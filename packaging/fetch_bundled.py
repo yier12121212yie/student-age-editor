@@ -35,7 +35,11 @@ def _request(url, token=None, timeout=30):
 
 
 def resolve_asset(repo, tag, asset_name, token):
-    """返回 (browser_download_url, 是否命中)；404/缺 asset 时返回 (None, False)。"""
+    """返回 (下载 url, asset id 或 None, 是否命中)；404/缺 asset 时返回 (None, None, False)。
+
+    私有仓库的 browser_download_url 对 Bearer token 也会 404，须走
+    资产 API（Accept: application/octet-stream）下载，因此同时返回 id。
+    """
     if tag == "latest":
         api = "https://api.github.com/repos/%s/releases/latest" % repo
     else:
@@ -47,25 +51,35 @@ def resolve_asset(repo, tag, asset_name, token):
         if e.code in (404, 410):
             print("没有找到 %s 的 Release（tag=%s），跳过资源包注入"
                   % (repo, tag))
-            return None, False
+            return None, None, False
         raise
     if status != 200:
         print("GitHub API 返回 %d，无法解析 release，跳过" % status)
-        return None, False
+        return None, None, False
     data = json.loads(body.decode("utf-8"))
     for a in data.get("assets") or []:
         if a.get("name") == asset_name:
-            return a.get("browser_download_url"), True
+            return a.get("browser_download_url"), a.get("id"), True
     print("Release %s 中未找到 asset '%s'，跳过资源包注入"
           % (data.get("tag_name") or tag, asset_name))
-    return None, False
+    return None, None, False
 
 
-def download(url, out_path, token):
+def download(url, out_path, token, repo=None, asset_id=None):
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    if token:
+    if token and asset_id and repo:
+        # 私有仓库必须走资产 API（octet-stream 直出文件字节流）。
+        url = "https://api.github.com/repos/%s/releases/assets/%s" % (
+            repo, asset_id)
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/octet-stream",
+            "User-Agent": _USER_AGENT,
+        })
         req.add_header("Authorization", "Bearer " + token)
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
     with urllib.request.urlopen(req, timeout=600) as r, \
             open(out_path, "wb") as f:
         shutil.copyfileobj(r, f)
@@ -95,10 +109,11 @@ def main():
 
     token = os.environ.get("GITHUB_TOKEN", "")
     try:
-        url, found = resolve_asset(args.repo, args.tag, args.asset, token)
+        url, asset_id, found = resolve_asset(args.repo, args.tag,
+                                             args.asset, token)
         if not found or not url:
             return 0  # 无包 → 跳过，不视为失败
-        download(url, args.out, token)
+        download(url, args.out, token, repo=args.repo, asset_id=asset_id)
     except Exception as e:
         print("获取资源包失败：%s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 1

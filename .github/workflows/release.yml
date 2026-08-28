@@ -52,6 +52,18 @@ jobs:
           VER="${{ github.event.inputs.version }}"
           if [ -z "$VER" ]; then VER="${GITHUB_REF_NAME#v}"; fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+      - name: 还原官方资源包缓存（ci-assets Release）
+        shell: bash
+        run: |
+          python packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
+            --out build/cache/official_pack_cache.zip
+          if [ ! -f build/cache/official_pack_cache.zip ]; then
+            echo "错误：ci-assets Release 缺少 official_pack_cache.zip，无法构建安装包"
+            exit 1
+          fi
+          python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 Windows 发行版与安装包
         run: python build_release.py --target windows --version $RELEASE_VERSION
       - name: 上传 Windows 产物
@@ -93,6 +105,17 @@ jobs:
           curl -fL -o build/tools/appimagetool-x86_64.AppImage \
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x build/tools/appimagetool-x86_64.AppImage
+      - name: 还原官方资源包缓存（ci-assets Release）
+        run: |
+          python packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
+            --out build/cache/official_pack_cache.zip
+          if [ ! -f build/cache/official_pack_cache.zip ]; then
+            echo "错误：ci-assets Release 缺少 official_pack_cache.zip，无法构建安装包"
+            exit 1
+          fi
+          python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 Linux 发行版与安装包（deb + AppImage）
         run: python build_release.py --target linux --version $RELEASE_VERSION
       - name: 上传 Linux 产物
@@ -123,6 +146,17 @@ jobs:
           VER="${{ github.event.inputs.version }}"
           if [ -z "$VER" ]; then VER="${GITHUB_REF_NAME#v}"; fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+      - name: 还原官方资源包缓存（ci-assets Release）
+        run: |
+          python3 packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
+            --out build/cache/official_pack_cache.zip
+          if [ ! -f build/cache/official_pack_cache.zip ]; then
+            echo "错误：ci-assets Release 缺少 official_pack_cache.zip，无法构建安装包"
+            exit 1
+          fi
+          python3 -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 macOS 发行版与安装包（DMG + PKG）
         run: python3 build_release.py --target macos --version $RELEASE_VERSION
       - name: 上传 macOS 产物
@@ -160,6 +194,7 @@ jobs:
         run: |
           python packaging/fetch_bundled.py \
             --asset bundled_preview.zip \
+            --tag ci-assets \
             --out frontend/android/app/src/main/assets/bundled/resource_pack.zip \
           || true
         env:
