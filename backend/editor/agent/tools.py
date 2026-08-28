@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 """Agent 工具注册表与离线执行器——ai_panel.dart _tools/_runTool 的 Python 移植。
 
-13 个文本工具（GUI 的 generate_image / edit_image 不在终端版范围内）：
+14 个工具——13 个文本工具（GUI 的 generate_image / edit_image 不在终端版范围内）
++ 1 个终端版专属的并行子代理派生工具：
   领域 CRUD×6  list_domains / list_domain_items / get_domain_item /
                update_domain_item / create_domain_item / delete_domain_item
   字典         get_game_dicts
   文件（只读） list_files / read_file
   模组         list_mods
   舞台×3       get_stage_dicts / get_talk_stage / set_talk_stage
+  子代理       spawn_subagents（由 engine 特判执行，把只读调研子任务
+               并行分派给只读克隆工具集的子代理，见 READ_ONLY_TOOLS）
 
 数据面直接复用 server 离线服务（ai_domain_service / stage_service / fs_tools），
 经 ai_domain_service.set_offline_cfg_dir 注入「当前模组」，与 GUI 同一份逻辑
@@ -31,6 +34,12 @@ from .client import ToolCall
 
 # list_files 结果截断（与 dart _runTool 的 take(300) 一致）
 _LIST_FILES_CAP = 300
+
+# 子代理允许的只读工具（并行执行安全、无需审批；写操作一律由主代理完成）
+READ_ONLY_TOOLS = frozenset({
+    "list_domains", "get_game_dicts", "list_domain_items", "get_domain_item",
+    "list_files", "read_file", "list_mods", "get_stage_dicts", "get_talk_stage",
+})
 
 
 def _jstr(data) -> str:
@@ -61,6 +70,8 @@ class AgentTools:
     def __init__(self):
         self._mod_root: Path | None = None
         self._workspace_root: Path | None = None
+        # 只读克隆标记（clone_readonly 置 True）：仅暴露/放行 READ_ONLY_TOOLS
+        self._readonly: bool = False
 
     # ------------------------------------------------------------------ 上下文
     def use_mod(self, mod_root, workspace_root=None):
@@ -79,6 +90,20 @@ class AgentTools:
             else:
                 cfg_dir = self._mod_root / "Cfgs" / "zh-cn"
         ai_domain_service.set_offline_cfg_dir(cfg_dir)
+
+    def clone_readonly(self) -> "AgentTools":
+        """克隆一个只读工具集（并行子代理专用）：继承当前模组/工作区上下文。
+
+        只复制 use_mod 设置的 _mod_root/_workspace_root 两个属性；不重设
+        域服务的全局注入（与 self 共用同一份离线上下文，线程内只读安全）。
+        克隆打上 _readonly=True 后，tool_defs() 只暴露 READ_ONLY_TOOLS，
+        _dispatch() 对其余工具一律拒绝（双保险），写操作不可能发生。
+        """
+        clone = AgentTools()
+        clone._mod_root = self._mod_root
+        clone._workspace_root = self._workspace_root
+        clone._readonly = True
+        return clone
 
     def _workspace(self) -> Path:
         """工作区根：显式指定 > CLI 工作区发现（env/注册表/创意工坊）> editor 根。"""
@@ -249,10 +274,38 @@ class AgentTools:
                 },
             },
         },
+        {
+            "name": "spawn_subagents",
+            "description": "把可独立完成的只读调研子任务并行分派给多个子代理（1-4 个，并行执行）。每个子代理只有只读查询工具（list_domains/get_game_dicts/list_domain_items/get_domain_item/list_files/read_file/list_mods/get_stage_dicts/get_talk_stage）、看不到主对话历史，所以 task 必须自包含全部上下文：写清要查的领域、关键词/ID、输出要求；name 是简短标题。适合同时查多个领域、批量核对多条数据等互不依赖的调研；写操作一律由你自己完成，子代理只返回调研结论",
+            "parameters": {
+                "type": "object",
+                "required": ["tasks"],
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "子任务列表（1-4 个）",
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "task"],
+                            "properties": {
+                                "name": {"type": "string", "description": "简短标题"},
+                                "task": {"type": "string", "description": "完整自包含的任务描述"},
+                            },
+                        },
+                    },
+                },
+            },
+        },
     ]
 
     def tool_defs(self) -> list:
-        """返回工具定义（openai function 格式；anthropic 由 client 层转换）。"""
+        """返回工具定义（openai function 格式；anthropic 由 client 层转换）。
+
+        只读克隆（_readonly=True）只返回 name 在 READ_ONLY_TOOLS 里的定义
+        （spawn_subagents 等不对子代理暴露，防止递归派生）。
+        """
+        if self._readonly:
+            return [t for t in self.TOOL_DEFS if t.get("name") in READ_ONLY_TOOLS]
         return self.TOOL_DEFS
 
     # ------------------------------------------------------------------ 执行
@@ -268,6 +321,9 @@ class AgentTools:
             return f"工具执行失败: {exc}"
 
     def _dispatch(self, call: ToolCall, confirm) -> str:
+        # 只读克隆的双保险：即使模型越权调用写工具也在此拒绝
+        if getattr(self, "_readonly", False) and call.name not in READ_ONLY_TOOLS:
+            return "错误：子代理仅允许只读工具，%s 已被拒绝" % call.name
         args = call.arguments or {}
         handler = getattr(self, "_tool_" + call.name, None)
         if handler is None:

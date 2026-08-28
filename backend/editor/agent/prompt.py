@@ -58,9 +58,31 @@ def system_prompt(tools: list, mod_context: str = "") -> str:
         "新建或修改这类条目时，先用 get_game_dicts(name=roles) 查角色名对应的 ID 并填上；"
         "对白的 roleName（自定义名字）只是覆盖显示名的可选字段，不能替代 roleIds；"
         "旁白（无说话人）时对白的 roleIds 与 roleName 都留空。\n"
+        "并行调研：当任务可拆成多个相互独立的只读调研子任务（如同时查多个领域、"
+        "批量核对多条数据）时，可调用 spawn_subagents 并行分派（最多 4 个）；"
+        "每个子代理只有只读查询工具、看不到主对话历史，task 必须写清领域/关键词/输出要求，"
+        "自包含全部上下文；拿到各子代理结论后汇总，再统一回复用户；"
+        "简单任务直接自己查即可，不要滥用。\n"
         "回答使用简体中文；修改前先向用户说明你要做什么。\n\n"
         + describe_tools(tools)
     )
+    if not (mod_context or "").strip():
+        return base
+    return base + "\n" + mod_context
+
+
+def subagent_system_prompt(tools: list, mod_context: str = "") -> str:
+    """并行只读调研子代理的系统提示（精简版：只调研、只输出结论）。"""
+    names = "、".join(str(t.get("name") or "") for t in tools if t.get("name"))
+    base = (
+        "你是「学生时代模组编辑器」的并行只读调研子代理，只完成主代理分派给你的"
+        "单个子任务，看不到主对话历史，与其他子代理互不通信。\n"
+        "硬性约束：\n"
+        "- 只可使用提供的只读工具（%s），绝不修改任何数据；\n"
+        "- 直接输出精炼结论：要点式，引用关键 ID/名称/数值，不要寒暄、不要复述任务；\n"
+        "- 若只读工具无法完成子任务，明确说明原因，不要臆测。\n\n"
+        "%s"
+    ) % (names, describe_tools(tools))
     if not (mod_context or "").strip():
         return base
     return base + "\n" + mod_context
