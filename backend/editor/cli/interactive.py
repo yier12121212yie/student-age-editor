@@ -59,14 +59,14 @@ except Exception:
     PromptSession = None
 
 SLASH_CMDS = [
-    "/help", "/mods", "/cfg", "/schema", "/search", "/workspace", "/doctor",
+    "/help", "/mods", "/cfg", "/schema", "/search", "/workspace", "/doctor", "/update",
     "/clear", "/exit", "/quit", "/tui", "/history", "/shell", "/shell!", "/status",
     "/use", "/edit", "/validate", "/export", "/import", "/theme",
     "/agent", "/cloud",
 ]
 
 # for direct (no slash) also
-DIRECT_CMDS = ["mods", "mod", "cfg", "schema", "search", "workspace", "doctor", "tui",
+DIRECT_CMDS = ["mods", "mod", "cfg", "schema", "search", "workspace", "doctor", "update", "tui",
                "help", "exit", "quit", "clear", "edit", "validate", "use", "status",
                "history", "list", "agent", "cloud"]
 
@@ -74,12 +74,12 @@ _KNOWN_CMDS = {c[1:].lower() for c in SLASH_CMDS} | set(DIRECT_CMDS) | {"mod"}
 
 _CMD_META = {
     "/help": "查看帮助", "/mods": "Mods 管理", "/cfg": "Cfg 读写", "/schema": "GAME_SCHEMA",
-    "/search": "全文搜索", "/workspace": "工作区", "/doctor": "环境自检", "/clear": "清屏",
+    "/search": "全文搜索", "/workspace": "工作区", "/doctor": "环境自检", "/update": "检查 GitHub 更新", "/clear": "清屏",
     "/exit": "退出", "/quit": "退出", "/tui": "启动 TUI", "/history": "历史记录",
     "/shell": "执行 shell", "/shell!": "执行 shell", "/status": "当前上下文",
     "/use": "切换当前 Mod", "/edit": "编辑 Cfg", "/validate": "校验当前 Mod",
     "/export": "batch 导出", "/import": "batch 导入", "/theme": "主题",
-    "/agent": "AI 助手 (config/chat)", "/cloud": "云同步 (providers/add/sync…)",
+    "/agent": "AI 助手（/agent 直接对话，/agent setting 配置）", "/cloud": "云同步 (providers/add/sync…)",
 }
 
 _SUB_META = {
@@ -89,7 +89,7 @@ _SUB_META = {
             ("edit", "<Cfg> $EDITOR 打开"), ("delete", "<Cfg> 删记录"),
             ("validate", "校验当前 Mod"), ("export", "batch 导出"), ("import", "batch 导入")],
     "workspace": [("show", "显示工作区"), ("set", "<path> 设置工作区")],
-    "agent": [("config", "查看/修改 AI 配置"), ("chat", "[任务] 对话式改模")],
+    "agent": [("setting", "查看/修改 AI 配置"), ("chat", "[任务] 对话式改模（直接 /agent 亦可）")],
     "cloud": [("providers", "列出网盘"), ("add", "新增网盘配置"), ("test", "<id> 测试连接"),
               ("show", "<id> 详情"), ("remove", "<id> 删除"), ("sync", "<id> 同步 Mod")],
 }
@@ -117,7 +117,7 @@ _BOOL_FLAGS = {"--force", "--all", "--json", "--verbose",
 
 _SUB_WORDS = {"get", "set", "list", "edit", "delete", "validate", "export", "import",
               "show", "use", "create", "add", "remove", "workshop",
-              "config", "chat", "providers", "sync"}
+              "config", "setting", "chat", "providers", "sync"}
 
 _SUB_SPECS = {
     "cfg": {
@@ -140,6 +140,7 @@ _SUB_SPECS = {
     "workspace": {"show": {"pos": [], "flags": []}, "set": {"pos": ["dir"], "flags": []}},
     "agent": {
         "config": {"pos": [], "flags": ["--json"]},
+        "setting": {"pos": [], "flags": ["--json"]},
         "chat": {"pos": ["task"], "flags": ["-m", "--mod", "--provider", "--base-url",
                                             "--api-key", "--model", "--temperature"]},
     },
@@ -602,8 +603,9 @@ def _print_help():
         ("/search <kw>", "全文搜索", "/search 320101"),
         ("/workspace show/set", "工作区", "/workspace show"),
         ("/doctor", "环境自检", "/doctor"),
-        ("/agent config", "AI 配置查看/修改", "/agent config"),
-        ("/agent chat [-m Mod] [任务]", "AI 助手对话改模", "/agent chat -m test 把开局事件标题改成…"),
+        ("/agent [任务]", "AI 助手直接对话改模", "/agent 把开局事件标题改成…"),
+        ("/agent setting", "AI 配置查看/修改 (config 别名)", "/agent setting"),
+        ("/update", "检查 GitHub 更新", "/update"),
         ("/cloud providers|add|test|sync", "云同步网盘", "/cloud sync p1 --mod test --dry-run"),
         ("/status", "当前上下文", "/status"),
         ("/tui", "启动 TUI", "/tui"),
@@ -886,8 +888,15 @@ class InteractiveCLI:
         if cmd == "doctor":
             self.cmd_doctor()
             return False
+        if cmd == "update":
+            self._dispatch_via_app(["update"] + args)
+            return False
         if cmd == "agent":
-            argv = ["agent"] + args
+            if not args or args[0].lower() not in ("config", "setting", "chat"):
+                # 裸 /agent 或 /agent <任务描述> → 直接进入 agent 对话
+                argv = ["agent", "chat"] + args
+            else:
+                argv = ["agent"] + args
             # REPL 当前 Mod 作为 agent chat 的默认 -m
             if len(argv) > 1 and argv[1] == "chat" and "--mod" not in argv and "-m" not in argv and self.current_mod:
                 argv += ["-m", self.current_mod]

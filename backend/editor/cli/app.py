@@ -1158,6 +1158,59 @@ def cmd_doctor(args):
     else:
         console.print("\n[green]all checks passed[/]")
 
+def cmd_update(args):
+    """检查 GitHub 最新发行版（手动单次查询，不做后台轮询）。"""
+    from editor.core.update_check import check_update
+
+    result = check_update(timeout=6)
+    if _want_json(args):
+        _json_out(result)
+        return
+    if not result.get("ok"):
+        err_console.print(f"[red]检查更新失败：{escape(str(result.get('error') or '未知错误'))}[/]")
+        return
+
+    current = str(result.get("current") or "-")
+    latest = str(result.get("latest_tag") or "")
+    console.rule("检查更新")
+    console.print(f"当前版本：[bold]{escape(current)}[/]")
+    if not latest:
+        console.print("最新版本：[dim](仓库尚无发行版)[/]")
+        return
+    name = str(result.get("latest_name") or "")
+    console.print(f"最新版本：[bold]{escape(latest)}[/]" + (f"  [dim]{escape(name)}[/]" if name else ""))
+    if result.get("update_available"):
+        console.print("[yellow]发现新版本，建议更新[/]")
+    else:
+        console.print("[green]已是最新[/]")
+    if result.get("prerelease"):
+        console.print("[dim]类型：预发行版 (prerelease)[/]")
+    if result.get("published_at"):
+        console.print(f"发布时间：{escape(str(result['published_at']))}")
+    if result.get("html_url"):
+        url = str(result["html_url"])
+        console.print(f"发行页：[link={url}]{escape(url)}[/]")
+
+    notes = str(result.get("notes") or "").strip()
+    if notes:
+        note_lines = notes.splitlines()
+        body = "\n".join(note_lines[:15])
+        if len(note_lines) > 15:
+            body += "\n…（完整说明见发行页）"
+        console.print(Panel(escape(body), title="更新说明", border_style="cyan"))
+
+    assets = result.get("assets") or []
+    if assets:
+        t = Table(title=f"附件 ({len(assets)})", show_lines=False)
+        t.add_column("名称", style="cyan", overflow="fold")
+        t.add_column("大小", justify="right")
+        t.add_column("下载地址", style="dim", overflow="fold")
+        for it in assets:
+            size = it.get("size") or 0
+            t.add_row(str(it.get("name") or "-"), f"{size / (1024 * 1024):.1f} MB",
+                      str(it.get("url") or "-"))
+        console.print(t)
+
 def cmd_tui(args):
     # lazy import
     try:
@@ -1352,7 +1405,7 @@ def cmd_agent_chat(args):
     settings = _apply_agent_overrides(args, read_ai_settings())
     if not is_ai_settings_meaningful(settings):
         err_console.print("[red]AI 助手尚未配置 apiKey。[/]")
-        err_console.print("先运行 [bold]python run_cli.py agent config[/] 完成配置（GUI 设置页亦可，三端共享）。")
+        err_console.print("先运行 [bold]python run_cli.py agent config[/]（或 REPL 内 [bold]/agent setting[/]）完成配置（GUI 设置页亦可，三端共享）。")
         raise SystemExit(1)
     if not settings.get("model"):
         err_console.print("[red]model 未配置，请在 agent config 或 --model 中提供。[/]")
@@ -1396,7 +1449,10 @@ def cmd_agent_chat(args):
             err_console.print(f"[red]{escape(str(e))}[/]")
             raise SystemExit(1)
         console.print("\n")
-        return
+        # 交互终端：执行完首条任务后继续落入下方聊天循环（可接着对话）；
+        # 非交互终端（管道/脚本）：保持旧版一次性执行后退出，便于脚本兼容。
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return
 
     # 交互聊天子会话：多轮上下文保存在 engine.history（内存态）
     console.print(Panel(
@@ -1869,6 +1925,11 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("doctor", help="环境自检")
     d.set_defaults(func=cmd_doctor)
 
+    # update
+    u = sub.add_parser("update", help="检查 GitHub 最新发行版")
+    u.add_argument("--json", action="store_true", help="JSON 输出")
+    u.set_defaults(func=cmd_update)
+
     # tui
     t = sub.add_parser("tui", help="启动 TUI 交互编辑器 (textual)")
     t.add_argument("--mod", default=None, help="初始模组")
@@ -1880,8 +1941,11 @@ def build_parser() -> argparse.ArgumentParser:
     a = ags.add_parser("config", help="查看/交互式修改 AI 服务配置")
     a.add_argument("--json", action="store_true", help="JSON 输出 (掩码)")
     a.set_defaults(func=cmd_agent_config)
-    a = ags.add_parser("chat", help="AI 助手：带任务参数=单次执行完退出，省略=进入聊天")
-    a.add_argument("task", nargs="*", help="一次性任务描述 (省略进入交互聊天)")
+    a = ags.add_parser("setting", help="查看/交互式修改 AI 服务配置（config 的别名）")
+    a.add_argument("--json", action="store_true", help="JSON 输出 (掩码)")
+    a.set_defaults(func=cmd_agent_config)
+    a = ags.add_parser("chat", help="AI 助手：带任务参数=先执行任务再进入聊天（非交互终端执行完退出），省略=进入聊天")
+    a.add_argument("task", nargs="*", help="任务描述（交互终端：先执行再继续对话；非交互：执行完退出）")
     a.add_argument("-m", "--mod", default=None, help="限定模组 (唯一模组时自动选定)")
     a.add_argument("--provider", default=None,
                    choices=["openai_compatible", "openai_responses", "anthropic"])
