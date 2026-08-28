@@ -335,7 +335,7 @@ def build_backend():
     # 把 exe 与共享 _internal/ 写到 build/release/backend_dist/ 下。
     subprocess.run([
         sys.executable, "-m", "PyInstaller",
-        os.path.join(ROOT, "build", "release", "backend.spec"),
+        os.path.join(ROOT, "packaging", "pyinstaller", "backend.spec"),
         "--distpath", os.path.join(ROOT, "build", "release"),
         "--workpath", os.path.join(ROOT, "build", "release", "pyinstaller_work"),
         "--noconfirm",
