@@ -468,9 +468,16 @@ def _copy_readme(out_dir, target):
     name = {"windows": "使用说明.txt",
             "linux": "使用说明-linux.txt",
             "macos": "使用说明-macos.txt"}[target]
-    src = os.path.join(ROOT, "build", "release", name)
-    if os.path.exists(src):
-        shutil.copy2(src, os.path.join(out_dir, "使用说明.txt"))
+    # 首选入库的 packaging/notes/；build/release/ 保留为本地覆盖位置
+    candidates = [
+        os.path.join(ROOT, "packaging", "notes", name),
+        os.path.join(ROOT, "build", "release", name),
+    ]
+    for src in candidates:
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(out_dir, "使用说明.txt"))
+            return
+    print("    警告：未找到 %s（%s），发行目录不含使用说明。" % (name, candidates[0]))
 
 
 def _make_executable(path):

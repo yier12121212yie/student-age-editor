@@ -1,0 +1,57 @@
+学生时代模组编辑器（macOS）
+==============================
+
+安装方式（任选其一）
+
+1) DMG 拖拽安装（全量）
+    打开 学生时代模组编辑器-vX.Y.Z-macos.dmg，
+    将 学生时代模组编辑器.app 拖入 Applications 文件夹。
+
+2) PKG 组件安装（可勾选）
+    双击 学生时代模组编辑器-vX.Y.Z-macos.pkg，按向导勾选：
+        组件   Core（必选）、GUI / TUI / CLI（至少选一个）、
+               官方资源扩展包（适用于未安装游戏的创作者）
+        命令   editor-gui / editor-tui / editor-cli 是否加入 PATH
+    安装到 /Applications/学生时代模组编辑器.app。
+    PKG 未签名，首次打开需右键 -> 打开（或在“系统设置 -> 隐私与
+    安全性”中允许）。macOS 无桌面图标惯例，故无该选项。
+
+3) 便携 zip
+    解压得到 学生时代模组编辑器.app，直接使用。
+
+首次运行
+    本版本为 ad hoc 签名（未做 Apple 公证），若提示“无法验证开发者”：
+        xattr -dr com.apple.quarantine 学生时代模组编辑器.app
+    然后双击打开即可，无需安装 Python 或 Flutter。
+
+命令行
+    PKG 安装时按勾选创建于 /usr/local/bin：
+        editor-gui    启动图形界面
+        editor-tui    终端字符界面
+        editor-cli    命令行接口
+    便携模式可直接运行 app 内后端：
+        学生时代模组编辑器.app/Contents/MacOS/backend tui
+        学生时代模组编辑器.app/Contents/MacOS/backend cli
+
+数据与日志位置
+    安装到 /Applications（root 所有）时自动使用
+    ~/Library/Application Support/StudentAgeEditor/
+    （logs/、_cache/、editor_env.json）；便携目录可写时与 app 同级。
+
+官方资源扩展包
+    PKG 勾选该组件后开箱可用（随包内嵌，只读）；便携 zip / DMG 内
+    app 自带 official_pack/ 目录时同样生效。
+
+模组位置
+    游戏无原生 macOS 版；CrossOver/Wine 用户请在首次启动向导（OOBE）
+    中手动指向 bottle 内的 Mods 目录
+    （默认给出 ~/Library/Application Support/ 下的等价路径）。
+
+签名说明
+    本版本为 ad hoc 签名（未做 Apple 公证），因此首次打开需
+    右键 -> 打开，或在“系统设置 -> 隐私与安全性”中允许。
+    若需正式分发，请在 CI 中配置签名/公证后再发布。
+
+疑难排查
+    - 提示“无法验证开发者”：执行上面的 xattr 命令后重开。
+    - 后端无法启动：查看日志 backend.log 并反馈。

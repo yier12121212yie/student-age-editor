@@ -1,0 +1,68 @@
+学生时代模组编辑器（Linux）
+==============================
+
+安装方式（任选其一）
+
+1) 安装向导（推荐，可勾选组件）
+    解压本 zip 后执行：
+        chmod +x install.sh
+        ./install.sh
+    按向导勾选：
+        组件   Core（必选）、GUI / TUI / CLI（至少选一个）、
+               官方资源扩展包（适用于未安装游戏的创作者）
+        命令   editor-gui（启动 GUI）、editor-tui（启动 TUI）、
+               editor-cli（启动 CLI）是否加入 PATH
+        桌面图标 是否创建
+    默认免 root 安装到 ~/.local/share/student-age-editor（root 下为
+    /opt/student-age-editor）。也支持静默安装：
+        ./install.sh --yes --dir ~/.local/share/student-age-editor \
+            --components gui,officialpack --commands cli --no-desktop-icon
+    卸载：
+        ./install.sh --uninstall
+
+2) deb 安装包（Debian/Ubuntu 系）
+        sudo dpkg -i student-age-editor_X.Y.Z_amd64.deb
+        sudo apt-get -f install    # 缺依赖时自动补齐
+    全量安装到 /opt/student-age-editor，自动注册桌面图标与命令。
+
+3) AppImage（免安装单文件）
+        chmod +x 学生时代模组编辑器-vX.Y.Z-linux-amd64.AppImage
+        ./学生时代模组编辑器-vX.Y.Z-linux-amd64.AppImage
+    无 FUSE 环境时可改用：
+        ./xxx.AppImage --appimage-extract-and-run
+
+4) 便携模式
+    直接给两个可执行文件加执行权限（一般解压工具已保留）：
+        chmod +x 学生时代模组编辑器 backend
+    然后双击（或 ./学生时代模组编辑器）即可，无需安装 Python 或 Flutter。
+    首次启动后端解压较慢，请耐心等待。
+
+命令行
+    editor-gui    启动图形界面
+    editor-tui    终端字符界面
+    editor-cli    命令行接口（如 editor-cli mods list）
+    便携模式可直接运行 ./backend tui 或 ./backend cli
+
+数据与日志位置
+    安装目录可写（便携 / ~/.local 安装）时与程序同目录
+    （logs/、_cache/、editor_env.json）；deb / AppImage 等系统安装时
+    自动改用 ~/.local/share/student-age-editor/。
+
+官方资源扩展包
+    内嵌于安装包（official_pack/ 目录），勾选组件即装；未勾选或便携
+    目录内无该目录时，需已安装游戏才能读取官方数据。
+
+模组位置
+    游戏本体为 Windows 版（含 Proton 运行场景）：编辑器会自动探测
+    Steam 库与 compatdata/1991040/pfx 内的 Mods 目录，也可在首次
+    启动向导（OOBE）或 editor_env.json 中手动指定工作区。
+
+依赖说明
+    本包在 Ubuntu 24.04 上构建；运行需较新的 glibc（≥ 2.39）及 GTK3、
+    GStreamer。较老的发行版（如 Ubuntu 22.04、Debian 12 以下）可能
+    无法运行，请使用新版发行版，或在 CI 中针对目标发行版单独构建。
+
+疑难排查
+    - 提示缺少 GTK/GLib 库：安装 libgtk-3-0 等运行库。
+    - 后端无法启动：查看日志 backend.log 并反馈。
+    - AppImage 双击无反应：改用 --appimage-extract-and-run 参数。
