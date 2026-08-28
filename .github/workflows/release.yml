@@ -224,6 +224,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: 修复资产名（artifact 传输会剥离文件名的中文前缀）
+        shell: bash
+        run: |
+          find artifacts -type f -name "-*" | while read -r f; do
+            dir="$(dirname "$f")"; base="$(basename "$f")"
+            mv "$f" "$dir/学生时代模组编辑器$base"
+          done
       - name: 汇总产物
         run: find artifacts -type f | sort
       - name: 创建 Release
