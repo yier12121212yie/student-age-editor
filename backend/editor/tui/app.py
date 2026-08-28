@@ -2645,6 +2645,98 @@ class AgentChatScreen(ModalScreen):
         self.dismiss(None)
 
 
+class UpdateCheckScreen(ModalScreen):
+    """检查更新弹窗：打开即显示「检查中…」，worker 线程查询 GitHub 后就地刷新结果。"""
+
+    BINDINGS = [Binding("escape", "close", "关闭", priority=True)]
+
+    DEFAULT_CSS = """
+    UpdateCheckScreen { align: center middle; }
+    #upd-dialog { width: 76; height: auto; max-height: 88%; background: $surface; border: thick $primary; padding: 1 2; }
+    #upd-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    #upd-body { height: auto; max-height: 24; margin-bottom: 1; }
+    #upd-hint { color: $text-muted; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="upd-dialog"):
+            yield Static("🔄 检查更新", id="upd-title")
+            with VerticalScroll(id="upd-body"):
+                yield Static("正在检查 GitHub 最新发行版…", id="upd-text")
+            yield Static("Esc 关闭", id="upd-hint")
+
+    def on_mount(self):
+        # 网络请求放 worker 线程跑（参考 agent-chat 的 thread worker 模式），UI 不阻塞
+        self.run_worker(self._fetch, thread=True, group="update-check", exclusive=True)
+
+    def _fetch(self):
+        result = {}
+        try:
+            from editor.core.update_check import check_update
+            result = check_update(timeout=6) or {}
+        except BaseException as e:  # 任何异常都转成结果文本，不允许炸掉 UI
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+        def done():
+            try:
+                self._show(result)
+            except Exception:
+                pass  # 弹窗已被用户关闭：worker 尾声的刷新直接忽略
+
+        self.app.call_from_thread(done)
+
+    def _show(self, result):
+        """把查询结果渲染进弹窗（UI 线程）。用 rich.text.Text 承载内容，
+        避免 notes 的 markdown/方括号被 Textual 当成标记语法解析。"""
+        from rich.text import Text
+
+        title = self.query_one("#upd-title", Static)
+        body = self.query_one("#upd-text", Static)
+        if not result.get("ok"):
+            title.update(Text("❌ 检查更新失败"))
+            body.update(Text(
+                f"错误：{result.get('error') or '未知错误'}\n"
+                f"当前版本：{result.get('current') or '-'}"))
+            return
+        current = str(result.get("current") or "-")
+        latest = str(result.get("latest_tag") or "")
+        update_available = bool(result.get("update_available"))
+        lines = [f"当前版本：{current}"]
+        if not latest:
+            lines.append("最新版本：-（仓库尚无发行版）")
+        else:
+            latest_name = str(result.get("latest_name") or "")
+            lines.append("最新版本：" + latest + (f"  {latest_name}" if latest_name else ""))
+            lines.append("需要更新：" + ("是 — 发现新版本，建议更新" if update_available else "否 — 已是最新"))
+            if result.get("prerelease"):
+                lines.append("类型：预发行版 (prerelease)")
+            if result.get("published_at"):
+                lines.append(f"发布时间：{result['published_at']}")
+            if result.get("html_url"):
+                lines.append(f"发行页：{result['html_url']}")
+            notes = str(result.get("notes") or "").strip()
+            if notes:
+                note_lines = notes.splitlines()
+                lines.append("")
+                lines.append("── 更新说明 ──")
+                lines.extend(note_lines[:20])
+                if len(note_lines) > 20:
+                    lines.append("…（完整说明见发行页）")
+            assets = result.get("assets") or []
+            lines.append("")
+            lines.append(f"── 附件：{len(assets)} 个 ──")
+            if assets:
+                first = assets[0] or {}
+                size = first.get("size") or 0
+                lines.append(f"{first.get('name') or '-'} ({size / (1024 * 1024):.1f} MB)")
+                lines.append(str(first.get("url") or "-"))
+        title.update(Text("✅ 已是最新" if not update_available else "🆕 发现新版本"))
+        body.update(Text("\n".join(lines)))
+
+    def action_close(self):
+        self.dismiss(None)
+
+
 class EditorTUI(App):
 
     TITLE = "学生时代 · 模组编辑器 — TUI"
@@ -2962,6 +3054,8 @@ class EditorTUI(App):
         Binding("c", "cloud", "云同步"),
 
         Binding("a", "agent_chat", "AI 助手"),
+
+        Binding("u", "check_update", "检查更新"),
 
         Binding("question_mark", "help", "帮助", key_display="?"),
 
@@ -5784,9 +5878,10 @@ class EditorTUI(App):
 
 
     def _modal_open(self) -> bool:
-        # 面板已打开时忽略 c/a（避免叠加弹屏）
+        # 面板已打开时忽略 c/a/u（避免叠加弹屏）
         return isinstance(self.screen, (CloudScreen, CloudProviderEditScreen,
-                                        AgentChatScreen, AgentConfigScreen))
+                                        AgentChatScreen, AgentConfigScreen,
+                                        UpdateCheckScreen))
 
     def action_cloud(self):
         if self._modal_open():
@@ -5799,6 +5894,12 @@ class EditorTUI(App):
         self.push_screen(AgentChatScreen(
             mod_root=self.current_mod_root, mod_name=self.current_mod_name,
             workspace=self.workspace))
+
+    def action_check_update(self):
+        """检查 GitHub 更新：立即弹窗显示「检查中…」，worker 返回后就地刷新结果。"""
+        if self._modal_open():
+            return
+        self.push_screen(UpdateCheckScreen())
 
     def action_help(self):
 
