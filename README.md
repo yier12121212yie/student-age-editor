@@ -4,7 +4,8 @@
 `127.0.0.1:8765` HTTP 服务与前端通信，各平台启动方式一致。
 
 除 GUI 外提供 CLI / TUI（`python run_cli.py`、`python run_tui.py`，详见
-`CLI_TUI_GUIDE.md`）；AI 助手（`agent`）与云同步（`cloud`）的配置为
+`CLI_TUI_GUIDE.md`），CLI 支持 `/update` 检查更新、`/agent` 直接进入 AI
+对话；AI 助手（`agent`）与云同步（`cloud`）的配置为
 GUI / CLI / TUI 三端共享（`.editor_ai.json` / `.editor_cloud.json`）。
 
 ## 支持平台
@@ -24,13 +25,13 @@ GUI / CLI / TUI 三端共享（`.editor_ai.json` / `.editor_cloud.json`）。
 
 ```bash
 # Windows（在 Windows 上）
-python build_release.py --target windows --version 1.3.0
+python build_release.py --target windows --version Alpha-v0.1
 
 # Linux（在 Linux / WSL 上）
-python build_release.py --target linux --version 1.3.0
+python build_release.py --target linux --version Alpha-v0.1
 
 # macOS（在 Mac 上）
-python build_release.py --target macos --version 1.3.0
+python build_release.py --target macos --version Alpha-v0.1
 
 # Android（先同步后端，再构建 APK）
 python packaging/sync_android_python.py
@@ -47,9 +48,9 @@ cd frontend && flutter build apk --release --target-platform android-arm64,andro
 
 ## GitHub Actions 自动出包
 
-推 tag（`v1.3.0` 等）或手动 `workflow_dispatch` 触发
+推 tag（`Alpha-v0.1` 等）或手动 `workflow_dispatch` 触发
 `.github/workflows/release.yml`，矩阵同时构建 Windows / Linux / macOS / Android，
-产出 zip / apk 并创建 GitHub Release（草稿）。
+产出 zip / apk 并自动创建 GitHub Release（含发布说明）。
 
 ## 注意事项
 - Android：Python 3.12 仅支持 64 位 ABI；已在 `gradle.properties` 关闭 Flutter

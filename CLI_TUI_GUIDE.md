@@ -149,6 +149,15 @@ python run_cli.py doctor                 # 环境自检
 python run_cli.py server start --port 8765  # 启动 HTTP 后端供 Flutter 用
 ```
 
+### 检查更新（update）
+
+```powershell
+python run_cli.py update           # 通过 GitHub Release 检查新版本
+python run_cli.py update --json    # JSON 输出（便于脚本解析）
+```
+
+显示最新版本号、发布说明与各资产的下载链接；REPL（`python run_cli.py` 无参进入）内 `/update` 等效。
+
 ### Shell 转义提示（Windows）
 
 PowerShell 单引号内 `\"` 会保留反斜杠，导致 JSON 失效。推荐：
@@ -206,6 +215,7 @@ python -m editor.tui --mod test         # 需 PYTHONPATH=backend
 | `/` | 搜索（当前 mod / 当前 cfg 内大小写不敏感） |
 | `c` | 云同步面板（provider 增删改查 / 测试 / 同步） |
 | `a` | AI 助手聊天面板（对话式改模，写操作需确认；面板内「⚙ 配置」可直接改 AI 配置） |
+| `u` | 检查更新（比对 GitHub Release，弹窗展示最新版本 / 发布说明 / 下载链接） |
 | `?` | 帮助 |
 | `Enter` | 左树展开 / 打开 cfg；中表选中 |
 | `↑↓` | 导航 |
@@ -264,7 +274,7 @@ python run_tui.py
 
 # PyInstaller 单文件（Windows 示例）
 pip install pyinstaller UnityPy textual rich
-python build_release.py --target windows --version 1.4.0
+python build_release.py --target windows --version Alpha-v0.1
 # 产物 dist/*.zip 含 backend.exe + Flutter 前端；CLI 额外文档见本文件
 # 如需控制台版：
 #   修改 build/release/backend.spec: console=True
@@ -305,14 +315,25 @@ python run_cli.py agent chat -m test
 python run_cli.py agent chat --provider anthropic --base-url https://… --api-key sk-… --model …
 ```
 
+REPL（`python run_cli.py` 无参进入）内亦可：`/agent` 直接进入 AI 对话；
+`/agent <任务>` 以该任务开场进入对话；`/agent setting` 查看/交互式修改 AI
+模型配置（`/agent config` 仍可用）；`/agent chat` 单命令模式带任务时为
+一次性执行（非交互，等价 `python run_cli.py agent chat <任务>`）。
+
 TUI 修改配置：聊天面板（`a`）内点「⚙ 配置」直接编辑协议 / baseUrl / apiKey /
-model / temperature，可保存前测试连通；REPL 内 `/agent config` 同效。
+model / temperature，可保存前测试连通；REPL 内 `/agent setting`（或
+`/agent config`）同效。
 
 安全语义与 GUI 一致：所有写操作（update/create/delete/set_talk_stage）都会
 先展示字段级 diff，等待 `y/N` 审批；工具循环上限 20 轮；未配置时给出引导而非报错栈。
 
-TUI 内按 `a` 打开聊天面板（Esc 关闭，写操作弹出确认框）；REPL 内 `/agent config`
-、`/agent chat`（当前 `/mods use` 选定的 mod 自动作为 `-m` 默认）。
+并行子代理：AI 可通过 `spawn_subagents` 把可独立完成的调研类子任务并行分派给
+最多 4 个只读子代理并汇总结论（子代理只读，不可写）；所有写操作仍由主代理
+执行并需 `y/N` 确认。
+
+TUI 内按 `a` 打开聊天面板（Esc 关闭，写操作弹出确认框），按 `u` 检查更新；
+REPL 内 `/agent`、`/agent setting|config`、`/agent chat`（当前 `/mods use`
+选定的 mod 自动作为 `-m` 默认）。
 
 ## 8. 云同步（手动上传 / 下载 Mod）
 
@@ -349,7 +370,7 @@ python run_cli.py cloud sync <id> --mod test --files readme.txt,Cfgs/zh-cn/EvtCf
 REPL（`python run_cli.py` 无参进入）内 Tab 补全已覆盖 `agent` / `cloud` 全族
 （裸词 `agent` / `cloud` 也可直接输入）：
 
-- 子命令级：`/cloud ` → providers/add/test/show/remove/sync；`/agent ` → config/chat
+- 子命令级：`/cloud ` → providers/add/test/show/remove/sync；`/agent ` → setting/config/chat
 - 网盘 ID：`cloud test|show|remove|sync <Tab>` → 已配置 provider 的 id + 名称 [类型]
 - 值补全：`--type`（10 种驱动）、`--direction`（upload/download/sync）、
   `--remote-root`（mods/cfgs/save）、`--provider`（三种 AI 协议）、
