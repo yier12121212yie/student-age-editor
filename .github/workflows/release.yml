@@ -67,6 +67,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 Windows 发行版与安装包
+        shell: bash
         run: python build_release.py --target windows --version $RELEASE_VERSION
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4
