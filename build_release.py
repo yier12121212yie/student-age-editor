@@ -227,6 +227,16 @@ def _locate_appimagetool():
     return None
 
 
+def _numeric_version(version):
+    """安装器工具元数据用的纯数字版本（dpkg/pkgbuild 要求以数字开头）。
+
+    显示版本可携带品牌前缀（如 Alpha-v0.1）或预发布后缀（0.1.0-alpha.1），
+    取其中的数字段；无数字段时回退 0.0。
+    """
+    m = re.search(r"(\d+(?:\.\d+)+)", version)
+    return m.group(1) if m else "0.0"
+
+
 def build_linux_installers(version, out_dir):
     """第 5 步：构建 .deb（dpkg-deb）与 AppImage（appimagetool），须在 Linux 上。"""
     _step(5, "构建 Linux 安装包（deb + AppImage）...")
@@ -242,6 +252,7 @@ def build_linux_installers(version, out_dir):
     deb = os.path.join(DIST_ROOT, "student-age-editor_%s_amd64.deb" % version)
     subprocess.run([sys.executable, LINUX_BUILD_DEB,
                     "--source", out_dir, "--version", version,
+                    "--deb-version", _numeric_version(version),
                     "--output", DIST_ROOT], cwd=ROOT, check=True)
     assert os.path.isfile(deb), "deb 未生成：%s" % deb
     print("完成：%s (%.1f MB)" % (deb, os.path.getsize(deb) / 1048576))
@@ -280,7 +291,9 @@ def build_macos_installers(version, out_dir):
     assert os.path.isdir(app_bundle), "未找到 %s" % app_bundle
     for script in (MACOS_BUILD_DMG, MACOS_BUILD_PKG):
         subprocess.run(["bash", script, "--app", app_bundle,
-                        "--version", version, "--output", DIST_ROOT],
+                        "--version", version,
+                        "--meta-version", _numeric_version(version),
+                        "--output", DIST_ROOT],
                        cwd=ROOT, check=True)
     dmg = os.path.join(DIST_ROOT, "%s-%s-macos.dmg" % (APP_FILE_BASE, version))
     pkg = os.path.join(DIST_ROOT, "%s-%s-macos.pkg" % (APP_FILE_BASE, version))

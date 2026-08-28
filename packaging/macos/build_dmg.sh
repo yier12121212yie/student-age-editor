@@ -65,6 +65,9 @@ while [ $# -gt 0 ]; do
         --version)
             [ $# -ge 2 ] || die "--version 缺少参数"
             VERSION="$2"; shift 2 ;;
+        --meta-version)
+            [ $# -ge 2 ] || die "--meta-version 缺少参数"
+            META_VERSION="$2"; shift 2 ;;
         --output)
             [ $# -ge 2 ] || die "--output 缺少参数"
             OUTPUT_DIR="$2"; shift 2 ;;
@@ -79,8 +82,14 @@ done
 [ -n "$VERSION" ]    || { usage >&2; die "缺少 --version 参数"; }
 [ -n "$OUTPUT_DIR" ] || { usage >&2; die "缺少 --output 参数"; }
 
-if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
-    die "版本号格式应为 x.y.z（如 1.4.0）：$VERSION"
+# 显示版本（用于文件名）：允许 x.y.z 与 Alpha-v0.1 这类品牌串；
+# --meta-version 提供工具元数据用的纯数字版本（省略时自动取显示版本的数字部分）
+if [[ ! "$VERSION" =~ ^[0-9A-Za-z.-]+$ ]]; then
+    die "版本号含非法字符（仅允许字母数字与 . -）：$VERSION"
+fi
+META_VERSION="${META_VERSION:-$(printf '%s' "$VERSION" | sed -E 's/^[^0-9]*//')}"
+if [[ ! "$META_VERSION" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
+    META_VERSION="0.0"
 fi
 
 command -v hdiutil  >/dev/null 2>&1 || die "未找到 hdiutil，本脚本须在 macOS 上运行"
@@ -135,7 +144,7 @@ ln -s /Applications "$STAGING/Applications"
 # ----------------------------- [3/3] 生成 DMG -----------------------------
 echo "[3/3] 生成 DMG（UDZO 压缩）..."
 hdiutil create \
-    -volname "$APP_NAME v$VERSION" \
+    -volname "$APP_NAME $VERSION" \
     -srcfolder "$STAGING" \
     -ov -format UDZO \
     "$DMG_OUT"

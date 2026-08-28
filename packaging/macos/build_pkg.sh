@@ -60,6 +60,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --app)      [ $# -ge 2 ] || die "--app 缺少参数"; APP_PATH="$2"; shift 2 ;;
         --version)  [ $# -ge 2 ] || die "--version 缺少参数"; VERSION="$2"; shift 2 ;;
+        --meta-version)
+            [ $# -ge 2 ] || die "--meta-version 缺少参数"
+            META_VERSION="$2"; shift 2 ;;
         --output)   [ $# -ge 2 ] || die "--output 缺少参数"; OUTPUT_DIR="$2"; shift 2 ;;
         -h|--help)  usage; exit 0 ;;
         *) usage >&2; die "未知参数：$1" ;;
@@ -70,8 +73,14 @@ done
 [ -n "$VERSION" ]    || { usage >&2; die "缺少 --version 参数"; }
 [ -n "$OUTPUT_DIR" ] || { usage >&2; die "缺少 --output 参数"; }
 
-if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
-    die "版本号格式应为 x.y.z（如 1.4.0）：$VERSION"
+# 显示版本（用于文件名）：允许 x.y.z 与 Alpha-v0.1 这类品牌串；
+# --meta-version 提供工具元数据用的纯数字版本（省略时自动取显示版本的数字部分）
+if [[ ! "$VERSION" =~ ^[0-9A-Za-z.-]+$ ]]; then
+    die "版本号含非法字符（仅允许字母数字与 . -）：$VERSION"
+fi
+META_VERSION="${META_VERSION:-$(printf '%s' "$VERSION" | sed -E 's/^[^0-9]*//')}"
+if [[ ! "$META_VERSION" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
+    META_VERSION="0.0"
 fi
 
 for tool in pkgbuild productbuild codesign; do
@@ -171,19 +180,19 @@ chmod 0755 "$WORK_DIR"/scripts_*/postinstall
 
 echo "[3/4] pkgbuild 子包 ..."
 pkgbuild --root "$GUI_ROOT" --install-location "/Applications" \
-    --identifier "com.pakyigame.${PKG_ID}.gui" --version "$VERSION" \
+    --identifier "com.pakyigame.${PKG_ID}.gui" --version "$META_VERSION" \
     --scripts "$WORK_DIR/scripts_gui" "$WORK_DIR/pkgs/gui.pkg"
 pkgbuild --root "$CORE_ROOT" --install-location "$BUNDLE" \
-    --identifier "com.pakyigame.${PKG_ID}.core" --version "$VERSION" \
+    --identifier "com.pakyigame.${PKG_ID}.core" --version "$META_VERSION" \
     "$WORK_DIR/pkgs/core.pkg"
 pkgbuild --root "$OP_ROOT" --install-location "$BUNDLE" \
-    --identifier "com.pakyigame.${PKG_ID}.officialpack" --version "$VERSION" \
+    --identifier "com.pakyigame.${PKG_ID}.officialpack" --version "$META_VERSION" \
     "$WORK_DIR/pkgs/officialpack.pkg"
 pkgbuild --nopayload \
-    --identifier "com.pakyigame.${PKG_ID}.tui" --version "$VERSION" \
+    --identifier "com.pakyigame.${PKG_ID}.tui" --version "$META_VERSION" \
     --scripts "$WORK_DIR/scripts_tui" "$WORK_DIR/pkgs/tui.pkg"
 pkgbuild --nopayload \
-    --identifier "com.pakyigame.${PKG_ID}.cli" --version "$VERSION" \
+    --identifier "com.pakyigame.${PKG_ID}.cli" --version "$META_VERSION" \
     --scripts "$WORK_DIR/scripts_cli" "$WORK_DIR/pkgs/cli.pkg"
 
 # ----------------------------- [4/4] productbuild 合成 -----------------------------
@@ -192,7 +201,7 @@ DIST_FILE="$WORK_DIR/distribution.xml"
 sed "s/@VERSION@/$VERSION/g" "$SCRIPT_DIR/distribution.xml" > "$DIST_FILE"
 rm -f "$PKG_OUT"
 productbuild --distribution "$DIST_FILE" --package-path "$WORK_DIR/pkgs" \
-    --version "$VERSION" "$PKG_OUT"
+    --version "$META_VERSION" "$PKG_OUT"
 
 SIZE="$(du -h "$PKG_OUT" | cut -f1)"
 echo "完成：$PKG_OUT ($SIZE)"

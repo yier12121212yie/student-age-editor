@@ -29,7 +29,9 @@ INSTALL_PREFIX = "/opt/" + PKG_ID
 def parse_args():
     ap = argparse.ArgumentParser(description="组装 Linux .deb 安装包")
     ap.add_argument("--source", required=True, help="zip 发行目录（assemble_linux 输出）")
-    ap.add_argument("--version", required=True, help="版本号 x.y.z")
+    ap.add_argument("--version", required=True, help="版本号（用于产物文件名，可如 Alpha-v0.1）")
+    ap.add_argument("--deb-version", dest="deb_version", default=None,
+                    help="control 的 Version 字段（dpkg 要求以数字开头）；省略时取 --version")
     ap.add_argument("--output", required=True, help="产物输出目录")
     ap.add_argument("--maintainer", default="PakyiGame <pakyigame@users.noreply.github.com>")
     return ap.parse_args()
@@ -124,7 +126,7 @@ def main():
             "模组编辑，含图形界面 (GUI)、终端界面 (TUI) 与命令行 (CLI)，"
             "内置官方资源扩展包，无需 Python/Flutter 运行环境。"
             "安装位置 /opt/student-age-editor。\n"
-        ) % (PKG_ID, args.version, dir_size_kb(app_dir), args.maintainer)
+        ) % (PKG_ID, args.deb_version or args.version, dir_size_kb(app_dir), args.maintainer)
         with open(os.path.join(debian, "control"), "w", encoding="utf-8") as f:
             f.write(control)
         postinst = (
