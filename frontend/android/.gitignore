@@ -1,0 +1,17 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks
+
+# 内置资源包大文件（由 export_decoded_pack.py / fetch_bundled.py 生成，不入库）
+/src/main/assets/bundled/*.zip

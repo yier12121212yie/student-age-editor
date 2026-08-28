@@ -1,0 +1,584 @@
+# -*- coding: utf-8 -*-
+"""Textual TUI for StudentAge editor.
+
+三栏布局:
+  左: Mods / Cfgs 树
+  中: 记录列表 (DataTable)
+  右: 详情 / JSON 预览 + 编辑
+
+快捷键:
+  q 退出  r 刷新  n 新建记录  e 编辑  d 删除  s 保存  / 搜索  ?
+"""
+
+import json
+import os
+from pathlib import Path
+
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+    Header, Footer, Tree, DataTable, TextArea, Static, Input, Button, Label
+)
+from textual.binding import Binding
+from textual import on
+
+from editor.cli.utils import (
+    resolve_workspace, list_mods, find_mod, cfg_name_normalize,
+    cfg_path, load_cfg, save_cfg, load_schema, validate_cfg, search_in_mod,
+    CfgParseError,
+)
+
+# ---------------------------------------------------------------------------
+# Fallback check – textual is required
+# ---------------------------------------------------------------------------
+
+try:
+    from textual.widgets import RichLog  # noqa
+except Exception:
+    pass
+
+
+class EditorTUI(App):
+    TITLE = "学生时代 模组编辑器 — TUI"
+    SUB_TITLE = "CLI/TUI 终端版 · 离线文件模式"
+    CSS = """
+    Screen { layout: vertical; }
+    Header { dock: top; }
+    Footer { dock: bottom; }
+    #body { height: 1fr; }
+    #left { width: 44; min-width: 30; border-right: solid $primary; }
+    #middle { width: 1fr; min-width: 28; border-right: solid $primary; }
+    #right { width: 42; min-width: 30; }
+    #right TextArea { height: 1fr; }
+    #status { height: 3; padding: 0 1; background: $boost; }
+    DataTable { height: 1fr; }
+    Tree { height: 1fr; }
+    Tree > .tree--guides { color: $primary 60%; }
+    #search-bar { height: 3; display: none; }
+    #search-bar.visible { display: block; }
+    """
+
+    BINDINGS = [
+        Binding("q", "quit", "退出"),
+        Binding("r", "refresh", "刷新"),
+        Binding("n", "new_record", "新建"),
+        Binding("e", "edit_record", "编辑"),
+        Binding("d", "delete_record", "删除"),
+        Binding("s", "save", "保存"),
+        Binding("/", "search", "搜索"),
+        Binding("?", "help", "帮助"),
+    ]
+
+    def __init__(self, workspace=None, initial_mod=None, **kwargs):
+        super().__init__(**kwargs)
+        self.workspace = resolve_workspace(workspace) if workspace else resolve_workspace(None)
+        self.initial_mod = initial_mod
+        self.current_mod_root: Path | None = None
+        self.current_mod_name: str | None = None
+        self.current_cfg: str | None = None
+        self.current_records: dict = {}
+        self.current_selected_id: str | None = None
+        self._dirty = False
+
+    # ------------------------------------------------------------------ compose
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
+        with Horizontal(id="body"):
+            with Vertical(id="left"):
+                yield Static("[b]Mods / Cfgs[/]", id="left-title")
+                yield Tree("Workspace", id="mod-tree")
+                yield Static("", id="left-hint")
+            with Vertical(id="middle"):
+                yield Static("[b]Records[/]", id="middle-title")
+                yield DataTable(id="record-table", cursor_type="row")
+                yield Static("", id="middle-hint")
+            with Vertical(id="right"):
+                yield Static("[b]Detail / JSON[/]", id="right-title")
+                yield TextArea(id="detail-area", language="json")
+                with Horizontal(id="right-actions"):
+                    yield Button("保存 (s)", id="btn-save", variant="primary")
+                    yield Button("校验", id="btn-validate")
+                    yield Button("外部编辑", id="btn-external")
+                yield Static("", id="status")
+        with Horizontal(id="search-bar"):
+            yield Label("搜索: ")
+            yield Input(placeholder="关键词 回车搜索 / Esc取消", id="search-input")
+        yield Footer()
+
+    # ------------------------------------------------------------------ lifecycle
+    def on_mount(self):
+        self._setup_table()
+        self._load_workspace()
+        # focus tree
+        self.query_one("#mod-tree", Tree).focus()
+
+    def _setup_table(self):
+        t: DataTable = self.query_one("#record-table", DataTable)
+        t.add_columns("ID", "Preview")
+        t.cursor_type = "row"
+        t.zebra_stripes = True
+
+    def _load_workspace(self):
+        tree: Tree = self.query_one("#mod-tree", Tree)
+        tree.clear()
+        mods = list_mods(self.workspace)
+        # Use root as workspace header, hide extra nesting
+        root = tree.root
+        # Shorten workspace display: only last 2 parts to avoid overflow hiding arrow
+        try:
+            ws_display = self.workspace.name or str(self.workspace)
+            # Show count in root label so arrow is visible even with long path (path in status)
+            root.label = f"Workspace ({len(mods)})"
+        except Exception:
+            root.label = f"Workspace ({len(mods)})"
+        root.expand()
+        tree.show_root = True
+        tree.guide_depth = 2
+        for m in mods:
+            label = f"{m['name']}"
+            if m["manifest_title"] and m["manifest_title"] != m["name"]:
+                # truncate long titles
+                title = m["manifest_title"]
+                if len(title) > 18:
+                    title = title[:17] + "…"
+                label += f" [{title}]"
+            cfg_count = len(m["cfg_files"])
+            if cfg_count:
+                label += f" [dim]({cfg_count})[/]"
+            else:
+                label += " [dim](empty)[/]"
+            # Only allow expand if has cfgs; otherwise no arrow
+            mod_node = root.add(label, data={"kind": "mod", "info": m}, allow_expand=bool(cfg_count))
+            # Add cfg leaves (no expand)
+            for cfg in m["cfg_files"]:
+                mod_node.add(f"[cyan]{cfg}[/]", data={"kind": "cfg", "mod": m, "cfg": cfg}, allow_expand=False)
+            # Do NOT auto-expand; keep collapsed so arrow is meaningful
+            # Optionally expand the current_mod or first mod with content
+            if self.current_mod_name and m["name"] == self.current_mod_name and cfg_count:
+                mod_node.expand()
+        # Expand root so mods are visible; keep mod nodes collapsed for clear arrow
+        root.expand()
+        self._set_status(f"workspace: {self.workspace}  ·  {len(mods)} mods  [dim](Enter 展开/折叠 | 点击箭头)[/]")
+        # auto-select initial mod or first
+        if self.initial_mod:
+            info = find_mod(self.initial_mod, self.workspace)
+            if info:
+                self._select_mod(info)
+                return
+        if mods:
+            # select first mod's first cfg automatically? leave to user
+            pass
+        self.query_one("#left-hint", Static).update("[dim]↑↓ 选择  Space/Enter 展开  r 刷新 | 点击箭头[/]")
+        self.query_one("#middle-hint", Static).update("[dim]选择左侧 cfg 查看记录[/]")
+
+    # ------------------------------------------------------------------ helpers
+    def _set_status(self, msg: str, style=""):
+        w = self.query_one("#status", Static)
+        w.update(msg)
+
+    def _select_mod(self, info: dict):
+        self.current_mod_root = Path(info["root"])
+        self.current_mod_name = info["name"]
+        self._set_status(f"已选择模组: [b]{info['name']}[/]  @ {info['root']}")
+        self.sub_title = f"{info['name']} @ {info['root']}"
+
+    def _load_cfg(self, cfg_name: str):
+        if not self.current_mod_root:
+            self._set_status("[red]请先选择模组[/]")
+            return
+        cfg_name = cfg_name_normalize(cfg_name)
+        self.current_cfg = cfg_name
+        try:
+            data, path, exists = load_cfg(self.current_mod_root, cfg_name)
+        except CfgParseError as e:
+            # show parse error in detail pane instead of crashing
+            self.current_records = {}
+            self.current_selected_id = None
+            t: DataTable = self.query_one("#record-table", DataTable)
+            t.clear()
+            self.query_one("#middle-title", Static).update(f"[b]{cfg_name}[/]  [red]JSON 解析失败[/]")
+            area: TextArea = self.query_one("#detail-area", TextArea)
+            area.text = str(e) + "\n\n# 提示：可按 [外部编辑] 用编辑器修复，或在 CLI 执行:\n#   cfg validate --mod %s\n# 文件: %s" % (self.current_mod_name, cfg_path(self.current_mod_root, cfg_name))
+            area.read_only = True
+            self._set_status(f"[red]JSON 解析失败: {e}[/]")
+            # also try to load raw for manual fix hint
+            try:
+                raw = cfg_path(self.current_mod_root, cfg_name).read_text(encoding="utf-8-sig", errors="replace")
+                # show first error context
+                import re as _re
+                # keep status already set
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            self._set_status(f"[red]加载失败: {e}[/]")
+            return
+        if data is None:
+            data = {}
+        self.current_records = data if isinstance(data, dict) else {}
+        # update middle
+        t: DataTable = self.query_one("#record-table", DataTable)
+        t.clear()
+        # dynamic columns based on schema? keep simple ID+preview
+        schema = load_schema().get(cfg_name, {})
+        # show record count
+        self.query_one("#middle-title", Static).update(f"[b]{cfg_name}[/]  [dim]{len(self.current_records)} records · {path.name}[/]")
+        # sort keys naturally
+        def sort_key(k):
+            try:
+                return (0, int(k))
+            except:
+                return (1, str(k))
+        for rid in sorted(self.current_records.keys(), key=sort_key):
+            rec = self.current_records[rid]
+            preview = ""
+            if isinstance(rec, dict):
+                # pick first 2 fields for preview
+                items = list(rec.items())[:3]
+                preview = ", ".join(f"{k}={str(v)[:18]}" for k, v in items)
+            else:
+                preview = str(rec)[:60]
+            t.add_row(str(rid), preview, key=str(rid))
+        # auto select first
+        if self.current_records:
+            t.move_cursor(row=0)
+            first_id = sorted(self.current_records.keys(), key=sort_key)[0]
+            self._show_record(str(first_id))
+        else:
+            self.query_one("#detail-area", TextArea).clear()
+            self._set_status(f"{cfg_name}: 空表 (按 n 新建)")
+        self.query_one("#middle-hint", Static).update("[dim]n 新建  e 编辑  d 删除  / 搜索[/]")
+
+    def _show_record(self, rid: str):
+        self.current_selected_id = rid
+        rec = self.current_records.get(rid)
+        area: TextArea = self.query_one("#detail-area", TextArea)
+        self.query_one("#right-title", Static).update(f"[b]{self.current_cfg}[{rid}][/]")
+        if rec is None:
+            area.clear()
+            return
+        pretty = json.dumps(rec, ensure_ascii=False, indent=2)
+        area.text = pretty
+        area.read_only = False
+        self._dirty = False
+
+    def _save_current_record(self):
+        if not self.current_mod_root or not self.current_cfg or not self.current_selected_id:
+            self._set_status("[yellow]没有选中的记录[/]")
+            return
+        area: TextArea = self.query_one("#detail-area", TextArea)
+        raw = area.text
+        if not raw.strip():
+            self._set_status("[red]内容为空，不保存[/]")
+            return
+        try:
+            parsed = json.loads(raw)
+        except Exception as e:
+            self._set_status(f"[red]JSON 解析失败: {e}[/]")
+            return
+        if not isinstance(parsed, dict):
+            self._set_status("[red]记录必须是 JSON object[/]")
+            return
+        rid = self.current_selected_id
+        self.current_records[rid] = parsed
+        # validate
+        issues = validate_cfg(self.current_cfg, self.current_records)
+        if issues:
+            warns = [m for lv, m in issues if rid in m or True][:5]
+            # filter relevant? just show first few
+            self._set_status(f"[yellow]已暂存，校验 {len(issues)} 条提示 (Ctrl+S 真正写入文件)[/]")
+        else:
+            self._set_status(f"[green]已暂存 {self.current_cfg}[{rid}] (按 s 写入文件)[/]")
+        self._dirty = True
+        # refresh table preview
+        t: DataTable = self.query_one("#record-table", DataTable)
+        # update preview cell for this row
+        try:
+            row_idx = t.get_row_index(str(rid))
+            preview = ", ".join(f"{k}={str(v)[:16]}" for k, v in list(parsed.items())[:3])
+            # DataTable update: remove and re-add? Simpler refresh
+            # We'll clear and reload keep selection
+            # Skip for now – status is enough
+            pass
+        except Exception:
+            pass
+
+    def _commit_to_disk(self):
+        if not self.current_mod_root or not self.current_cfg:
+            self._set_status("[yellow]没有打开的 cfg[/]")
+            return
+        if not self._dirty and self.current_selected_id is None:
+            self._set_status("[dim]没有待保存的更改[/]")
+            return
+        # if dirty, ensure current TextArea parsed is stored
+        if self._dirty and self.current_selected_id:
+            # try to parse and store
+            try:
+                area = self.query_one("#detail-area", TextArea)
+                parsed = json.loads(area.text)
+                if isinstance(parsed, dict):
+                    self.current_records[self.current_selected_id] = parsed
+            except Exception:
+                self._set_status("[red]当前编辑的 JSON 有误，无法保存到文件[/]")
+                return
+        # validate all
+        issues = validate_cfg(self.current_cfg, self.current_records)
+        has_err = any(lv == "error" for lv, _ in issues)
+        if has_err:
+            self._set_status(f"[red]校验失败，有 {len([1 for lv,_ in issues if lv=='error'])} 个 error，未写入 (可在 CLI 用 --force)[/]")
+            return
+        save_cfg(self.current_mod_root, self.current_cfg, self.current_records)
+        self._dirty = False
+        self._set_status(f"[green]已保存 {self.current_cfg} ({len(self.current_records)} records) -> {cfg_path(self.current_mod_root, self.current_cfg)}[/]")
+
+    # ------------------------------------------------------------------ actions
+    def action_refresh(self):
+        self._load_workspace()
+        if self.current_cfg:
+            self._load_cfg(self.current_cfg)
+        self.notify("已刷新")
+
+    def action_new_record(self):
+        if not self.current_mod_root or not self.current_cfg:
+            self._set_status("[yellow]请先在左侧选择一个 cfg[/]")
+            return
+        # prompt for new id
+        self._set_status("[bold]新建: 在右侧输入 JSON，ID 将自动使用输入框的临时值，保存前请确认 ID[/]")
+        # generate new id = max+1
+        try:
+            ints = [int(k) for k in self.current_records.keys() if str(k).isdigit()]
+            new_id = str(max(ints) + 1) if ints else "1001"
+        except:
+            new_id = "1001"
+        # ensure not exists
+        while new_id in self.current_records:
+            try:
+                new_id = str(int(new_id)+1)
+            except:
+                new_id += "_1"
+        # create empty record based on schema defaults
+        schema = load_schema().get(self.current_cfg, {})
+        template = {}
+        for field, typ in schema.items():
+            if typ == "String":
+                template[field] = ""
+            elif typ == "Number":
+                template[field] = 0
+            elif typ == "1D Array":
+                template[field] = []
+            elif typ == "2D Array":
+                template[field] = []
+            else:
+                template[field] = None
+            if field == "id":
+                try:
+                    template[field] = int(new_id)
+                except:
+                    template[field] = new_id
+        self.current_records[new_id] = template
+        # refresh table
+        t: DataTable = self.query_one("#record-table", DataTable)
+        preview = ", ".join(f"{k}={str(v)[:12]}" for k, v in list(template.items())[:2])
+        t.add_row(new_id, preview, key=new_id)
+        t.move_cursor(row=t.row_count-1)
+        self._show_record(new_id)
+        self._dirty = True
+        self._set_status(f"[green]已创建 {self.current_cfg}[{new_id}] (编辑后按 s 保存到文件)[/]")
+
+    def action_edit_record(self):
+        self.query_one("#detail-area", TextArea).focus()
+
+    def action_delete_record(self):
+        if not self.current_selected_id or not self.current_cfg:
+            return
+        rid = self.current_selected_id
+        # simple confirm: need second press? For now delete directly with notify
+        # In TUI we don't have modal confirm easily – use status prompt
+        if getattr(self, "_pending_delete", None) == rid:
+            del self.current_records[rid]
+            t: DataTable = self.query_one("#record-table", DataTable)
+            try:
+                t.remove_row(str(rid))
+            except Exception:
+                self._load_cfg(self.current_cfg)
+                return
+            self.query_one("#detail-area", TextArea).clear()
+            self.current_selected_id = None
+            self._dirty = True
+            self._pending_delete = None
+            self._set_status(f"[yellow]已删除 {self.current_cfg}[{rid}] (按 s 写入文件生效)[/]")
+            self.notify(f"已删除 {rid} (未落盘)")
+        else:
+            self._pending_delete = rid
+            self._set_status(f"[red]再按一次 d 确认删除 {self.current_cfg}[{rid}][/]")
+            self.notify(f"再按 d 确认删除 {rid}")
+
+    def action_save(self):
+        # if detail area focused and dirty, first stage; else commit
+        area: TextArea = self.query_one("#detail-area", TextArea)
+        if area.has_focus and self.current_selected_id:
+            # try to stage current edit
+            try:
+                parsed = json.loads(area.text)
+                if isinstance(parsed, dict):
+                    self.current_records[self.current_selected_id] = parsed
+                    self._dirty = True
+            except Exception as e:
+                self._set_status(f"[red]JSON 错误: {e}[/]")
+                return
+        self._commit_to_disk()
+
+    def action_search(self):
+        bar = self.query_one("#search-bar")
+        bar.add_class("visible")
+        self.query_one("#search-input", Input).focus()
+        self.query_one("#search-input", Input).clear()
+
+    def action_help(self):
+        self._set_status(
+            "[b]帮助:[/] q 退出 | r 刷新 | n 新建 | e 编辑 | d 删除(按两次) | s 保存落盘 | / 搜索 | "
+            "左侧树 Enter 打开 cfg | 中间表 ↑↓ 选择 | 右侧区编辑 JSON"
+        )
+
+    # alias for textual binding dispatch (snake_case)
+    def action_quit(self):
+        self.exit()
+
+    # ------------------------------------------------------------------ events
+    @on(Tree.NodeSelected, "#mod-tree")
+    def on_tree_select(self, event: Tree.NodeSelected):
+        data = event.node.data
+        node = event.node
+        if not data:
+            # Root or untyped - allow toggle if expandable
+            if node.allow_expand:
+                node.toggle()
+            return
+        if data.get("kind") == "mod":
+            self._select_mod(data["info"])
+            # NOTE: Do not toggle here; let arrow/mouse handle expand.
+            # Enter on mod only selects; use Right/Space or arrow click to expand.
+            # This avoids double-toggle where textual already toggled before handler.
+        elif data.get("kind") == "cfg":
+            mod = data["mod"]
+            self._select_mod(mod)
+            self._load_cfg(data["cfg"])
+
+    @on(DataTable.RowSelected, "#record-table")
+    def on_row_selected(self, event: DataTable.RowSelected):
+        rid = event.row_key.value
+        self._show_record(str(rid))
+        self._pending_delete = None
+
+    @on(DataTable.RowHighlighted, "#record-table")
+    def on_row_highlighted(self, event: DataTable.RowHighlighted):
+        # live preview on highlight
+        if event.row_key and event.row_key.value:
+            rid = str(event.row_key.value)
+            # don't overwrite if user is editing? still show
+            # only if not dirty or focus not in detail?
+            area = self.query_one("#detail-area", TextArea)
+            if not area.has_focus:
+                self._show_record(rid)
+
+    @on(Button.Pressed, "#btn-save")
+    def on_btn_save(self, event: Button.Pressed):
+        self.action_save()
+
+    @on(Button.Pressed, "#btn-validate")
+    def on_btn_validate(self, event: Button.Pressed):
+        if not self.current_cfg:
+            return
+        # ensure current edit staged
+        if self.current_selected_id:
+            try:
+                area = self.query_one("#detail-area", TextArea)
+                parsed = json.loads(area.text)
+                if isinstance(parsed, dict):
+                    self.current_records[self.current_selected_id] = parsed
+            except Exception as e:
+                self._set_status(f"[red]JSON 错误: {e}[/]")
+                return
+        issues = validate_cfg(self.current_cfg, self.current_records)
+        if not issues:
+            self._set_status(f"[green]{self.current_cfg}: 校验通过 ({len(self.current_records)} records) ✔[/]")
+        else:
+            self.query_one("#detail-area", TextArea).text = json.dumps(
+                {"_validation": [{"level": lv, "msg": m} for lv, m in issues[:30]]},
+                ensure_ascii=False, indent=2
+            )
+            self._set_status(f"[yellow]{self.current_cfg}: {len(issues)} 条校验提示 (显示前30)[/]")
+
+    @on(Button.Pressed, "#btn-external")
+    def on_btn_external(self, event: Button.Pressed):
+        if not self.current_mod_root or not self.current_cfg:
+            return
+        path = cfg_path(self.current_mod_root, self.current_cfg)
+        # ensure file exists
+        if not path.exists():
+            save_cfg(self.current_mod_root, self.current_cfg, self.current_records)
+        editor = os.environ.get("EDITOR") or ("notepad" if os.name == "nt" else "nano")
+        self._set_status(f"[dim]尝试用 {editor} 打开 {path} ... (悬挂 TUI 后请手动刷新 r)[/]")
+        # textual suspend
+        with self.suspend():
+            import subprocess
+            try:
+                subprocess.run([editor, str(path)])
+            except Exception as e:
+                self._set_status(f"[red]外部编辑失败: {e}[/]")
+        # reload
+        self._load_cfg(self.current_cfg)
+
+    @on(Input.Submitted, "#search-input")
+    def on_search_submit(self, event: Input.Submitted):
+        kw = event.value.strip()
+        bar = self.query_one("#search-bar")
+        bar.remove_class("visible")
+        if not kw:
+            return
+        if not self.current_mod_root:
+            self._set_status("[yellow]请先选择模组[/]")
+            return
+        # if cfg selected, search within cfg, else whole mod
+        cfg_filter = self.current_cfg if self.current_cfg else None
+        # if searching whole mod, we need to search all cfgs
+        if cfg_filter:
+            hits = search_in_mod(self.current_mod_root, kw, cfg_filter)
+        else:
+            hits = search_in_mod(self.current_mod_root, kw, None)
+        if not hits:
+            self._set_status(f"[yellow]搜索 {kw!r}: 无结果[/]")
+            return
+        # show hits in table temporarily?
+        t: DataTable = self.query_one("#record-table", DataTable)
+        t.clear()
+        # repurpose table to show search results
+        # add columns if needed – we keep ID/Preview but add cfg prefix
+        self.query_one("#middle-title", Static).update(f"[b]搜索: {kw!r}[/]  {len(hits)} hits")
+        for h in hits[:200]:
+            t.add_row(f"{h['cfg']}:{h['id']}", h["snippet"][:80], key=f"{h['cfg']}:{h['id']}")
+        self._set_status(f"[green]搜索 {kw!r}: {len(hits)} 条 (点击可定位，需手动切回 cfg 按 r 刷新)[/]")
+        # also dump hits to detail
+        self.query_one("#detail-area", TextArea).text = json.dumps(hits[:50], ensure_ascii=False, indent=2)
+        self.query_one("#detail-area", TextArea).read_only = True
+
+    @on(Input.Submitted)
+    def _hide_search_on_esc(self, event):
+        pass
+
+    def on_key(self, event):
+        # Esc to hide search bar
+        if event.key == "escape":
+            bar = self.query_one("#search-bar")
+            if bar.has_class("visible"):
+                bar.remove_class("visible")
+                self.query_one("#mod-tree", Tree).focus()
+                event.stop()
+
+
+def run(workspace=None, initial_mod=None):
+    app = EditorTUI(workspace=workspace, initial_mod=initial_mod)
+    app.run()
+
+if __name__ == "__main__":
+    run()

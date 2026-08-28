@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=学生时代模组编辑器
+GenericName=模组编辑器
+Comment=《学生时代》游戏的多端模组编辑器（图形界面 / 终端 / 命令行）
+Exec="__INSTALL_DIR__/学生时代模组编辑器"
+Icon=student-age-editor
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=student-age-editor
+Keywords=mod;editor;StudentAge;学生时代;

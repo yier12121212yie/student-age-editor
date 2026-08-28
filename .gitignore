@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 构建 / 发行产物
+build/
+dist/
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/.flutter-plugins-dependencies
+frontend/.idea/
+frontend/build/
+frontend/linux/flutter/ephemeral/
+frontend/macos/Flutter/ephemeral/
+
+# Android / Gradle
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/android/app/.cxx/
+*.keystore
+*.jks
+
+# Chaquopy 内嵌 Python 由 packaging/sync_android_python.py 生成，不入库
+frontend/android/app/src/main/python/
+
+# 其他
+backup.zip
+.reasonix/
+友商产品/
+*.log
+
+# 本机配置与缓存（editor_env.json / .editor_ai.json 含敏感信息不入库）
+editor_env.json
+.editor_ai.json
+.editor_cli_history
+_cache/
+
+# 本机工具状态
+.agents/
+.codex/
+.zcode/
+.opensquilla/
+.opensquilla-cache/
+.pytest_cache/
+
+# Flutter Windows 构建临时目录
+frontend/windows/flutter/ephemeral/
+
+# 第三方参考项目（OpenList 源码，非本项目内容）
+OpenList-main/
+
+# 导出的个人笔记（体积较大）
+《学生时代》Mod指南.note.html
+《学生时代》Mod指南.note_files/
+
+# 空目录占位
+website/

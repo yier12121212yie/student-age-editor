@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  学生时代 Mod 编辑器 (Student Age Mod Editor) 项目图标
+  画布: 1024x1024,圆角方形紫色渐变底
+  主体: 白色学士帽 + 金色铅笔
+  配色与应用品牌一致: #6C5CE7(主紫) / #8B7FEF(浅紫) / #F2C25C(金黄)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>学生时代 Mod 编辑器</title>
+  <desc>学士帽与铅笔主题的应用图标</desc>
+
+  <defs>
+    <!-- 背景对角渐变 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6C5CE7"/>
+      <stop offset="1" stop-color="#8B7FEF"/>
+    </linearGradient>
+    <!-- 帽筒底部轻微暗调,增加体积感 -->
+    <linearGradient id="headGrad" x1="0" y1="515" x2="0" y2="645" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E7E1FB"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 背景:圆角方形 + 内侧细描边 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="3" y="3" width="1018" height="1018" rx="221" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="6"/>
+
+  <!-- 内容整体上移,保证视觉重心略高于几何中心 -->
+  <g transform="translate(0 -80)">
+
+    <!-- ===== 学士帽 ===== -->
+    <!-- 帽筒(先画,藏在帽板之下) -->
+    <path d="M397 515 L627 515 L627 585 Q627 640 572 640 L452 640 Q397 640 397 585 Z"
+          fill="url(#headGrad)"/>
+    <!-- 帽板侧缘厚度 -->
+    <path d="M204 420 L512 550 L820 420 L820 448 L512 578 L204 448 Z" fill="#D9D2F8"/>
+    <!-- 帽板顶面 -->
+    <path d="M512 290 L820 420 L512 550 L204 420 Z" fill="#FFFFFF"/>
+    <!-- 帽顶纽扣 -->
+    <circle cx="512" cy="420" r="25" fill="#FFFFFF" stroke="#D9D2F8" stroke-width="7"/>
+
+    <!-- ===== 流苏(金黄) ===== -->
+    <path d="M512 424 Q690 470 818 436 Q829 447 829 472 L829 552"
+          fill="none" stroke="#F2C25C" stroke-width="13" stroke-linecap="round"/>
+    <circle cx="829" cy="568" r="17" fill="#F2C25C"/>
+    <path d="M811 586 L847 586 L842 630 Q840 650 829 650 Q818 650 816 630 Z" fill="#F2C25C"/>
+    <rect x="807" y="582" width="44" height="24" rx="10" fill="#DB9A2E"/>
+
+    <!-- ===== 铅笔(斜置,笔尖朝左) ===== -->
+    <g transform="translate(310 868) rotate(-13.77)">
+      <!-- 铅芯 -->
+      <polygon points="0,0 35,-11 35,11" fill="#5B4A36"/>
+      <!-- 木质削尖段 -->
+      <polygon points="35,-11 150,-33 150,33 35,11" fill="#FFEFCF"/>
+      <!-- 笔杆 -->
+      <rect x="150" y="-33" width="370" height="66" fill="#F2C25C"/>
+      <!-- 笔杆棱线 -->
+      <line x1="152" y1="-11" x2="518" y2="-11" stroke="#D98F2B" stroke-width="3.5" stroke-opacity="0.55"/>
+      <line x1="152" y1="11" x2="518" y2="11" stroke="#D98F2B" stroke-width="3.5" stroke-opacity="0.55"/>
+      <!-- 顶部高光 -->
+      <line x1="160" y1="-20" x2="510" y2="-20" stroke="#FFFFFF" stroke-opacity="0.35"
+            stroke-width="6" stroke-linecap="round"/>
+      <!-- 金属箍 -->
+      <rect x="520" y="-33" width="58" height="66" fill="#F5F2FF"/>
+      <line x1="536" y1="-33" x2="536" y2="33" stroke="#C9C2F0" stroke-width="4"/>
+      <line x1="556" y1="-33" x2="556" y2="33" stroke="#C9C2F0" stroke-width="4"/>
+      <!-- 橡皮擦 -->
+      <path d="M578 -33 L590 -33 Q630 -33 630 0 Q630 33 590 33 L578 33 Z" fill="#E0982F"/>
+    </g>
+  </g>
+</svg>

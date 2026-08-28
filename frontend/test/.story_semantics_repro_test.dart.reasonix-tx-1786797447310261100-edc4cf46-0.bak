@@ -1,0 +1,122 @@
+// 复现：语义启用时故事编辑视图（StoryDirectorView）的 parentDataDirty 断言。
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:student_age_editor/core/api_client.dart';
+import 'package:student_age_editor/core/models.dart';
+import 'package:student_age_editor/features/story/story_director_view.dart';
+
+const _evtCfg = {
+  '1000': {'id': 1000, 'title': '事件A', 'talkId': <dynamic>[1000001]},
+  '2000': {'id': 2000, 'title': '事件B', 'talkId': <dynamic>[2000001]},
+};
+
+const _talkCfg = {
+  '1000001': {
+    'id': 1000001,
+    'roleIds': <dynamic>[],
+    'content': '原始内容A',
+    'bg': '0',
+    'audio': '0',
+    'screenEffect': <dynamic>[],
+    'roles': <dynamic>[],
+    'highlights': <dynamic>[],
+    'effect': <dynamic>[],
+    'effect2': <dynamic>[],
+    'vocals': <dynamic>[],
+    'replace': <dynamic>[],
+    'miniGame': <dynamic>[],
+    'check': <dynamic>[],
+    'nextTalk': '',
+    'nextTalk2': '',
+  },
+  '2000001': {
+    'id': 2000001,
+    'roleIds': <dynamic>[],
+    'content': '内容B',
+    'bg': '0',
+    'audio': '0',
+  },
+};
+
+MockClient _mockBackend() {
+  return MockClient((req) async {
+    final path = req.url.path;
+    if (req.method == 'GET' && path.startsWith('/api/cfg/')) {
+      final name = path.split('/').last;
+      final data = switch (name) {
+        'EvtCfg' => _evtCfg,
+        'TalkCfg' => _talkCfg,
+        'OptionCfg' => <String, dynamic>{},
+        'PersonCfg' => <String, dynamic>{},
+        'BgCfg' => <String, dynamic>{},
+        'AudioCfg' => <String, dynamic>{},
+        'EvtTypeCfg' => <String, dynamic>{},
+        _ => <String, dynamic>{},
+      };
+      return http.Response(
+          jsonEncode({'cfg': name, 'data': data, 'exists': true}), 200,
+          headers: {'content-type': 'application/json'});
+    }
+    return http.Response(jsonEncode({'error': 'not found'}), 404);
+  });
+}
+
+void main() {
+  tearDown(() {
+    ApiClient.instance.client = http.Client();
+  });
+
+  testWidgets('复现：语义启用时故事编辑输入/切换/属性表不触发 parentDataDirty',
+      (tester) async {
+    final semanticsHandle = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(1600, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    ApiClient.instance.client = _mockBackend();
+    final state = AppState();
+    await tester.pumpWidget(fluent.FluentApp(
+      home: Scaffold(body: StoryDirectorView(state: state)),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: '初始渲染不应异常');
+
+    final contentBox = find.byWidgetPredicate((w) =>
+        w is fluent.TextBox &&
+        w.placeholder == '输入对白内容（支持 <color=..> <size=..> 富文本标签）');
+    expect(contentBox, findsOneWidget);
+
+    // 编辑对白内容
+    await tester.ensureVisible(contentBox);
+    await tester.enterText(contentBox, '新内容A');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.takeException(), isNull, reason: '编辑内容不应异常');
+
+    // 切换到事件 B（触发舞台重载，重建全部编辑控件）
+    await tester.tap(find.textContaining('[2000]').first);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: '切换事件不应异常');
+
+    // 再切回事件 A
+    await tester.tap(find.textContaining('[1000]').first);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: '切回事件不应异常');
+
+    // 在属性表/输入框中继续输入（_attrRow 每次 build 新建 controller 的路径）
+    final boxes = find.byType(fluent.TextBox);
+    if (boxes.evaluate().length > 1) {
+      await tester.ensureVisible(boxes.at(1));
+      await tester.enterText(boxes.at(1), '123');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.takeException(), isNull, reason: '属性表输入不应异常');
+    }
+
+    semanticsHandle.dispose();
+  });
+}

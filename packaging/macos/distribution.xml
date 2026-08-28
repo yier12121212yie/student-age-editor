@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  「学生时代模组编辑器」macOS PKG 发行定义（productbuild 的 distribution 模板）。
+
+  用法：由 packaging/macos/build_pkg.sh 在构建时将 @VERSION@ 占位符替换为
+  实际版本号（sed 生成临时副本，本模板文件不被修改），再以 productbuild
+  的 distribution 模式合成最终安装包（子包目录由 productbuild 的
+  package-path 参数指定）。
+
+  本文件独立成模板（而非 heredoc 内嵌进 build_pkg.sh），理由：
+    1. 可单独做 XML 语法校验与代码审阅，不必运行整个构建脚本；
+    2. 避免大段含中文与引号的 XML 塞入 heredoc 带来的转义与维护成本；
+    3. 版本号以 @VERSION@ 占位符注入，仓库内模板始终可复用、可对比。
+
+  组件划分（对齐 packaging/installer/setup.iss 的 Inno 组件语义）：
+    core          核心运行时（.app 骨架 + 内嵌 backend/_internal），固定必选
+    gui           图形界面（GUI 主程序；postinstall 创建 editor-gui 包装）
+    tui           终端界面（nopayload 脚本包；postinstall 创建 editor-tui 包装）
+    cli           命令行接口（nopayload 脚本包；postinstall 创建 editor-cli 包装）
+    officialpack  官方资源扩展包（.app/Contents/MacOS/official_pack）
+
+  “至少选择一种界面（GUI/TUI/CLI）”实现说明：
+    gui/tui/cli 三个 choice 的 start_selected 相互引用（循环 OR）：Installer
+    在用户改变选择时会重估这些表达式，把“取消最后一个已勾选界面”的操作拉回
+    勾选状态，从而保证三者不会同时为空。该机制在不同 macOS 版本上的重估时机
+    存在差异，且命令行 installer 工具做静默安装时不做交互校验，属“尽力而为”：
+    若实测联动无效，兜底行为为三者默认全选（与 Inno 的 full 类型一致），
+    且各 choice 的 description 已明示“请至少选择一种界面”。
+    core 用 enabled="false" selected="true" 固定必选（任务规格写法），并补充
+    规范写法 start_enabled="false" start_selected="true"，双保险兼容 Installer
+    的初始值求值路径；二者取值一致、互不冲突。
+
+  其他差异（与 Windows Inno 对比）：macOS 无桌面快捷方式惯例（无 desktop-icon
+  任务）；PKG 无法交互询问路径，不写 editor_env.json，安装到 /Applications 后
+  由后端自动回退数据目录（见 backend/editor/core/paths.py）。
+-->
+<installer-script minSpecVersion="1.000000">
+    <title>学生时代模组编辑器</title>
+    <options customize="always" allow-external-scripts="no" rootVolumeOnly="true"/>
+
+    <choices-outline>
+        <line choice="core"/>
+        <line choice="gui"/>
+        <line choice="tui"/>
+        <line choice="cli"/>
+        <line choice="officialpack"/>
+    </choices-outline>
+
+    <!-- 核心运行时：固定必选，不可取消勾选（enabled=false 置灰） -->
+    <choice id="core"
+            title="核心运行时（必选）"
+            description="应用骨架与内嵌后端：backend 及共享依赖 _internal（位于 .app/Contents/MacOS），所有组件的共同基础，固定安装。"
+            enabled="false" selected="true"
+            start_enabled="false" start_selected="true">
+        <pkg-ref id="com.pakyigame.studentageeditor.core"/>
+    </choice>
+
+    <!-- GUI：与 tui/cli 的 start_selected 联动，保证至少勾选一种界面 -->
+    <choice id="gui"
+            title="图形用户界面 (GUI) - 桌面主程序"
+            description="Flutter 图形界面主程序；安装后创建 /usr/local/bin/editor-gui 命令行入口。请至少选择一种界面（GUI / TUI / CLI）。"
+            start_selected="choices['tui'].selected || choices['cli'].selected">
+        <pkg-ref id="com.pakyigame.studentageeditor.gui"/>
+    </choice>
+
+    <!-- TUI：nopayload 脚本子包，仅安装 editor-tui 包装脚本 -->
+    <choice id="tui"
+            title="终端用户界面 (TUI) - 终端字符交互界面"
+            description="终端字符交互界面；安装后创建 /usr/local/bin/editor-tui 命令行入口（转发到 .app 内嵌 backend 的 tui 模式）。请至少选择一种界面（GUI / TUI / CLI）。"
+            start_selected="choices['gui'].selected || choices['cli'].selected">
+        <pkg-ref id="com.pakyigame.studentageeditor.tui"/>
+    </choice>
+
+    <!-- CLI：nopayload 脚本子包，仅安装 editor-cli 包装脚本 -->
+    <choice id="cli"
+            title="命令行接口 (CLI) - 自动化与脚本工具"
+            description="命令行接口；安装后创建 /usr/local/bin/editor-cli 命令行入口（转发到 .app 内嵌 backend 的 cli 模式）。请至少选择一种界面（GUI / TUI / CLI）。"
+            start_selected="choices['gui'].selected || choices['tui'].selected">
+        <pkg-ref id="com.pakyigame.studentageeditor.cli"/>
+    </choice>
+
+    <!-- 官方资源扩展包：默认勾选（对齐 Inno full 类型） -->
+    <choice id="officialpack"
+            title="官方资源扩展包（适用于未安装游戏的创作者）"
+            description="随应用内嵌官方资源扩展包（只读系统包，位于 .app/Contents/MacOS/official_pack），未安装《学生时代》游戏也可直接创作与导出。"
+            start_selected="true">
+        <pkg-ref id="com.pakyigame.studentageeditor.officialpack"/>
+    </choice>
+
+    <!-- pkg-ref：文件名为 build_pkg.sh 用 pkgbuild 产出的子包名；
+         version 占位符 @VERSION@ 由 build_pkg.sh 替换，须与子包实际版本一致；
+         auth="root" 使各组件以 root 安装（含 nopayload 包的 postinstall），
+         从而可创建 /usr/local/bin 下的命令行包装脚本。 -->
+    <pkg-ref id="com.pakyigame.studentageeditor.core" version="@VERSION@" auth="root">core.pkg</pkg-ref>
+    <pkg-ref id="com.pakyigame.studentageeditor.gui" version="@VERSION@" auth="root">gui.pkg</pkg-ref>
+    <pkg-ref id="com.pakyigame.studentageeditor.tui" version="@VERSION@" auth="root">tui.pkg</pkg-ref>
+    <pkg-ref id="com.pakyigame.studentageeditor.cli" version="@VERSION@" auth="root">cli.pkg</pkg-ref>
+    <pkg-ref id="com.pakyigame.studentageeditor.officialpack" version="@VERSION@" auth="root">officialpack.pkg</pkg-ref>
+</installer-script>
