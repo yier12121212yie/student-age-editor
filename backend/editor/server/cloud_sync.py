@@ -521,7 +521,7 @@ class OpenListDriver(BaseDriver):
         return {"url": "OpenList/Alist 地址 (http://host:5244)", "token": "Token (设置-后端-令牌)", "username": "可选用户名", "password": "可选密码"}
 
 
-# ---------- 7大主流网盘驱动（类 OpenList，单文件/文件夹通用） ----------
+# ---------- 主流网盘驱动（类 OpenList，单文件/文件夹通用） ----------
 # 为保持与 OpenList 配置兼容，字段名与 OpenList drivers/*/meta.go 的 Addition 对齐
 # 实际实现上：若提供了 openlist_url，则走 OpenList 代理；否则尝试直连云 API（需 refresh_token/access_token）
 
@@ -724,399 +724,6 @@ class BaiduNetdiskDriver(BaseDriver):
         return True
     def config_schema(self):
         return {"refresh_token": "百度 refresh_token（必填）", "client_id": "Client ID（可选，官方 OAuth）", "client_secret": "Client Secret", "api_url_address": "在线刷新地址", "openlist_url": "OpenList 代理（可选）", "mount_path": "/baidu", "root": "本地测试根"}
-
-class AliyunDriveDriver(BaseDriver):
-    type_name = "aliyundrive"
-    def _refresh(self):
-        rt = (self.config.get("refresh_token") or "").strip()
-        if not rt:
-            raise ValueError("阿里云盘 refresh_token 不能为空。直连驱动已 Deprecated，建议直接走 OpenList：部署 OpenList 并在其中添加 AliyundriveOpen 存储后，在此填写 OpenList 地址如 http://127.0.0.1:5244 + 挂载路径 /aliyun。若坚持直连，请登录 https://www.alipan.com 后按 F12 → Application → Local Storage → https://www.alipan.com → 复制 token 中的 refresh_token（完整复制，不要带空格）。")
-        if len(rt) < 20:
-            raise ValueError(f"阿里云盘 refresh_token 长度异常（仅 {len(rt)} 位，可能复制不完整）。请在 https://www.alipan.com 登录后完整复制 refresh_token（32位以上长串，不是 access_token）。提示：不要复制 access_token，且不要包含空格。")
-        if " " in rt or "\n" in rt or "\t" in rt:
-            raise ValueError("refresh_token 含空格/换行，请清理后重试。建议直接完整粘贴，不要手动输入。")
-        import json as _json
-        status, raw, _ = _http_request("https://auth.aliyundrive.com/v2/account/token", method="POST", headers={"Content-Type":"application/json"}, data=_json.dumps({"grant_type":"refresh_token","refresh_token":rt}).encode(), timeout=15)
-        try:
-            j=_json.loads(raw.decode())
-        except Exception:
-            body = raw[:800].decode(errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)[:800]
-            raise ValueError(f"阿里云盘 刷新失败：接口返回非 JSON（HTTP {status}）：{body[:500]}。请检查网络或稍后重试，若持续失败建议改用 OpenList 代理。")
-        if not j.get("access_token"):
-            code = j.get("code") or ""
-            # 统一友好化 InvalidParameter.RefreshToken - 注意旧 aliyundrive 驱动已 Deprecated，即使更换 token 仍可能失败，强烈建议走 OpenList
-            if "InvalidParameter.RefreshToken" in str(j) or code == "InvalidParameter.RefreshToken":
-                raise ValueError(
-                    "阿里云盘 refresh_token 无效或已过期（InvalidParameter.RefreshToken）。\n"
-                    "注意：编辑器内置的直连驱动已 Deprecated（OpenList 官方提示 There may be an infinite loop bug / no longer maintained），即使更换 refresh_token 仍可能因接口变更/设备签名缺失而失败，强烈建议改用 OpenList 代理。\n"
-                    "临时修复（直连）：\n"
-                    "1) 浏览器登录 https://www.alipan.com\n"
-                    "2) 按 F12 → Application → Local Storage → https://www.alipan.com\n"
-                    "3) 找到 token 字段，复制 refresh_token（32位以上长串，不是 access_token）\n"
-                    "4) 回到此页面粘贴到 refresh_token 并点击“测试连接”\n"
-                    "推荐修复（OpenList，稳定）：\n"
-                    "1) 启动/部署 OpenList（https://github.com/OpenListTeam/OpenList），端口 5244\n"
-                    "2) 在 OpenList 管理后台添加存储：选择 AliyundriveOpen（官方推荐）或 Aliyundrive，填入相同 refresh_token，测试通过并挂载到 /aliyun\n"
-                    "3) 回到此页面，将“OpenList 地址”填为 http://127.0.0.1:5244（或你的 OpenList 地址），“挂载路径”填 /aliyun，再测连接（此时无需依赖直连刷新）\n"
-                    f"原始返回：{j}"
-                )
-            raise ValueError(f"阿里云盘 刷新失败: {j}。直连驱动已 Deprecated，若持续失败请改用 OpenList 代理（在 OpenList 中挂载 aliyundrive_open 后，在此填 OpenList 地址 http://127.0.0.1:5244 + 挂载路径 /aliyun）。")
-        self._token=j["access_token"]
-        self._drive_id=j.get("default_drive_id") or self.config.get("drive_id") or ""
-        if not self._drive_id:
-            # 获取 drive_id
-            status, raw, _ = _http_request("https://api.aliyundrive.com/v2/user/get", method="POST", headers={"Authorization":"Bearer "+self._token, "Content-Type":"application/json"}, data=_json.dumps({}).encode(), timeout=15)
-            j2=_json.loads(raw.decode())
-            self._drive_id=j2.get("default_drive_id") or j2.get("drive_id") or ""
-        self.config["access_token"]=self._token
-        if self._drive_id:
-            self.config["drive_id"]=self._drive_id
-    def _ensure(self):
-        if hasattr(self,"_token") and self._token:
-            return
-        if self.config.get("access_token"):
-            self._token=self.config["access_token"]
-            self._drive_id=self.config.get("drive_id") or ""
-            return
-        self._refresh()
-    def _api(self, path, body):
-        self._ensure()
-        import json as _json
-        url="https://api.aliyundrive.com"+path
-        headers={"Authorization":"Bearer "+self._token, "Content-Type":"application/json"}
-        status, raw, _ = _http_request(url, method="POST", headers=headers, data=_json.dumps(body).encode(), timeout=30)
-        j=_json.loads(raw.decode())
-        if j.get("code") not in (None,"",0) and "not_found" not in str(j).lower():
-            # 尝试刷新一次
-            self._refresh()
-            headers["Authorization"]="Bearer "+self._token
-            status, raw, _ = _http_request(url, method="POST", headers=headers, data=_json.dumps(body).encode(), timeout=30)
-            j=_json.loads(raw.decode())
-        return j
-    def _resolve(self, rel):
-        rel=_norm_remote(rel)
-        if not rel:
-            return "root", ""
-        parts=rel.split("/")
-        cur="root"
-        for part in parts[:-1]:
-            j=self._api("/v2/file/list", {"drive_id":self._drive_id,"parent_file_id":cur,"limit":200,"order_by":"name"})
-            found=None
-            for fi in j.get("items") or []:
-                if fi["name"]==part and fi["type"]=="folder":
-                    found=fi
-                    break
-            if not found:
-                # 创建
-                j2=self._api("/v2/file/create", {"drive_id":self._drive_id,"parent_file_id":cur,"name":part,"type":"folder","check_name_mode":"refuse"})
-                cur=j2["file_id"]
-            else:
-                cur=found["file_id"]
-        return cur, parts[-1]
-    def test(self):
-        if self.config.get("root"):
-            return LocalDriver(self.config).test()
-        if self.config.get("openlist_url"):
-            return OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""}).test()
-        self._ensure()
-        self._api("/v2/user/get", {})
-        return True
-    def list(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/aliyun"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.list(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).list(remote_path)
-        rel=_norm_remote(remote_path)
-        # 解析到 file_id
-        if not rel:
-            cur="root"
-        else:
-            # 逐级查找
-            cur="root"
-            for part in rel.split("/"):
-                j=self._api("/v2/file/list", {"drive_id":self._drive_id,"parent_file_id":cur,"limit":200})
-                found=None
-                for fi in j.get("items") or []:
-                    if fi["name"]==part and fi["type"]=="folder":
-                        found=fi
-                        break
-                if not found:
-                    return []
-                cur=found["file_id"]
-        j=self._api("/v2/file/list", {"drive_id":self._drive_id,"parent_file_id":cur,"limit":200})
-        out=[]
-        for fi in j.get("items") or []:
-            name=fi["name"]
-            is_dir=fi["type"]=="folder"
-            size=fi.get("size") or 0
-            full=(rel + "/" + name).strip("/") if rel else name
-            out.append(Obj(name, full, is_dir, size, 0, ""))
-        return out
-    def stat(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/aliyun"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.stat(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).stat(remote_path)
-        rel=_norm_remote(remote_path)
-        parent="/".join(rel.split("/")[:-1])
-        name=rel.split("/")[-1]
-        for o in self.list(parent):
-            if o.name==name:
-                return o
-        return None
-    def mkdir(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/aliyun"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.mkdir(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).mkdir(remote_path)
-        rel=_norm_remote(remote_path)
-        parent_id, name = self._resolve(rel)
-        self._api("/v2/file/create", {"drive_id":self._drive_id,"parent_file_id":parent_id,"name":name,"type":"folder","check_name_mode":"refuse"})
-        return True
-    def delete(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/aliyun"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.delete(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).delete(remote_path)
-        rel=_norm_remote(remote_path)
-        # 查找 file_id
-        parent="/".join(rel.split("/")[:-1])
-        name=rel.split("/")[-1]
-        j=self._api("/v2/file/list", {"drive_id":self._drive_id,"parent_file_id":self._resolve(parent)[0] if parent else "root","limit":200})
-        target=None
-        for fi in j.get("items") or []:
-            if fi["name"]==name:
-                target=fi
-                break
-        if not target:
-            return True
-        self._api("/v2/recyclebin/trash", {"drive_id":self._drive_id,"file_id":target["file_id"]})
-        return True
-    def get(self, remote_path, local_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/aliyun"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.get(full, local_path)
-        if self.config.get("root"):
-            return LocalDriver(self.config).get(remote_path, local_path)
-        rel=_norm_remote(remote_path)
-        parent_id, name = self._resolve(rel)
-        # 查找文件
-        j=self._api("/v2/file/list", {"drive_id":self._drive_id,"parent_file_id":parent_id,"limit":200})
-        target=None
-        for fi in j.get("items") or []:
-            if fi["name"]==name:
-                target=fi
-                break
-        if not target:
-            raise FileNotFoundError(rel)
-        # 获取下载链接
-        j2=self._api("/v2/file/get", {"drive_id":self._drive_id,"file_id":target["file_id"]})
-        url=j2.get("url") or j2.get("download_url") or ""
-        if not url:
-            # 尝试 open
-            j3=self._api("/v2/file/open", {"drive_id":self._drive_id,"file_id":target["file_id"]})
-            url=j3.get("url") or ""
-        if not url:
-            raise ValueError("aliyun 获取下载链接失败")
-        status, raw, _ = _http_request(url, method="GET", headers={}, timeout=60)
-        if status!=200:
-            raise ValueError(f"aliyun 下载失败 {status}")
-        os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
-        with open(local_path, "wb") as f:
-            f.write(raw)
-        return True
-    def put(self, local_path, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/aliyun"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.put(local_path, full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).put(local_path, remote_path)
-        # 直连上传（小文件）
-        rel=_norm_remote(remote_path)
-        parent_id, name = self._resolve(rel)
-        # 创建文件
-        import os as _os, hashlib, base64
-        size=_os.path.getsize(local_path)
-        # 计算 sha1
-        h=hashlib.sha1()
-        with open(local_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-        sha1=h.hexdigest()
-        # 预创建
-        j=self._api("/v2/file/create", {"drive_id":self._drive_id,"parent_file_id":parent_id,"name":name,"type":"file","check_name_mode":"overwrite","size":size,"content_hash":sha1,"content_hash_name":"sha1","proof_code":""})
-        upload_id=j.get("upload_id") or j.get("file_id") or ""
-        # 若秒传命中则直接完成
-        if j.get("rapid_upload"):
-            return True
-        file_id=j.get("file_id") or ""
-        # 获取上传链接
-        part_info=j.get("part_info_list") or []
-        upload_url=(part_info[0].get("upload_url") if part_info else "") or ""
-        if not upload_url:
-            # create 既未秒传也未返回分片链接：绝不能静默 return True（实际一个字节都没上传）
-            raise ValueError(f"aliyun 上传失败：create 未返回上传链接（rapid_upload={j.get('rapid_upload')}，part_info_list={len(part_info)} 项）：{str(j)[:300]}")
-        with open(local_path, "rb") as f:
-            data=f.read()
-        status, raw, _ = _http_request(upload_url, method="PUT", headers={}, data=data, timeout=60)
-        if status not in (200,201,204):
-            raise ValueError(f"aliyun 上传分片失败 {status}")
-        self._api("/v2/file/complete", {"drive_id":self._drive_id,"file_id":file_id,"upload_id":upload_id})
-        return True
-    def config_schema(self):
-        return {"refresh_token": "阿里 refresh_token（在 https://www.alipan.com F12→Application→LocalStorage→token→refresh_token 完整复制）", "drive_id": "drive_id（自动获取）", "openlist_url": "OpenList 代理（推荐，填 http://127.0.0.1:5244 等，走代理可免频繁刷新）", "mount_path": "/aliyun", "root": "本地测试根"}
-
-class QuarkDriver(BaseDriver):
-    type_name = "quark"
-    def _headers(self):
-        c = self.config.get("cookie") or ""
-        return {"Cookie": c, "Content-Type": "application/json", "Referer": "https://drive.quark.cn/"}
-    def test(self):
-        if self.config.get("root"):
-            return LocalDriver(self.config).test()
-        if self.config.get("openlist_url"):
-            return OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""}).test()
-        if not self.config.get("cookie"):
-            raise ValueError("quark cookie 必填")
-        status, raw, _ = _http_request("https://drive.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_page=1&_size=1", method="GET", headers=self._headers(), timeout=15)
-        import json as _json
-        j=_json.loads(raw.decode())
-        if j.get("code") not in (0,200):
-            raise ValueError(f"quark 鉴权失败: {j}")
-        return True
-    def list(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/quark"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.list(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).list(remote_path)
-        rel=_norm_remote(remote_path)
-        # 需要 fileId：通过逐级查找
-        fid="0"
-        if rel:
-            parts=rel.split("/")
-            cur="0"
-            for part in parts:
-                status, raw, _ = _http_request(f"https://drive.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid={cur}&_page=1&_size=200", method="GET", headers=self._headers(), timeout=15)
-                import json as _json
-                j=_json.loads(raw.decode())
-                found=None
-                for fi in j.get("data",{}).get("list") or []:
-                    if fi["file_name"]==part and fi["dir"]==True:
-                        found=fi
-                        break
-                if not found:
-                    return []
-                cur=str(found["fid"])
-            fid=cur
-        status, raw, _ = _http_request(f"https://drive.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid={fid}&_page=1&_size=200", method="GET", headers=self._headers(), timeout=15)
-        import json as _json
-        j=_json.loads(raw.decode())
-        out=[]
-        for fi in j.get("data",{}).get("list") or []:
-            name=fi["file_name"]
-            is_dir=fi["dir"]==True
-            size=fi.get("size") or 0
-            full=(rel + "/" + name).strip("/") if rel else name
-            out.append(Obj(name, full, is_dir, size, 0, ""))
-        return out
-    def stat(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/quark"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.stat(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).stat(remote_path)
-        rel=_norm_remote(remote_path)
-        parent="/".join(rel.split("/")[:-1])
-        name=rel.split("/")[-1]
-        for o in self.list(parent):
-            if o.name==name:
-                return o
-        return None
-    def mkdir(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/quark"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.mkdir(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).mkdir(remote_path)
-        rel=_norm_remote(remote_path)
-        parent="/".join(rel.split("/")[:-1])
-        name=rel.split("/")[-1]
-        # 获取父 fid
-        fid="0"
-        if parent:
-            parts=parent.split("/")
-            cur="0"
-            for part in parts:
-                status, raw, _ = _http_request(f"https://drive.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid={cur}&_page=1&_size=200", method="GET", headers=self._headers(), timeout=15)
-                import json as _json
-                j=_json.loads(raw.decode())
-                found=None
-                for fi in j.get("data",{}).get("list") or []:
-                    if fi["file_name"]==part:
-                        found=fi
-                        break
-                if not found:
-                    raise ValueError(f"quark 父目录不存在 {parent}")
-                cur=str(found["fid"])
-            fid=cur
-        status, raw, _ = _http_request("https://drive.quark.cn/1/clouddrive/file", method="POST", headers=self._headers(), data=__import__("json").dumps({"pdir_fid":fid,"file_name":name,"dir":True}).encode(), timeout=15)
-        return True
-    def delete(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/quark"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.delete(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).delete(remote_path)
-        # 直连删除：/file/delete 接口需要 fid 而非路径，旧实现传 rel 路径且永不生效还返回 True，
-        # 会让 delete_extra 误判远端已删除。与直连 get/put 一致，明确提示走 OpenList。
-        raise ValueError("quark 直连删除暂需 OpenList 代理，请填写 openlist_url")
-    def get(self, remote_path, local_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/quark"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.get(full, local_path)
-        if self.config.get("root"):
-            return LocalDriver(self.config).get(remote_path, local_path)
-        # 直连下载：需获取下载链接（简化）
-        raise ValueError("quark 直连下载暂需 OpenList 代理，请填写 openlist_url")
-    def put(self, local_path, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/quark"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.put(local_path, full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).put(local_path, remote_path)
-        # 直连上传：夸克上传较复杂，建议走代理
-        raise ValueError("quark 直连上传暂未实现，请填写 openlist_url 走代理，或使用本地 root 测试")
-    def config_schema(self):
-        return {"cookie": "夸克 Cookie（必填，形如 __puus=...）", "openlist_url": "OpenList 代理（可选，用于上传/下载）", "mount_path": "/quark", "root": "本地测试根"}
 
 class Pan123Driver(BaseDriver):
     type_name = "123"
@@ -1459,80 +1066,6 @@ class Pan123Driver(BaseDriver):
         return True
     def config_schema(self):
         return {"username": "123 用户名/邮箱", "password": "密码", "passport": "passport（可选）", "openlist_url": "OpenList 地址（可选，直连失败时走代理）", "openlist_token": "OpenList Token", "mount_path": "/123", "root": "本地测试根"}
-
-class Tianyi189Driver(BaseDriver):
-    type_name = "189"
-    def _login(self):
-        # 简化：189 登录需 RSA 加密，此处仅校验参数，实际走代理
-        if not self.config.get("username") or not self.config.get("password"):
-            raise ValueError("天翼云盘 需要 username/password")
-        self._token = "dummy_189_token"
-    def test(self):
-        if self.config.get("root"):
-            return LocalDriver(self.config).test()
-        if self.config.get("openlist_url"):
-            return OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""}).test()
-        # 直连测试：仅校验参数，实际文件操作建议走代理
-        if not self.config.get("username"):
-            raise ValueError("天翼云盘 需要 username")
-        # 尝试简单请求以验证账号格式
-        return True
-    def list(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/189"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.list(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).list(remote_path)
-        raise ValueError("天翼云盘直连暂不支持列目录：请填写 openlist_url 或使用本地 root 测试")
-    def stat(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/189"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.stat(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).stat(remote_path)
-        return None
-    def get(self, remote_path, local_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/189"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.get(full, local_path)
-        if self.config.get("root"):
-            return LocalDriver(self.config).get(remote_path, local_path)
-        raise NotImplementedError("189 requires openlist_url")
-    def put(self, local_path, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/189"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.put(local_path, full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).put(local_path, remote_path)
-        raise NotImplementedError("189 requires openlist_url")
-    def delete(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/189"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.delete(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).delete(remote_path)
-        return True
-    def mkdir(self, remote_path):
-        if self.config.get("openlist_url"):
-            drv = OpenListDriver({"url": self.config["openlist_url"], "token": self.config.get("openlist_token") or ""})
-            mount = self.config.get("mount_path") or "/189"
-            full = (mount.rstrip("/") + "/" + _norm_remote(remote_path)).strip("/")
-            return drv.mkdir(full)
-        if self.config.get("root"):
-            return LocalDriver(self.config).mkdir(remote_path)
-        return True
-    def config_schema(self):
-        return {"username": "天翼 手机号", "password": "密码", "openlist_url": "OpenList 地址", "mount_path": "/189", "root": "本地测试根"}
 
 class GoogleDriveDriver(BaseDriver):
     type_name = "google_drive"
@@ -2155,6 +1688,12 @@ class OneDriveDriver(BaseDriver):
         return {"refresh_token": "refresh_token", "client_id": "Client ID", "client_secret": "Client Secret", "openlist_url": "OpenList 地址", "mount_path": "/onedrive", "root": "本地测试根"}
 
 
+# 已停止支持的云盘类型：历史配置条目保留展示，实际操作时给出明确提示
+REMOVED_DRIVERS = {
+    "aliyundrive": "阿里云盘", "aliyun": "阿里云盘", "quark": "夸克云盘",
+    "189": "天翼云盘", "tianyi": "天翼云盘",
+}
+
 DRIVERS = {
     "local": LocalDriver,
     "webdav": WebDAVDriver,
@@ -2162,20 +1701,21 @@ DRIVERS = {
     "alist": OpenListDriver,
     "baidu_netdisk": BaiduNetdiskDriver,
     "baidu": BaiduNetdiskDriver,
-    "aliyundrive": AliyunDriveDriver,
-    "aliyun": AliyunDriveDriver,
-    "quark": QuarkDriver,
     "123": Pan123Driver,
     "123pan": Pan123Driver,
-    "189": Tianyi189Driver,
-    "tianyi": Tianyi189Driver,
     "google_drive": GoogleDriveDriver,
     "gdrive": GoogleDriveDriver,
     "onedrive": OneDriveDriver,
 }
 
 def get_driver(type_name, config):
-    cls = DRIVERS.get((type_name or "").lower())
+    key = (type_name or "").lower()
+    if key in REMOVED_DRIVERS:
+        raise ValueError(
+            "%s已停止支持：请删除该云存储配置，改用 OpenList 代理"
+            "（在 OpenList 中添加对应存储后，此处填 OpenList 地址 + 挂载路径）。"
+            % REMOVED_DRIVERS[key])
+    cls = DRIVERS.get(key)
     if not cls:
         raise ValueError("unknown driver: %s" % type_name)
     return cls(config)

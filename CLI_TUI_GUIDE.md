@@ -316,8 +316,9 @@ TUI 内按 `a` 打开聊天面板（Esc 关闭，写操作弹出确认框）；R
 
 ## 8. 云同步（手动上传 / 下载 Mod）
 
-CLI/TUI 直接复用后端同步引擎（10 种驱动：local / webdav / openlist / 百度 /
-阿里 / 夸克 / 123 / 天翼 / Google Drive / OneDrive）。配置存于
+CLI/TUI 直接复用后端同步引擎（7 种驱动：local / webdav / openlist / 百度 /
+123 / Google Drive / OneDrive；阿里云盘、夸克、天翼已停止支持，历史配置
+会在操作时提示改用 OpenList 代理）。配置存于
 `<workspace>/.editor_cloud.json`，**与 GUI 云页同一份**。
 
 ```powershell

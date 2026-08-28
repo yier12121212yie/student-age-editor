@@ -328,13 +328,6 @@ class CloudSyncLogicTest(unittest.TestCase):
         out = cloud_sync._list_remote_recursive(_OkDriver(), "mods/y")
         self.assertIn("f.txt", out)
 
-    # ---------- 阿里云盘 _resolve 空路径 ----------
-    def test_aliyun_resolve_empty_returns_tuple(self):
-        from editor.server.cloud_sync import AliyunDriveDriver
-        drv = AliyunDriveDriver({"refresh_token": "x" * 40})
-        self.assertEqual(drv._resolve(""), ("root", ""))
-        self.assertEqual(drv._resolve("/"), ("root", ""))
-
     # ---------- _need_sync 判定 ----------
     def test_need_sync_branches(self):
         from editor.server.cloud_sync import _need_sync

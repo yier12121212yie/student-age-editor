@@ -6,6 +6,9 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 
+// 已下线的云盘类型：旧配置条目仍显示，但不可再测试/保存（后端已移除驱动）
+const Set<String> _kRemovedDrivers = {'aliyundrive','aliyun','quark','189','tianyi'};
+
 class CloudPage extends StatefulWidget {
   const CloudPage({super.key, required this.state});
   final AppState state;
@@ -15,7 +18,7 @@ class CloudPage extends StatefulWidget {
 
 class _CloudPageState extends State<CloudPage> {
   List<dynamic> _providers = [];
-  List<String> _drivers = ['local','webdav','openlist','alist','baidu_netdisk','aliyundrive','quark','123','189','google_drive','onedrive'];
+  List<String> _drivers = ['local','webdav','openlist','alist','baidu_netdisk','123','google_drive','onedrive'];
   // driver schemas loaded for future dynamic form generation
   Map<String, dynamic> _driverSchemas = {};
   String? _selectedProvider;
@@ -366,15 +369,12 @@ class _CloudPageState extends State<CloudPage> {
 
 
   String _driverLabel(String t){
-    const map = {'baidu_netdisk':'百度网盘','baidu':'百度网盘','aliyundrive':'阿里云盘','aliyun':'阿里云盘','quark':'夸克网盘','123':'123云盘','123pan':'123云盘','189':'天翼云盘','tianyi':'天翼云盘','google_drive': 'Google Drive','gdrive':'Google Drive','onedrive':'OneDrive','local':'本地目录','webdav':'WebDAV','openlist':'OpenList','alist':'Alist'};
+    const map = {'baidu_netdisk':'百度网盘','baidu':'百度网盘','aliyundrive':'阿里云盘（已下线）','aliyun':'阿里云盘（已下线）','quark':'夸克网盘（已下线）','123':'123云盘','123pan':'123云盘','189':'天翼云盘（已下线）','tianyi':'天翼云盘（已下线）','google_drive': 'Google Drive','gdrive':'Google Drive','onedrive':'OneDrive','local':'本地目录','webdav':'WebDAV','openlist':'OpenList','alist':'Alist'};
     return map[t] ?? t;
   }
   IconData _driverIcon(String t){
     if (t.contains('baidu')) return FluentIcons.cloud_24_regular;
-    if (t.contains('aliyun')) return FluentIcons.cloud_24_regular;
-    if (t.contains('quark')) return FluentIcons.cloud_24_regular;
     if (t.contains('123')) return FluentIcons.folder_24_regular;
-    if (t.contains('189')) return FluentIcons.cloud_24_regular;
     if (t.contains('google')) return FluentIcons.globe_24_regular;
     if (t.contains('onedrive')) return FluentIcons.cloud_24_regular;
     if (t=='webdav') return FluentIcons.link_24_regular;
@@ -388,10 +388,7 @@ class _CloudPageState extends State<CloudPage> {
       'webdav': 'WebDAV：兼容坚果云/Alist/Nextcloud。需填 URL+账号密码。',
       'openlist': 'OpenList/Alist 代理：填你的 OpenList 地址和 Token，一键复用 40+ 存储。',
       'baidu_netdisk': '百度网盘：优先填 refresh_token；也可走 OpenList 代理更稳定。',
-      'aliyundrive': '阿里云盘（直连已 Deprecated 仅作兼容）：需 refresh_token（有效期约28天）。获取：登录 https://www.alipan.com → F12 → Application → Local Storage → https://www.alipan.com → 复制 token 中的 refresh_token（注意是 refresh_token 不是 access_token）。强烈建议走 OpenList（推荐 AliyundriveOpen）：在 OpenList 中添加阿里云盘并挂载到 /aliyun，再在此填 OpenList 地址如 http://127.0.0.1:5244 + 挂载路径 /aliyun，直连即使更换 token 仍可能报 InvalidParameter.RefreshToken。',
-      'quark': '夸克：需 Cookie；上传/下载建议走 OpenList。',
       '123': '123云盘：填账号密码直连，或走 OpenList。',
-      '189': '天翼云盘：当前仅支持 OpenList 代理。',
       'google_drive': 'Google Drive：需 OAuth refresh_token，或走 OpenList。注意：OpenList 地址填你的 OpenList 实例 (如 http://127.0.0.1:5244)，不要填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口，会报 403/1010）',
       'onedrive': 'OneDrive：需 refresh_token + Client ID（Azure 应用），或走 OpenList。默认 Client ID f0e3cad9... 仅示例，请填你自己的 Azure 应用 ID，否则报 700016',
     };
@@ -406,7 +403,6 @@ class _CloudPageState extends State<CloudPage> {
     final passCtrl = TextEditingController(text: isEdit ? '' : ''); // password masked, leave blank to keep
     final tokenCtrl = TextEditingController(text: isEdit ? '' : '');
     final refreshCtrl = TextEditingController(text: isEdit ? '' : '');
-    final cookieCtrl = TextEditingController(text: isEdit ? '' : '');
     final mountCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['mount_path'] ?? '') : '');
     final gClientIdCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['client_id'] ?? '') : '');
     final gClientSecretCtrl = TextEditingController(text: isEdit ? '' : '');
@@ -427,17 +423,14 @@ class _CloudPageState extends State<CloudPage> {
       return fluent.ContentDialog(
         title: Text(isEdit ? '编辑云存储' : '新增云存储'),
         content: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
-          fluent.ComboBox<String>(value: type, isExpanded:true, items: _drivers.map((d)=>fluent.ComboBoxItem(value:d, child: Text('${_driverLabel(d)} ($d)', overflow:TextOverflow.ellipsis))).toList(), onChanged:(v)=>setDlg(()=>type=v??type)),
+          fluent.ComboBox<String>(value: type, isExpanded:true, items: (_drivers.contains(type) ? _drivers : [type, ..._drivers]).map((d)=>fluent.ComboBoxItem(value:d, child: Text('${_driverLabel(d)} ($d)', overflow:TextOverflow.ellipsis))).toList(), onChanged:(v)=>setDlg(()=>type=v??type)),
           if (help.isNotEmpty) Padding(padding: const EdgeInsets.only(top:6, bottom:8), child: Text(help, style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93)))),
           field('名称 *', nameCtrl, hint: _driverLabel(type)),
           if (type=='local') field('本地根目录 *', rootLocalCtrl, hint: r'D:/CloudMods 或 /tmp/mods'),
           if (type=='webdav') ...[field('WebDAV 地址 *', urlCtrl, hint: 'https://dav.example.com/'), field('用户名', userCtrl), field('密码', passCtrl, obscure:true)],
           if (type=='openlist' || type=='alist') ...[field('OpenList 地址 *', urlCtrl, hint:'http://host:5244'), field('Token', tokenCtrl, obscure:true)],
           if (type=='baidu_netdisk' || type=='baidu') ...[field('refresh_token', refreshCtrl, hint:'bduss 或官方 refresh_token'), field('OpenList 地址(可选，更稳定)', openUrlCtrl, hint:'http://host:5244'), field('挂载路径', mountCtrl, hint:'/baidu')],
-          if (type=='aliyundrive' || type=='aliyun') ...[field('refresh_token *', refreshCtrl, hint:'alipan.com F12→Application→LocalStorage→token→refresh_token 完整复制'), field('OpenList 地址(推荐)', openUrlCtrl, hint:'http://127.0.0.1:5244 走代理更稳定'), field('挂载路径', mountCtrl, hint:'/aliyun')],
-          if (type=='quark') ...[field('Cookie *', cookieCtrl, hint:'__puus=...'), field('OpenList 地址(推荐)', openUrlCtrl), field('挂载路径', mountCtrl, hint:'/quark')],
           if (type=='123' || type=='123pan') ...[field('用户名/邮箱 *', userCtrl), field('密码 *', passCtrl, obscure:true), field('OpenList 地址(可选)', openUrlCtrl), field('挂载路径', mountCtrl, hint:'/123')],
-          if (type=='189' || type=='tianyi') ...[field('手机号', userCtrl), field('密码', passCtrl, obscure:true), field('OpenList 地址 *', openUrlCtrl), field('挂载路径', mountCtrl, hint:'/189')],
           if (type=='google_drive' || type=='gdrive') ...[field('refresh_token *', refreshCtrl, hint:'1//... 完整 refresh_token'), field('Client ID (直连时选填，留空则尝试公共刷新)', gClientIdCtrl, hint:'xxx.apps.googleusercontent.com'), field('Client Secret (直连时选填)', gClientSecretCtrl, obscure:true), field('OpenList 地址', openUrlCtrl, hint:'http://127.0.0.1:5244（自建时填）'), field('挂载路径', mountCtrl, hint:'/gdrive (OpenList 中挂载名)'),],
           if (type=='onedrive') ...[field('refresh_token *', refreshCtrl, hint:'M.R3_BAY... 长串'), field('Client ID *', oClientIdCtrl, hint:'如 f0e3cad9-1bf3-4006-9999-1a1a1e1a4ae0 (oplist.org 公共)'), field('Client Secret', oClientSecretCtrl, obscure:true), field('OpenList 地址', openUrlCtrl, hint:'http://127.0.0.1:5244'), field('挂载路径', mountCtrl, hint:'/onedrive'),],
           field('远端根', rootCtrl, hint:'mods'),
@@ -453,17 +446,7 @@ class _CloudPageState extends State<CloudPage> {
               else if (type=='webdav'){ testCfg['url']=urlCtrl.text.trim(); testCfg['username']=userCtrl.text.trim(); if (passCtrl.text.isNotEmpty) testCfg['password']=passCtrl.text; }
               else if (type=='openlist' || type=='alist'){ testCfg['url']=urlCtrl.text.trim(); if(tokenCtrl.text.isNotEmpty) testCfg['token']=tokenCtrl.text.trim(); }
               else if (type=='baidu_netdisk' || type=='baidu'){ if(refreshCtrl.text.isNotEmpty) testCfg['refresh_token']=refreshCtrl.text.trim(); testCfg['openlist_url']=openUrlCtrl.text.trim(); if(openTokenCtrl.text.isNotEmpty) testCfg['openlist_token']=openTokenCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/baidu':mountCtrl.text.trim(); }
-              else if (type=='aliyundrive' || type=='aliyun'){
-                final rt = refreshCtrl.text.trim();
-                final ou = openUrlCtrl.text.trim();
-                // 编辑时留空表示保留原值，允许测试时留空（此时后端会用已保存配置的测试按钮更准确）
-                if(!isEdit && rt.isEmpty && ou.isEmpty){ setDlg(()=>errorText='阿里云盘需填写 refresh_token 或 OpenList 地址（二选一）。refresh_token 获取：登录 https://www.alipan.com → F12 → Application → Local Storage → https://www.alipan.com → 完整复制 refresh_token。留空测试将直接提示失败，建议先保存后用列表的“测试连接”验证已保存配置。'); return; }
-                if(rt.isNotEmpty && rt.length < 20){ setDlg(()=>errorText='refresh_token 长度异常（仅 ${rt.length} 位），可能复制不完整。请完整复制（32位以上）。'); return; }
-                if(rt.contains(' ') || rt.contains('\n')){ setDlg(()=>errorText='refresh_token 含空格/换行，请清理后重试。'); return; }
-                if(rt.isNotEmpty) testCfg['refresh_token']=rt; testCfg['openlist_url']=ou; testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/aliyun':mountCtrl.text.trim(); }
-              else if (type=='quark'){ if(cookieCtrl.text.isNotEmpty) testCfg['cookie']=cookieCtrl.text.trim(); testCfg['openlist_url']=openUrlCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/quark':mountCtrl.text.trim(); }
               else if (type=='123' || type=='123pan'){ testCfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) testCfg['password']=passCtrl.text; testCfg['openlist_url']=openUrlCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/123':mountCtrl.text.trim(); }
-              else if (type=='189' || type=='tianyi'){ testCfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) testCfg['password']=passCtrl.text; testCfg['openlist_url']=openUrlCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/189':mountCtrl.text.trim(); }
               else if (type=='google_drive' || type=='gdrive'){
                 final _openUrl = openUrlCtrl.text.trim();
                 if(_openUrl.contains('renewapi') || _openUrl.contains('googleui')){ setDlg(()=>errorText='OpenList 地址填写错误：请勿填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口）。直连请留空该字段；走 OpenList 请填你的 OpenList 实例如 http://127.0.0.1:5244'); return; }
@@ -478,28 +461,18 @@ class _CloudPageState extends State<CloudPage> {
             }catch(e){ setDlg(()=>errorText=e.toString()); } finally { setDlg(()=>testing=false); }
           }, child: Text(testing?'测试中...':'测试连接')),
           fluent.FilledButton(onPressed:() async {
+            if (_kRemovedDrivers.contains(type)) { setDlg(()=>errorText='该云盘已停止支持：请删除后改用 OpenList 代理云存储'); return; }
             final name = nameCtrl.text.trim();
             if (name.isEmpty) { setDlg(()=>errorText='名称不能为空'); return; }
             if (type=='local' && rootLocalCtrl.text.trim().isEmpty) { setDlg(()=>errorText='本地根目录不能为空'); return; }
             if ((type=='webdav' || type=='openlist' || type=='alist') && urlCtrl.text.trim().isEmpty) { setDlg(()=>errorText='地址不能为空'); return; }
-            if ((type=='aliyundrive' || type=='aliyun')) {
-              final rt = refreshCtrl.text.trim();
-              final ou = openUrlCtrl.text.trim();
-              final isEditKeep = isEdit && rt.isEmpty && ((editTarget['config']?['refresh_token'] ?? '') as String).isNotEmpty;
-              if(rt.isEmpty && ou.isEmpty && !isEditKeep){ setDlg(()=>errorText='阿里云盘需填写 refresh_token 或 OpenList 地址（二选一）'); return; }
-              if(rt.isNotEmpty && rt.length < 20){ setDlg(()=>errorText='refresh_token 长度异常（仅 ${rt.length} 位），可能复制不完整'); return; }
-              if(rt.contains(' ') || rt.contains('\n')){ setDlg(()=>errorText='refresh_token 含空格/换行，请清理后重试'); return; }
-            }
             Navigator.pop(ctx);
             final cfg=<String,dynamic>{};
             if (type=='local') cfg['root']=rootLocalCtrl.text.trim();
             else if (type=='webdav'){ cfg['url']=urlCtrl.text.trim(); cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; }
             else if (type=='openlist' || type=='alist'){ cfg['url']=urlCtrl.text.trim(); if(tokenCtrl.text.isNotEmpty) cfg['token']=tokenCtrl.text.trim(); }
             else if (type=='baidu_netdisk' || type=='baidu'){ if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim(); cfg['openlist_url']=openUrlCtrl.text.trim(); if(openTokenCtrl.text.isNotEmpty) cfg['openlist_token']=openTokenCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/baidu':mountCtrl.text.trim(); }
-            else if (type=='aliyundrive' || type=='aliyun'){ if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim(); cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/aliyun':mountCtrl.text.trim(); }
-            else if (type=='quark'){ if(cookieCtrl.text.isNotEmpty) cfg['cookie']=cookieCtrl.text.trim(); cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/quark':mountCtrl.text.trim(); }
             else if (type=='123' || type=='123pan'){ cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/123':mountCtrl.text.trim(); }
-            else if (type=='189' || type=='tianyi'){ cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/189':mountCtrl.text.trim(); }
             else if (type=='google_drive' || type=='gdrive'){
                 final _openUrl2 = openUrlCtrl.text.trim();
                 if(_openUrl2.contains('renewapi') || _openUrl2.contains('googleui')){ setDlg(()=>errorText='OpenList 地址填写错误：请勿填 api.oplist.org/.../renewapi'); return; }

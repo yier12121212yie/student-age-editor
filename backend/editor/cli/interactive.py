@@ -164,9 +164,8 @@ _SUB_SPECS["mod"] = _SUB_SPECS["mods"]
 # cloud add 的 --type / --remote-root 候选（与 server.cloud_sync.DRIVERS 对齐）
 _CLOUD_TYPE_CANDS = [
     ("local", "本地目录"), ("webdav", "WebDAV"), ("openlist", "OpenList/Alist"),
-    ("baidu", "百度网盘"), ("aliyun", "阿里云盘"), ("quark", "夸克网盘"),
-    ("123", "123 云盘"), ("189", "天翼云盘"), ("google_drive", "Google Drive"),
-    ("onedrive", "OneDrive"),
+    ("baidu", "百度网盘"), ("123", "123 云盘"),
+    ("google_drive", "Google Drive"), ("onedrive", "OneDrive"),
 ]
 _CLOUD_REMOTE_ROOTS = [("mods", "Mods 根目录"), ("cfgs", "Mod 的 Cfgs"), ("save", "存档目录")]
 

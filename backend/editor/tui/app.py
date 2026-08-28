@@ -1920,9 +1920,16 @@ class CloudProviderEditScreen(ModalScreen):
         sel = self.query_one("#cpe-type", Select)
         if self._entry.get("type"):
             want = _cloud_type_canonical(self._entry["type"])
-            if want != sel.value:
-                self._suppress_change = True  # 程序化赋值会入队一次 Changed，避免二次重建
-                sel.value = want
+            if want in {t for _, t in _CLOUD_DRIVER_TYPES}:
+                if want != sel.value:
+                    self._suppress_change = True  # 程序化赋值会入队一次 Changed，避免二次重建
+                    sel.value = want
+            else:
+                # 已下线驱动（阿里云盘/夸克/天翼）：不预选类型，给出替代指引
+                from editor.server import cloud_sync as _cs
+                label = getattr(_cs, "REMOVED_DRIVERS", {}).get(want, want)
+                self.query_one("#cpe-error", Static).update(
+                    "%s已停止支持：请改用 OpenList 代理云存储（下方选择 openlist 新建）。" % label)
         await self._rebuild_fields()
         if self._entry.get("name"):
             self.query_one("#cpe-name", Input).value = self._entry["name"]
@@ -2041,14 +2048,13 @@ class CloudProviderEditScreen(ModalScreen):
 
 _CLOUD_DRIVER_TYPES = [
     ("local", "本地目录"), ("webdav", "WebDAV"), ("openlist", "OpenList/Alist"),
-    ("baidu", "百度网盘"), ("aliyun", "阿里云盘"), ("quark", "夸克网盘"),
-    ("123", "123 云盘"), ("189", "天翼云盘"), ("google_drive", "Google Drive"),
-    ("onedrive", "OneDrive"),
+    ("baidu", "百度网盘"), ("123", "123 云盘"),
+    ("google_drive", "Google Drive"), ("onedrive", "OneDrive"),
 ]
 # server.cloud_sync.DRIVERS 里的别名 → 上表规范名（Select 只列规范名）
 _CLOUD_TYPE_ALIASES = {
-    "alist": "openlist", "baidu_netdisk": "baidu", "aliyundrive": "aliyun",
-    "123pan": "123", "tianyi": "189", "gdrive": "google_drive",
+    "alist": "openlist", "baidu_netdisk": "baidu",
+    "123pan": "123", "gdrive": "google_drive",
 }
 
 
