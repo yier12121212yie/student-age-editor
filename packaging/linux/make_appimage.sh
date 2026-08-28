@@ -71,6 +71,8 @@ chmod 0644 "$APPDIR/$PKG_ID.desktop" 2>/dev/null || true
 if [[ -f "$SRC/editor_icon.png" ]]; then
   cp "$SRC/editor_icon.png" "$APPDIR/.DirIcon"
   cp "$SRC/editor_icon.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/$PKG_ID.png"
+  # appimagetool 校验 desktop 的 Icon 时只查 AppDir 根目录
+  cp "$SRC/editor_icon.png" "$APPDIR/$PKG_ID.png"
 else
   echo "警告：未找到 editor_icon.png，AppImage 无图标" >&2
 fi

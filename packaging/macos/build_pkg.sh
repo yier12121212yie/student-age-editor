@@ -75,7 +75,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
 fi
 
 for tool in pkgbuild productbuild codesign; do
-    command -v "$tool" >/dev/null 2>&1 || die "未找到 $tool，本脚本须在 macOS 上运行"
+    command -v "$tool" >/dev/null 2>&1 || die "未找到 ${tool}，本脚本须在 macOS 上运行"
 done
 command -v PlistBuddy >/dev/null 2>&1 || command -v /usr/libexec/PlistBuddy >/dev/null 2>&1 \
     || die "未找到 PlistBuddy（macOS 自带）"
@@ -97,7 +97,7 @@ GUIBIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST" 2>/dev
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(abs_path "$OUTPUT_DIR")"
 PKG_OUT="$OUTPUT_DIR/$APP_NAME-v$VERSION-macos.pkg"
-echo "[1/4] 校验通过：$APP_PATH（GUI 主程序 $GUIBIN）"
+echo "[1/4] 校验通过：${APP_PATH}（GUI 主程序 ${GUIBIN}）"
 
 # ----------------------------- [2/4] staging 与 ad-hoc 重签 -----------------------------
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/studentage_pkg.XXXXXXXX")"

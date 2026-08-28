@@ -252,7 +252,7 @@ write_command() {
   # write_command <命令名> <可执行相对路径> <模式>
   local name="$1" rel="$2" mode="$3"
   if ! mkdir -p "$BIN_DIR"; then
-    warn "无法创建命令目录 $BIN_DIR，跳过 $name"
+    warn "无法创建命令目录 ${BIN_DIR}，跳过 $name"
     return 1
   fi
   local esc
@@ -269,7 +269,7 @@ EOF
 
 install_component_gui() {
   local src="$SRC_DIR/$APP_NAME"
-  [[ -e "$src" ]] || die "未找到 GUI 主程序 $src（zip 不完整？）"
+  [[ -e "$src" ]] || die "未找到 GUI 主程序 ${src}（zip 不完整？）"
   cp -R "$src" "$INSTALL_DIR/" || die "复制 GUI 主程序失败"
   for d in lib data; do
     if [[ -d "$SRC_DIR/$d" ]]; then
@@ -328,7 +328,7 @@ write_env_file() {
   mkdir -p "$DATA_DIR" || die "无法创建数据目录 $DATA_DIR"
   local env_file="$DATA_DIR/editor_env.json"
   if [[ -f "$env_file" ]]; then
-    info "已有 $env_file，保留现有配置（不覆盖）"
+    info "已有 ${env_file}，保留现有配置（不覆盖）"
     return 0
   fi
   local ws_def ws wk_def wk
@@ -449,7 +449,7 @@ do_uninstall() {
   INSTALL_DIR="${INSTALL_DIR:-$(default_install_dir)}"
   [[ -d "$INSTALL_DIR" ]] || die "$INSTALL_DIR 不存在，无需卸载"
   info "卸载安装目录：$INSTALL_DIR"
-  if interactive && ! yesno "确认删除 $INSTALL_DIR？"; then
+  if interactive && ! yesno "确认删除 ${INSTALL_DIR}？"; then
     echo "已取消卸载"
     exit 0
   fi
@@ -462,7 +462,7 @@ do_uninstall() {
   # 数据目录（可能位于安装目录内，单独询问是否连同删除）
   local data
   data="$(app_data_dir)"
-  if interactive && yesno "是否同时删除数据目录 $data（缓存/日志/配置）？"; then
+  if interactive && yesno "是否同时删除数据目录 ${data}（缓存/日志/配置）？"; then
     rm -rf "$data"
   fi
   rm -rf "$INSTALL_DIR"

@@ -95,7 +95,7 @@ MACOS_DIR="$APP_PATH/Contents/MacOS"
 
 APP_BASENAME="$(basename "$APP_PATH")"
 if [ "$APP_BASENAME" != "$APP_NAME.app" ]; then
-    echo "[警告] 输入 .app 名称（$APP_BASENAME）与标准名（$APP_NAME.app）不同，staging 中将按标准名重命名。" >&2
+    echo "[警告] 输入 .app 名称（${APP_BASENAME}）与标准名（$APP_NAME.app）不同，staging 中将按标准名重命名。" >&2
 fi
 
 mkdir -p "$OUTPUT_DIR"

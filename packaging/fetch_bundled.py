@@ -20,6 +20,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Windows CI 的管道 stdout 默认是 cp1252 等区域编码，打印中文会直接
+# UnicodeEncodeError；这里强制 UTF-8 并容忍不可编码字符。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 _USER_AGENT = "StudentAge-editor-release-bot/1.0"
 
 

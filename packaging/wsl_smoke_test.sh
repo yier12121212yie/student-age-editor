@@ -36,7 +36,7 @@ ping_backend() {  # $1=backend 路径 $2=端口
 }
 
 if [ ! -x "$OUT_DIR/backend" ]; then
-  echo "跳过：便携目录不存在 $OUT_DIR（先运行 wsl_build_linux.sh）" >&2
+  echo "跳过：便携目录不存在 ${OUT_DIR}（先运行 wsl_build_linux.sh）" >&2
   exit 1
 fi
 
