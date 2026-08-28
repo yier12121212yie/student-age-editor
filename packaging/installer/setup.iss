@@ -10,6 +10,11 @@
   #define AppName "学生时代模组编辑器"
 #endif
 
+#ifndef AppFileBase
+  ; 发行文件名基名（ASCII）：GitHub Actions artifact 传输会剥离中文文件名前缀
+  #define AppFileBase "student-age-editor"
+#endif
+
 #ifndef AppPublisher
   #define AppPublisher "PakyiGame"
 #endif
@@ -44,7 +49,7 @@ DefaultDirName={autopf}\StudentAgeEditor
 DisableProgramGroupPage=yes
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir={#OutputDir}
-OutputBaseFilename={#AppName}-setup-v{#AppVersion}
+OutputBaseFilename={#AppFileBase}-setup-v{#AppVersion}
 SetupIconFile=..\..\frontend\windows\runner\resources\app_icon.ico
 UninstallDisplayIcon={app}\{#AppName}.exe
 UninstallDisplayName={#AppName} v{#AppVersion}

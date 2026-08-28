@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 发行版本号（如 1.3.0）
-        required: true
-        default: "1.3.0"
+        description: 发行版本号（留空则取 tag 名或 frontend/pubspec.yaml）
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -52,7 +52,14 @@ jobs:
         shell: bash
         run: |
           VER="${{ github.event.inputs.version }}"
-          if [ -z "$VER" ]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3})(\+[0-9]+)?[[:space:]]*$/\1/p' frontend/pubspec.yaml | head -n1)"
+          fi
+          if [ -z "$VER" ]; then
+            echo "错误：无法解析版本号（workflow_dispatch 输入、tag 名、pubspec.yaml 均未提供）" >&2
+            exit 1
+          fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
       - name: 还原官方资源包缓存（ci-assets Release）
         shell: bash
@@ -100,7 +107,14 @@ jobs:
       - name: 解析版本号
         run: |
           VER="${{ github.event.inputs.version }}"
-          if [ -z "$VER" ]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3})(\+[0-9]+)?[[:space:]]*$/\1/p' frontend/pubspec.yaml | head -n1)"
+          fi
+          if [ -z "$VER" ]; then
+            echo "错误：无法解析版本号（workflow_dispatch 输入、tag 名、pubspec.yaml 均未提供）" >&2
+            exit 1
+          fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
       - name: 下载 appimagetool（AppImage 打包工具）
         run: |
@@ -147,7 +161,14 @@ jobs:
       - name: 解析版本号
         run: |
           VER="${{ github.event.inputs.version }}"
-          if [ -z "$VER" ]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3})(\+[0-9]+)?[[:space:]]*$/\1/p' frontend/pubspec.yaml | head -n1)"
+          fi
+          if [ -z "$VER" ]; then
+            echo "错误：无法解析版本号（workflow_dispatch 输入、tag 名、pubspec.yaml 均未提供）" >&2
+            exit 1
+          fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
       - name: 还原官方资源包缓存（ci-assets Release）
         run: |
@@ -188,7 +209,14 @@ jobs:
       - name: 解析版本号
         run: |
           VER="${{ github.event.inputs.version }}"
-          if [ -z "$VER" ]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3})(\+[0-9]+)?[[:space:]]*$/\1/p' frontend/pubspec.yaml | head -n1)"
+          fi
+          if [ -z "$VER" ]; then
+            echo "错误：无法解析版本号（workflow_dispatch 输入、tag 名、pubspec.yaml 均未提供）" >&2
+            exit 1
+          fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
       - name: 同步 Python 后端到 Android 工程
         run: python packaging/sync_android_python.py
@@ -209,7 +237,7 @@ jobs:
         run: |
           mkdir -p dist
           cp frontend/build/app/outputs/flutter-apk/app-release.apk \
-             "dist/学生时代模组编辑器-v$RELEASE_VERSION-android.apk"
+             "dist/student-age-editor-v$RELEASE_VERSION-android.apk"
       - name: 上传 Android 产物
         uses: actions/upload-artifact@v4
         with:
@@ -224,13 +252,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: 修复资产名（artifact 传输会剥离文件名的中文前缀）
-        shell: bash
-        run: |
-          find artifacts -type f -name "-*" | while read -r f; do
-            dir="$(dirname "$f")"; base="$(basename "$f")"
-            mv "$f" "$dir/学生时代模组编辑器$base"
-          done
       - name: 汇总产物
         run: find artifacts -type f | sort
       - name: 创建 Release

@@ -10,7 +10,7 @@
 # （dist/学生时代模组编辑器-vX.Y.Z-macos/学生时代模组编辑器.app，Flutter 产物
 # 骨架 + Contents/MacOS 下的 backend、_internal/、official_pack/）。
 # 产出（文件名固定，供 CI 归档）：
-#   <输出目录>/学生时代模组编辑器-vX.Y.Z-macos.dmg
+#   student-age-editor-vX.Y.Z-macos.dmg
 # 卷内布局为拖拽安装式：.app + /Applications 软链。
 #
 # 说明：
@@ -27,6 +27,8 @@
 set -euo pipefail
 
 APP_NAME="学生时代模组编辑器"
+# 发行文件名基名（ASCII）：GitHub Actions artifact 传输会剥离中文文件名前缀
+FILE_BASE="student-age-editor"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
@@ -101,7 +103,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(abs_path "$OUTPUT_DIR")"
 
-DMG_OUT="$OUTPUT_DIR/$APP_NAME-v$VERSION-macos.dmg"
+DMG_OUT="$OUTPUT_DIR/$FILE_BASE-v$VERSION-macos.dmg"
 
 echo "[1/3] 校验通过：$APP_PATH"
 

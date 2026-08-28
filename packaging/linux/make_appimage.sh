@@ -77,7 +77,7 @@ else
   echo "警告：未找到 editor_icon.png，AppImage 无图标" >&2
 fi
 
-OUT_FILE="$OUT/$APP_NAME-v$VER-linux-amd64.AppImage"
+OUT_FILE="$OUT/$PKG_ID-v$VER-linux-amd64.AppImage"
 rm -f "$OUT_FILE"
 if [[ "$TOOL" == *.AppImage ]]; then
   "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT_FILE"

@@ -43,6 +43,10 @@ BACKEND_DIST = os.path.join(ROOT, "build", "release", "backend_dist")
 DIST_ROOT = os.path.join(ROOT, "dist")
 
 APP_NAME = "学生时代模组编辑器"
+# 发行文件名统一用 ASCII 基名：GitHub Actions 的 artifact 上传/下载链路会把
+# 文件名开头的非 ASCII（中文）前缀整体剥离；中文名仅保留在 zip 内部目录、
+# 安装器显示名、DMG 卷名等非文件名处。
+APP_FILE_BASE = "student-age-editor"
 TARGETS = ("windows", "macos", "linux")
 
 # ----------------------------- Windows 安装包 -----------------------------
@@ -193,6 +197,7 @@ def build_installer(version, source_dir):
     cmd = [
         iscc,
         "/DAppVersion=%s" % version,
+        "/DAppFileBase=%s" % APP_FILE_BASE,
         "/DSourceDir=%s" % source_dir,
         "/DBackendDist=%s" % BACKEND_DIST,
         "/DOfficialPackZip=%s" % BUNDLED_ZIP,
@@ -203,7 +208,7 @@ def build_installer(version, source_dir):
         SETUP_ISS,
     ]
     subprocess.run(cmd, cwd=ROOT, check=True)
-    out = os.path.join(DIST_ROOT, "%s-setup-v%s.exe" % (APP_NAME, version))
+    out = os.path.join(DIST_ROOT, "%s-setup-v%s.exe" % (APP_FILE_BASE, version))
     assert os.path.isfile(out), "安装包未生成：%s" % out
     print("完成：%s (%.1f MB)" % (out, os.path.getsize(out) / 1048576))
 
@@ -258,7 +263,7 @@ def build_linux_installers(version, out_dir):
                     "--source", out_dir, "--version", version,
                     "--output", DIST_ROOT], cwd=ROOT, check=True, env=env)
     appimage = os.path.join(DIST_ROOT,
-                            "%s-v%s-linux-amd64.AppImage" % (APP_NAME, version))
+                            "%s-v%s-linux-amd64.AppImage" % (APP_FILE_BASE, version))
     assert os.path.isfile(appimage), "AppImage 未生成：%s" % appimage
     print("完成：%s (%.1f MB)" % (appimage, os.path.getsize(appimage) / 1048576))
 
@@ -277,8 +282,8 @@ def build_macos_installers(version, out_dir):
         subprocess.run(["bash", script, "--app", app_bundle,
                         "--version", version, "--output", DIST_ROOT],
                        cwd=ROOT, check=True)
-    dmg = os.path.join(DIST_ROOT, "%s-v%s-macos.dmg" % (APP_NAME, version))
-    pkg = os.path.join(DIST_ROOT, "%s-v%s-macos.pkg" % (APP_NAME, version))
+    dmg = os.path.join(DIST_ROOT, "%s-v%s-macos.dmg" % (APP_FILE_BASE, version))
+    pkg = os.path.join(DIST_ROOT, "%s-v%s-macos.pkg" % (APP_FILE_BASE, version))
     for out in (dmg, pkg):
         assert os.path.isfile(out), "安装包未生成：%s" % out
         print("完成：%s (%.1f MB)" % (out, os.path.getsize(out) / 1048576))
@@ -487,9 +492,9 @@ def _make_executable(path):
 
 # --------------------------------------------------------------- zip ----
 
-def make_zip(out_dir):
-    _step(4, "打包 zip ...")
-    zip_path = out_dir + ".zip"
+def make_zip(out_dir, zip_name):
+    _step(4, "打包 zip %s ..." % zip_name)
+    zip_path = os.path.join(DIST_ROOT, zip_name)
     if os.path.exists(zip_path):
         os.remove(zip_path)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
@@ -570,7 +575,11 @@ def main():
             "--skip-frontend 但找不到 Flutter 构建产物 %s" % main_prog
 
     out_dir = ASSEMBLERS[args.target](version)
-    make_zip(out_dir)
+    # zip 外部文件名用 ASCII 基名；dist 目录（zip 内部根目录）保持中文显示名
+    zip_name = "%s-v%s%s.zip" % (
+        APP_FILE_BASE, version,
+        {"windows": "", "linux": "-linux", "macos": "-macos"}[args.target])
+    make_zip(out_dir, zip_name)
     if build_inst:
         if args.target == "windows":
             build_installer(version, out_dir)
