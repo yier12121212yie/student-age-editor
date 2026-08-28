@@ -31,7 +31,7 @@ import urllib.request
 # 目标仓库（应用发行版所在）；可用环境变量覆盖（便于 fork/测试）
 GITHUB_REPO = os.environ.get("EDITOR_UPDATE_REPO") or "yier12121212yie/student-age-editor"
 
-# 只取最近 5 个 release（GitHub 按 newest-first 返回），足够找到最新非草稿版
+# 只取最近 5 个 release（足够覆盖当前迭代线），从中按创建时间挑最新
 _RELEASES_URL = "https://api.github.com/repos/%s/releases?per_page=5"
 
 _USER_AGENT = "student-age-editor-update-check"
@@ -86,8 +86,12 @@ def check_update(timeout=6):
         })
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             releases = json.loads(resp.read().decode("utf-8"))
-        # releases 按 newest-first 排列，取第一个非草稿条目
-        rel = next((r for r in releases if not r.get("draft")), None)
+        # 「最新发行版」按创建时间取：GitHub 列表顺序不保证按时间排列，
+        # 也不能按版本号取最大（版本线重置为 Alpha-v0.1 后，旧线 1.4.x
+        # 的数字版本永远更大，会误报更新）
+        candidates = [r for r in releases if not r.get("draft")]
+        rel = max(candidates, key=lambda r: r.get("created_at") or "") \
+            if candidates else None
         if rel is None:
             return _empty_result(current)
         latest_tag = rel.get("tag_name") or ""
