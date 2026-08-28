@@ -16,7 +16,7 @@
 # officialpack），分别 pkgbuild，再 productbuild 按 distribution.xml 的
 # choice 定义合成带勾选页的安装包；拆包前对 .app 副本做 ad-hoc 重签
 # （与 DMG 一致）。产物文件名固定，供 CI 归档：
-#   <输出目录>/student-age-editor-vX.Y.Z-macos.pkg
+#   <输出目录>/student-age-editor-<版本>-macos.pkg
 #
 # 注意：
 # - 完全非交互，供 GitHub Actions macos-14 调用；除 codesign 警告外
@@ -96,7 +96,7 @@ GUIBIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST" 2>/dev
 
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(abs_path "$OUTPUT_DIR")"
-PKG_OUT="$OUTPUT_DIR/$PKG_ID-v$VERSION-macos.pkg"
+PKG_OUT="$OUTPUT_DIR/$PKG_ID-$VERSION-macos.pkg"
 echo "[1/4] 校验通过：${APP_PATH}（GUI 主程序 ${GUIBIN}）"
 
 # ----------------------------- [2/4] staging 与 ad-hoc 重签 -----------------------------

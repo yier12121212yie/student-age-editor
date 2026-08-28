@@ -1,3 +1,3 @@
 # -*- coding: utf-8 -*-
 """CLI package for StudentAge editor."""
-__version__ = "1.4.0"
+from editor import __version__ as __version__

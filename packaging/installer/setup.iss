@@ -3,7 +3,8 @@
 ; ==============================================================================
 
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  ; 版本串自带 v 前缀（如 Alpha-v0.1），文件名模板不再额外加 v
+  #define AppVersion "Alpha-v0.1"
 #endif
 
 #ifndef AppName
@@ -24,7 +25,7 @@
 #endif
 
 #ifndef SourceDir
-  #define SourceDir "..\..\dist\学生时代模组编辑器-v" + AppVersion
+  #define SourceDir "..\..\dist\学生时代模组编辑器-" + AppVersion
 #endif
 
 #ifndef BackendDist
@@ -49,7 +50,7 @@ DefaultDirName={autopf}\StudentAgeEditor
 DisableProgramGroupPage=yes
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir={#OutputDir}
-OutputBaseFilename={#AppFileBase}-setup-v{#AppVersion}
+OutputBaseFilename={#AppFileBase}-setup-{#AppVersion}
 SetupIconFile=..\..\frontend\windows\runner\resources\app_icon.ico
 UninstallDisplayIcon={app}\{#AppName}.exe
 UninstallDisplayName={#AppName} v{#AppVersion}

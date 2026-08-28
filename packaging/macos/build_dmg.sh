@@ -4,13 +4,13 @@
 # ==============================================================================
 # 用法：
 #   bash packaging/macos/build_dmg.sh --app <path/to/学生时代模组编辑器.app> \
-#                                     --version 1.4.0 --output <输出目录>
+#   --version Alpha-v0.1 --output <输出目录>
 #
 # 输入 .app 由 build_release.py --target macos 的 assemble_macos 产出
-# （dist/学生时代模组编辑器-vX.Y.Z-macos/学生时代模组编辑器.app，Flutter 产物
+# （dist/学生时代模组编辑器-<版本>-macos/学生时代模组编辑器.app，Flutter 产物
 # 骨架 + Contents/MacOS 下的 backend、_internal/、official_pack/）。
 # 产出（文件名固定，供 CI 归档）：
-#   student-age-editor-vX.Y.Z-macos.dmg
+#   student-age-editor-<版本>-macos.dmg
 # 卷内布局为拖拽安装式：.app + /Applications 软链。
 #
 # 说明：
@@ -103,7 +103,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(abs_path "$OUTPUT_DIR")"
 
-DMG_OUT="$OUTPUT_DIR/$FILE_BASE-v$VERSION-macos.dmg"
+DMG_OUT="$OUTPUT_DIR/$FILE_BASE-$VERSION-macos.dmg"
 
 echo "[1/3] 校验通过：$APP_PATH"
 

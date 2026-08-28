@@ -4,7 +4,7 @@
 流程：PyInstaller 打包后端 → Flutter 构建前端 → 组装发行版目录 → 打 zip
       → 用平台安装器构建安装包（Windows Inno / Linux deb+AppImage / macOS DMG+PKG）。
 用法：
-    python build_release.py [--target windows|macos|linux] [--version 1.4.0]
+    python build_release.py [--target windows|macos|linux] [--version Alpha-v0.1]
                             [--skip-backend] [--skip-frontend]
                             [--installer] [--no-installer]
 
@@ -14,8 +14,8 @@
   Mac 上构建。跨平台出包请配合 CI（见 .github/workflows/release.yml）。
 - Android 为 APK，由 frontend/android 的 Gradle(Chaquopy) 直接构建，
   不走本脚本；CI 中执行 flutter build apk。
-- 版本号默认取 frontend/pubspec.yaml 的 version: x.y.z+n（取 x.y.z），
-  可用 --version 覆盖。
+- 版本号默认取 frontend/pubspec.yaml 的 version: x.y.z[-预发布后缀]+n
+  （取 x.y.z[-预发布后缀]，如 0.1.0-alpha.1），可用 --version 覆盖。
 - 各目标默认追加第 5 步构建安装包（--no-installer 跳过）：
   windows → Inno Setup setup.exe；linux → .deb + AppImage；
   macos → .dmg + .pkg。安装包内嵌官方资源扩展包，需本机已有游戏资源
@@ -80,13 +80,13 @@ def _step(n, msg):
 
 
 def read_frontend_version():
-    """从 frontend/pubspec.yaml 解析版本号（version: x.y.z+n → 'x.y.z'）。"""
+    """从 frontend/pubspec.yaml 解析版本号（version: x.y.z[-pre]+n → 'x.y.z[-pre]'）。"""
     path = os.path.join(FRONTEND, "pubspec.yaml")
     try:
         with io.open(path, "r", encoding="utf-8") as f:
             for line in f:
-                m = re.match(r"^version:\s*(\d+(?:\.\d+){1,3})(?:\+\d+)?\s*$",
-                             line.strip())
+                m = re.match(r"^version:\s*(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)"
+                             r"(?:\+\d+)?\s*$", line.strip())
                 if m:
                     return m.group(1)
     except OSError:
@@ -208,7 +208,7 @@ def build_installer(version, source_dir):
         SETUP_ISS,
     ]
     subprocess.run(cmd, cwd=ROOT, check=True)
-    out = os.path.join(DIST_ROOT, "%s-setup-v%s.exe" % (APP_FILE_BASE, version))
+    out = os.path.join(DIST_ROOT, "%s-setup-%s.exe" % (APP_FILE_BASE, version))
     assert os.path.isfile(out), "安装包未生成：%s" % out
     print("完成：%s (%.1f MB)" % (out, os.path.getsize(out) / 1048576))
 
@@ -263,7 +263,7 @@ def build_linux_installers(version, out_dir):
                     "--source", out_dir, "--version", version,
                     "--output", DIST_ROOT], cwd=ROOT, check=True, env=env)
     appimage = os.path.join(DIST_ROOT,
-                            "%s-v%s-linux-amd64.AppImage" % (APP_FILE_BASE, version))
+                            "%s-%s-linux-amd64.AppImage" % (APP_FILE_BASE, version))
     assert os.path.isfile(appimage), "AppImage 未生成：%s" % appimage
     print("完成：%s (%.1f MB)" % (appimage, os.path.getsize(appimage) / 1048576))
 
@@ -282,8 +282,8 @@ def build_macos_installers(version, out_dir):
         subprocess.run(["bash", script, "--app", app_bundle,
                         "--version", version, "--output", DIST_ROOT],
                        cwd=ROOT, check=True)
-    dmg = os.path.join(DIST_ROOT, "%s-v%s-macos.dmg" % (APP_FILE_BASE, version))
-    pkg = os.path.join(DIST_ROOT, "%s-v%s-macos.pkg" % (APP_FILE_BASE, version))
+    dmg = os.path.join(DIST_ROOT, "%s-%s-macos.dmg" % (APP_FILE_BASE, version))
+    pkg = os.path.join(DIST_ROOT, "%s-%s-macos.pkg" % (APP_FILE_BASE, version))
     for out in (dmg, pkg):
         assert os.path.isfile(out), "安装包未生成：%s" % out
         print("完成：%s (%.1f MB)" % (out, os.path.getsize(out) / 1048576))
@@ -397,7 +397,7 @@ def _copytree(src, dst):
 
 def assemble_windows(version):
     _TARGET_LABEL = 'windows'
-    out_dir = os.path.join(DIST_ROOT, "%s-v%s" % (APP_NAME, version))
+    out_dir = os.path.join(DIST_ROOT, "%s-%s" % (APP_NAME, version))
     release_dir, main_exe = _frontend_release_dir("windows")
     _step(3, "组装发行版目录 %s ..." % out_dir)
     if os.path.isdir(out_dir):
@@ -418,7 +418,7 @@ def assemble_windows(version):
 
 def assemble_linux(version):
     _TARGET_LABEL = 'linux'
-    out_dir = os.path.join(DIST_ROOT, "%s-v%s-linux" % (APP_NAME, version))
+    out_dir = os.path.join(DIST_ROOT, "%s-%s-linux" % (APP_NAME, version))
     bundle_dir, main_bin = _frontend_release_dir("linux")
     _step(3, "组装发行版目录 %s ..." % out_dir)
     if os.path.isdir(out_dir):
@@ -450,7 +450,7 @@ def assemble_linux(version):
 
 def assemble_macos(version):
     _TARGET_LABEL = 'macos'
-    out_dir = os.path.join(DIST_ROOT, "%s-v%s-macos" % (APP_NAME, version))
+    out_dir = os.path.join(DIST_ROOT, "%s-%s-macos" % (APP_NAME, version))
     _, app_bundle = _frontend_release_dir("macos")
     assert os.path.isdir(app_bundle), "未找到 %s" % app_bundle
     _step(3, "组装发行版目录 %s ..." % out_dir)
@@ -576,7 +576,7 @@ def main():
 
     out_dir = ASSEMBLERS[args.target](version)
     # zip 外部文件名用 ASCII 基名；dist 目录（zip 内部根目录）保持中文显示名
-    zip_name = "%s-v%s%s.zip" % (
+    zip_name = "%s-%s%s.zip" % (
         APP_FILE_BASE, version,
         {"windows": "", "linux": "-linux", "macos": "-macos"}[args.target])
     make_zip(out_dir, zip_name)
