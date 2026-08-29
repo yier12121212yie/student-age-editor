@@ -9,6 +9,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../files/file_viewer.dart';
+import '../../core/app_theme.dart';
 
 /// Unity 资源侧边栏：AA bundle 索引状态、资源列表（tex/aud/txt）。
 class ResourcesPage extends StatefulWidget {
@@ -154,20 +155,20 @@ class _ResourcesPageState extends State<ResourcesPage> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             children: [
-              const Text('资源',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3), fontWeight: FontWeight.w600)),
+              Text('资源',
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
               const Spacer(),
               MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
                     onTap: _busy ? null : _scan,
-                    child: const Icon(FluentIcons.scan_camera_24_regular,
-                        size: 15, color: Color(0xFF8B8B93))),
+                    child: Icon(FluentIcons.scan_camera_24_regular,
+                        size: 15, color: palette.textMuted)),
               ),
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
@@ -180,7 +181,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         _sourceBanner(),
         Expanded(
           child: widget.state.aaStatus == 'idle'
@@ -188,11 +189,11 @@ class _ResourcesPageState extends State<ResourcesPage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(FluentIcons.scan_camera_24_regular, size: 36, color: Color(0xFF3A3A42)),
+                      Icon(FluentIcons.scan_camera_24_regular, size: 36, color: palette.borderHover),
                       const SizedBox(height: 12),
-                      const Text('尚未扫描游戏资源\n点击右上角扫描按钮建立索引',
+                      Text('尚未扫描游戏资源\n点击右上角扫描按钮建立索引',
                           textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF6E6E76))),
+                          style: TextStyle(fontSize: 12, color: palette.textHint)),
                       const SizedBox(height: 10),
                       if (_busy)
                         const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
@@ -222,7 +223,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
                                     horizontal: 8, vertical: 5),
                                 decoration: BoxDecoration(
                                   color: selected
-                                      ? const Color(0xFF2B2B31)
+                                      ? palette.hover
                                       : Colors.transparent,
                                   borderRadius: BorderRadius.circular(4),
                                   border: Border.all(
@@ -236,9 +237,9 @@ class _ResourcesPageState extends State<ResourcesPage> {
                                       child: Text(key,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                               fontSize: 12,
-                                              color: Color(0xFFD4D4D8))),
+                                              color: palette.textPrimary)),
                                     ),
                                     if (selected)
                                       const Icon(
@@ -253,7 +254,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
                         },
                       ),
                     ),
-                    const Divider(height: 1, color: Color(0xFF2A2A2E)),
+                    Divider(height: 1, color: palette.border),
                     Padding(
                       padding: const EdgeInsets.all(8),
                       child: Column(
@@ -273,8 +274,8 @@ class _ResourcesPageState extends State<ResourcesPage> {
                           if (_exportMsg != null) ...[
                             const SizedBox(height: 6),
                             Text(_exportMsg!,
-                                style: const TextStyle(
-                                    fontSize: 11, color: Color(0xFF9BD1A6))),
+                                style: TextStyle(
+                                    fontSize: 11, color: palette.statusOk)),
                           ],
                         ],
                       ),
@@ -297,9 +298,9 @@ class _ResourcesPageState extends State<ResourcesPage> {
     final Widget leading;
     final String text;
     if (scanning) {
-      fg = const Color(0xFF9B9BA3);
-      bg = const Color(0xFF26262B);
-      border = const Color(0xFF2A2A2E);
+      fg = palette.textSecondary;
+      bg = palette.card;
+      border = palette.border;
       leading = const SizedBox(
           width: 13, height: 13, child: CircularProgressIndicator(strokeWidth: 2));
       text = '正在扫描资源…';
@@ -307,22 +308,22 @@ class _ResourcesPageState extends State<ResourcesPage> {
       final name = (bundled['name'] as String?) ?? '未知';
       final tex = (bundled['tex'] as num?)?.toInt() ?? 0;
       final aud = (bundled['aud'] as num?)?.toInt() ?? 0;
-      fg = const Color(0xFF8B7FEF);
+      fg = palette.accentLight;
       bg = const Color(0xFF6C5CE7).withValues(alpha: 0.14);
       border = const Color(0xFF6C5CE7).withValues(alpha: 0.38);
-      leading = const Icon(FluentIcons.box_24_regular, size: 14, color: Color(0xFF8B7FEF));
+      leading = Icon(FluentIcons.box_24_regular, size: 14, color: palette.accentLight);
       text = '内置资源包：$name（纹理 $tex / 音频 $aud）';
     } else if (_detectedDir.isNotEmpty) {
-      fg = const Color(0xFF5FBE8C);
-      bg = const Color(0xFF5FBE8C).withValues(alpha: 0.12);
-      border = const Color(0xFF5FBE8C).withValues(alpha: 0.35);
-      leading = const Icon(FluentIcons.hard_drive_24_regular, size: 14, color: Color(0xFF5FBE8C));
+      fg = palette.statusOk;
+      bg = palette.statusOk.withValues(alpha: 0.12);
+      border = palette.statusOk.withValues(alpha: 0.35);
+      leading = Icon(FluentIcons.hard_drive_24_regular, size: 14, color: palette.statusOk);
       text = '游戏目录：已检测到 $_detectedDir';
     } else {
-      fg = const Color(0xFFD9A15E);
-      bg = const Color(0xFFD9A15E).withValues(alpha: 0.12);
-      border = const Color(0xFFD9A15E).withValues(alpha: 0.35);
-      leading = const Icon(FluentIcons.warning_24_regular, size: 14, color: Color(0xFFD9A15E));
+      fg = palette.statusTan;
+      bg = palette.statusTan.withValues(alpha: 0.12);
+      border = palette.statusTan.withValues(alpha: 0.35);
+      leading = Icon(FluentIcons.warning_24_regular, size: 14, color: palette.statusTan);
       text = '未就绪：请安装资源包或接入游戏目录';
     }
 
@@ -360,13 +361,13 @@ class _ResourcesPageState extends State<ResourcesPage> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFF2B2B31) : Colors.transparent,
+            color: selected ? palette.hover : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(label,
               style: TextStyle(
                   fontSize: 12,
-                  color: selected ? Colors.white : const Color(0xFF9B9BA3))),
+                  color: selected ? palette.textHigh : palette.textSecondary)),
         ),
       ),
     );
@@ -462,7 +463,7 @@ class _AaPreviewDialogState extends State<_AaPreviewDialog> {
         height: 200,
         child: Center(
           child: Text(_error!,
-              style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 13)),
+              style: TextStyle(color: palette.textSecondary, fontSize: 13)),
         ),
       );
     }
@@ -485,22 +486,22 @@ class _AaPreviewDialogState extends State<_AaPreviewDialog> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (_truncated) ...[
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               child: Text('内容过大，仅预览前 200K 字符',
-                  style: TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                  style: TextStyle(fontSize: 11, color: palette.textHint)),
             ),
-            const Divider(height: 1, color: Color(0xFF2A2A2E)),
+            Divider(height: 1, color: palette.border),
           ],
           Expanded(
             child: fluent.Scrollbar(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(16),
                 child: SelectableText(_text!,
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontFamily: 'Consolas',
                         fontSize: 12.5,
-                        color: Color(0xFFD4D4D8),
+                        color: palette.textPrimary,
                         height: 1.5)),
               ),
             ),

@@ -7,6 +7,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/app_theme.dart';
 
 /// 资源包管理页：列出 / 激活 / 删除 / 导入内置游戏资源包。
 /// 资源包内含官方配置表、base_data 与预解码图包，是无游戏环境（Android）
@@ -115,7 +116,7 @@ class _PackManagerPageState extends State<PackManagerPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
-        backgroundColor: const Color(0xFF3A2A2A),
+        backgroundColor: palette.tintDanger,
       ),
     );
   }
@@ -123,22 +124,22 @@ class _PackManagerPageState extends State<PackManagerPage> {
   void _showInfo(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: const Color(0xFF1E1E23)),
+      SnackBar(content: Text(msg), backgroundColor: palette.panel),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF131316),
+      backgroundColor: palette.bgDeep2,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1B1B1F),
+        backgroundColor: palette.bg,
         elevation: 0,
-        leading: const BackButton(color: Colors.white),
-        title: const Text('资源包管理', style: TextStyle(fontSize: 16, color: Colors.white)),
+        leading: BackButton(color: palette.textHigh),
+        title: Text('资源包管理', style: TextStyle(fontSize: 16, color: palette.textHigh)),
         actions: [
           IconButton(
-            icon: const Icon(FluentIcons.folder_zip_24_regular, color: Color(0xFF9B9BA3)),
+            icon: Icon(FluentIcons.folder_zip_24_regular, color: palette.textSecondary),
             onPressed: _import,
             tooltip: '导入资源包',
           ),
@@ -170,7 +171,7 @@ class _PackManagerPageState extends State<PackManagerPage> {
               const SizedBox(height: 10),
               Text('加载失败: $_error',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 13)),
+                  style: TextStyle(color: palette.textSecondary, fontSize: 13)),
               const SizedBox(height: 12),
               fluent.Button(onPressed: _refresh, child: const Text('重试')),
             ],
@@ -189,11 +190,11 @@ class _PackManagerPageState extends State<PackManagerPage> {
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E23),
+            color: palette.panel,
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF2E2E35)),
+            border: Border.all(color: palette.surface),
           ),
-          child: const Row(
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(FluentIcons.info_24_regular, size: 16, color: Color(0xFF6C5CE7)),
@@ -201,7 +202,7 @@ class _PackManagerPageState extends State<PackManagerPage> {
               Expanded(
                 child: Text(
                   '资源包内置游戏的官方配置表与解码图包。无游戏环境的设备（如 Android）可借此使用剧情库、事件预览与资源浏览。',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3), height: 1.5),
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary, height: 1.5),
                 ),
               ),
             ],
@@ -209,11 +210,11 @@ class _PackManagerPageState extends State<PackManagerPage> {
         ),
         const SizedBox(height: 12),
         if (packs.isEmpty)
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(vertical: 40),
             child: Text('未安装任何资源包\n点击右上角导入',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Color(0xFF6E6E76), fontSize: 13, height: 1.6)),
+                style: TextStyle(color: palette.textHint, fontSize: 13, height: 1.6)),
           )
         else
           for (final p in packs) ...[
@@ -231,25 +232,25 @@ class _PackManagerPageState extends State<PackManagerPage> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E23),
+        color: palette.panel,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-            color: isActive ? const Color(0xFF4A3DB8) : const Color(0xFF2E2E35)),
+            color: isActive ? const Color(0xFF4A3DB8) : palette.surface),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(FluentIcons.folder_zip_24_regular, size: 18, color: Color(0xFF8B7FEF)),
+              Icon(FluentIcons.folder_zip_24_regular, size: 18, color: palette.accentLight),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   (p['name'] as String?) ?? id,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 14, color: Colors.white, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                      fontSize: 14, color: palette.textHigh, fontWeight: FontWeight.w600),
                 ),
               ),
               if (isActive)
@@ -260,8 +261,8 @@ class _PackManagerPageState extends State<PackManagerPage> {
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(color: const Color(0xFF4A3DB8)),
                   ),
-                  child: const Text('激活中',
-                      style: TextStyle(fontSize: 11, color: Color(0xFFA99FF4))),
+                  child: Text('激活中',
+                      style: TextStyle(fontSize: 11, color: palette.accentLighter)),
                 ),
             ],
           ),
@@ -271,14 +272,14 @@ class _PackManagerPageState extends State<PackManagerPage> {
               if ((p['version'] as String?)?.isNotEmpty ?? false) 'v${p['version']}',
               '$files 个文件',
             ].join(' · '),
-            style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76)),
+            style: TextStyle(fontSize: 11, color: palette.textHint),
           ),
           if ((p['description'] as String?)?.isNotEmpty ?? false) ...[
             const SizedBox(height: 4),
             Text(p['description'] as String,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                style: TextStyle(fontSize: 11, color: palette.textMuted)),
           ],
           const SizedBox(height: 8),
           Row(
@@ -294,15 +295,15 @@ class _PackManagerPageState extends State<PackManagerPage> {
                   child: const Text('激活', style: TextStyle(fontSize: 12)),
                 )
               else
-                const Text('当前启用中',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                Text('当前启用中',
+                    style: TextStyle(fontSize: 11, color: palette.textHint)),
               const Spacer(),
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () => _delete(id),
-                child: const Padding(
+                child: Padding(
                   padding: EdgeInsets.all(8),
-                  child: Icon(FluentIcons.delete_24_regular, size: 18, color: Color(0xFF8B8B93)),
+                  child: Icon(FluentIcons.delete_24_regular, size: 18, color: palette.textMuted),
                 ),
               ),
             ],

@@ -8,6 +8,7 @@ import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
 import '../../core/ui_mode.dart';
+import '../../core/app_theme.dart';
 
 /// AI 服务配置。
 class AiSettings {
@@ -20,6 +21,16 @@ class AiSettings {
     this.imageModel = '',
     this.imageApiKey = '',
     this.imageBaseUrl = '',
+    this.ttsProvider = '',
+    this.ttsApiKey = '',
+    this.ttsBaseUrl = '',
+    this.ttsModel = '',
+    this.ttsVoice = '',
+    this.ttsGroupId = '',
+    this.ttsSpeed = 1.0,
+    this.ttsVolume = 1.0,
+    this.ttsPitch = 0,
+    this.ttsFormat = 'wav',
   });
 
   String provider; // openai_compatible | openai_responses | anthropic
@@ -31,6 +42,17 @@ class AiSettings {
   String imageModel;
   String imageApiKey;
   String imageBaseUrl;
+  /// 配音（TTS）配置：provider 取 '' | minimax | aliyun，密钥与对话/生图相互独立。
+  String ttsProvider;
+  String ttsApiKey;
+  String ttsBaseUrl; // 可选自定义网关（MiniMax 代理 / DashScope 端点）
+  String ttsModel;
+  String ttsVoice; // 默认音色
+  String ttsGroupId; // MiniMax 专用
+  double ttsSpeed;
+  double ttsVolume;
+  int ttsPitch;
+  String ttsFormat; // wav | ogg
 
   static const prefsKey = 'ai_settings_v1';
 
@@ -64,6 +86,16 @@ class AiSettings {
         'imageModel': imageModel,
         'imageApiKey': imageApiKey,
         'imageBaseUrl': imageBaseUrl,
+        'ttsProvider': ttsProvider,
+        'ttsApiKey': ttsApiKey,
+        'ttsBaseUrl': ttsBaseUrl,
+        'ttsModel': ttsModel,
+        'ttsVoice': ttsVoice,
+        'ttsGroupId': ttsGroupId,
+        'ttsSpeed': ttsSpeed,
+        'ttsVolume': ttsVolume,
+        'ttsPitch': ttsPitch,
+        'ttsFormat': ttsFormat,
       };
 
   factory AiSettings.fromJson(Map<String, dynamic> json) => AiSettings(
@@ -75,6 +107,16 @@ class AiSettings {
         imageModel: json['imageModel'] as String? ?? '',
         imageApiKey: json['imageApiKey'] as String? ?? '',
         imageBaseUrl: json['imageBaseUrl'] as String? ?? '',
+        ttsProvider: json['ttsProvider'] as String? ?? '',
+        ttsApiKey: json['ttsApiKey'] as String? ?? '',
+        ttsBaseUrl: json['ttsBaseUrl'] as String? ?? '',
+        ttsModel: json['ttsModel'] as String? ?? '',
+        ttsVoice: json['ttsVoice'] as String? ?? '',
+        ttsGroupId: json['ttsGroupId'] as String? ?? '',
+        ttsSpeed: (json['ttsSpeed'] as num?)?.toDouble() ?? 1.0,
+        ttsVolume: (json['ttsVolume'] as num?)?.toDouble() ?? 1.0,
+        ttsPitch: (json['ttsPitch'] as num?)?.toInt() ?? 0,
+        ttsFormat: json['ttsFormat'] as String? ?? 'wav',
       );
 
   Future<void> save() async {
@@ -100,8 +142,16 @@ class AiSettings {
   /// - 后端不可达（冷启动竞态/Android 沙箱等）：静默沿用本地值。
   static Future<AiSettings> loadWithRemote() async {
     final local = await load();
+    // 有对话/生图配置，或任一 TTS 配置（TTS-only 也能从远端同步）即视为有效。
     bool meaningful(AiSettings s) =>
-        s.apiKey.isNotEmpty || s.model.isNotEmpty || s.baseUrl.isNotEmpty;
+        s.apiKey.isNotEmpty ||
+        s.model.isNotEmpty ||
+        s.baseUrl.isNotEmpty ||
+        s.ttsApiKey.isNotEmpty ||
+        s.ttsGroupId.isNotEmpty ||
+        s.ttsModel.isNotEmpty ||
+        s.ttsBaseUrl.isNotEmpty ||
+        s.ttsVoice.isNotEmpty;
     try {
       final r = await ApiClient.instance
           .get('/api/ai/settings')
@@ -169,7 +219,7 @@ class SaveValidatePrefs {
   }
 }
 
-/// 设置页（AI 服务配置 + 界面风格 + 工作区信息）。
+/// 设置页（AI 服务配置 + 界面风格 + 外观主题 + 工作区信息）。
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
     super.key,
@@ -195,8 +245,16 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _imageModelCtrl;
   late final TextEditingController _imageApiKeyCtrl;
   late final TextEditingController _imageBaseUrlCtrl;
+  late final TextEditingController _ttsApiKeyCtrl;
+  late final TextEditingController _ttsGroupIdCtrl;
+  late final TextEditingController _ttsModelCtrl;
+  late final TextEditingController _ttsBaseUrlCtrl;
+  late final TextEditingController _ttsVoiceCtrl;
   String _provider = 'openai_compatible';
   double _temperature = 0.7;
+  String _ttsProvider = '';
+  double _ttsSpeed = 1.0;
+  bool _ttsTesting = false;
 
   @override
   void initState() {
@@ -208,6 +266,13 @@ class _SettingsPageState extends State<SettingsPage> {
     _imageModelCtrl = TextEditingController(text: widget.settings.imageModel);
     _imageApiKeyCtrl = TextEditingController(text: widget.settings.imageApiKey);
     _imageBaseUrlCtrl = TextEditingController(text: widget.settings.imageBaseUrl);
+    _ttsProvider = widget.settings.ttsProvider;
+    _ttsApiKeyCtrl = TextEditingController(text: widget.settings.ttsApiKey);
+    _ttsGroupIdCtrl = TextEditingController(text: widget.settings.ttsGroupId);
+    _ttsModelCtrl = TextEditingController(text: widget.settings.ttsModel);
+    _ttsBaseUrlCtrl = TextEditingController(text: widget.settings.ttsBaseUrl);
+    _ttsVoiceCtrl = TextEditingController(text: widget.settings.ttsVoice);
+    _ttsSpeed = widget.settings.ttsSpeed.clamp(0.5, 2.0);
     _temperature = widget.settings.temperature;
   }
 
@@ -219,7 +284,57 @@ class _SettingsPageState extends State<SettingsPage> {
     _imageModelCtrl.dispose();
     _imageApiKeyCtrl.dispose();
     _imageBaseUrlCtrl.dispose();
+    _ttsApiKeyCtrl.dispose();
+    _ttsGroupIdCtrl.dispose();
+    _ttsModelCtrl.dispose();
+    _ttsBaseUrlCtrl.dispose();
+    _ttsVoiceCtrl.dispose();
     super.dispose();
+  }
+
+  Map<String, dynamic> _ttsSettingsMap() => {
+        'ttsProvider': _ttsProvider,
+        'ttsApiKey': _ttsApiKeyCtrl.text.trim(),
+        'ttsGroupId': _ttsGroupIdCtrl.text.trim(),
+        'ttsModel': _ttsModelCtrl.text.trim(),
+        'ttsBaseUrl': _ttsBaseUrlCtrl.text.trim(),
+        'ttsVoice': _ttsVoiceCtrl.text.trim(),
+        'ttsSpeed': _ttsSpeed,
+        // 页面无编辑控件，从既有设置透传，供后端参数归一使用。
+        'ttsVolume': widget.settings.ttsVolume,
+        'ttsPitch': widget.settings.ttsPitch,
+        'ttsFormat': widget.settings.ttsFormat,
+      };
+
+  Future<void> _ttsTest() async {
+    setState(() => _ttsTesting = true);
+    try {
+      final r = await ApiClient.instance
+          .post('/api/tts/test',
+              body: {'provider': _ttsProvider, 'settings': _ttsSettingsMap()})
+          .timeout(const Duration(seconds: 60));
+      final ok = r['ok'] == true;
+      if (!mounted) return;
+      fluent.displayInfoBar(context,
+          builder: (ctx, close) => fluent.InfoBar(
+              title: Text(ok ? '配音服务连接成功' : '配音服务连接失败'),
+              content: Text(ok
+                  ? (r['detail']?.toString() ?? '')
+                  : (r['error']?.toString() ?? '未知错误')),
+              severity: ok
+                  ? fluent.InfoBarSeverity.success
+                  : fluent.InfoBarSeverity.error));
+    } catch (e) {
+      if (mounted) {
+        fluent.displayInfoBar(context,
+            builder: (ctx, close) => fluent.InfoBar(
+                title: const Text('配音服务连接失败'),
+                content: Text(e.toString()),
+                severity: fluent.InfoBarSeverity.error));
+      }
+    } finally {
+      if (mounted) setState(() => _ttsTesting = false);
+    }
   }
 
   Future<void> _save() async {
@@ -232,6 +347,17 @@ class _SettingsPageState extends State<SettingsPage> {
       imageModel: _imageModelCtrl.text.trim(),
       imageApiKey: _imageApiKeyCtrl.text.trim(),
       imageBaseUrl: _imageBaseUrlCtrl.text.trim(),
+      ttsProvider: _ttsProvider,
+      ttsApiKey: _ttsApiKeyCtrl.text.trim(),
+      ttsGroupId: _ttsGroupIdCtrl.text.trim(),
+      ttsModel: _ttsModelCtrl.text.trim(),
+      ttsBaseUrl: _ttsBaseUrlCtrl.text.trim(),
+      ttsVoice: _ttsVoiceCtrl.text.trim(),
+      ttsSpeed: _ttsSpeed,
+      // 音量/音调/格式页面无编辑控件，从既有设置透传，避免保存时被重置。
+      ttsVolume: widget.settings.ttsVolume,
+      ttsPitch: widget.settings.ttsPitch,
+      ttsFormat: widget.settings.ttsFormat,
     );
     await s.save();
     widget.onChanged(s);
@@ -244,7 +370,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    const hintColor = Color(0xFF6E6E76);
+    final hintColor = palette.textHint;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -252,20 +378,20 @@ class _SettingsPageState extends State<SettingsPage> {
           height: 38,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.centerLeft,
-          child: const Text('设置',
-              style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3), fontWeight: FontWeight.w600)),
+          child: Text('设置',
+              style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('AI 服务',
-                    style: TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+                Text('AI 服务',
+                    style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 12),
-                const Text('接口协议', style: TextStyle(fontSize: 12, color: hintColor)),
+                Text('接口协议', style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 6),
                 fluent.ComboBox<String>(
                   value: _provider,
@@ -287,11 +413,11 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (v) => setState(() => _provider = v ?? _provider),
                 ),
                 const SizedBox(height: 12),
-                const Text('Base URL（留空使用官方默认）',
+                Text('Base URL（留空使用官方默认）',
                     style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 4),
-                const Text('接口地址，通常保持默认即可；使用自建代理或中转服务时才需修改',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                Text('接口地址，通常保持默认即可；使用自建代理或中转服务时才需修改',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
                 const SizedBox(height: 6),
                 fluent.TextBox(
                   controller: _baseUrlCtrl,
@@ -299,10 +425,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (_) {},
                 ),
                 const SizedBox(height: 12),
-                const Text('API Key', style: TextStyle(fontSize: 12, color: hintColor)),
+                Text('API Key', style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 4),
-                const Text('调用 AI 服务所需的密钥，在服务商控制台获取；仅保存在本机',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                Text('调用 AI 服务所需的密钥，在服务商控制台获取；仅保存在本机',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
                 const SizedBox(height: 6),
                 fluent.TextBox(
                   controller: _apiKeyCtrl,
@@ -310,17 +436,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   placeholder: 'sk-...',
                 ),
                 const SizedBox(height: 12),
-                const Text('模型', style: TextStyle(fontSize: 12, color: hintColor)),
+                Text('模型', style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 4),
-                const Text('选择或填写要使用的模型名称；留空则使用所选接口协议的默认模型',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                Text('选择或填写要使用的模型名称；留空则使用所选接口协议的默认模型',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
                 const SizedBox(height: 6),
                 fluent.TextBox(
                   controller: _modelCtrl,
                   placeholder: 'gpt-4o / claude-sonnet-4-20250514 / 自定义模型',
                 ),
                 const SizedBox(height: 12),
-                const Text('温度', style: TextStyle(fontSize: 12, color: hintColor)),
+                Text('温度', style: TextStyle(fontSize: 12, color: hintColor)),
                 fluent.Slider(
                   value: _temperature,
                   min: 0,
@@ -329,16 +455,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   label: _temperature.toStringAsFixed(1),
                 ),
                 const SizedBox(height: 20),
-                const Divider(color: Color(0xFF2A2A2E)),
+                Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const Text('图片生成（openai-image-api）',
-                    style: TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+                Text('图片生成（openai-image-api）',
+                    style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 4),
-                const Text('供 AI 侧栏的生图 / 改图工具调用，遵循 OpenAI Images API 标准（images/generations、images/edits）。'
+                Text('供 AI 侧栏的生图 / 改图工具调用，遵循 OpenAI Images API 标准（images/generations、images/edits）。'
                     '留空时自动复用上方对话配置；使用 Anthropic 等非 OpenAI 接口时请单独填写',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
                 const SizedBox(height: 12),
-                const Text('图片模型', style: TextStyle(fontSize: 12, color: hintColor)),
+                Text('图片模型', style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 6),
                 fluent.TextBox(
                   controller: _imageModelCtrl,
@@ -346,7 +472,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (_) {},
                 ),
                 const SizedBox(height: 12),
-                const Text('图片 API Key', style: TextStyle(fontSize: 12, color: hintColor)),
+                Text('图片 API Key', style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 6),
                 fluent.TextBox(
                   controller: _imageApiKeyCtrl,
@@ -354,7 +480,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   placeholder: 'sk-...（留空复用对话 API Key）',
                 ),
                 const SizedBox(height: 12),
-                const Text('图片 Base URL（留空使用对话地址或官方默认）',
+                Text('图片 Base URL（留空使用对话地址或官方默认）',
                     style: TextStyle(fontSize: 12, color: hintColor)),
                 const SizedBox(height: 6),
                 fluent.TextBox(
@@ -362,6 +488,103 @@ class _SettingsPageState extends State<SettingsPage> {
                   placeholder: 'https://api.openai.com/v1',
                   onChanged: (_) {},
                 ),
+                const SizedBox(height: 20),
+                Divider(color: palette.border),
+                const SizedBox(height: 8),
+                Text('配音（TTS）',
+                    style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                Text('为剧本/文本合成语音：阿里云（DashScope 百炼，Bearer sk-*）或 MiniMax（T2A V2）。'
+                    '密钥仅保存在本机；生成内容存到当前 mod 的 audio/tts/ 目录',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
+                const SizedBox(height: 12),
+                Text('服务商', style: TextStyle(fontSize: 12, color: hintColor)),
+                const SizedBox(height: 6),
+                fluent.ComboBox<String>(
+                  value: _ttsProvider,
+                  isExpanded: true,
+                  items: const [
+                    fluent.ComboBoxItem(
+                        value: '', child: Text('未配置（在配音面板中按需选择）')),
+                    fluent.ComboBoxItem(
+                        value: 'aliyun', child: Text('阿里云 DashScope（百炼）')),
+                    fluent.ComboBoxItem(
+                        value: 'minimax', child: Text('MiniMax（T2A V2）')),
+                  ],
+                  onChanged: (v) => setState(() => _ttsProvider = v ?? ''),
+                ),
+                const SizedBox(height: 12),
+                Text('API Key', style: TextStyle(fontSize: 12, color: hintColor)),
+                const SizedBox(height: 6),
+                fluent.TextBox(
+                  controller: _ttsApiKeyCtrl,
+                  obscureText: true,
+                  placeholder: 'sk-...（阿里云）或 MiniMax API Key',
+                ),
+                if (_ttsProvider == 'minimax') ...[
+                  const SizedBox(height: 12),
+                  Text('Group ID（MiniMax 控制台获取）',
+                      style: TextStyle(fontSize: 12, color: hintColor)),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _ttsGroupIdCtrl,
+                    placeholder: '19xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Text('模型（留空使用默认）',
+                    style: TextStyle(fontSize: 12, color: hintColor)),
+                const SizedBox(height: 6),
+                fluent.TextBox(
+                  controller: _ttsModelCtrl,
+                  placeholder: 'qwen-tts / cosyvoice-v2 / speech-02-hd',
+                ),
+                const SizedBox(height: 12),
+                Text('默认音色（留空使用服务商默认）',
+                    style: TextStyle(fontSize: 12, color: hintColor)),
+                const SizedBox(height: 6),
+                fluent.TextBox(
+                  controller: _ttsVoiceCtrl,
+                  placeholder: 'Cherry / female-shaonv / 其他 voice id',
+                ),
+                const SizedBox(height: 12),
+                Text('Base URL（留空使用官方默认；自建代理/中转时才需修改）',
+                    style: TextStyle(fontSize: 12, color: hintColor)),
+                const SizedBox(height: 6),
+                fluent.TextBox(
+                  controller: _ttsBaseUrlCtrl,
+                  placeholder: _ttsProvider == 'minimax'
+                      ? 'https://api.minimax.chat'
+                      : 'https://dashscope.aliyuncs.com/...',
+                ),
+                const SizedBox(height: 12),
+                Text('语速', style: TextStyle(fontSize: 12, color: hintColor)),
+                fluent.Slider(
+                  value: _ttsSpeed,
+                  min: 0.5,
+                  max: 2,
+                  onChanged: (v) => setState(() => _ttsSpeed = v),
+                  label: '${_ttsSpeed.toStringAsFixed(1)}x',
+                ),
+                const SizedBox(height: 12),
+                Row(children: [
+                  fluent.Button(
+                    onPressed:
+                        (_ttsTesting || _ttsProvider.isEmpty) ? null : _ttsTest,
+                    child: _ttsTesting
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Text('测试连接'),
+                  ),
+                  const SizedBox(width: 8),
+                  if (_ttsProvider.isEmpty)
+                    Expanded(
+                        child: Text('先选择服务商并填写 API Key 再测试',
+                            style:
+                                TextStyle(fontSize: 11, color: palette.textMuted))),
+                ]),
                 const SizedBox(height: 16),
                 fluent.FilledButton(
                   onPressed: _save,
@@ -369,10 +592,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 if (widget.uiMode != null && widget.onUiModeChanged != null) ...[
                   const SizedBox(height: 24),
-                  const Divider(color: Color(0xFF2A2A2E)),
+                  Divider(color: palette.border),
                   const SizedBox(height: 8),
-                  const Text('界面风格',
-                      style: TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+                  Text('界面风格',
+                      style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 10),
                   Row(
                     children: [
@@ -398,24 +621,69 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  const Text('切换后立即生效，已打开的文档与 AI 配置会保留',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                  Text('切换后立即生效，已打开的文档与 AI 配置会保留',
+                      style: TextStyle(fontSize: 11, color: palette.textMuted)),
                 ],
                 const SizedBox(height: 24),
-                const Divider(color: Color(0xFF2A2A2E)),
+                Divider(color: palette.border),
+                const SizedBox(height: 8),
+                Text('外观',
+                    style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+                ListenableBuilder(
+                  listenable: AppTheme.mode,
+                  builder: (context, _) => Row(
+                    children: [
+                      Expanded(
+                        child: _StyleCard(
+                          title: '跟随系统',
+                          desc: '与操作系统的亮暗设置保持一致',
+                          icon: FluentIcons.color_24_regular,
+                          selected: AppTheme.mode.value == AppThemeMode.system,
+                          onTap: () => AppTheme.set(AppThemeMode.system),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _StyleCard(
+                          title: '亮色',
+                          desc: '浅色界面，适合明亮环境',
+                          icon: FluentIcons.weather_sunny_24_regular,
+                          selected: AppTheme.mode.value == AppThemeMode.light,
+                          onTap: () => AppTheme.set(AppThemeMode.light),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _StyleCard(
+                          title: '暗色',
+                          desc: '深色界面（默认），适合夜间使用',
+                          icon: FluentIcons.weather_moon_24_regular,
+                          selected: AppTheme.mode.value == AppThemeMode.dark,
+                          onTap: () => AppTheme.set(AppThemeMode.dark),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text('切换后立即生效并记忆，下次启动保持所选外观',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
+                const SizedBox(height: 24),
+                Divider(color: palette.border),
                 const SizedBox(height: 8),
                 const _SaveValidateSection(),
                 const SizedBox(height: 24),
-                const Divider(color: Color(0xFF2A2A2E)),
+                Divider(color: palette.border),
                 const SizedBox(height: 8),
                 const _ResourcePackSection(),
 const SizedBox(height: 24),
-                const Divider(color: Color(0xFF2A2A2E)),
+                Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const Text('关于',
-                    style: TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+                Text('关于',
+                    style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 8),
-                const Text('学生时代模组编辑器 · Flutter 前端\n'
+                Text('学生时代模组编辑器 · Flutter 前端\n'
                     '核心引擎：Python + UnityPy + Steamworks\n'
                     'UI：Fluent 2 设计语言（创作布局 + 经典布局）',
                     style: TextStyle(fontSize: 12, color: hintColor, height: 1.6)),
@@ -480,8 +748,8 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children:[
         // 窄侧栏（<300px）时标题可收缩省略，避免与右侧按钮挤爆
-        const Flexible(
-          child: Text('资源扩展 (Zip)', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:13, color: Colors.white, fontWeight: FontWeight.w600)),
+        Flexible(
+          child: Text('资源扩展 (Zip)', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:13, color: palette.textHigh, fontWeight: FontWeight.w600)),
         ),
         const Spacer(),
         fluent.Button(onPressed: _loading? null : _load, child: const Icon(FluentIcons.arrow_sync_24_regular, size:14)),
@@ -489,19 +757,19 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
         fluent.FilledButton(onPressed: _pickZip, child: const Text('加载 Zip 扩展')),
       ]),
       const SizedBox(height:4),
-      const Text('将游戏资源打包为 Zip（含 aa_index.json / base_data.json / Cfgs），可在设置中加载，兼容无游戏的 Android/Linux。', style: TextStyle(fontSize:11, color: Color(0xFF8B8B93))),
+      Text('将游戏资源打包为 Zip（含 aa_index.json / base_data.json / Cfgs），可在设置中加载，兼容无游戏的 Android/Linux。', style: TextStyle(fontSize:11, color: palette.textMuted)),
       const SizedBox(height:8),
       if (_loading) const SizedBox(width:16,height:16, child: CircularProgressIndicator(strokeWidth:2))
-      else if (_packs.isEmpty) const Text('暂无扩展，可点击“加载 Zip 扩展”', style: TextStyle(fontSize:11, color: Color(0xFF6E6E76)))
+      else if (_packs.isEmpty) Text('暂无扩展，可点击“加载 Zip 扩展”', style: TextStyle(fontSize:11, color: palette.textHint))
       else ..._packs.map((p){
         final id = p['id'] as String; final isActive = id==_active;
-        return Container(margin: const EdgeInsets.symmetric(vertical:4), padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: isActive? const Color(0xFF26262B): const Color(0xFF1B1B1F), borderRadius: BorderRadius.circular(6), border: Border.all(color: isActive? const Color(0xFF6C5CE7): const Color(0xFF2A2A2E))), child: Row(children:[
-          Icon(isActive? FluentIcons.checkmark_circle_24_filled : FluentIcons.box_24_regular, size:16, color: isActive? const Color(0xFF6C5CE7): const Color(0xFF8B8B93)),
+        return Container(margin: const EdgeInsets.symmetric(vertical:4), padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: isActive? palette.card: palette.bg, borderRadius: BorderRadius.circular(6), border: Border.all(color: isActive? const Color(0xFF6C5CE7): palette.border)), child: Row(children:[
+          Icon(isActive? FluentIcons.checkmark_circle_24_filled : FluentIcons.box_24_regular, size:16, color: isActive? const Color(0xFF6C5CE7): palette.textMuted),
           const SizedBox(width:8),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
-            Text(p['name'] as String? ?? id, style: const TextStyle(fontSize:12, color: Colors.white)),
-            Text('$id  ${p['version'] ?? ''}  ${p['files'] ?? 0} 文件', style: const TextStyle(fontSize:10, color: Color(0xFF6E6E76))),
-            if ((p['description']??'').toString().isNotEmpty) Text(p['description'] as String, style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93))),
+            Text(p['name'] as String? ?? id, style: TextStyle(fontSize:12, color: palette.textHigh)),
+            Text('$id  ${p['version'] ?? ''}  ${p['files'] ?? 0} 文件', style: TextStyle(fontSize:10, color: palette.textHint)),
+            if ((p['description']??'').toString().isNotEmpty) Text(p['description'] as String, style: TextStyle(fontSize:10, color: palette.textMuted)),
           ])),
           if (!isActive) fluent.Button(onPressed: ()=>_activate(id), child: const Text('启用')),
           if (isActive) const Padding(padding: EdgeInsets.symmetric(horizontal:8), child: Text('已启用', style: TextStyle(fontSize:11, color: Color(0xFF6C5CE7)))),
@@ -550,23 +818,23 @@ class _SaveValidateSectionState extends State<_SaveValidateSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('保存校验',
-            style: TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+        Text('保存校验',
+            style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
-        const Text('保存前调用后端按官方《学生时代》Mod 指南校验当前配置表',
-            style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+        Text('保存前调用后端按官方《学生时代》Mod 指南校验当前配置表',
+            style: TextStyle(fontSize: 11, color: palette.textMuted)),
         const SizedBox(height: 10),
         Row(
           children: [
-            const Expanded(
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('保存时指南校验错误阻止保存',
-                      style: TextStyle(fontSize: 12, color: Color(0xFFD4D4D8))),
+                      style: TextStyle(fontSize: 12, color: palette.textPrimary)),
                   SizedBox(height: 2),
                   Text('依据官方《学生时代》Mod 指南；关闭后错误仅在保存结果中提示，不阻止保存',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                      style: TextStyle(fontSize: 11, color: palette.textMuted)),
                 ],
               ),
             ),
@@ -606,26 +874,26 @@ class _StyleCard extends StatelessWidget {
           duration: const Duration(milliseconds: 120),
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFF26262B) : const Color(0xFF1B1B1F),
+            color: selected ? palette.card : palette.bg,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
-                color: selected ? const Color(0xFF6C5CE7) : const Color(0xFF2A2A2E),
+                color: selected ? const Color(0xFF6C5CE7) : palette.border,
                 width: selected ? 1.5 : 1),
           ),
           child: Row(
             children: [
-              Icon(icon, size: 18, color: selected ? const Color(0xFF6C5CE7) : const Color(0xFF8B8B93)),
+              Icon(icon, size: 18, color: selected ? const Color(0xFF6C5CE7) : palette.textMuted),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(title,
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.white, fontWeight: FontWeight.w600)),
+                        style: TextStyle(
+                            fontSize: 12, color: palette.textHigh, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 2),
                     Text(desc,
-                        style: const TextStyle(fontSize: 10, color: Color(0xFF8B8B93), height: 1.4)),
+                        style: TextStyle(fontSize: 10, color: palette.textMuted, height: 1.4)),
                   ],
                 ),
               ),

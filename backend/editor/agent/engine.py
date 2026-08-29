@@ -40,6 +40,7 @@ class AgentEngine:
         on_tool_round_text: Optional[Callable[[str], None]] = None,
         on_tool_result: Optional[Callable[[str, str], None]] = None,
         on_done: Optional[Callable[[], None]] = None,
+        on_retry: Optional[Callable[[int, int, str], None]] = None,
         mod_context: str = "",
         max_rounds: int = _MAX_TOOL_ROUNDS,
         system_builder: Optional[Callable[[list, str], str]] = None,
@@ -50,6 +51,8 @@ class AgentEngine:
         self.on_tool_round_text = on_tool_round_text
         self.on_tool_result = on_tool_result
         self.on_done = on_done
+        # 自动重连回调 on_retry(attempt, total_retries, reason)，透传给 client.round
+        self.on_retry = on_retry
         # 非空时追加到系统提示，约束模型只操作该模组（与 GUI modContext 同构）
         self.mod_context = mod_context
         # 工具调用轮次上限（子代理引擎可调小）；超限文案按实例上限生成
@@ -62,7 +65,8 @@ class AgentEngine:
     def run(self, user_message: str, client: LlmClient) -> str:
         """处理一条用户消息，返回最终回复文本。
 
-        LlmError / LlmCancelled 直接向上抛（UI 层决定如何展示/中断）；
+        不可重试的 LlmError（4xx、未配置 Key）与 LlmCancelled 直接向上抛
+        （UI 层决定如何展示/中断）；可重试的网络失败由 client 自动重连。
         history 已包含该条用户消息，异常后重试不会丢失上下文。
         """
         self.history.append({"role": "user", "content": user_message})
@@ -81,7 +85,10 @@ class AgentEngine:
                 if self.on_done:
                     self.on_done()
                 return ""
-            calls, text = client.round(self.history, tools, system, on_text=self.on_text)
+            calls, text = client.round(
+                self.history, tools, system,
+                on_text=self.on_text, on_retry=self.on_retry,
+            )
 
             if not calls:
                 # 最终回复：写入 history 保证后续轮次对话连贯

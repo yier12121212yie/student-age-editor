@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/models.dart';
+import '../../core/plugin_state.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
 import '../ai/ai_panel.dart';
@@ -16,11 +17,13 @@ class CreationShell extends StatelessWidget {
     super.key,
     required this.state,
     required this.shell,
+    required this.pluginState,
     required this.uiMode,
     required this.onUiModeChanged,
   });
   final AppState state;
   final ShellState shell;
+  final PluginState pluginState;
   final UiMode uiMode;
   final ValueChanged<UiMode> onUiModeChanged;
 
@@ -46,6 +49,8 @@ class CreationShell extends StatelessWidget {
                     aiOpen: shell.aiOpen,
                     onSelect: shell.selectPane,
                     onToggleAi: shell.toggleAi,
+                    shell: shell,
+                    pluginState: pluginState,
                   ),
                   // 侧边栏宽度平滑跟手
                   AnimatedContainer(
@@ -55,6 +60,8 @@ class CreationShell extends StatelessWidget {
                     child: SidePaneView(
                       pane: shell.pane,
                       state: state,
+                      shell: shell,
+                      pluginState: pluginState,
                       controller: shell.controller,
                       aiSettings: shell.aiSettings,
                       onAiChanged: shell.setAiSettings,

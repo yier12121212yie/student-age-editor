@@ -13,6 +13,7 @@ import '../ai/ai_panel.dart';
 import '../editor/editor_controller.dart';
 import '../settings/settings_page.dart';
 import 'preview_models.dart';
+import '../../core/app_theme.dart';
 
 /// 事件场景预览视图：把当前事件（EvtCfg + TalkCfg + OptionCfg）渲染成
 /// 视觉小说式游戏场景（背景 + 立绘 + 对白 + 选项），支持对白导航、
@@ -372,10 +373,10 @@ class _EventPreviewViewState extends State<EventPreviewView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(FluentIcons.error_circle_24_regular, size: 36, color: Color(0xFFFF8A8A)),
+            Icon(FluentIcons.error_circle_24_regular, size: 36, color: palette.statusDanger),
             const SizedBox(height: 12),
             Text('预览加载失败: $_error',
-                style: const TextStyle(fontSize: 13, color: Color(0xFF9B9BA3))),
+                style: TextStyle(fontSize: 13, color: palette.textSecondary)),
             const SizedBox(height: 12),
             fluent.Button(onPressed: _load, child: const Text('重试')),
           ],
@@ -404,7 +405,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
           onEdit: () => widget.controller
               .open(OpenDoc.cfg(cfgName: 'EvtCfg')),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -413,7 +414,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
                 child: _buildStage(),
               ),
               if (_aiOpen) ...[
-                const VerticalDivider(width: 1, color: Color(0xFF2A2A2E)),
+                VerticalDivider(width: 1, color: palette.border),
                 SizedBox(
                   width: _aiWidth,
                   child: AiPanel(
@@ -445,8 +446,8 @@ class _EventPreviewViewState extends State<EventPreviewView> {
     final data = _data;
     final talk = currentTalk;
     if (data == null || talk == null) {
-      return const Center(
-          child: Text('该事件没有可预览的对白', style: TextStyle(fontSize: 13, color: Color(0xFF6E6E76))));
+      return Center(
+          child: Text('该事件没有可预览的对白', style: TextStyle(fontSize: 13, color: palette.textHint)));
     }
     // 背景沿用：本条对白显式切换则用新背景，否则沿用当前背景
     final bgKey = (talk.stage.bg?.key.isNotEmpty ?? false)
@@ -489,7 +490,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
                           : (_imgErrors.containsKey(bgKey)
                               ? '背景不可用：${_imgErrors[bgKey]}'
                               : '背景加载中…'),
-                      color: const Color(0xFF141418),
+                      color: palette.bgDeep,
                     ),
                   // 立绘
                   for (final c in talk.stage.chars)
@@ -587,7 +588,7 @@ class _Toolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 40,
-      color: const Color(0xFF1B1B1F),
+      color: palette.bg,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Row(
         children: [
@@ -599,7 +600,7 @@ class _Toolbar extends StatelessWidget {
               child: Text(title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w600)),
+                  style: TextStyle(fontSize: 12.5, color: palette.textHigh, fontWeight: FontWeight.w600)),
             ),
           ),
           const SizedBox(width: 8),
@@ -607,11 +608,11 @@ class _Toolbar extends StatelessWidget {
             child: Text('事件 $evtId',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                style: TextStyle(fontSize: 11, color: palette.textHint)),
           ),
           const Spacer(),
           Text('对白 $talkIndex / $talkCount',
-              style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+              style: TextStyle(fontSize: 11, color: palette.textMuted)),
           const SizedBox(width: 12),
           _ToolButton(
             icon: FluentIcons.chevron_left_24_regular,
@@ -664,7 +665,7 @@ class _VDiv extends StatelessWidget {
   const _VDiv();
   @override
   Widget build(BuildContext context) {
-    return Container(width: 1, height: 18, color: const Color(0xFF2A2A2E), margin: const EdgeInsets.symmetric(horizontal: 6));
+    return Container(width: 1, height: 18, color: palette.border, margin: const EdgeInsets.symmetric(horizontal: 6));
   }
 }
 
@@ -680,10 +681,10 @@ class _ToolButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = !enabled
-        ? const Color(0xFF3A3A42)
+        ? palette.borderHover
         : active
-            ? const Color(0xFF8B7FEF)
-            : const Color(0xFF8B8B93);
+            ? palette.accentLight
+            : palette.textMuted;
     return MouseRegion(
       cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.forbidden,
       child: fluent.Tooltip(
@@ -695,7 +696,7 @@ class _ToolButton extends StatelessWidget {
             height: 30,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: active ? const Color(0xFF2E2A45) : Colors.transparent,
+              color: active ? palette.tintAccent : Colors.transparent,
               borderRadius: BorderRadius.circular(4),
             ),
             child: Icon(icon, size: 15, color: color),
@@ -718,7 +719,7 @@ class _Placeholder extends StatelessWidget {
       color: color,
       alignment: Alignment.center,
       child: Text(label,
-          style: const TextStyle(fontSize: 12, color: Color(0xFF4A4A52))),
+          style: TextStyle(fontSize: 12, color: palette.iconDisabled)),
     );
   }
 }
@@ -794,7 +795,7 @@ class _TalkBox extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                   decoration: BoxDecoration(
-                    color: isNarrator ? const Color(0xFF2A2A30) : const Color(0xFF6C5CE7),
+                    color: isNarrator ? palette.card : const Color(0xFF6C5CE7),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(speaker,
@@ -803,7 +804,7 @@ class _TalkBox extends StatelessWidget {
                       style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
-                          color: isNarrator ? const Color(0xFF9B9BA3) : Colors.white)),
+                          color: isNarrator ? palette.textSecondary : palette.textHigh)),
                 ),
               ),
               const SizedBox(width: 8),
@@ -811,7 +812,7 @@ class _TalkBox extends StatelessWidget {
                 child: Text('TalkCfg #$talkId',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10.5, color: Color(0xFF5E5E66))),
+                    style: TextStyle(fontSize: 10.5, color: palette.textFaint)),
               ),
             ],
           ),
@@ -821,7 +822,7 @@ class _TalkBox extends StatelessWidget {
             style: TextStyle(
               fontSize: 15,
               height: 1.6,
-              color: content.isEmpty ? const Color(0xFF5E5E66) : const Color(0xFFF0F0F4),
+              color: content.isEmpty ? palette.textFaint : palette.textHigh,
             ),
           ),
         ],
@@ -847,7 +848,7 @@ class _OptionButton extends StatelessWidget {
           decoration: BoxDecoration(
             color: const Color(0xCC1E1E24),
             borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: const Color(0xFF3A3A44)),
+            border: Border.all(color: palette.borderHover),
           ),
           child: Row(
             children: [
@@ -855,7 +856,7 @@ class _OptionButton extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(text,
-                    style: const TextStyle(fontSize: 13.5, color: Color(0xFFE4E4E8))),
+                    style: TextStyle(fontSize: 13.5, color: palette.textBody)),
               ),
             ],
           ),
@@ -929,7 +930,7 @@ class _BrushPainter extends CustomPainter {
     canvas.drawRect(
       r,
       Paint()
-        ..color = const Color(0xFF8B7FEF)
+        ..color = palette.accentLight
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2,
     );
@@ -959,14 +960,17 @@ class _BrushResultDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 桌面端放宽到 480；窄屏跟随弹窗默认宽度（ContentDialog 上限 368），
+    // 固定 480 会超出弹窗约束导致横向溢出
+    final wide = MediaQuery.sizeOf(context).width >= 560;
     return fluent.ContentDialog(
       title: Text(title),
       content: Container(
-        width: 480,
+        width: wide ? 480 : null,
         constraints: const BoxConstraints(maxHeight: 320),
         child: SingleChildScrollView(
           child: Text(description,
-              style: const TextStyle(fontSize: 13, color: Color(0xFFD4D4D8), height: 1.6)),
+              style: TextStyle(fontSize: 13, color: palette.textPrimary, height: 1.6)),
         ),
       ),
       actions: [

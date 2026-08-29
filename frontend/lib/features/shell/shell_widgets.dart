@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/models.dart';
+import '../../core/plugin_state.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
 import '../base/base_search_page.dart';
@@ -9,9 +10,12 @@ import '../editor/editor_controller.dart';
 import '../files/file_tree_page.dart';
 import '../mods/mods_page.dart';
 import '../pages/pages_list.dart';
+import '../plugins/plugin_pane.dart';
+import '../plugins/plugins_page.dart';
 import '../resources/resources_page.dart';
 import '../settings/settings_page.dart';
 import 'shell_state.dart';
+import '../../core/app_theme.dart';
 
 // 当前面板对应的侧栏视图（带 AnimatedSwitcher 切换动效）
 class SidePaneView extends StatelessWidget {
@@ -19,6 +23,8 @@ class SidePaneView extends StatelessWidget {
     super.key,
     required this.pane,
     required this.state,
+    required this.shell,
+    required this.pluginState,
     required this.controller,
     required this.aiSettings,
     required this.onAiChanged,
@@ -29,6 +35,8 @@ class SidePaneView extends StatelessWidget {
 
   final SidePane pane;
   final AppState state;
+  final ShellState shell;
+  final PluginState pluginState;
   final EditorController controller;
   final AiSettings aiSettings;
   final ValueChanged<AiSettings> onAiChanged;
@@ -54,6 +62,8 @@ class SidePaneView extends StatelessWidget {
         child = BugfixPanel(key: const ValueKey('bugfix'), state: state);
       case SidePane.cloud:
         child = CloudPage(key: const ValueKey('cloud'), state: state);
+      case SidePane.plugins:
+        child = _pluginsView();
       case SidePane.settings:
         child = SettingsPage(
             key: const ValueKey('settings'),
@@ -71,6 +81,24 @@ class SidePaneView extends StatelessWidget {
         transitionBuilder: (child, anim) => FadeTransition(opacity: anim, child: child),
         child: child,
       ),
+    );
+  }
+
+  /// 插件面板视图：activePluginPanel 非空时显示对应用面板，否则显示插件列表。
+  Widget _pluginsView() {
+    final active = shell.activePluginPanel;
+    if (active == null || active.trim().isEmpty) {
+      return PluginsPage(key: const ValueKey('plugins'), pluginState: pluginState);
+    }
+    final parts = active.split('/');
+    if (parts.isEmpty || parts.first.isEmpty) {
+      return PluginsPage(key: const ValueKey('plugins'), pluginState: pluginState);
+    }
+    return PluginPane(
+      key: ValueKey('panel-$active'),
+      pluginId: parts.first,
+      panelId: parts.length > 1 ? parts.sublist(1).join('/') : '',
+      onClosed: () => shell.setActivePluginPanel(null),
     );
   }
 }
@@ -132,8 +160,8 @@ class _ResizeHandleState extends State<ResizeHandle> {
               color: _dragging
                   ? const Color(0xFF6C5CE7)
                   : _hover
-                      ? const Color(0xFF3A3A42)
-                      : const Color(0xFF2A2A2E),
+                      ? palette.borderHover
+                      : palette.border,
             ),
           ),
         ),

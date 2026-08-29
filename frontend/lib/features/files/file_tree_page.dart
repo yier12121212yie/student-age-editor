@@ -5,6 +5,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../editor/editor_controller.dart';
+import '../../core/app_theme.dart';
 
 /// 文件树侧边栏：浏览当前模组目录，点击打开文档。
 class FileTreePage extends StatefulWidget {
@@ -97,10 +98,10 @@ class _FileTreePageState extends State<FileTreePage> {
   Widget build(BuildContext context) {
     final mob = isMobileWidth(context);
     if (widget.state.modRoot.isEmpty) {
-      return const Center(
+      return Center(
           child: Text('请先在「模组」中选择一个模组',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF6E6E76), fontSize: 12)));
+              style: TextStyle(color: palette.textHint, fontSize: 12)));
     }
     return Column(
       children: [
@@ -109,13 +110,13 @@ class _FileTreePageState extends State<FileTreePage> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             children: [
-              const Icon(FluentIcons.folder_24_regular, size: 14, color: Color(0xFF8B8B93)),
+              Icon(FluentIcons.folder_24_regular, size: 14, color: palette.textMuted),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(widget.state.modName,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                    style: TextStyle(fontSize: 12, color: palette.textSecondary)),
               ),
               MouseRegion(
                 cursor: SystemMouseCursors.click,
@@ -124,13 +125,13 @@ class _FileTreePageState extends State<FileTreePage> {
                     onTap: _load,
                     child: Padding(
                         padding: EdgeInsets.all(mob ? 12 : 0),
-                        child: const Icon(FluentIcons.arrow_sync_24_regular,
-                            size: 14, color: Color(0xFF8B8B93)))),
+                        child: Icon(FluentIcons.arrow_sync_24_regular,
+                            size: 14, color: palette.textMuted))),
               ),
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: _loading
               ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
@@ -154,7 +155,7 @@ class _FileTreePageState extends State<FileTreePage> {
                                     ? FluentIcons.folder_24_regular
                                     : _fileIcon(name),
                                 size: 15,
-                                color: isDir ? const Color(0xFF9B9BA3) : const Color(0xFF6E6E76),
+                                color: isDir ? palette.textSecondary : palette.textHint,
                               ),
                               const SizedBox(width: 8),
                               Expanded(
@@ -163,7 +164,7 @@ class _FileTreePageState extends State<FileTreePage> {
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                         fontSize: 12.5,
-                                        color: const Color(0xFFD4D4D8),
+                                        color: palette.textPrimary,
                                         fontWeight: isDir ? FontWeight.w600 : FontWeight.w400)),
                               ),
                             ],

@@ -7,8 +7,10 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import 'core/api_client.dart';
+import 'core/app_theme.dart';
 import 'core/backend_launcher.dart';
 import 'core/models.dart';
+import 'core/plugin_state.dart';
 import 'core/responsive.dart';
 import 'core/ui_mode.dart';
 import 'core/motion.dart';
@@ -31,6 +33,7 @@ class StudentAgeEditorApp extends StatefulWidget {
 
 class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
   final AppState state = AppState();
+  final PluginState pluginState = PluginState();
   ShellState? _shell;
   UiMode _uiMode = UiMode.creation;
   bool _loaded = false;
@@ -50,6 +53,13 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
     );
     _bootstrap();
     _initUiMode();
+    unawaited(AppTheme.init());
+    // 跟随系统模式下，系统亮度变化时同步当前调色板
+    WidgetsBinding.instance.platformDispatcher.onPlatformBrightnessChanged = () {
+      if (AppTheme.mode.value == AppThemeMode.system) {
+        AppTheme.apply(AppThemeMode.system, save: false);
+      }
+    };
   }
 
   @override
@@ -102,6 +112,8 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
       state.backendOnline = ping['ok'] == true;
         _loaded = true;
       });
+      // 后端就绪后拉取插件列表与面板声明（失败静默，插件页内可手动重试）
+      unawaited(pluginState.refresh());
       await _checkOobe();
     } catch (e) {
       if (!mounted) return;
@@ -146,30 +158,52 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
     unawaited(_bootstrap());
   }
 
+  /// 构建 Fluent 主题（亮/暗共用强调色与字体，亮色为新增）。
+  fluent.FluentThemeData _fluentTheme(Brightness brightness) {
+    return fluent.FluentThemeData(
+      brightness: brightness,
+      accentColor: fluent.AccentColor.swatch(const <String, Color>{
+        'normal': accentColor,
+        'dark': Color(0xFF5A4BD1),
+        'darker': Color(0xFF4A3DB8),
+        'darkest': Color(0xFF3B3096),
+        'light': Color(0xFF8B7FEF),
+        'lighter': Color(0xFFA99FF4),
+        'lightest': Color(0xFFC7C0F9),
+      }),
+      visualDensity: VisualDensity.standard,
+      fontFamily: 'Microsoft YaHei',
+      scaffoldBackgroundColor: palette.bg,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return fluent.FluentApp(
-      title: '学生时代模组编辑器',
-      debugShowCheckedModeBanner: false,
-      theme: fluent.FluentThemeData(
-        brightness: Brightness.dark,
-        accentColor: fluent.AccentColor.swatch(const <String, Color>{
-          'normal': accentColor,
-          'dark': Color(0xFF5A4BD1),
-          'darker': Color(0xFF4A3DB8),
-          'darkest': Color(0xFF3B3096),
-          'light': Color(0xFF8B7FEF),
-          'lighter': Color(0xFFA99FF4),
-          'lightest': Color(0xFFC7C0F9),
-        }),
-        visualDensity: VisualDensity.standard,
-        fontFamily: 'Microsoft YaHei',
-      ),
-      home: _loaded && _shell != null
-          ? (_showOobe
-              ? OobePage(onFinished: _onOobeFinished, forced: widget.forceOobe)
-              : _buildShell())
-          : _buildLoading(),
+    return ListenableBuilder(
+      listenable: AppTheme.mode,
+      builder: (context, _) {
+        final mode = AppTheme.mode.value;
+        return fluent.FluentApp(
+          title: '学生时代模组编辑器',
+          debugShowCheckedModeBanner: false,
+          theme: _fluentTheme(Brightness.light),
+          darkTheme: _fluentTheme(Brightness.dark),
+          themeMode: switch (mode) {
+            AppThemeMode.system => ThemeMode.system,
+            AppThemeMode.light => ThemeMode.light,
+            AppThemeMode.dark => ThemeMode.dark,
+          },
+          home: _loaded && _shell != null
+              ? (_showOobe
+                  ? OobePage(
+                      onFinished: _onOobeFinished,
+                      forced: widget.forceOobe,
+                      onUiModeChanged: _setUiMode,
+                    )
+                  : _buildShell())
+              : _buildLoading(),
+        );
+      },
     );
   }
 
@@ -187,12 +221,12 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
         key: ValueKey(_uiMode),
         builder: (context, c) {
           if (c.maxWidth < Breakpoints.mobile) {
-            return MobileShell(state: state, shell: shell, uiMode: _uiMode, onUiModeChanged: _setUiMode);
+            return MobileShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
           }
           if (_uiMode == UiMode.classic) {
-            return ClassicShell(state: state, shell: shell, uiMode: _uiMode, onUiModeChanged: _setUiMode);
+            return ClassicShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
           }
-          return CreationShell(state: state, shell: shell, uiMode: _uiMode, onUiModeChanged: _setUiMode);
+          return CreationShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
         },
       ),
     );
@@ -200,7 +234,7 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
 
   Widget _buildLoading() {
     return Scaffold(
-      backgroundColor: const Color(0xFF1B1B1F),
+      backgroundColor: palette.bg,
       body: Center(
         child: ScaleFade(
           child: Column(
@@ -234,7 +268,14 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                const FadeSlide(delay: Duration(milliseconds: 100), child: Text('正在连接本地服务', style: TextStyle(color: Colors.white70, fontSize: 13, letterSpacing: 0.3))),
+                FadeSlide(
+                  delay: const Duration(milliseconds: 100),
+                  child: Text('正在连接本地服务',
+                      style: TextStyle(
+                          color: palette.textMuted,
+                          fontSize: 13,
+                          letterSpacing: 0.3)),
+                ),
                 const SizedBox(height: 16),
                 const Row(
                   mainAxisSize: MainAxisSize.min,
@@ -256,7 +297,8 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
                       child: Text('无法连接后端服务\n$_loadError',
                           softWrap: true,
                           textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                          style: TextStyle(
+                              color: palette.textMuted, fontSize: 13)),
                     ),
                   ),
                 ),

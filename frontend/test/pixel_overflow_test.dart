@@ -7,6 +7,7 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/core/models.dart';
+import 'package:student_age_editor/core/plugin_state.dart';
 import 'package:student_age_editor/core/ui_mode.dart';
 import 'package:student_age_editor/features/base/base_search_page.dart';
 import 'package:student_age_editor/features/bugfix/bugfix_panel.dart';
@@ -156,6 +157,7 @@ void main() {
             body: ClassicShell(
               state: state,
               shell: shell,
+              pluginState: PluginState(),
               uiMode: UiMode.classic,
               onUiModeChanged: (_) {},
             ),
@@ -303,6 +305,7 @@ void main() {
           home: MobileShell(
             state: state,
             shell: shell,
+            pluginState: PluginState(),
             uiMode: UiMode.creation,
             onUiModeChanged: (_) {},
           ),

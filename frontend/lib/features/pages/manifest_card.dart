@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 
 /// 官方模组工具：manifest 校验卡片。
 class ManifestStatusCard extends StatefulWidget {
@@ -47,9 +48,9 @@ class _ManifestStatusCardState extends State<ManifestStatusCard> {
       margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E22),
+        color: palette.bgDeep,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF2A2A2E)),
+        border: Border.all(color: palette.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -59,8 +60,8 @@ class _ManifestStatusCardState extends State<ManifestStatusCard> {
               const Icon(FluentIcons.checkmark_circle_24_regular,
                   size: 15, color: Color(0xFF4CAF50)),
               const SizedBox(width: 8),
-              const Text('模组清单检查',
-                  style: TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w600)),
+              Text('模组清单检查',
+                  style: TextStyle(fontSize: 12.5, color: palette.textHigh, fontWeight: FontWeight.w600)),
               const Spacer(),
               MouseRegion(
                 cursor: SystemMouseCursors.click,
@@ -69,16 +70,16 @@ class _ManifestStatusCardState extends State<ManifestStatusCard> {
                       setState(() => _loading = true);
                       _load();
                     },
-                    child: const Icon(FluentIcons.arrow_sync_24_regular,
-                        size: 14, color: Color(0xFF8B8B93))),
+                    child: Icon(FluentIcons.arrow_sync_24_regular,
+                        size: 14, color: palette.textMuted)),
               ),
             ],
           ),
           const SizedBox(height: 8),
           if (!_selected)
-            const Text('请先选择模组', style: TextStyle(fontSize: 12, color: Color(0xFF8B8B93)))
+            Text('请先选择模组', style: TextStyle(fontSize: 12, color: palette.textMuted))
           else if (_checks.isEmpty)
-            const Text('（无检查项）', style: TextStyle(fontSize: 12, color: Color(0xFF8B8B93)))
+            Text('（无检查项）', style: TextStyle(fontSize: 12, color: palette.textMuted))
           else
             for (final c in _checks)
               Padding(
@@ -90,15 +91,15 @@ class _ManifestStatusCardState extends State<ManifestStatusCard> {
                           ? FluentIcons.checkmark_24_regular
                           : FluentIcons.dismiss_24_regular,
                       size: 13,
-                      color: c['ok'] == true ? const Color(0xFF4CAF50) : const Color(0xFFE08A3C),
+                      color: c['ok'] == true ? const Color(0xFF4CAF50) : palette.warning,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text('${c['label'] ?? c['key']}: ${c['detail']}',
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 12, color: Color(0xFFC8C8CF))),
+                          style: TextStyle(
+                              fontSize: 12, color: palette.textMid)),
                     ),
                   ],
                 ),

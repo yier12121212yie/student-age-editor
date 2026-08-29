@@ -1247,6 +1247,8 @@ def _mask_ai_settings(settings: dict) -> dict:
         out["apiKey"] = "***"
     if out.get("imageApiKey"):
         out["imageApiKey"] = "***"
+    if out.get("ttsApiKey"):
+        out["ttsApiKey"] = "***"
     return out
 
 
@@ -1343,8 +1345,58 @@ def cmd_agent_config(args):
             patch["temperature"] = float(raw)
         except ValueError:
             err_console.print("[yellow]temperature 需为数字，保留原值[/]")
+    raw = console.input(
+        f"maxRetries [dim]回车={settings['maxRetries']}（自动重连次数，0=关闭）[/]: ").strip()
+    if raw:
+        try:
+            patch["maxRetries"] = int(raw)
+        except ValueError:
+            err_console.print("[yellow]maxRetries 需为整数，保留原值[/]")
+    raw = console.input(
+        f"retryDelayMs [dim]回车={settings['retryDelayMs']}（重连首个退避间隔毫秒）[/]: ").strip()
+    if raw:
+        try:
+            patch["retryDelayMs"] = int(raw)
+        except ValueError:
+            err_console.print("[yellow]retryDelayMs 需为整数，保留原值[/]")
 
-    if set(patch) == {"provider"} and patch["provider"] == cur:
+    # 配音（TTS）可选配置：aliyun（DashScope 百炼）/ minimax（T2A V2）
+    if console.input("\n配置配音(TTS)服务? [y/N]: ").strip().lower() in ("y", "yes"):
+        tts_cur = settings.get("ttsProvider") or "空"
+        raw = console.input(
+            f"  ttsProvider [dim]回车={tts_cur}（aliyun / minimax）[/]: ").strip()
+        if raw in ("aliyun", "minimax"):
+            patch["ttsProvider"] = raw
+        shown_tts = "***" if settings.get("ttsApiKey") else "空"
+        raw = getpass.getpass(f"  ttsApiKey [dim]回车={shown_tts} 保留[/]: ").strip()
+        if raw:
+            patch["ttsApiKey"] = raw
+        if (patch.get("ttsProvider") or settings.get("ttsProvider")) == "minimax":
+            raw = console.input(
+                f"  ttsGroupId [dim]回车={settings.get('ttsGroupId') or '空'}[/]: ").strip()
+            if raw:
+                patch["ttsGroupId"] = raw
+        raw = console.input(
+            f"  ttsBaseUrl [dim]回车={settings.get('ttsBaseUrl') or '空'}（留空官方默认）[/]: ").strip()
+        if raw:
+            patch["ttsBaseUrl"] = raw
+        raw = console.input(
+            f"  ttsModel [dim]回车={settings.get('ttsModel') or '空'}[/]: ").strip()
+        if raw:
+            patch["ttsModel"] = raw
+        raw = console.input(
+            f"  ttsVoice [dim]回车={settings.get('ttsVoice') or '空'}[/]: ").strip()
+        if raw:
+            patch["ttsVoice"] = raw
+        raw = console.input(
+            f"  ttsSpeed [dim]回车={settings.get('ttsSpeed') or 1.0}[/]: ").strip()
+        if raw:
+            try:
+                patch["ttsSpeed"] = float(raw)
+            except ValueError:
+                err_console.print("[yellow]ttsSpeed 需为数字，保留原值[/]")
+
+    if not patch or (set(patch) == {"provider"} and patch["provider"] == cur):
         console.print("[dim]未做修改[/]")
         return
     merged = write_ai_settings(patch)
@@ -1392,10 +1444,14 @@ def _make_agent_hooks(mod_name: str):
         style = "yellow" if name == "_loop_limit" else "dim"
         console.print(f"[{style}]  ⚙ {escape(name)} → {escape(head[:160])}[/]")
 
+    def on_retry(attempt, total, reason):
+        # 断流前已输出的半截文本会随重连重新生成，这里换行给出明确提示
+        console.print(f"\n[yellow]⚠ 连接中断，正在自动重连 ({attempt}/{total})…[/]")
+
     def confirm(title, detail):
         return _cli_confirm_change(title, detail)
 
-    return on_text, on_tool_round_text, on_tool_result, confirm
+    return on_text, on_tool_round_text, on_tool_result, confirm, on_retry
 
 
 def cmd_agent_chat(args):
@@ -1428,13 +1484,14 @@ def cmd_agent_chat(args):
 
     tools = AgentTools()
     tools.use_mod(mod_root, ws)
-    on_text, on_round, on_result, confirm = _make_agent_hooks(mod_name)
+    on_text, on_round, on_result, confirm, on_retry = _make_agent_hooks(mod_name)
     engine = AgentEngine(
         tools,
         confirm=confirm,
         on_text=on_text,
         on_tool_round_text=on_round,
         on_tool_result=on_result,
+        on_retry=on_retry,
         mod_context=(f"当前模组：{mod_name}。默认只修改这个模组，不要读取或修改其他模组的内容。"
                      if mod_name else ""),
     )
@@ -1782,6 +1839,457 @@ def cmd_cloud_sync(args):
 
 
 # ---------------------------------------------------------------------------
+# 配音（tts config/voices/test/synthesize/list/delete）— 复用 server.tts_service
+# 与 server.tts_store；配置存 .editor_ai.json 的 tts* 字段（三端共享）。
+# ---------------------------------------------------------------------------
+
+_TTS_PROVIDERS = ("aliyun", "minimax")
+
+
+def _tts_provider_and_settings(args) -> tuple[str, dict]:
+    """解析 provider（命令行 > 设置 ttsProvider > aliyun）并应用 --model/--voice/--speed 覆盖（仅内存）。"""
+    from editor.core.env_store import read_ai_settings
+
+    settings = dict(read_ai_settings())
+    provider = (getattr(args, "provider", None)
+                or settings.get("ttsProvider") or "aliyun").strip().lower()
+    if getattr(args, "model", None):
+        settings["ttsModel"] = args.model
+    if getattr(args, "voice", None):
+        settings["ttsVoice"] = args.voice
+    if getattr(args, "speed", None) is not None:
+        settings["ttsSpeed"] = args.speed
+    return provider, settings
+
+
+def _print_tts_settings(settings: dict):
+    t = Table(title="配音（TTS）配置（.editor_ai.json，GUI / CLI / TUI 三端共享）", show_header=False)
+    t.add_column("字段", style="bold cyan")
+    t.add_column("值")
+    for k in sorted(k for k in settings if k.startswith("tts")):
+        v = settings.get(k)
+        if k == "ttsApiKey" and v:
+            v = "***"
+        shown = str(v) if str(v) != "" else "[dim](空)[/]"
+        t.add_row(k, escape(shown))
+    console.print(t)
+
+
+def cmd_tts_config(args):
+    from editor.core.env_store import read_ai_settings, write_ai_settings, ai_settings_path
+
+    settings = read_ai_settings()
+    if _want_json(args):
+        _json_out(_mask_ai_settings(settings))
+        return
+    _print_tts_settings(settings)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        console.print("[dim]非交互终端：仅显示配置。修改请在终端运行 python run_cli.py tts config[/]")
+        return
+
+    import getpass
+    console.print("\n[bold]修改配音配置[/] [dim]（直接回车保留当前值）[/]")
+    cur = settings.get("ttsProvider") or ""
+    raw = console.input(
+        f"ttsProvider [dim]回车={cur or '空'}（{' / '.join(_TTS_PROVIDERS)}）[/]: ").strip().lower()
+    patch = {}
+    if raw in _TTS_PROVIDERS:
+        patch["ttsProvider"] = raw
+    shown_key = "***" if settings.get("ttsApiKey") else "空"
+    raw = getpass.getpass(f"ttsApiKey [dim]回车={shown_key} 保留[/]: ").strip()
+    if raw:
+        patch["ttsApiKey"] = raw
+    if (patch.get("ttsProvider") or cur) == "minimax":
+        raw = console.input(
+            f"ttsGroupId [dim]回车={settings.get('ttsGroupId') or '空'}[/]: ").strip()
+        if raw:
+            patch["ttsGroupId"] = raw
+    raw = console.input(
+        f"ttsBaseUrl [dim]回车={settings.get('ttsBaseUrl') or '空'}（留空官方默认）[/]: ").strip()
+    if raw:
+        patch["ttsBaseUrl"] = raw
+    raw = console.input(f"ttsModel [dim]回车={settings.get('ttsModel') or '空'}[/]: ").strip()
+    if raw:
+        patch["ttsModel"] = raw
+    raw = console.input(f"ttsVoice [dim]回车={settings.get('ttsVoice') or '空'}[/]: ").strip()
+    if raw:
+        patch["ttsVoice"] = raw
+    raw = console.input(f"ttsSpeed [dim]回车={settings.get('ttsSpeed') or 1.0}[/]: ").strip()
+    if raw:
+        try:
+            patch["ttsSpeed"] = float(raw)
+        except ValueError:
+            err_console.print("[yellow]ttsSpeed 需为数字，保留原值[/]")
+
+    if not patch:
+        console.print("[dim]未做修改[/]")
+        return
+    write_ai_settings(patch)
+    console.print(f"[green]已保存[/] -> {ai_settings_path()}")
+
+
+def cmd_tts_voices(args):
+    from editor.server.tts_service import list_voices, TtsError
+
+    provider, settings = _tts_provider_and_settings(args)
+    try:
+        voices, source = list_voices(provider, settings)
+    except TtsError as e:
+        err_console.print(f"[red]{escape(str(e))}[/]")
+        raise SystemExit(1)
+    if _want_json(args):
+        _json_out({"provider": provider, "source": source,
+                   "count": len(voices), "voices": voices})
+        return
+    src_label = "在线拉取" if source == "live" else "内置音色表"
+    t = Table(title=f"TTS 音色 — {provider}  ({len(voices)} 个, 来源: {src_label})")
+    t.add_column("id", style="bold green")
+    t.add_column("name", style="cyan", overflow="fold")
+    t.add_column("gender", style="magenta", justify="center")
+    t.add_column("desc", style="dim", overflow="fold")
+    for v in voices:
+        t.add_row(escape(str(v.get("id") or "")), escape(str(v.get("name") or "")),
+                  escape(str(v.get("gender") or "")), escape(str(v.get("desc") or "")))
+    console.print(t)
+    if source == "preset":
+        console.print("[dim]来源为内置音色表（兜底数据）。minimax 配置 apiKey+groupId 后可在线拉取完整音色。[/]")
+
+
+def cmd_tts_test(args):
+    from editor.server.tts_service import test_connection
+
+    provider, settings = _tts_provider_and_settings(args)
+    result = test_connection(provider, settings)
+    if _want_json(args):
+        _json_out({"provider": provider, **result})
+        return
+    if result.get("ok"):
+        console.print(f"[green]连接成功[/] {provider} — {escape(str(result.get('detail') or ''))}")
+    else:
+        err_console.print(f"[red]连接失败[/] {provider} — {escape(str(result.get('error') or '未知错误'))}")
+        raise SystemExit(1)
+
+
+def _read_tts_text(args) -> str:
+    """文本来源：位置参数 > --text/-t；'-' 从 stdin 读；皆空报错。"""
+    pos = " ".join(getattr(args, "text", None) or []).strip()
+    flag = (getattr(args, "text_flag", None) or "").strip()
+    raw = pos or flag
+    if not raw:
+        err_console.print("[red]缺少配音文本[/]  用位置参数或 --text/-t 提供，传 '-' 从 stdin 读取")
+        raise SystemExit(1)
+    if raw == "-":
+        raw = sys.stdin.read().strip()
+        if not raw:
+            err_console.print("[red]stdin 未提供文本[/]")
+            raise SystemExit(1)
+    return raw
+
+
+def cmd_tts_synthesize(args):
+    import time as _time
+    from editor.server.tts_service import synthesize, TtsError
+    from editor.server.tts_store import save_audio, register_audio_cfg, TtsStoreError
+
+    text = _read_tts_text(args)
+    provider, settings = _tts_provider_and_settings(args)
+    voice = (getattr(args, "voice", None) or "").strip() or None
+    params = {}
+    if getattr(args, "speed", None) is not None:
+        params["speed"] = args.speed
+    mod_root = _require_mod(args)
+    key = (getattr(args, "key", None) or "").strip() or ("tts_%d" % int(_time.time() * 1000))
+    try:
+        audio, ext = synthesize(provider, text, voice=voice, settings=settings, params=params)
+        info = save_audio(mod_root, audio, ext, key=key, ogg=not args.raw_wav)
+    except (TtsError, TtsStoreError) as e:
+        err_console.print(f"[red]{escape(str(e))}[/]")
+        raise SystemExit(1)
+    # 登记 AudioCfg 失败不当作整体失败：文件已落盘，降级为警告
+    # （与 /api/tts/save 的 200 + warning 行为一致，避免误报 + 孤儿素材）
+    cfg_id = None
+    if not args.no_cfg:
+        try:
+            cfg_id = register_audio_cfg(Path(mod_root) / "Cfgs" / "zh-cn",
+                                        info["key"], title=text[:24])
+        except TtsStoreError as e:
+            err_console.print(f"[yellow]文件已保存，登记 AudioCfg 失败: {escape(str(e))}[/]")
+    result = {"provider": provider, "mod": Path(mod_root).name, "key": info["key"],
+              "path": info["path"], "ext": info["ext"], "bytes": info["bytes"],
+              "convertedOgg": info["convertedOgg"], "audioCfgId": cfg_id}
+    if _want_json(args):
+        _json_out(result)
+        return
+    status = "已转 Ogg" if info["convertedOgg"] else "wav 原样"
+    console.print(f"[green]已保存[/] {escape(result['path'])}  ({info['bytes']} B, {status})")
+    if cfg_id is not None:
+        console.print(f"[green]已登记[/] AudioCfg id={cfg_id}")
+    else:
+        console.print("[dim]未登记 AudioCfg (--no-cfg)[/]")
+    if not info["convertedOgg"] and not args.raw_wav:
+        console.print("[dim]未检测到 ffmpeg/oggenc，保持 wav 格式（游戏原生为 Ogg，安装后可重试）[/]")
+
+
+def cmd_tts_list(args):
+    from editor.server.tts_store import list_materials, TtsStoreError
+
+    mod_root = _require_mod(args)
+    try:
+        items = list_materials(mod_root)
+    except TtsStoreError as e:
+        err_console.print(f"[red]{escape(str(e))}[/]")
+        raise SystemExit(1)
+    if _want_json(args):
+        _json_out({"mod": Path(mod_root).name, "materials": items})
+        return
+    if not items:
+        console.print(f"[yellow]无配音素材[/]  ({mod_root / 'audio' / 'tts'} 为空)")
+        console.print("[dim]运行 python run_cli.py tts synthesize \"文本\" 合成第一条配音[/]")
+        return
+    t = Table(title=f"配音素材 @ {Path(mod_root).name}  ({len(items)} 个)")
+    t.add_column("path", style="bold green", overflow="fold")
+    t.add_column("size", justify="right")
+    t.add_column("ext", style="cyan")
+    for it in items:
+        t.add_row(escape(str(it.get("path") or "")),
+                  f"{it.get('size') or 0} B", escape(str(it.get("ext") or "")))
+    console.print(t)
+
+
+def cmd_tts_delete(args):
+    from editor.server.tts_store import delete_material, TtsStoreError
+
+    mod_root = _require_mod(args)
+    rel = (args.path or "").strip().replace("\\", "/")
+    if not rel:
+        err_console.print("[red]缺少素材路径[/]  例: tts_1730000000.ogg 或 audio/tts/talk_intro.ogg")
+        raise SystemExit(1)
+    if not rel.startswith("audio/tts/"):
+        rel = "audio/tts/" + rel.lstrip("/")
+    if not args.force:
+        console.print(f"[yellow]will delete:[/] {rel}")
+        try:
+            ans = console.input("[bold red]确认删除? [y/N]: [/]").strip().lower()
+        except (EOFError, KeyboardInterrupt, OSError):
+            ans = ""
+        if ans not in ("y", "yes"):
+            console.print("[dim]cancelled[/]")
+            return
+    try:
+        deleted = delete_material(mod_root, rel)
+    except TtsStoreError as e:
+        err_console.print(f"[red]{escape(str(e))}[/]")
+        raise SystemExit(1)
+    if _want_json(args):
+        _json_out({"deleted": deleted})
+        return
+    console.print(f"[green]deleted[/] {deleted}")
+
+
+# ---------------------------------------------------------------------------
+# 插件管理（plugin）— 复用 editor.core.plugin_system（离线模式）
+# ---------------------------------------------------------------------------
+
+def _plugin_system():
+    from editor.core import plugin_system
+    return plugin_system
+
+
+def _ensure_plugins_loaded():
+    """离线收集：加载全部已启用插件（不挂路由），供 list/info/命令注册表查询。"""
+    ps = _plugin_system()
+    try:
+        ps.load_all(None)
+    except Exception:
+        pass
+    return ps
+
+
+def _plugin_by_id(ps, pid):
+    """按 id 取详情；不存在打印可用列表并 SystemExit(1)。"""
+    info = ps.get_plugin_info(pid)
+    if info is None:
+        err_console.print(f"[red]plugin not found: {pid}[/]")
+        avail = [e["id"] for e in ps.list_plugins()]
+        if avail:
+            err_console.print("available: " + ", ".join(avail))
+        raise SystemExit(1)
+    return info
+
+
+def cmd_plugin_list(args):
+    ps = _ensure_plugins_loaded()
+    entries = ps.list_plugins()
+    if _want_json(args):
+        _json_out({"plugins": entries})
+        return
+    if not entries:
+        console.print("[yellow]no plugins installed[/]")
+        console.print("[dim]install one with:  python run_cli.py plugin install <xxx.zip>[/]")
+        return
+    t = Table(title=f"Plugins ({len(entries)})")
+    t.add_column("id", style="bold green")
+    t.add_column("name", style="cyan")
+    t.add_column("version", style="dim")
+    t.add_column("author", style="dim")
+    t.add_column("status", style="yellow")
+    t.add_column("error", style="red", overflow="fold")
+    for e in entries:
+        status = "启用" if e["enabled"] else "停用"
+        if e["enabled"]:
+            status += " · " + ("已加载" if e["loaded"] else "加载失败")
+        cell_err = escape(str(e["error"] or ""))[:80]
+        t.add_row(escape(e["id"]), escape(e["name"] or "-"),
+                  escape(e["version"] or "-"), escape(e["author"] or "-"),
+                  status, cell_err)
+    console.print(t)
+
+
+def cmd_plugin_info(args):
+    ps = _ensure_plugins_loaded()
+    info = _plugin_by_id(ps, args.id)
+    if _want_json(args):
+        _json_out(info)
+        return
+    t = Table(show_header=False, title=f"plugin {info['id']}")
+    t.add_column("字段", style="bold cyan")
+    t.add_column("值", overflow="fold")
+    for k in ("id", "name", "version", "author", "description", "entry"):
+        t.add_row(k, escape(str(info.get(k) or "")))
+    status = "启用" if info["enabled"] else "停用"
+    status += " · " + ("已加载" if info["loaded"] else "未加载")
+    t.add_row("status", status)
+    t.add_row("risk_ack_at", escape(str(info.get("risk_ack_at") or "")))
+    if info.get("error"):
+        t.add_row("error", escape(str(info["error"])))
+    console.print(t)
+    contrib = info.get("contributions") or {}
+    console.print("\n[bold]contributions[/]")
+    for kind in ("routes", "tools", "commands", "panels"):
+        items = contrib.get(kind) or []
+        if items:
+            for it in items:
+                console.print(f"  [green]{kind}[/]  {escape(str(it))}")
+        else:
+            console.print(f"  [dim]{kind}: (none)[/]")
+
+
+def cmd_plugin_install(args):
+    _ensure_plugins_loaded()
+    try:
+        result = _plugin_system().install_plugin_from_path(args.path)
+    except ValueError as e:
+        err_console.print(f"[red]install failed:[/] {escape(str(e))}")
+        raise SystemExit(1)
+    pid = result["id"]
+    console.print(f"[green]installed[/] {pid}  (默认停用，启用请运行 [bold]python run_cli.py plugin enable {pid}[/])")
+
+
+def cmd_plugin_enable(args):
+    ps = _ensure_plugins_loaded()
+    info = _plugin_by_id(ps, args.id)
+    if info["enabled"]:
+        console.print(f"[dim]{args.id} 已是启用状态[/]")
+        return
+    # 插件元信息 + 红色高危警示块
+    console.print(Panel.fit(
+        f"[bold]{escape(info['name'])}[/]  [dim]{escape(info['id'])}[/]\n"
+        f"version: {escape(info['version'] or '-')}   author: {escape(info['author'] or '-')}\n"
+        f"{escape(info['description'] or '')}",
+        title="插件信息", border_style="cyan"))
+    console.print(Panel.fit(
+        "[bold red]高危警示[/]\n"
+        "该插件为第三方 Python 代码，启用后将以与编辑器相同的用户权限在本机运行，"
+        "可读写文件、访问网络。请仅启用来自可信来源的插件。",
+        border_style="red"))
+    if not args.yes:
+        try:
+            ans = console.input("[bold green]确定启用该插件? [y/N]: [/]").strip().lower()
+        except (EOFError, KeyboardInterrupt, OSError):
+            ans = ""
+        if ans not in ("y", "yes"):
+            console.print(f"[dim]已取消 (未启用 {args.id})[/]")
+            return
+    try:
+        entry = ps.set_enabled(args.id, True, risk_ack=True)
+    except ValueError as e:
+        err_console.print(f"[red]{escape(str(e))}[/]")
+        raise SystemExit(1)
+    detail = "已加载" if entry["loaded"] else f"加载失败: {entry['error']}"
+    console.print(f"[green]已启用[/] {args.id}  ({detail})")
+
+
+def cmd_plugin_disable(args):
+    ps = _ensure_plugins_loaded()
+    _plugin_by_id(ps, args.id)
+    entry = ps.set_enabled(args.id, False)
+    console.print(f"[green]已停用[/] {args.id}")
+
+
+def cmd_plugin_uninstall(args):
+    ps = _ensure_plugins_loaded()
+    info = _plugin_by_id(ps, args.id)
+    if info["enabled"]:
+        err_console.print(f"[red]{args.id} 已启用，请先停用 (python run_cli.py plugin disable {args.id}) 再卸载[/]")
+        raise SystemExit(1)
+    if not args.yes:
+        console.print(f"[yellow]将卸载插件:[/] [bold]{args.id}[/] ({escape(info['name'])} {escape(info['version'] or '')})")
+        console.print("[yellow]将删除插件目录与数据，不可恢复[/]")
+        try:
+            ans = console.input("[bold red]确认卸载? [y/N]: [/]").strip().lower()
+        except (EOFError, KeyboardInterrupt, OSError):
+            ans = ""
+        if ans not in ("y", "yes"):
+            console.print("[dim]已取消[/]")
+            return
+    try:
+        ps.uninstall_plugin(args.id)
+    except ValueError as e:
+        err_console.print(f"[red]{escape(str(e))}[/]")
+        raise SystemExit(1)
+    console.print(f"[green]已卸载[/] {args.id}")
+
+
+def cmd_plugin_reload(args):
+    ps = _ensure_plugins_loaded()
+    entries = ps.reload_plugins(None)
+    if _want_json(args):
+        _json_out({"plugins": entries})
+        return
+    ok = [e for e in entries if e["enabled"] and e["loaded"]]
+    failed = [e for e in entries if e["enabled"] and not e["loaded"] and e["error"]]
+    console.print(f"[green]已重载[/] 启用 {len(ok)} · 失败 {len(failed)}")
+    for e in failed:
+        err_console.print(f"[red]  {e['id']}: {escape(e['error'][:80])}[/]")
+
+
+def _plugin_command_fallback(parser, argv):
+    """dispatch 末端：内置子命令未命中时查插件命令注册表（全名 <id>.<name>）。
+
+    命名空间冲突顺序：现有子命令优先，插件命令兜底。命中返回 (fn, args_str)。
+    """
+    if not argv or argv[0].startswith("-"):
+        return None
+    first = argv[0]
+    subs = None
+    for act in parser._actions:
+        if getattr(act, "dest", None) == "cmd" and getattr(act, "choices", None):
+            subs = act
+            break
+    if subs is not None and first in subs.choices:
+        return None  # 现有子命令优先
+    try:
+        from editor.core import plugin_system
+        plugin_system.load_all(None)
+        fn = plugin_system.plugin_command(first)
+    except Exception:
+        fn = None
+    if fn is None:
+        return None
+    return fn, " ".join(argv[1:])
+
+
+# ---------------------------------------------------------------------------
 # Parser assembly
 # ---------------------------------------------------------------------------
 
@@ -1991,6 +2499,82 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--files", default=None, help="仅同步指定相对路径 (逗号分隔)")
     a.set_defaults(func=cmd_cloud_sync)
 
+    # tts（配音）
+    tt = sub.add_parser("tts", help="配音 TTS（配置/音色/合成/素材管理，配置三端共享）")
+    tts = tt.add_subparsers(dest="sub", required=True)
+    a = tts.add_parser("config", help="查看/交互式配置配音服务 (provider/apiKey/groupId/model/voice/speed)")
+    a.add_argument("--json", action="store_true", help="JSON 输出 (打码 ttsApiKey)")
+    a.set_defaults(func=cmd_tts_config)
+    a = tts.add_parser("voices", help="列出音色 (缺省取设置 ttsProvider, 再缺省 aliyun)")
+    a.add_argument("provider", nargs="?", default=None, choices=list(_TTS_PROVIDERS),
+                   help="配音服务商")
+    a.add_argument("--model", default=None, help="aliyun 时按模型切换内置音色表 (qwen-tts/cosyvoice)")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_tts_voices)
+    a = tts.add_parser("test", help="配音服务连通性测试 (aliyun 会真实合成一句短文本)")
+    a.add_argument("provider", nargs="?", default=None, choices=list(_TTS_PROVIDERS),
+                   help="配音服务商 (缺省取设置 ttsProvider, 再缺省 aliyun)")
+    a.add_argument("--model", default=None, help="覆盖合成模型")
+    a.add_argument("--voice", default=None, help="覆盖音色")
+    a.add_argument("--speed", type=float, default=None, help="覆盖语速 0.5–2.0")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_tts_test)
+    a = tts.add_parser("synthesize", help="合成语音并保存到模组 audio/tts/ (默认登记 AudioCfg + 转 Ogg)")
+    a.add_argument("text", nargs="*", help="配音文本 ('-' 从 stdin 读取)")
+    a.add_argument("-t", "--text", dest="text_flag", default=None,
+                   help="配音文本 (长文本/含特殊字符时用)")
+    a.add_argument("--mod", default=None, help="模组名 (多模组时必填)")
+    a.add_argument("--provider", default=None, choices=list(_TTS_PROVIDERS),
+                   help="配音服务商 (覆盖设置)")
+    a.add_argument("--voice", default=None, help="音色 id (tts voices 查看)")
+    a.add_argument("--model", default=None, help="覆盖合成模型")
+    a.add_argument("--speed", type=float, default=None, help="语速 0.5–2.0")
+    a.add_argument("--key", default=None,
+                   help="素材键名 (缺省 tts_<时间戳>; 建议自行命名如 talk_xxx)")
+    a.add_argument("--no-cfg", dest="no_cfg", action="store_true", help="不登记 AudioCfg")
+    a.add_argument("--raw-wav", dest="raw_wav", action="store_true",
+                   help="跳过 Ogg 自动转码 (保留 wav)")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_tts_synthesize)
+    a = tts.add_parser("list", help="列出模组 audio/tts/ 配音素材")
+    a.add_argument("--mod", default=None, help="模组名 (多模组时必填)")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_tts_list)
+    a = tts.add_parser("delete", help="删除配音素材 (audio/tts/ 内, 需 y/N 确认)")
+    a.add_argument("path", help="素材文件名或相对路径 (如 tts_1730000000.ogg)")
+    a.add_argument("--mod", default=None, help="模组名 (多模组时必填)")
+    a.add_argument("--force", action="store_true", help="跳过确认")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_tts_delete)
+
+    # plugin（第三方插件管理）
+    pl = sub.add_parser("plugin", help="插件管理 (第三方 Python 插件，高危确认后启用)")
+    pls = pl.add_subparsers(dest="sub", required=True)
+    a = pls.add_parser("list", help="列出全部插件")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_plugin_list)
+    a = pls.add_parser("info", help="查看插件详情 (manifest 全字段 + contributions)")
+    a.add_argument("id", help="插件 id")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_plugin_info)
+    a = pls.add_parser("install", help="从本地 zip 安装插件 (默认停用)")
+    a.add_argument("path", help="插件 zip 路径")
+    a.set_defaults(func=cmd_plugin_install)
+    a = pls.add_parser("enable", help="启用插件 (先展示高危警示, y/N 确认)")
+    a.add_argument("id", help="插件 id")
+    a.add_argument("-y", "--yes", action="store_true", help="跳过高危确认 (脚本场景)")
+    a.set_defaults(func=cmd_plugin_enable)
+    a = pls.add_parser("disable", help="停用插件")
+    a.add_argument("id", help="插件 id")
+    a.set_defaults(func=cmd_plugin_disable)
+    a = pls.add_parser("uninstall", help="卸载插件 (需先停用 + 二次确认)")
+    a.add_argument("id", help="插件 id")
+    a.add_argument("-y", "--yes", action="store_true", help="跳过确认直接卸载")
+    a.set_defaults(func=cmd_plugin_uninstall)
+    a = pls.add_parser("reload", help="重新加载全部已启用插件")
+    a.add_argument("--json", action="store_true", help="JSON 输出")
+    a.set_defaults(func=cmd_plugin_reload)
+
     # also allow `cfg validate` without sub nesting as top-level alias for convenience
     # (handled via cfg subparser already)
 
@@ -2102,6 +2686,19 @@ def main(argv=None):
             from .interactive import run_interactive
             run_interactive()
             return 0
+    # 插件命令兜底：内置子命令未命中时查插件命令注册表（全名 <id>.<name>）
+    fallback = _plugin_command_fallback(parser, argv)
+    if fallback is not None:
+        fn, rest = fallback
+        try:
+            fn(rest)
+        except Exception as e:
+            err_console.print(f"[red]error:[/] {escape(str(e))}")
+            import traceback
+            if os.environ.get("EDITOR_CLI_DEBUG"):
+                traceback.print_exc()
+            raise SystemExit(1)
+        return 0
     args = parser.parse_args(argv)
     # global --json handling is per-command; ensure func exists
     func = getattr(args, "func", None)

@@ -9,6 +9,7 @@ import '../files/file_viewer.dart';
 import '../pages/page_view.dart';
 import '../pages/pages_catalog.dart';
 import '../preview/event_preview_view.dart';
+import '../../core/app_theme.dart';
 
 class EditorArea extends StatefulWidget {
   const EditorArea({
@@ -35,7 +36,7 @@ class _EditorAreaState extends State<EditorArea> {
       children: [
         if (widget.showTabs) ...[
           _TabBar(controller: widget.controller),
-          const Divider(height: 1, color: Color(0xFF2A2A2E)),
+          Divider(height: 1, color: palette.border),
         ],
         Expanded(
           child: ListenableBuilder(
@@ -139,7 +140,7 @@ class _TabBar extends StatelessWidget {
       builder: (context, _) {
         return Container(
           height: isMob ? 44 : 36,
-          color: const Color(0xFF1B1B1F),
+          color: palette.bg,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
@@ -192,13 +193,13 @@ class _TabItemState extends State<_TabItem> {
           padding: const EdgeInsets.symmetric(horizontal: 10),
           decoration: BoxDecoration(
             color: widget.selected
-                ? const Color(0xFF26262B)
+                ? palette.card
                 : _hover
-                    ? const Color(0xFF23232A)
-                    : const Color(0xFF1B1B1F),
+                    ? palette.panel
+                    : palette.bg,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
-              color: widget.selected ? const Color(0xFF3A3A42) : Colors.transparent,
+              color: widget.selected ? palette.borderHover : Colors.transparent,
               width: 1,
             ),
           ),
@@ -207,7 +208,7 @@ class _TabItemState extends State<_TabItem> {
               TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: widget.selected ? 1 : 0),
                 duration: AppMotion.fast,
-                builder: (context, v, child) => Icon(widget.icon, size: 13, color: Color.lerp(const Color(0xFF8B8B93), const Color(0xFF6C5CE7), v)),
+                builder: (context, v, child) => Icon(widget.icon, size: 13, color: Color.lerp(palette.textMuted, const Color(0xFF6C5CE7), v)),
                 child: Icon(widget.icon),
               ),
               const SizedBox(width: 6),
@@ -216,7 +217,7 @@ class _TabItemState extends State<_TabItem> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal,
-                  color: widget.selected ? Colors.white : _hover ? const Color(0xFFD4D4D8) : const Color(0xFF9B9BA3),
+                  color: widget.selected ? palette.textHigh : _hover ? palette.textPrimary : palette.textSecondary,
                 ),
                 child: Text(widget.doc.title),
               ),
@@ -234,7 +235,7 @@ class _TabItemState extends State<_TabItem> {
                       duration: AppMotion.fast,
                       padding: const EdgeInsets.all(2),
                       decoration: BoxDecoration(
-                        color: _closeHover ? const Color(0xFF3A3A42) : Colors.transparent,
+                        color: _closeHover ? palette.borderHover : Colors.transparent,
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: AnimatedRotation(
@@ -243,7 +244,7 @@ class _TabItemState extends State<_TabItem> {
                         child: Icon(
                           FluentIcons.dismiss_24_regular,
                           size: 12,
-                          color: _closeHover ? Colors.white : const Color(0xFF6E6E76),
+                          color: _closeHover ? palette.textHigh : palette.textHint,
                         ),
                       ),
                     ),
@@ -297,9 +298,9 @@ class _WelcomeViewState extends State<_WelcomeView> with SingleTickerProviderSta
                 width: 72,
                 height: 72,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E23),
+                  color: palette.panel,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFF2E2E35)),
+                  border: Border.all(color: palette.surface),
                   boxShadow: [
                     BoxShadow(color: const Color(0xFF6C5CE7).withValues(alpha: 0.12), blurRadius: 24, offset: const Offset(0, 8)),
                   ],
@@ -308,28 +309,34 @@ class _WelcomeViewState extends State<_WelcomeView> with SingleTickerProviderSta
               ),
             ),
             const SizedBox(height: 20),
-            const FadeSlide(
+            FadeSlide(
               delay: Duration(milliseconds: 120),
-              child: Text('学生时代模组编辑器', style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.w600)),
+              child: Text('学生时代模组编辑器', style: TextStyle(fontSize: 20, color: palette.textHigh, fontWeight: FontWeight.w600)),
             ),
             const SizedBox(height: 8),
-            const FadeSlide(
+            FadeSlide(
               delay: Duration(milliseconds: 220),
               offset: Offset(0, 8),
-              child: Text('从左侧选择一个模组，然后从配置表开始编辑', style: TextStyle(fontSize: 13, color: Color(0xFF8B8B93))),
+              child: Text('从左侧选择一个模组，然后从配置表开始编辑', style: TextStyle(fontSize: 13, color: palette.textMuted)),
             ),
             const SizedBox(height: 20),
+            // 提示按平台区分：移动端没有键盘快捷键，引导用顶部搜索入口
             FadeSlide(
               delay: const Duration(milliseconds: 360),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(color: const Color(0xFF26262B), borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xFF2E2E35))),
-                child: const Row(
+                decoration: BoxDecoration(color: palette.card, borderRadius: BorderRadius.circular(20), border: Border.all(color: palette.surface)),
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(FluentIcons.lightbulb_24_regular, size: 12, color: Color(0xFF6C5CE7)),
-                    SizedBox(width: 6),
-                    Text('提示：按 Ctrl+F 全局搜索配置', style: TextStyle(fontSize: 11, color: Color(0xFF9B9BA3))),
+                    const Icon(FluentIcons.lightbulb_24_regular, size: 12, color: Color(0xFF6C5CE7)),
+                    const SizedBox(width: 6),
+                    Text(
+                      MediaQuery.sizeOf(context).width < 720
+                          ? '提示：点击右上角搜索图标全局搜索配置'
+                          : '提示：按 Ctrl+F 全局搜索配置',
+                      style: TextStyle(fontSize: 11, color: palette.textSecondary),
+                    ),
                   ],
                 ),
               ),

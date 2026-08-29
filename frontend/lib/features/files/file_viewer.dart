@@ -8,6 +8,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/app_theme.dart';
 
 /// 文件查看器：文本只读展示；图片/音频走媒体预览（通过 /api/tools/read 的 base64）。
 class FileViewer extends StatefulWidget {
@@ -126,7 +127,7 @@ class _FileViewerState extends State<FileViewer> {
     if (_error != null) {
       return Center(
         child: Text(_error!,
-            style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 13)),
+            style: TextStyle(color: palette.textSecondary, fontSize: 13)),
       );
     }
     switch (_kindFor(widget.path)) {
@@ -146,10 +147,10 @@ class _FileViewerState extends State<FileViewer> {
         controller: _scrollCtrl,
         padding: const EdgeInsets.all(16),
         child: SelectableText(_text!,
-            style: const TextStyle(
+            style: TextStyle(
                 fontFamily: 'Consolas',
                 fontSize: 12.5,
-                color: Color(0xFFD4D4D8),
+                color: palette.textPrimary,
                 height: 1.5)),
       ),
     );
@@ -170,17 +171,17 @@ class _InfoBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
         children: [
-          Icon(icon, size: 14, color: const Color(0xFF8B8B93)),
+          Icon(icon, size: 14, color: palette.textMuted),
           const SizedBox(width: 8),
           Expanded(
             child: Text(name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                style: TextStyle(fontSize: 12, color: palette.textSecondary)),
           ),
           if (hint.isNotEmpty)
             Text(hint,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                style: TextStyle(fontSize: 11, color: palette.textHint)),
         ],
       ),
     );
@@ -198,7 +199,7 @@ class ImagePreview extends StatelessWidget {
     return Column(
       children: [
         _InfoBar(name: name, icon: FluentIcons.image_24_regular, hint: '滚轮缩放 · 拖拽平移'),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: InteractiveViewer(
             maxScale: 8,
@@ -206,8 +207,8 @@ class ImagePreview extends StatelessWidget {
               child: Image.memory(bytes,
                   fit: BoxFit.contain,
                   gaplessPlayback: true,
-                  errorBuilder: (_, _, _) => const Text('图片解码失败',
-                      style: TextStyle(color: Color(0xFF9B9BA3), fontSize: 13))),
+                  errorBuilder: (_, _, _) => Text('图片解码失败',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 13))),
             ),
           ),
         ),
@@ -308,29 +309,29 @@ class _AudioPreviewState extends State<AudioPreview> {
               name: widget.name,
               icon: FluentIcons.music_note_2_24_regular,
               hint: ''),
-          const Divider(height: 1, color: Color(0xFF2A2A2E)),
+          Divider(height: 1, color: palette.border),
           Expanded(
             child: Center(
               child: _error != null
                   ? Text(_error!,
-                      style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 13))
+                      style: TextStyle(color: palette.textSecondary, fontSize: 13))
                   : ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 560),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                        const Icon(FluentIcons.music_note_2_24_regular,
-                            size: 56, color: Color(0xFF3A3A42)),
+                        Icon(FluentIcons.music_note_2_24_regular,
+                            size: 56, color: palette.borderHover),
                         const SizedBox(height: 12),
                         Text(widget.name,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 13, color: Color(0xFFD4D4D8))),
+                            style: TextStyle(
+                                fontSize: 13, color: palette.textPrimary)),
                         const SizedBox(height: 4),
                         Text('${_fmt(_position)} / ${_fmt(_duration)}',
-                            style: const TextStyle(
-                                fontSize: 11, color: Color(0xFF6E6E76))),
+                            style: TextStyle(
+                                fontSize: 11, color: palette.textHint)),
                         const SizedBox(height: 8),
                         Row(
                           children: [
@@ -340,7 +341,7 @@ class _AudioPreviewState extends State<AudioPreview> {
                                       ? FluentIcons.pause_24_regular
                                       : FluentIcons.play_24_regular,
                                   size: 20,
-                                  color: const Color(0xFFD4D4D8)),
+                                  color: palette.textPrimary),
                               onPressed: _toggle,
                             ),
                             Expanded(
@@ -361,8 +362,8 @@ class _AudioPreviewState extends State<AudioPreview> {
                               ),
                             ),
                             const SizedBox(width: 8),
-                            const Icon(FluentIcons.speaker_1_24_regular,
-                                size: 14, color: Color(0xFF8B8B93)),
+                            Icon(FluentIcons.speaker_1_24_regular,
+                                size: 14, color: palette.textMuted),
                             SizedBox(
                               width: 90,
                               child: Slider(

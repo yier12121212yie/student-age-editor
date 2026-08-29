@@ -62,13 +62,13 @@ SLASH_CMDS = [
     "/help", "/mods", "/cfg", "/schema", "/search", "/workspace", "/doctor", "/update",
     "/clear", "/exit", "/quit", "/tui", "/history", "/shell", "/shell!", "/status",
     "/use", "/edit", "/validate", "/export", "/import", "/theme",
-    "/agent", "/cloud",
+    "/agent", "/cloud", "/plugins",
 ]
 
 # for direct (no slash) also
 DIRECT_CMDS = ["mods", "mod", "cfg", "schema", "search", "workspace", "doctor", "update", "tui",
                "help", "exit", "quit", "clear", "edit", "validate", "use", "status",
-               "history", "list", "agent", "cloud"]
+               "history", "list", "agent", "cloud", "plugins"]
 
 _KNOWN_CMDS = {c[1:].lower() for c in SLASH_CMDS} | set(DIRECT_CMDS) | {"mod"}
 
@@ -80,6 +80,7 @@ _CMD_META = {
     "/use": "切换当前 Mod", "/edit": "编辑 Cfg", "/validate": "校验当前 Mod",
     "/export": "batch 导出", "/import": "batch 导入", "/theme": "主题",
     "/agent": "AI 助手（/agent 直接对话，/agent setting 配置）", "/cloud": "云同步 (providers/add/sync…)",
+    "/plugins": "插件管理 (list/info/install/enable/disable/uninstall/reload)",
 }
 
 _SUB_META = {
@@ -92,6 +93,9 @@ _SUB_META = {
     "agent": [("setting", "查看/修改 AI 配置"), ("chat", "[任务] 对话式改模（直接 /agent 亦可）")],
     "cloud": [("providers", "列出网盘"), ("add", "新增网盘配置"), ("test", "<id> 测试连接"),
               ("show", "<id> 详情"), ("remove", "<id> 删除"), ("sync", "<id> 同步 Mod")],
+    "plugins": [("list", "列出插件"), ("info", "<id> 详情"), ("install", "<zip路径> 安装"),
+                ("enable", "<id> 启用 (高危确认)"), ("disable", "<id> 停用"),
+                ("uninstall", "<id> 卸载 (二次确认)"), ("reload", "重载全部插件")],
 }
 
 _FLAG_META = {
@@ -108,12 +112,14 @@ _FLAG_META = {
     "--reveal": "敏感字段明文", "--direction": "<upload/download/sync>",
     "--dry-run": "只预览不写盘", "--delete-extra": "删除远端多余文件",
     "--files": "<相对路径,逗号分隔>",
+    # plugins
+    "--yes": "跳过高危/二次确认", "-y": "同 --yes",
 }
 _VALUE_FLAGS = {"--id", "--key", "--mod", "--cfg", "--value", "--file", "--desc",
                 "-m", "--provider", "--base-url", "--api-key", "--model", "--temperature",
                 "--type", "--remote-root", "--direction", "--files"}
 _BOOL_FLAGS = {"--force", "--all", "--json", "--verbose",
-               "--dry-run", "--delete-extra", "--reveal"}
+               "--dry-run", "--delete-extra", "--reveal", "--yes", "-y"}
 
 _SUB_WORDS = {"get", "set", "list", "edit", "delete", "validate", "export", "import",
               "show", "use", "create", "add", "remove", "workshop",
@@ -161,6 +167,17 @@ _SUB_SPECS = {
     "validate": {"*": {"pos": [], "flags": ["--mod", "--verbose"]}},
 }
 _SUB_SPECS["mod"] = _SUB_SPECS["mods"]
+
+# _SUB_SPECS 续：plugins（插件管理，走 _dispatch_via_app 同路径）
+_SUB_SPECS["plugins"] = {
+    "list": {"pos": [], "flags": ["--json"]},
+    "info": {"pos": ["id"], "flags": ["--json"]},
+    "install": {"pos": ["path"], "flags": []},
+    "enable": {"pos": ["id"], "flags": ["-y", "--yes"]},
+    "disable": {"pos": ["id"], "flags": []},
+    "uninstall": {"pos": ["id"], "flags": ["-y", "--yes"]},
+    "reload": {"pos": [], "flags": ["--json"]},
+}
 
 # cloud add 的 --type / --remote-root 候选（与 server.cloud_sync.DRIVERS 对齐）
 _CLOUD_TYPE_CANDS = [
@@ -607,6 +624,7 @@ def _print_help():
         ("/agent setting", "AI 配置查看/修改 (config 别名)", "/agent setting"),
         ("/update", "检查 GitHub 更新", "/update"),
         ("/cloud providers|add|test|sync", "云同步网盘", "/cloud sync p1 --mod test --dry-run"),
+        ("/plugins list|enable <id>|disable|install|uninstall|reload", "插件管理 (第三方 Python)", "/plugins list"),
         ("/status", "当前上下文", "/status"),
         ("/tui", "启动 TUI", "/tui"),
         ("/clear", "清屏", "/clear"),
@@ -904,6 +922,13 @@ class InteractiveCLI:
             return False
         if cmd == "cloud":
             self._dispatch_via_app(["cloud"] + args)
+            return False
+        if cmd == "plugins":
+            if not args:
+                console.print("[dim]plugins: list | info <id> | install <zip> | "
+                              "enable <id> [-y/--yes] | disable <id> | uninstall <id> [-y/--yes] | reload[/]")
+                return False
+            self._dispatch_via_app(["plugin"] + args)
             return False
         if cmd == "clear":
             console.clear()

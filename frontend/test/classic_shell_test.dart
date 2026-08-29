@@ -7,6 +7,7 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/core/models.dart';
+import 'package:student_age_editor/core/plugin_state.dart';
 import 'package:student_age_editor/core/ui_mode.dart';
 import 'package:student_age_editor/features/shell/classic_shell.dart';
 import 'package:student_age_editor/features/shell/shell_state.dart';
@@ -30,6 +31,7 @@ void main() {
       home: ClassicShell(
         state: state,
         shell: shell,
+        pluginState: PluginState(),
         uiMode: UiMode.classic,
         onUiModeChanged: (m) => changed = m,
       ),
@@ -91,6 +93,7 @@ void main() {
       home: ClassicShell(
         state: AppState(),
         shell: shell,
+        pluginState: PluginState(),
         uiMode: UiMode.classic,
         onUiModeChanged: (_) {},
       ),

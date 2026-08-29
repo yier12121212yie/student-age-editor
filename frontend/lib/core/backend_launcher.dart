@@ -13,7 +13,7 @@ import 'api_client.dart';
 /// 前端退出时回收自己拉起的进程。开发模式（flutter run，由 run_dev.py
 /// 启动后端）下同目录不存在后端可执行文件，本类不干预。
 /// Android 上无法运行 PyInstaller 子进程，由 Chaquopy 内嵌后端负责，
-/// 本类仅做 API 探测。
+/// 本类轮询等待内嵌后端就绪（内嵌启动由原生侧异步进行，需数秒）。
 class BackendLauncher {
   BackendLauncher._();
   static final BackendLauncher instance = BackendLauncher._();
@@ -53,7 +53,18 @@ class BackendLauncher {
   Future<bool> _ensure() async {
     try {
       if (await probe()) return true;
-      if (!supportsSpawn) return false; // Android：由原生侧内嵌后端负责
+      if (!supportsSpawn) {
+        // Android：后端由 Chaquopy 在原生侧后台线程内嵌启动（见 MainActivity
+        // 的 onResume），Python 初始化、资源包解压、模块导入需数秒后端口才就绪，
+        // 单次探测必然失败；此处轮询等待内嵌后端完成启动。
+        // 耗时：连接拒绝时每轮约 0.5s（约 45s 封顶）；端口已监听但 HTTP 未就绪时
+        // 每轮要烧满 1s 探测超时（约 135s 封顶），通常数秒内即成功。
+        for (var i = 0; i < 90; i++) {
+          if (await probe(timeout: const Duration(seconds: 1))) return true;
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+        return false;
+      }
 
       final exe = _findBackendExe();
       if (exe == null) return false; // 开发模式：后端由 run_dev.py 负责

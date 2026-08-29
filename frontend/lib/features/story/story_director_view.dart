@@ -5,8 +5,10 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../ai/tts_panel.dart';
 import '../editor/field_utils.dart';
 import 'story_logic.dart';
+import '../../core/app_theme.dart';
 
 /// 故事页：事件 → 剧情线 → 对白节点 的三栏编排视图。
 ///
@@ -730,7 +732,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       return Center(
         child: Text(
           '加载失败: $_error',
-          style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 13),
+          style: TextStyle(color: palette.textSecondary, fontSize: 13),
         ),
       );
     }
@@ -742,9 +744,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildEventList(),
-          const VerticalDivider(width: 1, color: Color(0xFF2A2A2E)),
+          VerticalDivider(width: 1, color: palette.border),
           _buildStoryLine(),
-          const VerticalDivider(width: 1, color: Color(0xFF2A2A2E)),
+          VerticalDivider(width: 1, color: palette.border),
           SizedBox(width: 420, child: _buildTalkEditor()),
         ],
       ),
@@ -767,9 +769,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         Container(
           height: 48,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          decoration: const BoxDecoration(
-            color: Color(0xFF1B1B1F),
-            border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E))),
+          decoration: BoxDecoration(
+            color: palette.bg,
+            border: Border(bottom: BorderSide(color: palette.border)),
           ),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
@@ -779,14 +781,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 const SizedBox(width: 8),
                 Text(
                   '剧情处理器 - 正在编辑事件 [${_evtId ?? '8000'}]',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13.5,
-                    color: Colors.white,
+                    color: palette.textHigh,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 const SizedBox(width: 16),
-                const Text('切换事件:', style: TextStyle(fontSize: 11.5, color: Color(0xFF9B9BA3))),
+                Text('切换事件:', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
                 const SizedBox(width: 6),
                 SizedBox(
                   width: 140,
@@ -839,13 +841,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 width: 270,
                 child: _buildClassicDialogueLine(),
               ),
-              const VerticalDivider(width: 1, color: Color(0xFF2A2A2E)),
+              VerticalDivider(width: 1, color: palette.border),
               // 2. 中栏：配置 + 可视化舞台与角色编辑 + 底部对话
               Expanded(
                 flex: 7,
                 child: _buildClassicCenterStage(curTalk),
               ),
-              const VerticalDivider(width: 1, color: Color(0xFF2A2A2E)),
+              VerticalDivider(width: 1, color: palette.border),
               // 3. 右栏：流程操作 + 场景人物控制 + 玩家选项配置
               SizedBox(
                 width: 320,
@@ -866,9 +868,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         Container(
           height: 38,
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: const BoxDecoration(
-            color: Color(0xFF1E1E23),
-            border: Border(bottom: BorderSide(color: Color(0xFF2E2E35))),
+          decoration: BoxDecoration(
+            color: palette.panel,
+            border: Border(bottom: BorderSide(color: palette.surface)),
           ),
           child: Row(
             children: [
@@ -877,7 +879,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Expanded(
                 child: Text(
                   '事件 ${_evtId ?? ''} 的对话线 (${talkIds.length})',
-                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white),
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.textHigh),
                 ),
               ),
             ],
@@ -889,9 +891,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(FluentIcons.chat_empty_24_regular, size: 32, color: Color(0xFF4A4A52)),
+                      Icon(FluentIcons.chat_empty_24_regular, size: 32, color: palette.iconDisabled),
                       const SizedBox(height: 8),
-                      const Text('该事件暂无对话', style: TextStyle(color: Color(0xFF6E6E76), fontSize: 12)),
+                      Text('该事件暂无对话', style: TextStyle(color: palette.textHint, fontSize: 12)),
                       const SizedBox(height: 10),
                       fluent.FilledButton(
                         onPressed: _appendTalk,
@@ -910,7 +912,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         ),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          color: const Color(0xFF18181C),
+          color: palette.bgAlt,
           child: Row(
             children: [
               const Text('💡', style: TextStyle(fontSize: 12)),
@@ -918,7 +920,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Expanded(
                 child: Text(
                   '按住 Shift 可多选，右侧可批量删除。\n当前阶段：${_stages[_stageIndex]}',
-                  style: const TextStyle(fontSize: 10.5, color: Color(0xFF8B8B93), height: 1.3),
+                  style: TextStyle(fontSize: 10.5, color: palette.textMuted, height: 1.3),
                 ),
               ),
             ],
@@ -947,12 +949,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFF332F4C) : (isCurrent ? const Color(0xFF26262B) : const Color(0xFF1E1E23)),
+            color: selected ? palette.tintAccent : (isCurrent ? palette.card : palette.panel),
             borderRadius: BorderRadius.circular(5),
             border: Border.all(
               color: isCurrent
                   ? const Color(0xFF6C5CE7)
-                  : (selected ? const Color(0xFF4A3DB8) : const Color(0xFF2E2E35)),
+                  : (selected ? const Color(0xFF4A3DB8) : palette.surface),
               width: isCurrent ? 1.5 : 1,
             ),
           ),
@@ -961,7 +963,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Icon(
                 hasBranch ? FluentIcons.branch_fork_24_regular : FluentIcons.chat_24_regular,
                 size: 14,
-                color: hasBranch ? const Color(0xFFE08A3C) : (isCurrent ? const Color(0xFF6C5CE7) : const Color(0xFF6E6E76)),
+                color: hasBranch ? palette.warning : (isCurrent ? const Color(0xFF6C5CE7) : palette.textHint),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -975,7 +977,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: isCurrent ? Colors.white : const Color(0xFFD4D4D8),
+                        color: isCurrent ? palette.textHigh : palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -983,7 +985,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       cln(talk is Map ? talk['content'] : ''),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+                      style: TextStyle(fontSize: 11, color: palette.textMuted),
                     ),
                   ],
                 ),
@@ -992,12 +994,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF332617),
+                    color: palette.tintWarn,
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
                     '${opts.length}选',
-                    style: const TextStyle(fontSize: 9.5, color: Color(0xFFE0A454)),
+                    style: TextStyle(fontSize: 9.5, color: palette.statusTan),
                   ),
                 ),
             ],
@@ -1010,8 +1012,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   /// 中栏：顶部参数配置 + 可视化舞台与角色编辑 + 底部对白
   Widget _buildClassicCenterStage(Map<String, dynamic>? talk) {
     if (talk == null) {
-      return const Center(
-        child: Text('请在左侧选择一句对话以开启舞台编辑', style: TextStyle(color: Color(0xFF6E6E76), fontSize: 13)),
+      return Center(
+        child: Text('请在左侧选择一句对话以开启舞台编辑', style: TextStyle(color: palette.textHint, fontSize: 13)),
       );
     }
 
@@ -1024,7 +1026,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     final hasCheck = talk['check'] != null && talk['check'].toString().isNotEmpty && talk['check'].toString() != '[]';
 
     return Container(
-      color: const Color(0xFF131316),
+      color: palette.bgDeep2,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1033,9 +1035,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             margin: const EdgeInsets.fromLTRB(10, 10, 10, 6),
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E23),
+              color: palette.panel,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: const Color(0xFF2E2E35)),
+              border: Border.all(color: palette.surface),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1043,11 +1045,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 // 第一行：背景 + 背景音乐
                 Row(
                   children: [
-                    const Flexible(
+                    Flexible(
                       child: Text('背景:',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -1077,11 +1079,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    const Flexible(
+                    Flexible(
                       child: Text('背景音乐(audio):',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -1126,11 +1128,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 // 第二行：说话人 + 高亮人物 + 实际显示名称
                 Row(
                   children: [
-                    const Flexible(
+                    Flexible(
                       child: Text('说话人(逗号隔开):',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -1149,11 +1151,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Flexible(
+                    Flexible(
                       child: Text('高亮人物(逗号隔开):',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -1172,11 +1174,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Flexible(
+                    Flexible(
                       child: Text('实际显示名称:',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -1200,17 +1202,17 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF26262B),
+                    color: palette.card,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: const Color(0xFF3A3A42)),
+                    border: Border.all(color: palette.borderHover),
                   ),
                   child: Row(
                     children: [
-                      const Flexible(
+                      Flexible(
                         child: Text('🔀 分支与跳转',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12, color: Color(0xFFE08A3C), fontWeight: FontWeight.bold)),
+                            style: TextStyle(fontSize: 12, color: palette.warning, fontWeight: FontWeight.bold)),
                       ),
                       const SizedBox(width: 14),
                       Flexible(
@@ -1222,15 +1224,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                               _dirty = true;
                             });
                           },
-                          content: const Text('开启前提分支判定', style: TextStyle(fontSize: 11.5, color: Color(0xFFC8C8CF))),
+                          content: Text('开启前提分支判定', style: TextStyle(fontSize: 11.5, color: palette.textMid)),
                         ),
                       ),
                       const SizedBox(width: 16),
-                      const Flexible(
+                      Flexible(
                         child: Text('下一句对话ID:',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                            style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
@@ -1259,9 +1261,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
-                color: const Color(0xFF18181C),
+                color: palette.bgAlt,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFF2E2E35)),
+                border: Border.all(color: palette.surface),
               ),
               child: _buildVisualStage(talk),
             ),
@@ -1272,9 +1274,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             margin: const EdgeInsets.all(10),
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E23),
+              color: palette.panel,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: const Color(0xFF2E2E35)),
+              border: Border.all(color: palette.surface),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1286,15 +1288,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         '【${_talkDisplayName(_talkId ?? '')}】',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.bold,
-                          color: Color(0xFFE08A3C),
+                          color: palette.warning,
                         ),
                       ),
                     ),
                     const Spacer(),
-                    const Text('对话内容 (content):', style: TextStyle(fontSize: 11.5, color: Color(0xFF9B9BA3))),
+                    Text('对话内容 (content):', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -1365,15 +1367,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         // 舞台顶端状态栏
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: const BoxDecoration(
-            color: Color(0xFF222228),
+          decoration: BoxDecoration(
+            color: palette.card,
             borderRadius: BorderRadius.only(topLeft: Radius.circular(8), topRight: Radius.circular(8)),
           ),
           child: Row(
             children: [
               const Icon(FluentIcons.video_24_regular, size: 14, color: Color(0xFF6C5CE7)),
               const SizedBox(width: 6),
-              const Text('🎭 舞台站位与表情动作预览区', style: TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w600)),
+              Text('🎭 舞台站位与表情动作预览区', style: TextStyle(fontSize: 12, color: palette.textHigh, fontWeight: FontWeight.w600)),
               const Spacer(),
               _smallButton('➕ 放置角色', () => _showAddStageRoleDialog(talk)),
               const SizedBox(width: 6),
@@ -1395,9 +1397,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  const Color(0xFF141418),
-                  const Color(0xFF1E1E26),
-                  const Color(0xFF101014),
+                  palette.bgDeep,
+                  palette.bgDeep,
+                  palette.bgDeep2,
                 ],
               ),
             ),
@@ -1430,23 +1432,23 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           onTap: () => _showPlaceRoleToSlotDialog(slotIdx, talk),
           child: Container(
             decoration: BoxDecoration(
-              color: const Color(0xFF17171C).withValues(alpha: 0.6),
+              color: palette.bgDeep2.withValues(alpha: 0.6),
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFF2E2E35), style: BorderStyle.solid),
+              border: Border.all(color: palette.surface, style: BorderStyle.solid),
             ),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(FluentIcons.add_circle_24_regular, size: 24, color: Color(0xFF4A4A52)),
+                  Icon(FluentIcons.add_circle_24_regular, size: 24, color: palette.iconDisabled),
                   const SizedBox(height: 6),
                   Text(
                     slotNames[slotIdx],
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 10.5, color: Color(0xFF6E6E76)),
+                    style: TextStyle(fontSize: 10.5, color: palette.textHint),
                   ),
                   const SizedBox(height: 2),
-                  const Text('点击放置', style: TextStyle(fontSize: 9.5, color: Color(0xFF4A4A52))),
+                  Text('点击放置', style: TextStyle(fontSize: 9.5, color: palette.iconDisabled)),
                 ],
               ),
             ),
@@ -1460,10 +1462,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
 
     return Container(
       decoration: BoxDecoration(
-        color: role.isHighlight ? const Color(0xFF2D2644) : const Color(0xFF222228),
+        color: role.isHighlight ? palette.tintAccent : palette.card,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: role.isHighlight ? const Color(0xFF6C5CE7) : const Color(0xFF3A3A42),
+          color: role.isHighlight ? const Color(0xFF6C5CE7) : palette.borderHover,
           width: role.isHighlight ? 2 : 1,
         ),
       ),
@@ -1481,7 +1483,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: role.isHighlight ? Colors.white : const Color(0xFFD4D4D8),
+                    color: role.isHighlight ? palette.textHigh : palette.textPrimary,
                   ),
                 ),
               ),
@@ -1496,7 +1498,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       _dirty = true;
                     });
                   },
-                  child: const Icon(FluentIcons.dismiss_16_regular, size: 12, color: Color(0xFF8B8B93)),
+                  child: Icon(FluentIcons.dismiss_16_regular, size: 12, color: palette.textMuted),
                 ),
               ),
             ],
@@ -1507,7 +1509,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             child: Container(
               width: double.infinity,
               decoration: BoxDecoration(
-                color: const Color(0xFF18181C),
+                color: palette.bgAlt,
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Center(
@@ -1517,12 +1519,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     Icon(
                       FluentIcons.person_24_filled,
                       size: 36,
-                      color: role.isHighlight ? const Color(0xFF8B7FEF) : const Color(0xFF6E6E76),
+                      color: role.isHighlight ? palette.accentLight : palette.textHint,
                     ),
                     const SizedBox(height: 4),
                     Text(
                       slotNames[slotIdx],
-                      style: const TextStyle(fontSize: 9.5, color: Color(0xFF6E6E76)),
+                      style: TextStyle(fontSize: 9.5, color: palette.textHint),
                     ),
                   ],
                 ),
@@ -1540,7 +1542,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF2C283E),
+                  color: palette.tintAccent,
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(color: const Color(0xFF5A4EB8)),
                 ),
@@ -1549,7 +1551,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 10, color: Color(0xFFC7C0F9), fontWeight: FontWeight.w500),
+                  style: TextStyle(fontSize: 10, color: palette.accentPale, fontWeight: FontWeight.w500),
                 ),
               ),
             ),
@@ -1606,14 +1608,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 2),
           decoration: BoxDecoration(
-            color: enabled ? const Color(0xFF26262B) : const Color(0xFF1E1E23),
+            color: enabled ? palette.card : palette.panel,
             borderRadius: BorderRadius.circular(3),
-            border: Border.all(color: const Color(0xFF3A3A42)),
+            border: Border.all(color: palette.borderHover),
           ),
           child: Text(
             text,
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 9.5, color: enabled ? const Color(0xFFD4D4D8) : const Color(0xFF4A4A52)),
+            style: TextStyle(fontSize: 9.5, color: enabled ? palette.textPrimary : palette.iconDisabled),
           ),
         ),
       ),
@@ -1777,7 +1779,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('常用表情代码预设:', style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+            Text('常用表情代码预设:', style: TextStyle(fontSize: 12, color: palette.textSecondary)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
@@ -1819,6 +1821,26 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     );
   }
 
+  /// 打开配音面板：带入当前对白行的内容与键名前缀（默认 `talk_{id}`）。
+  Future<void> _openTtsPanel(Map<String, dynamic> talk) async {
+    final content = ((talk['content'] ?? talk['showTxt'])?.toString() ?? '').trim();
+    final role = cln(talk['roleName']).trim();
+    final title = content.isNotEmpty
+        ? (role.isNotEmpty ? '$role：$content' : content)
+        : '';
+    await showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => Center(
+        child: TtsPanel(
+          initText: content,
+          initTitle: title,
+          initTalkId: talk['id'] != null ? 'talk_${talk['id']}' : '',
+        ),
+      ),
+    );
+  }
+
   /// 3. 右栏：流程操作 + 场景人物控制 + 玩家选项配置
   Widget _buildClassicRightPanel(Map<String, dynamic>? talk) {
     final opts = ensureList(talk != null ? talk['option'] : null);
@@ -1826,12 +1848,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     final screenEffect = cln(talk != null ? talk['screenEffect'] : '');
 
     return Container(
-      color: const Color(0xFF1B1B1F),
+      color: palette.bg,
       padding: const EdgeInsets.all(12),
       child: ListView(
         children: [
           // 流程操作
-          const Text('流程操作', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white)),
+          Text('流程操作', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.textHigh)),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -1874,12 +1896,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               ),
             ],
           ),
-          const Divider(height: 24, color: Color(0xFF2A2A2E)),
+          Divider(height: 24, color: palette.border),
 
           // 场景人物控制
-          const Text('✨ 场景人物控制', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFFE08A3C))),
+          Text('✨ 场景人物控制', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.warning)),
           const SizedBox(height: 8),
-          const Text('人物动作/表情(30xx):', style: TextStyle(fontSize: 11.5, color: Color(0xFF9B9BA3))),
+          Text('人物动作/表情(30xx):', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
           const SizedBox(height: 4),
           fluent.TextBox(
             controller: TextEditingController(text: rolesStr),
@@ -1892,7 +1914,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             },
           ),
           const SizedBox(height: 10),
-          const Text('屏幕效果(40xx):', style: TextStyle(fontSize: 11.5, color: Color(0xFF9B9BA3))),
+          Text('屏幕效果(40xx):', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
           const SizedBox(height: 4),
           fluent.TextBox(
             controller: TextEditingController(text: screenEffect),
@@ -1923,28 +1945,48 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF26262B),
+                      color: palette.card,
                       borderRadius: BorderRadius.circular(3),
-                      border: Border.all(color: const Color(0xFF3A3A42)),
+                      border: Border.all(color: palette.borderHover),
                     ),
-                    child: Text(tag, style: const TextStyle(fontSize: 10, color: Color(0xFFD4D4D8))),
+                    child: Text(tag, style: TextStyle(fontSize: 10, color: palette.textPrimary)),
                   ),
                 ),
               );
             }).toList(),
           ),
 
-          const Divider(height: 24, color: Color(0xFF2A2A2E)),
+          Divider(height: 24, color: palette.border),
+
+          // 台词配音
+          Text('🎙️ 台词配音',
+              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.warning)),
+          const SizedBox(height: 8),
+          Text('用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
+              '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
+              style: TextStyle(fontSize: 11, color: palette.textSecondary, height: 1.5)),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: fluent.FilledButton(
+              onPressed: talk == null ? null : () => _openTtsPanel(talk),
+              style: fluent.ButtonStyle(
+                backgroundColor: WidgetStatePropertyAll(palette.warning),
+              ),
+              child: const Text('🎙️ 给本行内容配音', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+          Divider(height: 24, color: palette.border),
 
           // 玩家选项配置
-          const Text('🎯 玩家选项配置', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFFE08A3C))),
+          Text('🎯 玩家选项配置', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.warning)),
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
             child: fluent.FilledButton(
               onPressed: talk == null ? null : _addOption,
-              style: const fluent.ButtonStyle(
-                backgroundColor: WidgetStatePropertyAll(Color(0xFFE08A3C)),
+              style: fluent.ButtonStyle(
+                backgroundColor: WidgetStatePropertyAll(palette.warning),
               ),
               child: const Text('➕ 添加选项按钮', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
@@ -1954,28 +1996,28 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           // 选项列表表格
           Container(
             decoration: BoxDecoration(
-              color: const Color(0xFF18181C),
+              color: palette.bgAlt,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFF2E2E35)),
+              border: Border.all(color: palette.surface),
             ),
             child: Column(
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  color: const Color(0xFF222228),
-                  child: const Row(
+                  color: palette.card,
+                  child: Row(
                     children: [
-                      SizedBox(width: 50, child: Text('选项ID', style: TextStyle(fontSize: 11, color: Color(0xFF9B9BA3)))),
-                      Expanded(child: Text('选项文本', style: TextStyle(fontSize: 11, color: Color(0xFF9B9BA3)))),
-                      SizedBox(width: 60, child: Text('跳转至(ID)', style: TextStyle(fontSize: 11, color: Color(0xFF9B9BA3)))),
+                      SizedBox(width: 50, child: Text('选项ID', style: TextStyle(fontSize: 11, color: palette.textSecondary))),
+                      Expanded(child: Text('选项文本', style: TextStyle(fontSize: 11, color: palette.textSecondary))),
+                      SizedBox(width: 60, child: Text('跳转至(ID)', style: TextStyle(fontSize: 11, color: palette.textSecondary))),
                       SizedBox(width: 24),
                     ],
                   ),
                 ),
                 if (opts.isEmpty)
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.symmetric(vertical: 14),
-                    child: Text('当前对白无选项按钮', style: TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                    child: Text('当前对白无选项按钮', style: TextStyle(fontSize: 11, color: palette.textHint)),
                   )
                 else
                   for (final optId in opts) _buildClassicOptionRow(optId),
@@ -2007,14 +2049,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: Color(0xFF222228))),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: palette.card)),
       ),
       child: Row(
         children: [
           SizedBox(
             width: 50,
-            child: Text(optId, style: const TextStyle(fontSize: 10.5, color: Color(0xFFA99FF4))),
+            child: Text(optId, style: TextStyle(fontSize: 10.5, color: palette.accentLighter)),
           ),
           Expanded(
             child: SizedBox(
@@ -2055,9 +2097,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => _removeOption(optId),
-              child: const Padding(
+              child: Padding(
                 padding: EdgeInsets.all(4),
-                child: Icon(FluentIcons.delete_16_regular, size: 13, color: Color(0xFFE5484D)),
+                child: Icon(FluentIcons.delete_16_regular, size: 13, color: palette.danger),
               ),
             ),
           ),
@@ -2067,14 +2109,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   }
 
   Widget _smallButton(String label, VoidCallback? onPressed, {IconData? icon, bool primary = false, bool danger = false}) {
-    Color bg = const Color(0xFF26262B);
-    Color fg = const Color(0xFFD4D4D8);
+    Color bg = palette.card;
+    Color fg = palette.textPrimary;
     if (primary) {
       bg = const Color(0xFF6C5CE7);
       fg = Colors.white;
     } else if (danger) {
-      bg = const Color(0xFF2D1E1E);
-      fg = const Color(0xFFFF6B6B);
+      bg = palette.tintDanger;
+      fg = palette.statusDanger;
     }
     return MouseRegion(
       cursor: onPressed != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
@@ -2086,7 +2128,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           decoration: BoxDecoration(
             color: bg,
             borderRadius: BorderRadius.circular(4),
-            border: primary ? null : Border.all(color: const Color(0xFF3A3A42)),
+            border: primary ? null : Border.all(color: palette.borderHover),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -2128,19 +2170,19 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
               children: [
-                const Text(
+                Text(
                   'EvtCfg 事件',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary),
                 ),
                 const Spacer(),
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
                     onTap: _addEvent,
-                    child: const Icon(
+                    child: Icon(
                       FluentIcons.add_24_regular,
                       size: 15,
-                      color: Color(0xFF8B8B93),
+                      color: palette.textMuted,
                     ),
                   ),
                 ),
@@ -2153,7 +2195,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               alignment: Alignment.centerLeft,
               child: Text(
                 '输入事件 ID 或标题关键词，实时过滤左侧 EvtCfg 事件列表',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+                style: TextStyle(fontSize: 11, color: palette.textMuted),
               ),
             ),
           ),
@@ -2161,11 +2203,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
             child: fluent.TextBox(
               placeholder: '搜索事件 ID / 标题',
-              style: const TextStyle(fontSize: 12, color: Colors.white),
+              style: TextStyle(fontSize: 12, color: palette.textHigh),
               onChanged: (v) => setState(() => _evtSearch = v),
             ),
           ),
-          const Divider(height: 1, color: Color(0xFF2A2A2E)),
+          Divider(height: 1, color: palette.border),
           Expanded(
             child: ListView.builder(
               itemCount: filtered.length,
@@ -2180,7 +2222,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     onTap: () => _selectEvent(id),
                     child: Container(
                       color: selected
-                          ? const Color(0xFF2B2B31)
+                          ? palette.hover
                           : Colors.transparent,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -2200,8 +2242,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                                     fontSize: 12.5,
                                     fontWeight: FontWeight.w600,
                                     color: selected
-                                        ? Colors.white
-                                        : const Color(0xFFD4D4D8),
+                                        ? palette.textHigh
+                                        : palette.textPrimary,
                                   ),
                                 ),
                               ),
@@ -2216,26 +2258,26 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                                         vertical: 3,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFF2E2A45),
+                                        color: palette.tintAccent,
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(
                                           color: const Color(0xFF4A3DB8),
                                         ),
                                       ),
-                                      child: const Row(
+                                      child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           Icon(
                                             FluentIcons.play_24_regular,
                                             size: 11,
-                                            color: Color(0xFF8B7FEF),
+                                            color: palette.accentLight,
                                           ),
                                           SizedBox(width: 3),
                                           Text(
                                             '预览',
                                             style: TextStyle(
                                               fontSize: 10.5,
-                                              color: Color(0xFFA99FF4),
+                                              color: palette.accentLighter,
                                             ),
                                           ),
                                         ],
@@ -2250,9 +2292,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                             '对白 ${_eventTalkCount(id)} · ${typeName.isEmpty ? '未分类' : typeName}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 11,
-                              color: Color(0xFF6E6E76),
+                              color: palette.textHint,
                             ),
                           ),
                         ],
@@ -2263,7 +2305,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               },
             ),
           ),
-          const Divider(height: 1, color: Color(0xFF2A2A2E)),
+          Divider(height: 1, color: palette.border),
           Container(
             height: 36,
             padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -2325,9 +2367,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     evtId == null ? '剧情线' : '事件 $evtId 的对话线（${talkIds.length}）',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
-                      color: Color(0xFF9B9BA3),
+                      color: palette.textSecondary,
                     ),
                   ),
                 ),
@@ -2371,29 +2413,29 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
               child: Row(
                 children: [
-                  const Icon(
+                  Icon(
                     FluentIcons.info_24_regular,
                     size: 11,
-                    color: Color(0xFF6E6E76),
+                    color: palette.textHint,
                   ),
                   const SizedBox(width: 4),
                   Text(
                     '按住 Shift 点击可多选，支持批量删除',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 10.5,
-                      color: Color(0xFF6E6E76),
+                      color: palette.textHint,
                     ),
                   ),
                 ],
               ),
             ),
-          const Divider(height: 1, color: Color(0xFF2A2A2E)),
+          Divider(height: 1, color: palette.border),
           Expanded(
             child: evtId == null
-                ? const Center(
+                ? Center(
                     child: Text(
                       '选择左侧事件开始编排',
-                      style: TextStyle(color: Color(0xFF6E6E76), fontSize: 13),
+                      style: TextStyle(color: palette.textHint, fontSize: 13),
                     ),
                   )
                 : ListView.builder(
@@ -2406,7 +2448,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           ),
           // 底部：台词展示区 + 立绘角色卡片
           if (_talkId != null) ...[
-            const Divider(height: 1, color: Color(0xFF2A2A2E)),
+            Divider(height: 1, color: palette.border),
             _buildTalkPreviewPane(),
           ],
         ],
@@ -2431,17 +2473,17 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     return Container(
       height: 132,
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-      color: const Color(0xFF1E1C17),
+      color: palette.tintWarn,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Text(
+              Text(
                 '当前台词',
                 style: TextStyle(
                   fontSize: 11,
-                  color: Color(0xFF8B8B93),
+                  color: palette.textMuted,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -2450,16 +2492,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF2A2418),
+                    color: palette.tintWarn,
                     borderRadius: BorderRadius.circular(3),
                   ),
                   child: Text(
                     speaker,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      color: Color(0xFFE8D5B0),
+                      color: palette.goldText,
                     ),
                   ),
                 ),
@@ -2472,17 +2514,17 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           const SizedBox(height: 8),
           Expanded(
             child: content.isEmpty
-                ? const Text(
+                ? Text(
                     '（此对白暂无内容）',
-                    style: TextStyle(fontSize: 12, color: Color(0xFF6E6E76)),
+                    style: TextStyle(fontSize: 12, color: palette.textHint),
                   )
                 : SingleChildScrollView(
                     child: Text(
                       content,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 15,
                         height: 1.5,
-                        color: Color(0xFFF0EDE6),
+                        color: palette.textHigh,
                       ),
                     ),
                   ),
@@ -2507,12 +2549,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFF332B22),
-              border: Border.all(color: const Color(0xFF4A3B22)),
+              color: palette.tintWarn,
+              border: Border.all(color: palette.tintWarn),
             ),
             child: Text(
               name.isNotEmpty ? name.characters.first : '?',
-              style: const TextStyle(fontSize: 13, color: Color(0xFFE8D5B0)),
+              style: TextStyle(fontSize: 13, color: palette.goldText),
             ),
           ),
           const SizedBox(width: 6),
@@ -2525,7 +2567,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   name.isEmpty ? '角色$id' : name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Color(0xFFE4E4E8)),
+                  style: TextStyle(fontSize: 11, color: palette.textBody),
                 ),
                 Text(
                   faceKey.isEmpty ? 'ID $id' : '立绘 $faceKey',
@@ -2561,9 +2603,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               // 左侧高亮条：选中 = 主题紫，当前节点 = 橙色
               decoration: BoxDecoration(
                 color: selected
-                    ? const Color(0xFF2B2B31)
+                    ? palette.hover
                     : (isCurrent
-                          ? const Color(0xFF232329)
+                          ? palette.panel
                           : Colors.transparent),
                 border: Border(
                   left: BorderSide(
@@ -2585,8 +2627,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         : FluentIcons.chat_24_regular,
                     size: 13,
                     color: hasBranch
-                        ? const Color(0xFFE08A3C)
-                        : const Color(0xFF6E6E76),
+                        ? palette.warning
+                        : palette.textHint,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -2601,8 +2643,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
                             color: selected
-                                ? Colors.white
-                                : const Color(0xFFD4D4D8),
+                                ? palette.textHigh
+                                : palette.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -2610,9 +2652,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                           cln(talk is Map ? talk['content'] : ''),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
-                            color: Color(0xFF8B8B93),
+                            color: palette.textMuted,
                           ),
                         ),
                       ],
@@ -2625,14 +2667,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         vertical: 1,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2A2418),
+                        color: palette.tintWarn,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
                         '${opts.length} 选项',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 9.5,
-                          color: Color(0xFFE08A3C),
+                          color: palette.warning,
                         ),
                       ),
                     ),
@@ -2654,19 +2696,19 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       margin: const EdgeInsets.only(left: 26, right: 8, bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFF23201A),
+        color: palette.tintWarn,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: const Color(0xFF4A3B22)),
+        border: Border.all(color: palette.tintWarn),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(
+              Icon(
                 FluentIcons.circle_half_fill_24_regular,
                 size: 12,
-                color: Color(0xFFE08A3C),
+                color: palette.warning,
               ),
               const SizedBox(width: 6),
               Expanded(
@@ -2674,9 +2716,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   text.isEmpty ? '（空选项文本）' : text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
-                    color: Color(0xFFE8D5B0),
+                    color: palette.goldText,
                   ),
                 ),
               ),
@@ -2712,19 +2754,19 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Widget _buildTalkEditor() {
     final talkId = _talkId;
     if (talkId == null) {
-      return const Center(
+      return Center(
         child: Text(
           '选择剧情线中的对白节点进行编辑',
-          style: TextStyle(color: Color(0xFF6E6E76), fontSize: 13),
+          style: TextStyle(color: palette.textHint, fontSize: 13),
         ),
       );
     }
     final talk = _stageTalks[talkId];
     if (talk is! Map) {
-      return const Center(
+      return Center(
         child: Text(
           '选择剧情线中的对白节点进行编辑',
-          style: TextStyle(color: Color(0xFF6E6E76), fontSize: 13),
+          style: TextStyle(color: palette.textHint, fontSize: 13),
         ),
       );
     }
@@ -2839,6 +2881,27 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     widget.onChanged();
   }
 
+  /// 打开配音面板：带入当前编辑中的对白内容与键名前缀（默认 `talk_{id}`）。
+  Future<void> _openTtsPanel() async {
+    final content =
+        (_contentCtrl.text.trim().isNotEmpty ? _contentCtrl.text.trim() : cln(widget.talk['showTxt'])).trim();
+    final role = cln(widget.talk['roleName']).trim();
+    final title = content.isNotEmpty
+        ? (role.isNotEmpty ? '$role：$content' : content)
+        : '';
+    await showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => Center(
+        child: TtsPanel(
+          initText: content,
+          initTitle: title,
+          initTalkId: 'talk_${widget.talkId}',
+        ),
+      ),
+    );
+  }
+
   /// 逗号分隔文本 → 1D 数字/字符串列表（保持原值类型语义）。
   List<dynamic> _splitIds(String text) {
     return ValueCodec.decode(text.isEmpty ? '' : text, '1D Array');
@@ -2877,11 +2940,11 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              const Text(
+              Text(
                 '对白节点',
                 style: TextStyle(
                   fontSize: 12,
-                  color: Color(0xFF9B9BA3),
+                  color: palette.textSecondary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -2893,13 +2956,13 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               const Spacer(),
               Text(
                 '对白: ${opts.length} 选项',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76)),
+                style: TextStyle(fontSize: 11, color: palette.textHint),
               ),
               const SizedBox(width: 12),
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: fluent.Scrollbar(
             controller: _scrollCtrl,
@@ -2916,9 +2979,9 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     (v) => _setField('roleIds', _splitIds(v)),
                     trailing: Text(
                       _roleNamesPreview(),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: Color(0xFF6E6E76),
+                        color: palette.textHint,
                       ),
                     ),
                   ),
@@ -2970,17 +3033,37 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   ),
                 ]),
                 _section('台词内容', [
-                  const Text(
+                  Text(
                     '该条对白显示的文字内容；<color=..>、<size=..> 标签可控制颜色与字号',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+                    style: TextStyle(fontSize: 11, color: palette.textMuted),
                   ),
                   const SizedBox(height: 4),
                   fluent.TextBox(
                     controller: _contentCtrl,
                     maxLines: 6,
                     placeholder: '输入对白内容（支持 <color=..> <size=..> 富文本标签）',
-                    style: const TextStyle(fontSize: 14, color: Colors.white),
+                    style: TextStyle(fontSize: 14, color: palette.textHigh),
                     onChanged: (v) => _setField('content', v),
+                  ),
+                ]),
+                _section('台词配音', [
+                  Text(
+                    '用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
+                    '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted, height: 1.5),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: fluent.FilledButton(
+                      onPressed: () => _openTtsPanel(),
+                      style: fluent.ButtonStyle(
+                        backgroundColor:
+                            WidgetStatePropertyAll(palette.warning),
+                      ),
+                      child: const Text('🎙️ 给本行内容配音',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
                   ),
                 ]),
                 _section('流程与分支', [
@@ -3022,24 +3105,24 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 8),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF23201A),
+                          color: palette.tintWarn,
                           borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: const Color(0xFF4A3B22)),
+                          border: Border.all(color: palette.tintWarn),
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(
                               FluentIcons.add_24_regular,
                               size: 13,
-                              color: Color(0xFFE08A3C),
+                              color: palette.warning,
                             ),
                             SizedBox(width: 6),
                             Text(
                               '添加选项按钮',
                               style: TextStyle(
                                 fontSize: 12,
-                                color: Color(0xFFE8D5B0),
+                                color: palette.goldText,
                               ),
                             ),
                           ],
@@ -3053,7 +3136,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
             ),
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Container(
           height: 44,
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -3065,8 +3148,8 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   style: TextStyle(
                     fontSize: 11,
                     color: widget.dirty
-                        ? const Color(0xFFE08A3C)
-                        : const Color(0xFF6E6E76),
+                        ? palette.warning
+                        : palette.textHint,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -3147,16 +3230,16 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
             children: [
               Text(
                 label,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12.5,
-                  color: Color(0xFFD4D4D8),
+                  color: palette.textPrimary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(width: 8),
               Text(
                 key,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF5E5E66)),
+                style: TextStyle(fontSize: 11, color: palette.textFaint),
               ),
             ],
           ),
@@ -3167,7 +3250,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                 child: fluent.TextBox(
                   controller: ctrl,
                   placeholder: hint,
-                  style: const TextStyle(fontSize: 12.5, color: Colors.white),
+                  style: TextStyle(fontSize: 12.5, color: palette.textHigh),
                   onChanged: onChanged,
                 ),
               ),
@@ -3191,7 +3274,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     if (special.isNotEmpty) {
       return Text(
         special,
-        style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+        style: TextStyle(fontSize: 11, color: palette.textMuted),
       );
     }
     final p = widget.bgCfg[v];
@@ -3199,7 +3282,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     if (n is String && n.isNotEmpty) {
       return Text(
         n,
-        style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+        style: TextStyle(fontSize: 11, color: palette.textMuted),
       );
     }
     return const SizedBox.shrink();
@@ -3213,7 +3296,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     if (n is String && n.isNotEmpty) {
       return Text(
         n,
-        style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+        style: TextStyle(fontSize: 11, color: palette.textMuted),
       );
     }
     return const SizedBox.shrink();
@@ -3238,14 +3321,14 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                         ? FluentIcons.chevron_down_24_regular
                         : FluentIcons.chevron_right_24_regular,
                     size: 13,
-                    color: const Color(0xFF8B8B93),
+                    color: palette.textMuted,
                   ),
                   const SizedBox(width: 6),
                   Text(
                     '属性表（${keys.length}）',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12.5,
-                      color: Color(0xFF8B8B93),
+                      color: palette.textMuted,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -3257,7 +3340,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
             const SizedBox(height: 8),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xFF2E2E34)),
+                border: Border.all(color: palette.surface),
                 borderRadius: BorderRadius.circular(6),
               ),
               clipBehavior: Clip.antiAlias,
@@ -3265,7 +3348,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                 children: [
                   for (var i = 0; i < keys.length; i++) ...[
                     if (i > 0)
-                      const Divider(height: 1, color: Color(0xFF2A2A2E)),
+                      Divider(height: 1, color: palette.border),
                     _attrRow(keys[i]),
                   ],
                 ],
@@ -3280,7 +3363,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
   /// 属性表行：左侧固定宽属性名，右侧值输入框。
   Widget _attrRow(String key) {
     return Container(
-      color: const Color(0xFF1F1F24),
+      color: palette.bgDeep,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Row(
         children: [
@@ -3293,17 +3376,17 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   _fieldLabel(key),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
-                    color: Color(0xFFD4D4D8),
+                    color: palette.textPrimary,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 Text(
                   key,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10,
-                    color: Color(0xFF5E5E66),
+                    color: palette.textFaint,
                   ),
                 ),
               ],
@@ -3316,9 +3399,9 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               children: [
                 Text(
                   '「${_fieldLabel(key)}」字段值，按类型输入',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
-                    color: Color(0xFF8B8B93),
+                    color: palette.textMuted,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -3327,7 +3410,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     text: ValueCodec.encode(widget.talk[key]),
                   ),
                   maxLines: 2,
-                  style: const TextStyle(fontSize: 12.5, color: Colors.white),
+                  style: TextStyle(fontSize: 12.5, color: palette.textHigh),
                   onChanged: (v) => _setField(key, _decodeByType(key, v)),
                 ),
               ],
@@ -3424,26 +3507,26 @@ class _OptionRowState extends State<_OptionRow> {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFF23201A),
+        color: palette.tintWarn,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: const Color(0xFF4A3B22)),
+        border: Border.all(color: palette.tintWarn),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(
+              Icon(
                 FluentIcons.circle_half_fill_24_regular,
                 size: 12,
-                color: Color(0xFFE08A3C),
+                color: palette.warning,
               ),
               const SizedBox(width: 6),
               Text(
                 '选项 ${widget.optId}',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
-                  color: Color(0xFFE8D5B0),
+                  color: palette.goldText,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -3452,25 +3535,25 @@ class _OptionRowState extends State<_OptionRow> {
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
                   onTap: widget.onRemove,
-                  child: const Icon(
+                  child: Icon(
                     FluentIcons.delete_24_regular,
                     size: 13,
-                    color: Color(0xFFE05656),
+                    color: palette.statusDanger,
                   ),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             '玩家看到的选项按钮文字，点击后进入对应分支',
-            style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+            style: TextStyle(fontSize: 11, color: palette.textMuted),
           ),
           const SizedBox(height: 4),
           fluent.TextBox(
             controller: _contentCtrl,
             placeholder: '选项文本',
-            style: const TextStyle(fontSize: 12.5, color: Colors.white),
+            style: TextStyle(fontSize: 12.5, color: palette.textHigh),
             onChanged: (v) {
               if (opt is Map) {
                 opt['content'] = v;
@@ -3479,15 +3562,15 @@ class _OptionRowState extends State<_OptionRow> {
             },
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             '玩家选择该选项后跳转到的对话 ID；多个 ID 用逗号分隔',
-            style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+            style: TextStyle(fontSize: 11, color: palette.textMuted),
           ),
           const SizedBox(height: 4),
           fluent.TextBox(
             controller: _targetCtrl,
             placeholder: '跳转至对话 ID（talkId）',
-            style: const TextStyle(fontSize: 12.5, color: Colors.white),
+            style: TextStyle(fontSize: 12.5, color: palette.textHigh),
             onChanged: (v) {
               if (opt is Map) {
                 opt['talkId'] = ValueCodec.decode(v, '1D Array');
@@ -3529,18 +3612,18 @@ class _ActionPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Color bg = const Color(0xFF26262B);
-    Color fg = const Color(0xFFD4D4D8);
-    Color? borderColor = const Color(0xFF3A3A42);
+    Color bg = palette.card;
+    Color fg = palette.textPrimary;
+    Color? borderColor = palette.borderHover;
 
     if (primary) {
       bg = const Color(0xFF6C5CE7);
       fg = Colors.white;
       borderColor = null;
     } else if (danger) {
-      bg = const Color(0xFF2D1E1E);
-      fg = const Color(0xFFFF6B6B);
-      borderColor = const Color(0xFF4D2A2A);
+      bg = palette.tintDanger;
+      fg = palette.statusDanger;
+      borderColor = palette.tintDanger;
     }
 
     return MouseRegion(

@@ -5,6 +5,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../story/story_transfer_dialogs.dart';
+import '../../core/app_theme.dart';
 
 /// 剧情库侧边栏：原版事件检索/提取 + 台词全文搜索。
 /// FullTextSearchDialog）+ 故事剧本导入/导出入口。
@@ -172,7 +173,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
     return Column(
       children: [
         _header(),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         _statusCard(),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -201,7 +202,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(child: _tab == 'events' ? _eventsTab() : _talksTab()),
       ],
     );
@@ -219,11 +220,11 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
             color: Color(0xFF6C5CE7),
           ),
           const SizedBox(width: 8),
-          const Text(
+          Text(
             '剧情库',
             style: TextStyle(
               fontSize: 12,
-              color: Color(0xFF9B9BA3),
+              color: palette.textSecondary,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -238,7 +239,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
     final status = _status['status'] ?? 'idle';
     final Widget content;
     if (status == 'loading') {
-      content = const Row(
+      content = Row(
         children: [
           SizedBox(
             width: 12,
@@ -249,7 +250,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
           Expanded(
             child: Text(
               '正在加载原版配置表…',
-              style: TextStyle(fontSize: 11, color: Color(0xFF9B9BA3)),
+              style: TextStyle(fontSize: 11, color: palette.textSecondary),
             ),
           ),
         ],
@@ -260,19 +261,19 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
       content = Text(
         '原版数据已就绪：${_status['dirs']?.length ?? 0} 个目录 / $loaded 表'
         '${missing > 0 ? ' / 缺 $missing 表' : ''}',
-        style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+        style: TextStyle(fontSize: 11, color: palette.textMuted),
       );
     } else if (status == 'error') {
       content = Text(
         '加载失败：${_status['error']}',
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 11, color: Color(0xFFE5484D)),
+        style: TextStyle(fontSize: 11, color: palette.danger),
       );
     } else {
-      content = const Text(
+      content = Text(
         '未加载原版数据：配置 editor_env.json 或点击扫描',
-        style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+        style: TextStyle(fontSize: 11, color: palette.textMuted),
       );
     }
     return Container(
@@ -280,9 +281,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
       margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFF222228),
+        color: palette.card,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: const Color(0xFF2E2E34)),
+        border: Border.all(color: palette.surface),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -310,10 +311,10 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
 
   Widget _eventsTab() {
     if (_status['status'] != 'ready') {
-      return const Center(
+      return Center(
         child: Text(
           '加载原版数据后可用',
-          style: TextStyle(fontSize: 12, color: Color(0xFF6E6E76)),
+          style: TextStyle(fontSize: 12, color: palette.textHint),
         ),
       );
     }
@@ -326,7 +327,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
             alignment: Alignment.centerLeft,
             child: Text(
               '输入事件标题关键词或 ID 前缀，从已加载的原版数据中检索',
-              style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+              style: TextStyle(fontSize: 11, color: palette.textMuted),
             ),
           ),
         ),
@@ -350,9 +351,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
               children: [
                 Text(
                   '共 $_total 个事件',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
-                    color: Color(0xFF8B8B93),
+                    color: palette.textMuted,
                   ),
                 ),
                 const Spacer(),
@@ -364,9 +365,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                 }),
                 Text(
                   '$_page/$maxPage',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
-                    color: Color(0xFF9B9BA3),
+                    color: palette.textSecondary,
                   ),
                 ),
                 _pagerBtn('>', () {
@@ -419,7 +420,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                 size: 16,
                                 color: selected
                                     ? const Color(0xFF6C5CE7)
-                                    : const Color(0xFF6E6E76),
+                                    : palette.textHint,
                               ),
                             ),
                           ),
@@ -439,9 +440,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                   '[$id] $title',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 12,
-                                    color: Color(0xFFD4D4D8),
+                                    color: palette.textPrimary,
                                   ),
                                 ),
                               ),
@@ -497,7 +498,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
             alignment: Alignment.centerLeft,
             child: Text(
               '输入任意台词片段（支持部分匹配），在本体与 Mod 的台词库中全文检索',
-              style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+              style: TextStyle(fontSize: 11, color: palette.textMuted),
             ),
           ),
         ),
@@ -531,7 +532,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                       margin: const EdgeInsets.fromLTRB(8, 2, 8, 2),
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1F1F24),
+                        color: palette.bgDeep,
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Column(
@@ -546,15 +547,15 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                 ),
                                 decoration: BoxDecoration(
                                   color: src == 'Mod'
-                                      ? const Color(0xFF3A2A4A)
-                                      : const Color(0xFF26364A),
+                                      ? palette.tintAccent
+                                      : palette.tintInfo,
                                   borderRadius: BorderRadius.circular(3),
                                 ),
                                 child: Text(
                                   src,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 10,
-                                    color: Color(0xFF9B9BA3),
+                                    color: palette.textSecondary,
                                   ),
                                 ),
                               ),
@@ -564,9 +565,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                   '$evtId $evtTitle',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 11,
-                                    color: Color(0xFF9B9BA3),
+                                    color: palette.textSecondary,
                                   ),
                                 ),
                               ),
@@ -595,9 +596,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                             content,
                             maxLines: 3,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 12,
-                              color: Color(0xFFE4E4E8),
+                              color: palette.textBody,
                             ),
                           ),
                         ],
@@ -619,14 +620,14 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFF2B2B31) : Colors.transparent,
+            color: selected ? palette.hover : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(
             label,
             style: TextStyle(
               fontSize: 12,
-              color: selected ? Colors.white : const Color(0xFF9B9BA3),
+              color: selected ? palette.textHigh : palette.textSecondary,
             ),
           ),
         ),
@@ -643,7 +644,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
           message: tip,
           child: Padding(
             padding: const EdgeInsets.all(4),
-            child: Icon(icon, size: 14, color: const Color(0xFF8B8B93)),
+            child: Icon(icon, size: 14, color: palette.textMuted),
           ),
         ),
       ),
@@ -659,7 +660,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           child: Text(
             label,
-            style: const TextStyle(fontSize: 13, color: Color(0xFF9B9BA3)),
+            style: TextStyle(fontSize: 13, color: palette.textSecondary),
           ),
         ),
       ),

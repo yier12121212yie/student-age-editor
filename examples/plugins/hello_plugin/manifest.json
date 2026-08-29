@@ -1,0 +1,7 @@
+{
+  "id": "hello_plugin",
+  "name": "Hello 插件",
+  "version": "1.0.0",
+  "author": "示例作者",
+  "description": "插件系统演示：路由 / 面板 / Agent 工具 / CLI 命令"
+}

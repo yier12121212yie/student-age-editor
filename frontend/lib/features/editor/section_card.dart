@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/motion.dart';
+import '../../core/app_theme.dart';
 
 class SectionCard extends StatefulWidget {
   const SectionCard({
@@ -30,9 +31,9 @@ class _SectionCardState extends State<SectionCard> {
         duration: AppMotion.fast,
         curve: AppMotion.easeOut,
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E23),
+          color: palette.panel,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: _hover ? const Color(0xFF3A3A42) : const Color(0xFF2E2E35)),
+          border: Border.all(color: _hover ? palette.borderHover : palette.surface),
           boxShadow: _hover ? [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 12, offset: const Offset(0, 4))] : [],
         ),
         transform: Matrix4.identity()..translateByDouble(0.0, _hover ? -1.0 : 0.0, 0.0, 1.0),
@@ -41,10 +42,10 @@ class _SectionCardState extends State<SectionCard> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (widget.title.isNotEmpty) ...[
-              Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+              Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
               if (widget.desc != null) ...[
                 const SizedBox(height: 4),
-                Text(widget.desc!, style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                Text(widget.desc!, style: TextStyle(fontSize: 11, color: palette.textMuted)),
               ],
               const SizedBox(height: 8),
             ],

@@ -22,17 +22,36 @@ class ApiRouter(object):
     def __init__(self):
         self._routes = []           # (method, rx, fn, sig) 保留注册顺序
         self._by_method = {}        # method -> [(rx, fn, sig), ...] 避免每请求扫全量
+        self._owner_fns = {}        # owner -> set(fn)，插件路由按 owner 注销用
 
-    def route(self, method, pattern):
+    def route(self, method, pattern, owner=None):
         rx = re.compile(pattern)
 
         def deco(fn):
             sig = inspect.signature(fn)
             self._routes.append((method, rx, fn, sig))
             self._by_method.setdefault(method, []).append((rx, fn, sig))
+            if owner:
+                self._owner_fns.setdefault(owner, set()).add(fn)
             return fn
 
         return deco
+
+    def unregister_owner(self, owner):
+        """注销带 owner 标记的全部路由（插件停用/卸载时调用）。返回注销条数。
+
+        注意按 fn 身份过滤：同一函数注册到多个 pattern 会一并注销，
+        插件应避免复用同一 handler 注册多条路由。
+        """
+        fns = self._owner_fns.pop(owner, None)
+        if not fns:
+            return 0
+        before = len(self._routes)
+        self._routes = [e for e in self._routes if e[2] not in fns]
+        for method in list(self._by_method):
+            # _by_method 元组为 (rx, fn, sig)，按 fn(e[1]) 身份过滤
+            self._by_method[method] = [e for e in self._by_method[method] if e[1] not in fns]
+        return before - len(self._routes)
 
     def dispatch(self, method, path, query, body):
         bucket = self._by_method.get(method)

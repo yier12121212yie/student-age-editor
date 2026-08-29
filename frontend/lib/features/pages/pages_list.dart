@@ -5,6 +5,7 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../editor/editor_controller.dart';
 import 'pages_catalog.dart';
+import '../../core/app_theme.dart';
 
 /// 编辑页面侧边栏：9 个页面入口。
 class PagesList extends StatelessWidget {
@@ -31,15 +32,15 @@ class PagesList extends StatelessWidget {
         Container(
           height: 38,
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: const Row(
+          child: Row(
             children: [
               Text('编辑页面',
                   style: TextStyle(
-                      fontSize: 12, color: Color(0xFF9B9BA3), fontWeight: FontWeight.w600)),
+                      fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -56,7 +57,7 @@ class PagesList extends StatelessWidget {
                     child: Container(
                       decoration: isMobileWidth(context)
                           ? BoxDecoration(
-                              color: const Color(0xFF1E1E23),
+                              color: palette.panel,
                               borderRadius: BorderRadius.circular(8),
                             )
                           : null,
@@ -75,19 +76,19 @@ class PagesList extends StatelessWidget {
                                 Text(page.title,
                                     style: TextStyle(
                                         fontSize: isMobileWidth(context) ? 14 : 13,
-                                        color: const Color(0xFFD4D4D8),
+                                        color: palette.textPrimary,
                                         fontWeight: FontWeight.w600)),
                                 const SizedBox(height: 2),
                                 Text(page.description,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontSize: 11, color: Color(0xFF6E6E76))),
+                                    style: TextStyle(
+                                        fontSize: 11, color: palette.textHint)),
                               ],
                             ),
                           ),
-                          const Icon(FluentIcons.chevron_right_24_regular,
-                              size: 13, color: Color(0xFF5E5E66)),
+                          Icon(FluentIcons.chevron_right_24_regular,
+                              size: 13, color: palette.textFaint),
                         ],
                       ),
                     ),

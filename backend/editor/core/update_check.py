@@ -51,6 +51,42 @@ def _version_key(tag):
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+def _line_prefix(tag):
+    """版本线前缀：首个点分数字之前的文本（"Alpha-v0.1" → "Alpha-v"、
+    "v1.4.1" → "v"）。版本线重置（如 1.4.x → Alpha-v0.x）后，不同前缀的
+    数值元组之间没有可比较的语义，必须退回按「是否为同一发行」判断。
+    """
+    match = re.search(r"\d+(?:\.\d+)+", tag or "")
+    if not match:
+        return tag or ""
+    return (tag or "")[:match.start()]
+
+
+def _same_release(tag, current):
+    """忽略大小写及首字符 v/V 后，两个版本字符串是否指代同一发行。"""
+    norm = lambda s: re.sub(r"^[vV]", "", s or "").strip().lower()
+    return bool(tag) and norm(tag) == norm(current)
+
+
+def _should_update(latest_tag, current):
+    """latest 与 current 是否应提示更新。
+
+    同一版本线内用数值元组比较（Alpha-v0.10 > Alpha-v0.9 成立）；
+    跨版本线（前缀不同，如当前 1.4.x、最新按创建时间取的 Alpha-v0.x）
+    数值比较无意义，退化为「最新发行与已装版本不是同一发行」；
+    latest 提取不到点分版本号（如 tag "latest"）时无法判断新旧，不提示。
+    """
+    if not (latest_tag or "").strip():
+        return False
+    v_latest = _version_key(latest_tag)
+    if not v_latest:
+        return False
+    v_current = _version_key(current)
+    if v_latest and v_current and _line_prefix(latest_tag) == _line_prefix(current):
+        return v_latest > v_current
+    return not _same_release(latest_tag, current)
+
+
 def _empty_result(current):
     """仓库暂无可用发行版（列表为空或全是 draft）时的返回值。"""
     return {
@@ -86,6 +122,11 @@ def check_update(timeout=6):
         })
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             releases = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(releases, list):
+            # 非列表响应（如限流/异常时的 {"message": ...}）不能按 release 遍历
+            return {"ok": False,
+                    "error": "GitHub 返回了意外的响应格式（非列表）",
+                    "current": current}
         # 「最新发行版」按创建时间取：GitHub 列表顺序不保证按时间排列，
         # 也不能按版本号取最大（版本线重置为 Alpha-v0.1 后，旧线 1.4.x
         # 的数字版本永远更大，会误报更新）
@@ -105,7 +146,7 @@ def check_update(timeout=6):
             "html_url": rel.get("html_url") or rel.get("url") or "",
             # 完整返回发布说明，截断交给展示层
             "notes": rel.get("body") or "",
-            "update_available": _version_key(latest_tag) > _version_key(current),
+            "update_available": _should_update(latest_tag, current),
             "assets": [
                 {
                     "name": a.get("name", ""),

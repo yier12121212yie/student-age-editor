@@ -84,6 +84,8 @@ from textual.widgets.option_list import Option
 
 from textual import events, on
 
+from rich.markup import escape
+
 
 
 from editor.cli.utils import (
@@ -927,6 +929,8 @@ class HelpScreen(ModalScreen):
                 "  [cyan]r[/]  刷新           重载 workspace + 当前 cfg\n"
                 "  [green]c[/]  云同步         网盘 provider 列表 / 测试 / 上传下载同步\n"
                 "  [green]a[/]  AI 助手        对话式修改模组（写操作需确认）\n"
+                "  [green]t[/]  配音 (TTS)     语音合成 / 测试连接 / 素材管理\n"
+                "  [green]p[/]  插件           第三方插件列表 / 启停 / 详情 / 卸载 / 重载（启用需高危确认）\n"
 
                 "  [cyan]?[/]  帮助           打开本窗口\n"
 
@@ -1521,7 +1525,7 @@ class OobeScreen(ModalScreen[bool]):
 
 
 
-    STEPS = ["欢迎", "工作区", "首个 Mod（可选）", "完成"]
+    STEPS = ["欢迎", "工作区", "首个 Mod（可选）", "AI 助手（可选）", "配音 TTS（可选）", "云存储（可选）", "完成"]
 
 
     def __init__(self, workspace: Path | None = None, forced: bool = False, **kwargs):
@@ -1607,6 +1611,48 @@ class OobeScreen(ModalScreen[bool]):
 
                 with Vertical(id="oobe-step-3", classes="oobe-step"):
 
+                    yield Static("[b]③ AI 助手[/] [dim](可选，全部留空跳过)[/]")
+
+                    yield Input(placeholder="协议 openai_compatible / openai_responses / anthropic", value="openai_compatible", id="oobe-ai-provider")
+
+                    yield Input(placeholder="Base URL（回车=官方默认）", id="oobe-ai-baseurl")
+
+                    yield Input(placeholder="API Key（留空则跳过本步）", id="oobe-ai-key", password=True)
+
+                    yield Input(placeholder="模型（回车=默认）", id="oobe-ai-model")
+
+                with Vertical(id="oobe-step-4", classes="oobe-step"):
+
+                    yield Static("[b]④ 配音 TTS[/] [dim](可选，全部留空跳过)[/]")
+
+                    yield Input(placeholder="服务商 aliyun / minimax（留空跳过）", id="oobe-tts-provider")
+
+                    yield Input(placeholder="API Key", id="oobe-tts-key", password=True)
+
+                    yield Input(placeholder="Group ID（仅 MiniMax，可空）", id="oobe-tts-groupid")
+
+                    yield Input(placeholder="模型（回车=默认）", id="oobe-tts-model")
+
+                    yield Input(placeholder="默认音色（回车=默认）", id="oobe-tts-voice")
+
+                with Vertical(id="oobe-step-5", classes="oobe-step"):
+
+                    yield Static("[b]⑤ 云存储[/] [dim](可选，留空跳过；保存后可到云同步面板测试)[/]")
+
+                    yield Input(placeholder="类型 local / webdav / openlist（留空跳过）", id="oobe-cloud-type")
+
+                    yield Input(placeholder="名称（回车=类型名）", id="oobe-cloud-name")
+
+                    yield Input(placeholder="地址（WebDAV/OpenList）或本地根目录（local）", id="oobe-cloud-url")
+
+                    yield Input(placeholder="用户名（webdav 可空）", id="oobe-cloud-user")
+
+                    yield Input(placeholder="密码 / Token（可空）", id="oobe-cloud-secret", password=True)
+
+                    yield Input(placeholder="远端根目录（回车=mods）", value="mods", id="oobe-cloud-remote")
+
+                with Vertical(id="oobe-step-6", classes="oobe-step"):
+
                     yield Static("", id="oobe-summary")
 
             with Horizontal(id="oobe-nav"):
@@ -1620,6 +1666,8 @@ class OobeScreen(ModalScreen[bool]):
 
     def on_mount(self):
 
+        self._prefill_settings()
+
         self._show_step(0)
 
         self.query_one("#o-next", Button).focus()
@@ -1632,7 +1680,7 @@ class OobeScreen(ModalScreen[bool]):
 
         self._step = idx
 
-        for i in range(4):
+        for i in range(len(self.STEPS)):
 
             try:
 
@@ -1648,7 +1696,7 @@ class OobeScreen(ModalScreen[bool]):
 
         if idx > 0:
 
-            title = f"🚀  OOBE 向导 — 第 {idx}/3 步：{self.STEPS[idx]}"
+            title = f"🚀  OOBE 向导 — 第 {idx}/{len(self.STEPS) - 1} 步：{self.STEPS[idx]}"
 
         self.query_one("#oobe-title", Static).update(title)
 
@@ -1662,13 +1710,19 @@ class OobeScreen(ModalScreen[bool]):
 
         elif idx == 2:
 
-            nxt.label = "创建并完成"
+            nxt.label = "下一步"
 
             self.query_one("#oobe-mod-title", Input).focus()
 
+        elif idx == len(self.STEPS) - 2:
+
+            nxt.label = "创建并完成"
+
+            self.query_one("#oobe-cloud-type", Input).focus()
+
         else:
 
-            nxt.label = "开始使用" if idx == 3 else "下一步"
+            nxt.label = "开始使用" if idx == len(self.STEPS) - 1 else "下一步"
 
 
     @on(Button.Pressed, "#o-ws-default")
@@ -1695,27 +1749,17 @@ class OobeScreen(ModalScreen[bool]):
 
             return
 
-        if self._step < 3:
+        if self._step == len(self.STEPS) - 1:
 
-            if self._step == 1:
+            self.dismiss(True)
 
-                self._show_step(2)
+        elif self._step == len(self.STEPS) - 2:
 
-            elif self._step == 2:
-
-                self._finish()
-
-            elif self._step == 3:
-
-                self.dismiss(True)
-
-            else:
-
-                self._show_step(1)
+            self._finish()
 
         else:
 
-            self.dismiss(True)
+            self._show_step(self._step + 1)
 
 
     @on(Input.Submitted, "#o-ws-input")
@@ -1761,6 +1805,212 @@ class OobeScreen(ModalScreen[bool]):
         return True
 
 
+    def _prefill_settings(self):
+
+        from editor.core.env_store import read_ai_settings
+
+        try:
+
+            s = read_ai_settings()
+
+        except Exception:
+
+            s = {}
+
+        try:
+
+            self.query_one("#oobe-ai-provider", Input).value = s.get("provider") or "openai_compatible"
+
+            self.query_one("#oobe-ai-baseurl", Input).value = s.get("baseUrl") or ""
+
+            self.query_one("#oobe-ai-key", Input).value = s.get("apiKey") or ""
+
+            self.query_one("#oobe-ai-model", Input).value = s.get("model") or ""
+
+            self.query_one("#oobe-tts-provider", Input).value = s.get("ttsProvider") or ""
+
+            self.query_one("#oobe-tts-key", Input).value = s.get("ttsApiKey") or ""
+
+            self.query_one("#oobe-tts-groupid", Input).value = s.get("ttsGroupId") or ""
+
+            self.query_one("#oobe-tts-model", Input).value = s.get("ttsModel") or ""
+
+            self.query_one("#oobe-tts-voice", Input).value = s.get("ttsVoice") or ""
+
+        except Exception:
+
+            pass
+
+
+    def _collect_ai_settings(self) -> dict:
+
+        ai: dict = {}
+
+        try:
+
+            ai["provider"] = self.query_one("#oobe-ai-provider", Input).value.strip() or "openai_compatible"
+
+        except Exception:
+
+            ai["provider"] = "openai_compatible"
+
+        for key, iid in (("baseUrl", "#oobe-ai-baseurl"),
+
+                         ("apiKey", "#oobe-ai-key"),
+
+                         ("model", "#oobe-ai-model")):
+
+            try:
+
+                v = self.query_one(iid, Input).value.strip()
+
+                if v:
+
+                    ai[key] = v
+
+            except Exception:
+
+                pass
+
+        if not (ai.get("apiKey") or ai.get("model") or ai.get("baseUrl")):
+
+            return {}
+
+        return ai
+
+
+    def _collect_tts_settings(self) -> dict:
+
+        tts: dict = {}
+
+        try:
+
+            p = self.query_one("#oobe-tts-provider", Input).value.strip().lower()
+
+        except Exception:
+
+            return tts
+
+        if p not in ("aliyun", "minimax"):
+
+            return tts
+
+        for key, iid in (("ttsApiKey", "#oobe-tts-key"),
+
+                         ("ttsGroupId", "#oobe-tts-groupid"),
+
+                         ("ttsModel", "#oobe-tts-model"),
+
+                         ("ttsVoice", "#oobe-tts-voice")):
+
+            try:
+
+                v = self.query_one(iid, Input).value.strip()
+
+                if v:
+
+                    tts[key] = v
+
+            except Exception:
+
+                pass
+
+        if not tts.get("ttsApiKey"):
+
+            return {}
+
+        tts["ttsProvider"] = p
+
+        return tts
+
+
+    def _collect_cloud(self) -> dict | None:
+
+        try:
+
+            t = self.query_one("#oobe-cloud-type", Input).value.strip().lower()
+
+        except Exception:
+
+            return None
+
+        if t not in ("local", "webdav", "openlist"):
+
+            return None
+
+        def _val(iid: str) -> str:
+
+            try:
+
+                return self.query_one(iid, Input).value.strip()
+
+            except Exception:
+
+                return ""
+
+        cfg: dict = {}
+
+        if t == "local":
+
+            root = _val("#oobe-cloud-url")
+
+            if not root:
+
+                return None
+
+            cfg["root"] = root
+
+        elif t == "webdav":
+
+            url = _val("#oobe-cloud-url")
+
+            if not url:
+
+                return None
+
+            cfg["url"] = url
+
+            user = _val("#oobe-cloud-user")
+
+            if user:
+
+                cfg["username"] = user
+
+            pwd = _val("#oobe-cloud-secret")
+
+            if pwd:
+
+                cfg["password"] = pwd
+
+        else:  # openlist
+
+            url = _val("#oobe-cloud-url")
+
+            if not url:
+
+                return None
+
+            cfg["url"] = url
+
+            token = _val("#oobe-cloud-secret")
+
+            if token:
+
+                cfg["token"] = token
+
+        return {
+
+            "name": _val("#oobe-cloud-name") or t,
+
+            "type": t,
+
+            "config": cfg,
+
+            "remote_root": _val("#oobe-cloud-remote") or "mods",
+
+        }
+
+
     def _finish(self):
 
         from editor.cli.oobe import apply_setup
@@ -1779,11 +2029,25 @@ class OobeScreen(ModalScreen[bool]):
 
             pass
 
+        ai_only = self._collect_ai_settings()
+
+        tts = self._collect_tts_settings()
+
+        ai_settings = dict(ai_only)
+
+        ai_settings.update(tts)
+
+        cloud_provider = self._collect_cloud()
+
         try:
 
             result = apply_setup(workspace=ws_raw or None,
 
-                                 mod_title=title or None, mod_desc=desc)
+                                 mod_title=title or None, mod_desc=desc,
+
+                                 ai_settings=ai_settings or None,
+
+                                 cloud_provider=cloud_provider)
 
         except Exception as e:
 
@@ -1813,13 +2077,29 @@ class OobeScreen(ModalScreen[bool]):
 
             lines.append(f"[b]首个 Mod[/] {result['mod']}")
 
+        if ai_only:
+
+            lines.append(f"[b]AI 助手[/] 已配置（{ai_only.get('provider') or 'openai_compatible'}）")
+
+        if tts.get("ttsProvider"):
+
+            lines.append(f"[b]配音 TTS[/] 已配置（{tts.get('ttsProvider')}）")
+
+        if result.get("cloud_provider"):
+
+            cname = (cloud_provider or {}).get("name") or ""
+
+            ctype = (cloud_provider or {}).get("type") or ""
+
+            lines.append(f"[b]云存储[/] {cname}（{ctype}）")
+
         lines.append("\n[dim]提示：左侧选择 Mod → 展开 Cfgs → 回车打开记录表[/]")
 
         lines.append("[dim]快捷键：n 新建 · e 编辑 · s 保存 · ? 帮助[/]")
 
         s.update("\n".join(lines))
 
-        self._show_step(3)
+        self._show_step(len(self.STEPS) - 1)
 
 
     @on(Button.Pressed, "#o-skip")
@@ -1844,6 +2124,238 @@ class OobeScreen(ModalScreen[bool]):
 
 
 # ──────────────────────────────────────────────────────────────────────
+
+
+class PluginInfoScreen(ModalScreen):
+    """插件详情弹窗：manifest 全字段 + contributions。"""
+
+    BINDINGS = [Binding("escape", "close", "关闭", priority=True)]
+
+    DEFAULT_CSS = """
+    PluginInfoScreen { align: center middle; }
+    #pi-dialog { width: 80; height: 72%; background: $surface; border: thick $primary; padding: 1 2; }
+    #pi-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    #pi-body { height: 1fr; overflow-y: auto; }
+    """
+
+    def __init__(self, info):
+        super().__init__()
+        self._info = info
+
+    def _render_body(self):
+        info = self._info
+        lines = []
+        for k in ("id", "name", "version", "author", "description", "entry"):
+            lines.append(f"[cyan]{k}[/]  {escape(str(info.get(k) or ''))}")
+        status = "启用" if info.get("enabled") else "停用"
+        if info.get("enabled"):
+            status += " · " + ("已加载" if info.get("loaded") else "加载失败")
+        lines.append(f"[cyan]status[/]  {status}")
+        lines.append(f"[cyan]risk_ack_at[/]  {escape(str(info.get('risk_ack_at') or ''))}")
+        if info.get("error"):
+            lines.append(f"[red]error[/]  {escape(str(info['error']))}")
+        contrib = info.get("contributions") or {}
+        lines.append("\n[bold]contributions[/]")
+        for kind in ("routes", "tools", "commands", "panels"):
+            items = contrib.get(kind) or []
+            if items:
+                lines.append(f"[green][{kind}][/]")
+                for it in items:
+                    lines.append("    " + escape(str(it)))
+            else:
+                lines.append(f"[dim][{kind}][/] (none)")
+        return "\n".join(lines)
+
+    def compose(self):
+        with Vertical(id="pi-dialog"):
+            yield Static(f"🧩 插件详情 — {escape(self._info['id'])}", id="pi-title")
+            yield Static(self._render_body(), id="pi-body")
+            with Center():
+                yield Button("关闭 (Esc)", id="pi-close", variant="primary")
+
+    def on_mount(self):
+        self.query_one("#pi-close", Button).focus()
+
+    @on(Button.Pressed, "#pi-close")
+    def close(self, _=None):
+        self.app.pop_screen()
+
+    def on_key(self, event):
+        if event.key in ("escape", "q", "enter"):
+            event.stop()
+            self.app.pop_screen()
+
+
+class PluginsScreen(ModalScreen):
+    """插件管理弹窗：空格 启用/停用 · i 详情 · d 卸载 · r 重载。
+
+    启用第三方插件 = 运行其 Python 代码，必须先弹 ConfirmScreen 高危确认，
+    确认后才 set_enabled(pid, True, risk_ack=True)；未确认保持停用。
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "关闭", priority=True),
+        Binding("space", "toggle", "启用/停用"),
+        Binding("i", "info", "详情"),
+        Binding("d", "delete", "卸载"),
+        Binding("r", "reload", "重载"),
+        Binding("q", "close", "关闭", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    PluginsScreen { align: center middle; }
+    #pl-dialog { width: 90; height: 80%; background: $surface; border: thick $primary; padding: 1 2; }
+    #pl-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    #pl-table { height: 1fr; }
+    #pl-hint { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._plugins = []
+        self._selected_id = None
+
+    @staticmethod
+    def _system():
+        from editor.core import plugin_system
+        return plugin_system
+
+    def compose(self):
+        with Vertical(id="pl-dialog"):
+            yield Static("🧩 插件管理（第三方 Python 插件）", id="pl-title")
+            yield DataTable(id="pl-table", cursor_type="row")
+            yield Static(
+                "空格=启用/停用 · i=详情 · d=卸载 · r=重载 · Esc/q=关闭  "
+                "[dim]（启用需高危确认：插件将与编辑器同权限运行）[/]",
+                id="pl-hint")
+
+    def on_mount(self):
+        t: DataTable = self.query_one("#pl-table", DataTable)
+        t.cursor_type = "row"
+        t.zebra_stripes = True
+        t.add_columns("id", "名称", "版本", "状态", "error")
+        t.focus()
+        self._reload()
+
+    def _reload(self):
+        ps = self._system()
+        try:
+            ps.load_all(None)
+            self._plugins = ps.list_plugins()
+        except Exception as e:
+            self._plugins = []
+            self.app.notify(f"插件列表加载失败: {e}", severity="error", timeout=3)
+        t: DataTable = self.query_one("#pl-table", DataTable)
+        t.clear()
+        for e in self._plugins:
+            status = "启用" if e["enabled"] else "停用"
+            if e["enabled"]:
+                status += " ·" + ("已加载" if e["loaded"] else "加载失败")
+            t.add_row(e["id"], e["name"] or "-", e["version"] or "-", status,
+                      (e["error"] or "")[:40], key=e["id"])
+        if self._selected_id is None and self._plugins:
+            self._selected_id = self._plugins[0]["id"]
+
+    def _selected_plugin(self):
+        if self._selected_id:
+            for e in self._plugins:
+                if e["id"] == self._selected_id:
+                    return e
+        return None
+
+    @on(DataTable.RowHighlighted, "#pl-table")
+    def _on_highlight(self, event):
+        if event.row_key and event.row_key.value:
+            self._selected_id = str(event.row_key.value)
+
+    def action_toggle(self):
+        entry = self._selected_plugin()
+        if entry is None:
+            self.app.notify("先在列表中选择一个插件", severity="warning", timeout=2)
+            return
+        ps = self._system()
+        if entry["enabled"]:
+            # 停用直接切换（无需确认）
+            try:
+                ps.set_enabled(entry["id"], False)
+            except Exception as e:
+                self.app.notify(f"停用失败: {e}", severity="error", timeout=3)
+            else:
+                self.app.notify(f"已停用 {entry['id']}", timeout=2)
+            self._reload()
+            return
+        # 启用：先弹高危确认（复用 ConfirmScreen[bool] 模式），确认才启用
+        def _after(ok):
+            if not ok:
+                self.app.notify(f"{entry['id']} 未启用（放弃高危确认）", timeout=2)
+                self._reload()
+                return
+            try:
+                ps.set_enabled(entry["id"], True, risk_ack=True)
+            except Exception as e:
+                self.app.notify(f"启用失败: {e}", severity="error", timeout=3)
+            else:
+                self.app.notify(f"已启用 {entry['id']}", timeout=2)
+            self._reload()
+        self.app.push_screen(ConfirmScreen(
+            f"启用插件 {entry['id']}？",
+            f"[b]{escape(entry['name'])}[/]  [{escape(entry['id'])}] "
+            f"{escape(entry['version'] or '')} · {escape(entry['author'] or '')}\n"
+            f"{escape(entry['description'] or '')}\n\n"
+            "[bold red]高危警示[/]\n"
+            "该插件为第三方 Python 代码，启用后将以与编辑器相同的用户权限在本机运行，"
+            "可读写文件、访问网络。请仅启用来自可信来源的插件。",
+            ok_label="启用", ok_variant="warning"), _after)
+
+    def action_info(self):
+        entry = self._selected_plugin()
+        if entry is None:
+            self.app.notify("先在列表中选择一个插件", severity="warning", timeout=2)
+            return
+        self.app.push_screen(PluginInfoScreen(entry))
+
+    def action_delete(self):
+        entry = self._selected_plugin()
+        if entry is None:
+            self.app.notify("先在列表中选择一个插件", severity="warning", timeout=2)
+            return
+        ps = self._system()
+        if entry["enabled"]:
+            self.app.notify(f"{entry['id']} 已启用，请先停用再卸载（空格停用）",
+                            severity="warning", timeout=3)
+            return
+        def _after(ok):
+            if not ok:
+                return
+            try:
+                ps.uninstall_plugin(entry["id"])
+            except Exception as e:
+                self.app.notify(f"卸载失败: {e}", severity="error", timeout=3)
+            else:
+                self.app.notify(f"已卸载 {entry['id']}", timeout=2)
+            self._reload()
+        self.app.push_screen(ConfirmScreen(
+            f"卸载插件 {entry['id']}？",
+            f"将删除插件目录与数据，不可恢复。\n{escape(entry['name'])} {escape(entry['version'] or '')}",
+            ok_label="卸载", ok_variant="error"), _after)
+
+    def action_reload(self):
+        ps = self._system()
+        try:
+            ps.reload_plugins(None)
+        except Exception as e:
+            self.app.notify(f"重载失败: {e}", severity="error", timeout=3)
+        else:
+            self.app.notify("插件已重载", timeout=2)
+        self._reload()
+
+    def action_close(self):
+        self.app.pop_screen()
+
+    def on_key(self, event):
+        if event.key == "escape":
+            event.stop()
+            self.app.pop_screen()
 
 
 # Main App
@@ -2187,6 +2699,347 @@ class AgentConfigScreen(ModalScreen):
         self.run_worker(job, thread=True, group="agent-config-test", exclusive=True)
 
 
+def _fmt_size(n):
+    n = int(n or 0)
+    if n < 1024:
+        return "%dB" % n
+    if n < 1024 * 1024:
+        return "%.1fKB" % (n / 1024)
+    return "%.1fMB" % (n / 1024 / 1024)
+
+
+class TtsScreen(ModalScreen):
+    """配音 (TTS) 面板：配置 / 测试连接 / 文本合成 / 素材管理。
+
+    配置读写 .editor_ai.json 的 tts* 字段（三端共享）；素材落在
+    <mod>/audio/tts/，可选登记 AudioCfg（url="audio/tts/<key>"，与落盘路径
+    一致、不带扩展名，不写 TalkCfg.vocals）。
+    """
+
+    BINDINGS = [Binding("escape", "close", "关闭", priority=True)]
+
+    _TTS_PROVIDERS = ("aliyun", "minimax")
+
+    DEFAULT_CSS = """
+    TtsScreen { align: center middle; }
+    #tts-dialog { width: 84; height: 90%; background: $surface; border: thick $primary; padding: 1 2; }
+    #tts-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    #tts-section, .tts-section { text-style: bold; margin-top: 1; }
+    TtsScreen Input, TtsScreen RadioSet, TtsScreen Checkbox { margin-bottom: 1; }
+    #tts-cfg-buttons, #tts-mat-buttons { height: 3; }
+    #tts-keyname { width: 32; }
+    #tts-mats { height: 8; border: round $panel; margin-bottom: 1; }
+    #tts-result { height: 7; margin-top: 1; border: round $panel; }
+    #tts-hint { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, mod_root=None, mod_name=None, workspace=None):
+        super().__init__()
+        self._mod_root = mod_root
+        self._mod_name = mod_name
+        self._workspace = workspace
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="tts-dialog"):
+            yield Static(
+                "🔊 配音 (TTS)（.editor_ai.json 三端共享） · 模组："
+                + (self._mod_name or "（未选定）"),
+                id="tts-title")
+            yield RadioSet(
+                "阿里云 DashScope（CosyVoice / Qwen-TTS）",
+                "MiniMax（speech-02 系列）",
+                id="tts-provider",
+            )
+            yield Input(placeholder="apiKey — 密钥（已保存时显示 ***，回车保存保留原值）",
+                        id="tts-key", password=True)
+            yield Input(placeholder="groupId — 仅 MiniMax 需要", id="tts-group")
+            yield Input(placeholder="baseUrl — 留空用官方默认", id="tts-baseurl")
+            yield Input(placeholder="model — 如 cosyvoice-v2 / qwen-tts-latest", id="tts-model")
+            yield Input(placeholder="voice — 音色 ID（留空用服务商默认）", id="tts-voice")
+            yield Input(placeholder="speed — 语速 0.5 ~ 2.0", id="tts-speed")
+            with Horizontal(id="tts-cfg-buttons"):
+                yield Button("保存配置", id="tts-save", variant="success")
+                yield Button("测试连接", id="tts-test", variant="default")
+                yield Button("音色列表", id="tts-voices", variant="default")
+            yield Static("合成并保存", classes="tts-section")
+            yield Input(placeholder="合成文本 — 要转成语音的台词", id="tts-text")
+            with Horizontal():
+                yield Input(placeholder="文件名 key（可选，缺省按时间戳）", id="tts-keyname")
+                yield Checkbox("登记 AudioCfg", id="tts-regcfg", value=True)
+                yield Button("合成并保存", id="tts-synth", variant="primary")
+            yield Static("素材（mod/audio/tts/）", classes="tts-section")
+            yield OptionList(id="tts-mats")
+            with Horizontal(id="tts-mat-buttons"):
+                yield Button("刷新素材", id="tts-reload", variant="default")
+                yield Button("删除选中", id="tts-del", variant="error")
+            yield RichLog(id="tts-result", markup=False, wrap=True)
+            yield Static("Esc 关闭 · 测试/合成/音色列表在后台线程执行 · 合成前请先在左侧树选择模组",
+                         id="tts-hint")
+
+    def on_mount(self):
+        from editor.core.env_store import read_ai_settings
+        s = read_ai_settings()
+        want = s.get("ttsProvider") if s.get("ttsProvider") in self._TTS_PROVIDERS \
+            else self._TTS_PROVIDERS[0]
+        for i, rb in enumerate(self.query_one("#tts-provider", RadioSet).query(RadioButton)):
+            rb.value = (self._TTS_PROVIDERS[i] == want)
+        self.query_one("#tts-key", Input).value = "***" if s.get("ttsApiKey") else ""
+        self.query_one("#tts-group", Input).value = s.get("ttsGroupId") or ""
+        self.query_one("#tts-baseurl", Input).value = s.get("ttsBaseUrl") or ""
+        self.query_one("#tts-model", Input).value = s.get("ttsModel") or ""
+        self.query_one("#tts-voice", Input).value = s.get("ttsVoice") or ""
+        speed = s.get("ttsSpeed")
+        self.query_one("#tts-speed", Input).value = "" if speed in (None, 1.0) else str(speed)
+        self._reload_materials()
+
+    # ---- 配置 ----
+    def _collect_patch(self):
+        """只收集 tts* 字段的 patch；apiKey 为 *** 掩码时保留原值（不写入 patch）。"""
+        rs = self.query_one("#tts-provider", RadioSet)
+        patch = {"ttsProvider": self._TTS_PROVIDERS[rs.pressed_index]
+                 if rs.pressed_index >= 0 else self._TTS_PROVIDERS[0]}
+        key = self.query_one("#tts-key", Input).value.strip()
+        if key != "***":
+            patch["ttsApiKey"] = key
+        patch["ttsGroupId"] = self.query_one("#tts-group", Input).value.strip()
+        patch["ttsBaseUrl"] = self.query_one("#tts-baseurl", Input).value.strip()
+        patch["ttsModel"] = self.query_one("#tts-model", Input).value.strip()
+        patch["ttsVoice"] = self.query_one("#tts-voice", Input).value.strip()
+        raw = self.query_one("#tts-speed", Input).value.strip()
+        if raw:
+            patch["ttsSpeed"] = float(raw)  # ValueError 由调用方捕获
+        return patch
+
+    def _merged_settings(self):
+        from editor.core.env_store import read_ai_settings
+        merged = dict(read_ai_settings())
+        merged.update(self._collect_patch())
+        return merged
+
+    @on(Button.Pressed, "#tts-save")
+    def save_pressed(self):
+        from editor.core.env_store import write_ai_settings
+        res = self.query_one("#tts-result", RichLog)
+        try:
+            patch = self._collect_patch()
+        except ValueError:
+            self._log("⚠ 语速需为数字（0.5 ~ 2.0）")
+            return
+        try:
+            merged = write_ai_settings(patch)
+        except Exception as e:
+            self._log(f"✗ 保存失败: {type(e).__name__}: {e}")
+            return
+        self.query_one("#tts-key", Input).value = "***" if merged.get("ttsApiKey") else ""
+        self._log(f"✓ 已保存 → .editor_ai.json（ttsProvider={merged.get('ttsProvider') or '空'}）")
+
+    @on(Button.Pressed, "#tts-test")
+    def test_pressed(self):
+        btn = self.query_one("#tts-test", Button)
+        try:
+            settings = self._merged_settings()
+        except ValueError:
+            self._log("⚠ 语速需为数字（0.5 ~ 2.0）")
+            return
+        provider = settings.get("ttsProvider")
+        if not provider:
+            self._log("⚠ 请先选择服务商（阿里云 / MiniMax）")
+            return
+        if not (settings.get("ttsApiKey") or "").strip():
+            self._log("⚠ 请先填写 apiKey")
+            return
+        btn.disabled = True
+        self._log(f"… 连接中（{provider}）")
+
+        def job():
+            out = {"ok": False, "error": ""}
+            try:
+                from editor.server import tts_service
+                out = tts_service.test_connection(provider, settings)
+            except Exception as e:  # noqa: BLE001
+                out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+            def done():
+                try:
+                    btn.disabled = False
+                    if out.get("ok"):
+                        self._log(f"✓ {out.get('detail') or '连接成功'}")
+                    else:
+                        self._log(f"✗ {out.get('error') or '连接失败'}")
+                except Exception:
+                    pass
+            self.app.call_from_thread(done)
+
+        self.run_worker(job, thread=True, group="tts-test", exclusive=True)
+
+    @on(Button.Pressed, "#tts-voices")
+    def voices_pressed(self):
+        btn = self.query_one("#tts-voices", Button)
+        try:
+            settings = self._merged_settings()
+        except ValueError:
+            self._log("⚠ 语速需为数字（0.5 ~ 2.0）")
+            return
+        provider = settings.get("ttsProvider")
+        if not provider:
+            self._log("⚠ 请先选择服务商（阿里云 / MiniMax）")
+            return
+        btn.disabled = True
+        self._log(f"… 拉取音色列表（{provider}）")
+
+        def job():
+            msg = ""
+            try:
+                from editor.server import tts_service
+                voices, source = tts_service.list_voices(provider, settings)
+                preview = ", ".join(f"{v['id']}({v['name']})" for v in voices[:8])
+                msg = (f"✓ 音色 {len(voices)} 个（{source}）：{preview}"
+                       + (" …" if len(voices) > 8 else ""))
+            except Exception as e:  # noqa: BLE001
+                from editor.server.tts_service import TtsError
+                msg = "✗ 拉取失败：" + (str(e) if isinstance(e, TtsError)
+                                       else f"{type(e).__name__}: {e}")
+
+            def done():
+                try:
+                    btn.disabled = False
+                    self._log(msg)
+                except Exception:
+                    pass
+            self.app.call_from_thread(done)
+
+        self.run_worker(job, thread=True, group="tts-voices", exclusive=True)
+
+    # ---- 合成 ----
+    @on(Button.Pressed, "#tts-synth")
+    def synth_pressed(self):
+        btn = self.query_one("#tts-synth", Button)
+        if not self._mod_root:
+            self._log("⚠ 未选择模组 — 请先在左侧树打开一个模组")
+            return
+        text = self.query_one("#tts-text", Input).value.strip()
+        if not text:
+            self._log("⚠ 请输入要合成的文本")
+            return
+        try:
+            settings = self._merged_settings()
+        except ValueError:
+            self._log("⚠ 语速需为数字（0.5 ~ 2.0）")
+            return
+        provider = settings.get("ttsProvider")
+        if not provider:
+            self._log("⚠ 请先选择服务商（阿里云 / MiniMax）")
+            return
+        key = self.query_one("#tts-keyname", Input).value.strip()
+        register = self.query_one("#tts-regcfg", Checkbox).value
+        mod_root = self._mod_root
+        voice = settings.get("ttsVoice") or None
+        title = text[:24]
+        btn.disabled = True
+        self._log(f"… 正在合成（{provider}，{len(text)} 字）…")
+
+        def job():
+            err, line = "", ""
+            try:
+                from editor.server import tts_service, tts_store
+                audio, ext = tts_service.synthesize(provider, text, voice=voice,
+                                                    settings=settings)
+                info = tts_store.save_audio(mod_root, audio, ext, key=key or None, ogg=True)
+                line = (f"✓ 已保存 {info['path']}（{info['bytes']} 字节，"
+                        + ("已转 Ogg" if info["convertedOgg"] else f"格式 {info['ext']}") + "）")
+                if register:
+                    cfg_dir = cfg_path(mod_root, "AudioCfg").parent
+                    new_id = tts_store.register_audio_cfg(cfg_dir, info["key"], title=title)
+                    line += f" · 已登记 AudioCfg id={new_id}（url=audio/tts/{info['key']}）"
+            except Exception as e:  # noqa: BLE001
+                from editor.server.tts_service import TtsError
+                from editor.server.tts_store import TtsStoreError
+                err = str(e) if isinstance(e, (TtsError, TtsStoreError)) \
+                    else f"{type(e).__name__}: {e}"
+
+            def done():
+                try:
+                    btn.disabled = False
+                    if err:
+                        self._log(f"✗ 合成失败：{err}")
+                    else:
+                        self._log(line)
+                        self._reload_materials()
+                except Exception:
+                    pass
+            self.app.call_from_thread(done)
+
+        self.run_worker(job, thread=True, group="tts-synth", exclusive=True)
+
+    # ---- 素材 ----
+    def _reload_materials(self):
+        lst = self.query_one("#tts-mats", OptionList)
+        lst.clear_options()
+        if not self._mod_root:
+            lst.add_option(Option("（未选择模组 — Esc 后在左侧树打开一个模组）", id=None))
+            return
+        try:
+            from editor.server import tts_store
+            items = tts_store.list_materials(self._mod_root)
+        except Exception as e:  # noqa: BLE001
+            from editor.server.tts_store import TtsStoreError
+            msg = str(e) if isinstance(e, TtsStoreError) else f"{type(e).__name__}: {e}"
+            lst.add_option(Option(f"⚠ 读取失败：{msg}", id=None))
+            return
+        if not items:
+            lst.add_option(Option("（暂无配音素材）", id=None))
+            return
+        for it in items:
+            lst.add_option(Option(f"{it['path']}  {_fmt_size(it['size'])}", id=it["path"]))
+        lst.highlighted = 0
+
+    @on(Button.Pressed, "#tts-reload")
+    def reload_pressed(self):
+        self._reload_materials()
+
+    @on(Button.Pressed, "#tts-del")
+    def del_pressed(self):
+        lst = self.query_one("#tts-mats", OptionList)
+        rel = None
+        try:
+            opt = lst.get_option_at_index(lst.highlighted or 0)
+            rel = opt.id
+        except Exception:
+            pass
+        if not rel:
+            self._log("⚠ 先在列表中选择一个素材")
+            return
+        # 列表返回的 id 已是完整相对路径（audio/tts/...），避免再拼一次前缀
+        target = rel if rel.startswith("audio/tts/") else "audio/tts/" + rel
+
+        def _after(ok):
+            if not ok:
+                return
+            try:
+                from editor.server import tts_store
+                tts_store.delete_material(self._mod_root, target)
+                self._log(f"✓ 已删除 {target}")
+            except Exception as e:  # noqa: BLE001
+                from editor.server.tts_store import TtsStoreError
+                msg = str(e) if isinstance(e, TtsStoreError) else f"{type(e).__name__}: {e}"
+                self._log(f"✗ 删除失败：{msg}")
+            self._reload_materials()
+
+        self.app.push_screen(ConfirmScreen(
+            "删除配音素材",
+            f"确定删除 {target} 吗？\n仅删除音频文件，不改动 AudioCfg。",
+            ok_label="删除", ok_variant="error"), _after)
+
+    def _log(self, text):
+        try:
+            self.query_one("#tts-result", RichLog).write(text)
+        except Exception:
+            pass
+
+    def action_close(self):
+        self.dismiss(None)
+
+
 class CloudScreen(ModalScreen):
     """云同步面板：左侧 provider 列表 + 测试连接，右侧方向/选项 + 同步进度。"""
 
@@ -2521,7 +3374,7 @@ class AgentChatScreen(ModalScreen):
         self._engine = AgentEngine(
             tools, confirm=self._confirm_bridge, on_text=self._on_text,
             on_tool_round_text=self._on_round_text, on_tool_result=self._on_tool_result,
-            mod_context=mod_ctx)
+            on_retry=self._on_retry, mod_context=mod_ctx)
         self._client = LlmClient(settings)
         if not note:
             log.text = "已就绪。描述你想对模组做的修改，例如：\n  把开局事件的标题改成「新的开始」\n  给某角色加一段对白\n"
@@ -2574,6 +3427,10 @@ class AgentChatScreen(ModalScreen):
         head = (result or "").strip().splitlines()
         head = head[0] if head else ""
         self._pending.put(f"⚙ {name} → {head[:160]}\n")
+
+    def _on_retry(self, attempt, total, reason):
+        # 断流前已输出的半截文本会随重连重新生成，提示行与正文分两行
+        self._pending.put(f"\n⚠ 连接中断，正在自动重连 ({attempt}/{total})…\n")
 
     def _finish(self):
         def done():
@@ -3055,7 +3912,11 @@ class EditorTUI(App):
 
         Binding("a", "agent_chat", "AI 助手"),
 
+        Binding("t", "tts", "配音 TTS"),
+
         Binding("u", "check_update", "检查更新"),
+
+        Binding("p", "plugins", "插件"),
 
         Binding("question_mark", "help", "帮助", key_display="?"),
 
@@ -5878,10 +6739,11 @@ class EditorTUI(App):
 
 
     def _modal_open(self) -> bool:
-        # 面板已打开时忽略 c/a/u（避免叠加弹屏）
+        # 面板已打开时忽略 c/a/t/u/p（避免叠加弹屏）
         return isinstance(self.screen, (CloudScreen, CloudProviderEditScreen,
                                         AgentChatScreen, AgentConfigScreen,
-                                        UpdateCheckScreen))
+                                        TtsScreen, UpdateCheckScreen,
+                                        PluginsScreen, PluginInfoScreen))
 
     def action_cloud(self):
         if self._modal_open():
@@ -5894,6 +6756,24 @@ class EditorTUI(App):
         self.push_screen(AgentChatScreen(
             mod_root=self.current_mod_root, mod_name=self.current_mod_name,
             workspace=self.workspace))
+
+    def action_tts(self):
+        if self._modal_open():
+            return
+        self.push_screen(TtsScreen(
+            mod_root=self.current_mod_root, mod_name=self.current_mod_name,
+            workspace=self.workspace))
+
+    def action_plugins(self):
+        if self._modal_open():
+            return
+        # 打开插件屏前确保 load_all() 已执行（离线模式，收集命令/工具/面板）
+        try:
+            from editor.core import plugin_system
+            plugin_system.load_all(None)
+        except Exception:
+            pass
+        self.push_screen(PluginsScreen())
 
     def action_check_update(self):
         """检查 GitHub 更新：立即弹窗显示「检查中…」，worker 返回后就地刷新结果。"""

@@ -3,7 +3,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/motion.dart';
+import '../../core/plugin_state.dart';
+import '../plugins/plugin_pane.dart';
 import 'shell_state.dart';
+import '../../core/app_theme.dart';
 
 // 创作模式窄活动栏（Cursor 风格）—— 真实滑动指示条
 class ActivityBar extends StatelessWidget {
@@ -13,12 +16,16 @@ class ActivityBar extends StatelessWidget {
     required this.aiOpen,
     required this.onSelect,
     required this.onToggleAi,
+    required this.shell,
+    required this.pluginState,
   });
 
   final SidePane current;
   final bool aiOpen;
   final ValueChanged<SidePane> onSelect;
   final VoidCallback onToggleAi;
+  final ShellState shell;
+  final PluginState pluginState;
 
   int _paneIndex(SidePane p) {
     switch (p) {
@@ -29,16 +36,42 @@ class ActivityBar extends StatelessWidget {
       case SidePane.base: return 4;
       case SidePane.cloud: return 5;
       case SidePane.bugfix: return 6;
-      case SidePane.settings: return 7;
+      case SidePane.plugins: return 7;
+      case SidePane.settings: return 8;
     }
+  }
+
+  /// 固定「插件」条目：切到插件列表（清空已打开的面板）。
+  void _openPluginsList() {
+    onSelect(SidePane.plugins);
+    shell.setActivePluginPanel(null);
+  }
+
+  /// 动态插件面板条目：key = `pluginId/panelId`，title 作显示/tooltip。
+  Widget _panelItem(int i) {
+    final panel = pluginState.uiPanels[i];
+    final pluginId = (panel['plugin_id'] as String?) ?? '';
+    final panelId = (panel['panel_id'] as String?) ?? '';
+    final title = (panel['title'] as String? ?? '').trim();
+    final key = '$pluginId/$panelId';
+    return _BarItem(
+      pane: SidePane.plugins,
+      icon: pluginPanelIcon(panel['icon'] as String?),
+      tip: title.isEmpty ? '插件面板' : title,
+      selected: current == SidePane.plugins && shell.activePluginPanel == key,
+      onTap: () {
+        onSelect(SidePane.plugins);
+        shell.setActivePluginPanel(key);
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final active = aiOpen ? const Color(0xFF6C5CE7) : const Color(0xFFD4D4D8);
+    final active = aiOpen ? const Color(0xFF6C5CE7) : palette.textPrimary;
     return Container(
       width: 48,
-      color: const Color(0xFF17171B),
+      color: palette.bgDeep2,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final h = constraints.maxHeight;
@@ -49,31 +82,39 @@ class ActivityBar extends StatelessWidget {
           // 队列整体需要的最小高度；窗口过矮时以该高度布局并允许滚动，避免纵向溢出
           const minNeeded = 420.0;
           final layoutH = math.max(h, minNeeded);
+          // 当前面板在顶部序列中的视觉索引：
+          // 插件固定项=7；其后按序为各动态面板（8+i）。
+          int pluginsIndex() {
+            final active = shell.activePluginPanel;
+            if (active == null || active.isEmpty) return 7;
+            final keys = [
+              for (final p in pluginState.uiPanels)
+                '${p['plugin_id']}/${p['panel_id']}',
+            ];
+            final i = keys.indexOf(active);
+            return i >= 0 ? 8 + i : 7;
+          }
+
           double paneTop;
           if (current == SidePane.settings) {
             paneTop = layoutH - 8 - 44 + itemPad; // 底部设置项
+          } else if (current == SidePane.plugins) {
+            paneTop = 8 + pluginsIndex() * stride + itemPad;
           } else {
-            final idx = _paneIndex(current);
-            // settings 不在顶部序列，cloud/bugfix 索引已包含，settings 单独处理
-            final topIdx = idx > 6 ? 6 : idx;
-            paneTop = 8 + topIdx * stride + itemPad;
-            // 如果是 cloud/bugfix 之后的 settings 已处理，顶部序列最大值 6
-            if (current == SidePane.cloud) paneTop = 8 + 5 * stride + itemPad;
-            if (current == SidePane.bugfix) paneTop = 8 + 6 * stride + itemPad;
+            paneTop = 8 + _paneIndex(current) * stride + itemPad;
           }
 
           return Stack(
             children: [
               ClipRect(
                 child: SingleChildScrollView(
-                  physics: h < minNeeded
-                      ? const AlwaysScrollableScrollPhysics()
-                      : const NeverScrollableScrollPhysics(),
+                  physics: const AlwaysScrollableScrollPhysics(),
                   padding: EdgeInsets.zero,
-                  child: SizedBox(
-                    height: layoutH,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: layoutH),
                     child: Column(
-                  children: [
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                     const SizedBox(height: 8),
                     FadeSlide(delay: AppMotion.stagger(0), child: _BarItem(pane: SidePane.mods, icon: FluentIcons.box_24_regular, tip: '模组', selected: current == SidePane.mods, onTap: () => onSelect(SidePane.mods))),
                     const SizedBox(height: 2),
@@ -88,9 +129,16 @@ class ActivityBar extends StatelessWidget {
                     FadeSlide(delay: AppMotion.stagger(5), child: _BarItem(pane: SidePane.cloud, icon: FluentIcons.cloud_24_regular, tip: '云同步', selected: current == SidePane.cloud, onTap: () => onSelect(SidePane.cloud))),
                     const SizedBox(height: 2),
                     FadeSlide(delay: AppMotion.stagger(6), child: _BarItem(pane: SidePane.bugfix, icon: FluentIcons.wrench_24_regular, tip: '错误修复', selected: current == SidePane.bugfix, onTap: () => onSelect(SidePane.bugfix))),
+                    const SizedBox(height: 2),
+                    FadeSlide(delay: AppMotion.stagger(7), child: _BarItem(pane: SidePane.plugins, icon: Icons.extension_outlined, selectedIcon: Icons.extension, tip: '插件', selected: current == SidePane.plugins && shell.activePluginPanel == null, onTap: _openPluginsList)),
+                    // 已启用插件声明的动态面板入口（uiPanels 为空时不渲染）
+                    for (var i = 0; i < pluginState.uiPanels.length; i++) ...[
+                      const SizedBox(height: 2),
+                      FadeSlide(delay: AppMotion.stagger(8 + i), child: _panelItem(i)),
+                    ],
                     const Spacer(),
                     FadeSlide(
-                      delay: AppMotion.stagger(7),
+                      delay: AppMotion.stagger(8 + pluginState.uiPanels.length),
                       child: Tooltip(
                         message: 'AI 助手',
                         child: _HoverScale(
@@ -104,7 +152,7 @@ class ActivityBar extends StatelessWidget {
                                 width: 44,
                                 height: 40,
                                 decoration: BoxDecoration(
-                                  color: aiOpen ? const Color(0xFF26262B) : Colors.transparent,
+                                  color: aiOpen ? palette.card : Colors.transparent,
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: AnimatedSwitcher(
@@ -122,7 +170,7 @@ class ActivityBar extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(8), child: _BarItem(pane: SidePane.settings, icon: FluentIcons.settings_24_regular, tip: '设置', selected: current == SidePane.settings, onTap: () => onSelect(SidePane.settings))),
+                    FadeSlide(delay: AppMotion.stagger(9 + pluginState.uiPanels.length), child: _BarItem(pane: SidePane.settings, icon: FluentIcons.settings_24_regular, tip: '设置', selected: current == SidePane.settings, onTap: () => onSelect(SidePane.settings))),
                     const SizedBox(height: 8),
                   ],
                 ),
@@ -180,9 +228,10 @@ class ActivityBar extends StatelessWidget {
 }
 
 class _BarItem extends StatefulWidget {
-  const _BarItem({required this.pane, required this.icon, required this.tip, required this.selected, required this.onTap});
+  const _BarItem({required this.pane, required this.icon, required this.tip, required this.selected, required this.onTap, this.selectedIcon});
   final SidePane pane;
   final IconData icon;
+  final IconData? selectedIcon;
   final String tip;
   final bool selected;
   final VoidCallback onTap;
@@ -211,9 +260,9 @@ class _BarItemState extends State<_BarItem> {
               height: 40,
               decoration: BoxDecoration(
                 color: widget.selected
-                    ? const Color(0xFF26262B)
+                    ? palette.card
                     : _hover
-                        ? const Color(0xFF1E1E23)
+                        ? palette.panel
                         : Colors.transparent,
                 borderRadius: BorderRadius.circular(6),
               ),
@@ -221,9 +270,9 @@ class _BarItemState extends State<_BarItem> {
                 duration: AppMotion.fast,
                 curve: AppMotion.spring,
                 scale: widget.selected ? 1.0 : _hover ? 1.08 : 1.0,
-                child: Icon(widget.icon,
+                child: Icon(widget.selected ? (widget.selectedIcon ?? widget.icon) : widget.icon,
                     size: 21,
-                    color: widget.selected ? Colors.white : _hover ? const Color(0xFFD4D4D8) : const Color(0xFF9B9BA3)),
+                    color: widget.selected ? palette.textHigh : _hover ? palette.textPrimary : palette.textSecondary),
               ),
             ),
           ),

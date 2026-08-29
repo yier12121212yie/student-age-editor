@@ -4,7 +4,7 @@ import '../settings/settings_page.dart';
 import '../editor/editor_controller.dart';
 
 /// 左侧面板类型（创作模式的活动栏 / 经典模式的导航列表共用）。
-enum SidePane { mods, pages, files, resources, base, bugfix, cloud, settings }
+enum SidePane { mods, pages, files, resources, base, bugfix, cloud, plugins, settings }
 
 /// 两套布局（创作/经典）共享的界面状态：当前面板、文档标签、AI 面板、
 /// 各板块宽度等。提升到应用层持有，切换布局风格时不丢失任何状态。
@@ -28,6 +28,15 @@ class ShellState extends ChangeNotifier {
   bool get aiOpen => _aiOpen;
   void toggleAi() {
     _aiOpen = !_aiOpen;
+    notifyListeners();
+  }
+
+  /// 当前打开的插件面板（`pluginId/panelId`），null 表示显示插件列表页。
+  String? _activePluginPanel;
+  String? get activePluginPanel => _activePluginPanel;
+  void setActivePluginPanel(String? v) {
+    if (_activePluginPanel == v) return;
+    _activePluginPanel = v;
     notifyListeners();
   }
 

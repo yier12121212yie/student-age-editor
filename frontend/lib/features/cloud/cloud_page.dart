@@ -5,6 +5,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/app_theme.dart';
 
 // 已下线的云盘类型：旧配置条目仍显示，但不可再测试/保存（后端已移除驱动）
 const Set<String> _kRemovedDrivers = {'aliyundrive','aliyun','quark','189','tianyi'};
@@ -163,35 +164,35 @@ class _CloudPageState extends State<CloudPage> {
       margin: const EdgeInsets.only(bottom:10),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1E),
+        color: palette.bgDeep,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: enabled ? const Color(0xFF4F6EF7).withValues(alpha: 0.4) : const Color(0xFF2A2A2E)),
+        border: Border.all(color: enabled ? const Color(0xFF4F6EF7).withValues(alpha: 0.4) : palette.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
         Row(children:[
           Container(
             padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(color: enabled ? const Color(0xFF4F6EF7) : const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(6)),
-            child: Icon(enabled ? FluentIcons.cloud_sync_24_regular : FluentIcons.cloud_off_24_regular, size:14, color: Colors.white),
+            decoration: BoxDecoration(color: enabled ? const Color(0xFF4F6EF7) : palette.border, borderRadius: BorderRadius.circular(6)),
+            child: Icon(enabled ? FluentIcons.cloud_sync_24_regular : FluentIcons.cloud_off_24_regular, size:14, color: palette.textHigh),
           ),
           const SizedBox(width:8),
-          const Flexible(
-            child: Text('实时同步', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:12, color: Color(0xFFD4D4D8), fontWeight: FontWeight.w600)),
+          Flexible(
+            child: Text('实时同步', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:12, color: palette.textPrimary, fontWeight: FontWeight.w600)),
           ),
           const SizedBox(width:6),
           Flexible(child: Container(
             padding: const EdgeInsets.symmetric(horizontal:6, vertical:2),
-            decoration: BoxDecoration(color: running ? const Color(0xFF0F7B0F).withValues(alpha:0.15) : const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(4), border: Border.all(color: running ? const Color(0xFF0F7B0F).withValues(alpha:0.3) : Colors.transparent)),
+            decoration: BoxDecoration(color: running ? const Color(0xFF0F7B0F).withValues(alpha:0.15) : palette.border, borderRadius: BorderRadius.circular(4), border: Border.all(color: running ? const Color(0xFF0F7B0F).withValues(alpha:0.3) : Colors.transparent)),
             child: Row(mainAxisSize: MainAxisSize.min, children:[
-              Container(width:6, height:6, decoration: BoxDecoration(color: running ? const Color(0xFF0F7B0F) : const Color(0xFF6E6E76), shape: BoxShape.circle)),
+              Container(width:6, height:6, decoration: BoxDecoration(color: running ? const Color(0xFF0F7B0F) : palette.textHint, shape: BoxShape.circle)),
               const SizedBox(width:4),
-              Flexible(child: Text(running ? '运行中' : (enabled ? '已启用' : '已停止'), maxLines:1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:10, color: running ? const Color(0xFF0F7B0F) : const Color(0xFF8B8B93)))),
+              Flexible(child: Text(running ? '运行中' : (enabled ? '已启用' : '已停止'), maxLines:1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:10, color: running ? const Color(0xFF0F7B0F) : palette.textMuted))),
             ]),
           ),
           ),
           if (pending>0) ...[
             const SizedBox(width:6),
-            Flexible(child: Container(padding: const EdgeInsets.symmetric(horizontal:6, vertical:2), decoration: BoxDecoration(color: const Color(0xFFF2C25C).withValues(alpha:0.15), borderRadius: BorderRadius.circular(4)), child: Text('待同步 $pending', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize:10, color: Color(0xFFF2C25C)))))
+            Flexible(child: Container(padding: EdgeInsets.symmetric(horizontal:6, vertical:2), decoration: BoxDecoration(color: palette.statusWarn.withValues(alpha:0.15), borderRadius: BorderRadius.circular(4)), child: Text('待同步 $pending', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:10, color: palette.statusWarn))))
           ],
           const Spacer(),
           if (_rtLoading) const SizedBox(width:12, height:12, child: fluent.ProgressRing(strokeWidth:2)),
@@ -205,7 +206,7 @@ class _CloudPageState extends State<CloudPage> {
         // config row
         Wrap(spacing:8, runSpacing:6, crossAxisAlignment: WrapCrossAlignment.center, children:[
           Row(mainAxisSize: MainAxisSize.min, children:[
-            const Text('方向', style: TextStyle(fontSize:10, color: Color(0xFF9B9BA3))),
+            Text('方向', style: TextStyle(fontSize:10, color: palette.textSecondary)),
             const SizedBox(width:6),
             _rtDirectionChip('upload', '上传', FluentIcons.arrow_upload_24_regular, direction),
             const SizedBox(width:4),
@@ -219,7 +220,7 @@ class _CloudPageState extends State<CloudPage> {
               onChanged: (v)=> _updateRealtimeConfig({'delete_extra': v==true}),
             ),
             const SizedBox(width:4),
-            const Text('同步删除', style: TextStyle(fontSize:10, color: Color(0xFF9B9BA3))),
+            Text('同步删除', style: TextStyle(fontSize:10, color: palette.textSecondary)),
           ]),
           Row(mainAxisSize: MainAxisSize.min, children:[
             fluent.Checkbox(
@@ -230,7 +231,7 @@ class _CloudPageState extends State<CloudPage> {
               },
             ),
             const SizedBox(width:4),
-            const Text('全部 Mod', style: TextStyle(fontSize:10, color: Color(0xFF9B9BA3))),
+            Text('全部 Mod', style: TextStyle(fontSize:10, color: palette.textSecondary)),
           ]),
           Row(mainAxisSize: MainAxisSize.min, children:[
             fluent.Checkbox(
@@ -238,24 +239,24 @@ class _CloudPageState extends State<CloudPage> {
               onChanged: (v)=> _updateRealtimeConfig({'auto_start': v==true}),
             ),
             const SizedBox(width:4),
-            const Text('自动启动', style: TextStyle(fontSize:10, color: Color(0xFF9B9BA3))),
+            Text('自动启动', style: TextStyle(fontSize:10, color: palette.textSecondary)),
           ]),
         ]),
         if (watching.isNotEmpty) Padding(
           padding: const EdgeInsets.only(top:6),
           child: Wrap(spacing:4, runSpacing:4, children: watching.map((m)=> Container(
             padding: const EdgeInsets.symmetric(horizontal:6, vertical:2),
-            decoration: BoxDecoration(color: const Color(0xFF2B2B31), borderRadius: BorderRadius.circular(4)),
-            child: Text(m, style: const TextStyle(fontSize:10, color: Color(0xFF9B9BA3))),
+            decoration: BoxDecoration(color: palette.hover, borderRadius: BorderRadius.circular(4)),
+            child: Text(m, style: TextStyle(fontSize:10, color: palette.textSecondary)),
           )).toList()),
         ),
         if (lastSync.isNotEmpty || (stats!=null && stats.isNotEmpty)) Padding(
           padding: const EdgeInsets.only(top:6),
           child: Row(children:[
-            if (lastSync.isNotEmpty) Text('上次 $lastSync', style: const TextStyle(fontSize:10, color: Color(0xFF6E6E76))),
+            if (lastSync.isNotEmpty) Text('上次 $lastSync', style: TextStyle(fontSize:10, color: palette.textHint)),
             if (stats!=null) ...[
               const SizedBox(width:8),
-              Text('本地+${stats['local_changes'] ?? 0} 远端+${stats['remote_changes'] ?? 0} 成功${stats['sync_success'] ?? 0}', style: const TextStyle(fontSize:10, color: Color(0xFF6E6E76))),
+              Text('本地+${stats['local_changes'] ?? 0} 远端+${stats['remote_changes'] ?? 0} 成功${stats['sync_success'] ?? 0}', style: TextStyle(fontSize:10, color: palette.textHint)),
             ],
           ]),
         ),
@@ -275,13 +276,13 @@ class _CloudPageState extends State<CloudPage> {
           padding: const EdgeInsets.only(top:6),
           child: Container(
             padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(4), border: Border.all(color: const Color(0xFF2A2A2E))),
+            decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(4), border: Border.all(color: palette.border)),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
-              const Text('待处理', style: TextStyle(fontSize:10, color: Color(0xFF8B8B93))),
+              Text('待处理', style: TextStyle(fontSize:10, color: palette.textMuted)),
               const SizedBox(height:4),
               ...((rt!['pending_files'] as List).take(5).map((f)=> Padding(
                 padding: const EdgeInsets.only(bottom:2),
-                child: Text(f.toString(), style: const TextStyle(fontSize:10, color: Color(0xFFF2C25C)), overflow: TextOverflow.ellipsis),
+                child: Text(f.toString(), style: TextStyle(fontSize:10, color: palette.statusWarn), overflow: TextOverflow.ellipsis),
               ))),
             ]),
           ),
@@ -290,15 +291,15 @@ class _CloudPageState extends State<CloudPage> {
           const SizedBox(height:8),
           Container(
             height: 92,
-            decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFF2A2A2E))),
+            decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(6), border: Border.all(color: palette.border)),
             child: Column(children:[
               Container(
                 padding: const EdgeInsets.symmetric(horizontal:8, vertical:4),
-                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E)))),
+                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))),
                 child: Row(children:[
-                  const Text('事件', style: TextStyle(fontSize:10, color: Color(0xFF8B8B93))),
+                  Text('事件', style: TextStyle(fontSize:10, color: palette.textMuted)),
                   const Spacer(),
-                  GestureDetector(onTap: _loadRealtimeStatus, child: const Icon(FluentIcons.arrow_sync_24_regular, size:10, color: Color(0xFF6E6E76))),
+                  GestureDetector(onTap: _loadRealtimeStatus, child: Icon(FluentIcons.arrow_sync_24_regular, size:10, color: palette.textHint)),
                 ]),
               ),
               Expanded(child: ListView.builder(
@@ -306,15 +307,15 @@ class _CloudPageState extends State<CloudPage> {
                 itemBuilder: (c,i){
                   final e = events[i] as Map;
                   final lvl = e['level'] as String? ?? 'info';
-                  Color col = const Color(0xFF9B9BA3);
+                  Color col = palette.textSecondary;
                   if (lvl=='error') col = Colors.redAccent;
-                  else if (lvl=='warn') col = const Color(0xFFF2C25C);
+                  else if (lvl=='warn') col = palette.statusWarn;
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal:8, vertical:2),
                     child: Row(children:[
                       Container(width:6, height:6, decoration: BoxDecoration(color: col, shape: BoxShape.circle)),
                       const SizedBox(width:6),
-                      Text(e['time'] as String? ?? '', style: const TextStyle(fontSize:9, color: Color(0xFF6E6E76))),
+                      Text(e['time'] as String? ?? '', style: TextStyle(fontSize:9, color: palette.textHint)),
                       const SizedBox(width:6),
                       Expanded(child: Text(e['msg'] as String? ?? '', style: TextStyle(fontSize:10, color: col), overflow: TextOverflow.ellipsis)),
                     ]),
@@ -352,7 +353,7 @@ class _CloudPageState extends State<CloudPage> {
             child: const Text('查看全部', style: TextStyle(fontSize:11)),
           ),
           const Spacer(),
-          Flexible(child: Text('防抖 ${cfg?['debounce_ms'] ?? 2000}ms  轮询 ${cfg?['poll_interval_ms'] ?? 2000}ms', maxLines:1, overflow:TextOverflow.ellipsis, style: const TextStyle(fontSize:9, color: Color(0xFF6E6E76)))),
+          Flexible(child: Text('防抖 ${cfg?['debounce_ms'] ?? 2000}ms  轮询 ${cfg?['poll_interval_ms'] ?? 2000}ms', maxLines:1, overflow:TextOverflow.ellipsis, style: TextStyle(fontSize:9, color: palette.textHint))),
         ]),
       ]),
     );
@@ -360,7 +361,7 @@ class _CloudPageState extends State<CloudPage> {
 
   Widget _rtDirectionChip(String value, String label, IconData icon, String current){
     final sel = current==value;
-    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:10, color: sel? Colors.white: const Color(0xFF9B9BA3)), const SizedBox(width:3), Text(label, style: TextStyle(fontSize:10, color: sel? Colors.white: const Color(0xFFD4D4D8)))]);
+    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:10, color: sel? Colors.white: palette.textSecondary), const SizedBox(width:3), Text(label, style: TextStyle(fontSize:10, color: sel? Colors.white: palette.textPrimary))]);
     if(sel){
       return fluent.FilledButton(onPressed: ()=> _updateRealtimeConfig({'direction': value}), child: content);
     }
@@ -417,14 +418,14 @@ class _CloudPageState extends State<CloudPage> {
     bool testing = false;
     await fluent.showDialog<void>(context: context, builder: (ctx)=>StatefulBuilder(builder: (ctx,setDlg){
       Widget field(String label, TextEditingController c, {String? hint, bool obscure=false}){
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children:[Text(label, style: const TextStyle(fontSize:11, color: Color(0xFF9B9BA3))), const SizedBox(height:3), fluent.TextBox(controller:c, placeholder:hint, obscureText:obscure), const SizedBox(height:6)]);
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children:[Text(label, style: TextStyle(fontSize:11, color: palette.textSecondary)), SizedBox(height:3), fluent.TextBox(controller:c, placeholder:hint, obscureText:obscure), SizedBox(height:6)]);
       }
       final help = _driverHelp(type);
       return fluent.ContentDialog(
         title: Text(isEdit ? '编辑云存储' : '新增云存储'),
         content: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
           fluent.ComboBox<String>(value: type, isExpanded:true, items: (_drivers.contains(type) ? _drivers : [type, ..._drivers]).map((d)=>fluent.ComboBoxItem(value:d, child: Text('${_driverLabel(d)} ($d)', overflow:TextOverflow.ellipsis))).toList(), onChanged:(v)=>setDlg(()=>type=v??type)),
-          if (help.isNotEmpty) Padding(padding: const EdgeInsets.only(top:6, bottom:8), child: Text(help, style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93)))),
+          if (help.isNotEmpty) Padding(padding: EdgeInsets.only(top:6, bottom:8), child: Text(help, style: TextStyle(fontSize:10, color: palette.textMuted))),
           field('名称 *', nameCtrl, hint: _driverLabel(type)),
           if (type=='local') field('本地根目录 *', rootLocalCtrl, hint: r'D:/CloudMods 或 /tmp/mods'),
           if (type=='webdav') ...[field('WebDAV 地址 *', urlCtrl, hint: 'https://dav.example.com/'), field('用户名', userCtrl), field('密码', passCtrl, obscure:true)],
@@ -592,7 +593,7 @@ class _CloudPageState extends State<CloudPage> {
 
   Widget _directionChip(String value, String label, IconData icon){
     final sel = _direction==value;
-    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:12, color: sel? Colors.white: const Color(0xFF9B9BA3)), const SizedBox(width:4), Text(label, style: TextStyle(fontSize:11, color: sel? Colors.white: const Color(0xFFD4D4D8)))]);
+    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:12, color: sel? Colors.white: palette.textSecondary), const SizedBox(width:4), Text(label, style: TextStyle(fontSize:11, color: sel? Colors.white: palette.textPrimary))]);
     if(sel){
       return fluent.FilledButton(onPressed: ()=> setState(()=> _direction=value), child: content);
     }
@@ -610,16 +611,16 @@ class _CloudPageState extends State<CloudPage> {
     return Container(
       margin: const EdgeInsets.only(top:8, bottom:4),
       padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFF2A2A2E))),
+      decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(6), border: Border.all(color: palette.border)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
         Row(children:[
           SizedBox(width:12, height:12, child: running ? const fluent.ProgressRing(strokeWidth:2) : const Icon(FluentIcons.checkmark_12_regular, size:12, color: Colors.green)),
           const SizedBox(width:8),
-          Expanded(child: Text(running ? '同步中 $action $prog/$total' : '就绪', style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8)))),
-          if(total>0) Text('$prog/$total', style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93))),
+          Expanded(child: Text(running ? '同步中 $action $prog/$total' : '就绪', style: TextStyle(fontSize:11, color: palette.textPrimary))),
+          if(total>0) Text('$prog/$total', style: TextStyle(fontSize:10, color: palette.textMuted)),
         ]),
         if(total>0) Padding(padding: const EdgeInsets.only(top:6), child: fluent.ProgressBar(value: total==0? null : (prog/total*100).clamp(0,100))),
-        if(last.isNotEmpty) Padding(padding: const EdgeInsets.only(top:4), child: Text(last, style: const TextStyle(fontSize:10, color: Color(0xFF6E6E76)), overflow: TextOverflow.ellipsis)),
+        if(last.isNotEmpty) Padding(padding: EdgeInsets.only(top:4), child: Text(last, style: TextStyle(fontSize:10, color: palette.textHint), overflow: TextOverflow.ellipsis)),
         if(s['error']!=null && (s['error'] as String).isNotEmpty) Padding(padding: const EdgeInsets.only(top:4), child: Text('错误: ${s['error']}', style: const TextStyle(fontSize:10, color: Colors.redAccent))),
       ]),
     );
@@ -643,21 +644,21 @@ class _CloudPageState extends State<CloudPage> {
     final failCount = results.where((e)=>e['ok']==false).length;
     return Container(
       margin: const EdgeInsets.only(top:8),
-      decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFF2A2A2E))),
+      decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(6), border: Border.all(color: palette.border)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children:[
         Container(
           padding: const EdgeInsets.symmetric(horizontal:10, vertical:8),
-          decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E)))),
+          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))),
           child: Row(children:[
-            Text(isError? '失败' : '结果', style: TextStyle(fontSize:11, color: isError? Colors.redAccent: const Color(0xFFD4D4D8), fontWeight: FontWeight.w600)),
+            Text(isError? '失败' : '结果', style: TextStyle(fontSize:11, color: isError? Colors.redAccent: palette.textPrimary, fontWeight: FontWeight.w600)),
             const SizedBox(width:8),
             if(!isError) ...[
               _badge('$okCount 成功', const Color(0xFF0F7B0F)),
               const SizedBox(width:6),
-              _badge('$skipCount 跳过', const Color(0xFF6E6E76)),
+              _badge('$skipCount 跳过', palette.textHint),
               if(failCount>0) ...[const SizedBox(width:6), _badge('$failCount 失败', Colors.redAccent)],
               const Spacer(),
-              Text('total $total', style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93))),
+              Text('total $total', style: TextStyle(fontSize:10, color: palette.textMuted)),
             ] else ...[
               const Spacer(),
             ],
@@ -666,7 +667,7 @@ class _CloudPageState extends State<CloudPage> {
           ]),
         ),
         if(isError) Padding(padding: const EdgeInsets.all(10), child: SelectableText(message, style: const TextStyle(fontSize:11, color: Colors.redAccent))),
-        if(message.isNotEmpty && !isError) Padding(padding: const EdgeInsets.all(10), child: Text(message, style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8)))),
+        if(message.isNotEmpty && !isError) Padding(padding: EdgeInsets.all(10), child: Text(message, style: TextStyle(fontSize:11, color: palette.textPrimary))),
         if(results.isNotEmpty) SizedBox(
           height: 160,
           child: ListView.builder(
@@ -680,19 +681,19 @@ class _CloudPageState extends State<CloudPage> {
               Color col;
               IconData icon;
               if(!ok){ col=Colors.redAccent; icon=FluentIcons.error_circle_24_regular; }
-              else if(action.contains('skip')){ col=const Color(0xFF8B8B93); icon=FluentIcons.subtract_24_regular; }
+              else if(action.contains('skip')){ col=palette.textMuted; icon=FluentIcons.subtract_24_regular; }
               else if(action.contains('upload')){ col=const Color(0xFF4F6EF7); icon=FluentIcons.arrow_upload_24_regular; }
               else if(action.contains('download')){ col=const Color(0xFF0F7B0F); icon=FluentIcons.arrow_download_24_regular; }
-              else { col=const Color(0xFFD4D4D8); icon=FluentIcons.checkmark_12_regular; }
+              else { col=palette.textPrimary; icon=FluentIcons.checkmark_12_regular; }
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal:10, vertical:5),
-                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: const Color(0xFF2A2A2E).withValues(alpha: 0.5)))),
+                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border.withValues(alpha: 0.5)))),
                 child: Row(children:[
                   Icon(icon, size:12, color: col),
                   const SizedBox(width:8),
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
-                    Text(rel, style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8)), overflow: TextOverflow.ellipsis),
-                    Text(ok ? action : (err ?? 'error'), style: TextStyle(fontSize:10, color: ok? const Color(0xFF8B8B93): Colors.redAccent), overflow: TextOverflow.ellipsis),
+                    Text(rel, style: TextStyle(fontSize:11, color: palette.textPrimary), overflow: TextOverflow.ellipsis),
+                    Text(ok ? action : (err ?? 'error'), style: TextStyle(fontSize:10, color: ok? palette.textMuted: Colors.redAccent), overflow: TextOverflow.ellipsis),
                   ])),
                 ]),
               );
@@ -702,7 +703,7 @@ class _CloudPageState extends State<CloudPage> {
         Padding(
           padding: const EdgeInsets.all(8),
           child: SingleChildScrollView(
-            child: SelectableText(const JsonEncoder.withIndent('  ').convert(_syncResult), style: const TextStyle(fontSize:9, fontFamily:'Consolas', color:Color(0xFF6E6E76))),
+            child: SelectableText(JsonEncoder.withIndent('  ').convert(_syncResult), style: TextStyle(fontSize:9, fontFamily:'Consolas', color:palette.textHint)),
           ),
         ),
       ]),
@@ -728,67 +729,67 @@ class _CloudPageState extends State<CloudPage> {
     return LayoutBuilder(builder: (ctx, cons){
       final narrow = cons.maxWidth < 560;
       final providerPane = Container(
-        decoration: BoxDecoration(color: const Color(0xFF1A1A1E), border: Border(right: narrow? BorderSide.none : const BorderSide(color: Color(0xFF2A2A2E)), bottom: narrow? const BorderSide(color: Color(0xFF2A2A2E)) : BorderSide.none)),
+        decoration: BoxDecoration(color: palette.bgDeep, border: Border(right: narrow? BorderSide.none : BorderSide(color: palette.border), bottom: narrow? BorderSide(color: palette.border) : BorderSide.none)),
         child: Column(children:[
           Container(height:32, padding:const EdgeInsets.symmetric(horizontal:12), alignment:Alignment.centerLeft, child: Row(children:[
-            const Text('云盘', style:TextStyle(fontSize:11, color:Color(0xFFD4D4D8), fontWeight: FontWeight.w600)),
+            Text('云盘', style:TextStyle(fontSize:11, color:palette.textPrimary, fontWeight: FontWeight.w600)),
             const SizedBox(width:6),
-            Container(padding: const EdgeInsets.symmetric(horizontal:6, vertical:1), decoration: BoxDecoration(color: const Color(0xFF2B2B31), borderRadius: BorderRadius.circular(4)), child: Text('${_providers.length}', style: const TextStyle(fontSize:10, color: Color(0xFF9B9BA3)))),
+            Container(padding: EdgeInsets.symmetric(horizontal:6, vertical:1), decoration: BoxDecoration(color: palette.hover, borderRadius: BorderRadius.circular(4)), child: Text('${_providers.length}', style: TextStyle(fontSize:10, color: palette.textSecondary))),
             const Spacer(),
-            Tooltip(message: '刷新', child: GestureDetector(onTap:_loadProviders, child:const Icon(FluentIcons.arrow_sync_24_regular, size:14, color:Color(0xFF8B8B93)))),
+            Tooltip(message: '刷新', child: GestureDetector(onTap:_loadProviders, child:Icon(FluentIcons.arrow_sync_24_regular, size:14, color:palette.textMuted))),
             const SizedBox(width:10),
             Tooltip(message: '新增', child: GestureDetector(onTap:()=>_addProvider(), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: const Color(0xFF4F6EF7), borderRadius: BorderRadius.circular(4)), child: const Icon(FluentIcons.add_24_regular, size:12, color: Colors.white)))),
           ])),
-          if(_providers.isNotEmpty) Container(padding: const EdgeInsets.symmetric(horizontal:10, vertical:6), color: const Color(0xFF1E1E23), child: Row(children:[
-            const Icon(FluentIcons.info_24_regular, size:10, color: Color(0xFF6E6E76)),
+          if(_providers.isNotEmpty) Container(padding: const EdgeInsets.symmetric(horizontal:10, vertical:6), color: palette.panel, child: Row(children:[
+            Icon(FluentIcons.info_24_regular, size:10, color: palette.textHint),
             const SizedBox(width:6),
-            const Expanded(child: Text('点名称选中，右侧展示文件对比。建议优先用 OpenList 代理', style: TextStyle(fontSize:9, color: Color(0xFF6E6E76)))),
+            Expanded(child: Text('点名称选中，右侧展示文件对比。建议优先用 OpenList 代理', style: TextStyle(fontSize:9, color: palette.textHint))),
           ])),
           Expanded(child: _loading? const Center(child:SizedBox(width:20,height:20, child:fluent.ProgressRing(strokeWidth:2))) : ListView.builder(itemCount:_providers.length, itemBuilder:(c,i){
             final p=_providers[i] as Map; final sel=p['id']==_selectedProvider;
             final type = p['type'] as String? ?? '';
             return GestureDetector(onTap:()=>setState(()=>_selectedProvider=p['id'] as String), child:Container(
-              color: sel? const Color(0xFF2B2B31): Colors.transparent,
+              color: sel? palette.hover: Colors.transparent,
               padding:const EdgeInsets.symmetric(horizontal:10, vertical:10),
               child:Row(children:[
-              Icon(_driverIcon(type), size:16, color: sel? Colors.white: const Color(0xFF9B9BA3)),
+              Icon(_driverIcon(type), size:16, color: sel? palette.textHigh: palette.textSecondary),
               const SizedBox(width:10),
               Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start, children:[
-                Text(p['name']??p['id'], style:TextStyle(fontSize:12, color: sel? Colors.white: const Color(0xFFD4D4D8), fontWeight: sel? FontWeight.w600: FontWeight.normal), overflow:TextOverflow.ellipsis, maxLines:1),
+                Text(p['name']??p['id'], style:TextStyle(fontSize:12, color: sel? palette.textHigh: palette.textPrimary, fontWeight: sel? FontWeight.w600: FontWeight.normal), overflow:TextOverflow.ellipsis, maxLines:1),
                 const SizedBox(height:2),
                 Row(children:[
-                  Container(padding: const EdgeInsets.symmetric(horizontal:4, vertical:1), decoration: BoxDecoration(color: const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(3)), child: Text(_driverLabel(type), style: const TextStyle(fontSize:9, color: Color(0xFF9B9BA3)))),
+                  Container(padding: EdgeInsets.symmetric(horizontal:4, vertical:1), decoration: BoxDecoration(color: palette.border, borderRadius: BorderRadius.circular(3)), child: Text(_driverLabel(type), style: TextStyle(fontSize:9, color: palette.textSecondary))),
                   const SizedBox(width:4),
-                  Expanded(child: Text(p['remote_root']??'mods', style: const TextStyle(fontSize:9, color: Color(0xFF6E6E76)), overflow: TextOverflow.ellipsis)),
+                  Expanded(child: Text(p['remote_root']??'mods', style: TextStyle(fontSize:9, color: palette.textHint), overflow: TextOverflow.ellipsis)),
                 ]),
               ])),
               const SizedBox(width:6),
-              Tooltip(message: '测试连接', child: GestureDetector(onTap:()=>_test(p['id'] as String), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: const Color(0xFF2A2A2E)), borderRadius: BorderRadius.circular(4)), child: const Icon(FluentIcons.checkmark_24_regular, size:10, color:Color(0xFF6E6E76))))),
+              Tooltip(message: '测试连接', child: GestureDetector(onTap:()=>_test(p['id'] as String), child: Container(padding: EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: palette.border), borderRadius: BorderRadius.circular(4)), child: Icon(FluentIcons.checkmark_24_regular, size:10, color:palette.textHint)))),
               const SizedBox(width:4),
-              Tooltip(message: '编辑', child: GestureDetector(onTap:()=>_addProvider(editTarget: p), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: const Color(0xFF2A2A2E)), borderRadius: BorderRadius.circular(4)), child: const Icon(FluentIcons.edit_24_regular, size:10, color:Color(0xFF6E6E76))))),
+              Tooltip(message: '编辑', child: GestureDetector(onTap:()=>_addProvider(editTarget: p), child: Container(padding: EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: palette.border), borderRadius: BorderRadius.circular(4)), child: Icon(FluentIcons.edit_24_regular, size:10, color:palette.textHint)))),
               const SizedBox(width:4),
               Tooltip(message: '删除', child: GestureDetector(onTap:()=>_del(p['id'] as String), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)), borderRadius: BorderRadius.circular(4)), child: const Icon(FluentIcons.delete_24_regular, size:10, color:Colors.redAccent)))),
             ])));
           })),
-          if(_providers.isEmpty && !_loading) const Padding(padding:EdgeInsets.all(16), child:Column(children:[
-            Icon(FluentIcons.cloud_24_regular, size:28, color: Color(0xFF3A3A3E)),
+          if(_providers.isEmpty && !_loading) Padding(padding:EdgeInsets.all(16), child:Column(children:[
+            Icon(FluentIcons.cloud_24_regular, size:28, color: palette.borderHover),
             SizedBox(height:8),
-            Text('暂无云盘', style:TextStyle(fontSize:12, color:Color(0xFFD4D4D8))),
+            Text('暂无云盘', style:TextStyle(fontSize:12, color:palette.textPrimary)),
             SizedBox(height:4),
-            Text('点击右上角 + 新增\n推荐：本地目录测试 → OpenList 代理', textAlign: TextAlign.center, style:TextStyle(fontSize:10, color:Color(0xFF6E6E76))),
+            Text('点击右上角 + 新增\n推荐：本地目录测试 → OpenList 代理', textAlign: TextAlign.center, style:TextStyle(fontSize:10, color:palette.textHint)),
           ])),
           // provider 状态 history
           if(_syncStatus!=null && (_syncStatus!['history'] as List?)?.isNotEmpty==true) Container(
             height: 70,
             padding: const EdgeInsets.all(8),
-            decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF2A2A2E)))),
+            decoration: BoxDecoration(border: Border(top: BorderSide(color: palette.border))),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
-              const Text('最近同步', style: TextStyle(fontSize:10, color: Color(0xFF6E6E76))),
+              Text('最近同步', style: TextStyle(fontSize:10, color: palette.textHint)),
               const SizedBox(height:4),
               Expanded(child: ListView(
                 children: ((_syncStatus!['history'] as List).take(3).map((h)=> Padding(
                   padding: const EdgeInsets.only(bottom:2),
-                  child: Text('${h['time']} ${h['mod']} ${h['direction']} x${h['count']}', style: const TextStyle(fontSize:9, color: Color(0xFF8B8B93)), overflow: TextOverflow.ellipsis),
+                  child: Text('${h['time']} ${h['mod']} ${h['direction']} x${h['count']}', style: TextStyle(fontSize:9, color: palette.textMuted), overflow: TextOverflow.ellipsis),
                 )).toList()),
               )),
             ]),
@@ -798,15 +799,15 @@ class _CloudPageState extends State<CloudPage> {
 
       final localList = Expanded(
         child: Container(
-          decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFF2A2A2E))),
+          decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(6), border: Border.all(color: palette.border)),
           child: Column(children:[
             Container(
               padding: const EdgeInsets.symmetric(horizontal:8, vertical:6),
-              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E)))),
+              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))),
               child: Row(children:[
-                const Icon(FluentIcons.folder_24_regular, size:12, color: Color(0xFF9B9BA3)),
+                Icon(FluentIcons.folder_24_regular, size:12, color: palette.textSecondary),
                 const SizedBox(width:6),
-                Text('本地 ${_localFiles.length}', style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8), fontWeight: FontWeight.w600)),
+                Text('本地 ${_localFiles.length}', style: TextStyle(fontSize:11, color: palette.textPrimary, fontWeight: FontWeight.w600)),
                 const Spacer(),
                 Flexible(child: ConstrainedBox(constraints: BoxConstraints(maxWidth:110), child: fluent.TextBox(placeholder: '搜索', onChanged: (v)=>setState(()=>_localSearch=v), style: const TextStyle(fontSize:11)))),
                 const SizedBox(width:6),
@@ -819,10 +820,10 @@ class _CloudPageState extends State<CloudPage> {
               ]),
             ),
             Expanded(child: filteredLocal.isEmpty? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children:[
-              const Icon(FluentIcons.document_24_regular, size:22, color: Color(0xFF3A3A3E)),
+              Icon(FluentIcons.document_24_regular, size:22, color: palette.borderHover),
               const SizedBox(height:6),
-              Text(_selectedMod==null? '请选择 Mod' : '暂无文件', style: const TextStyle(fontSize:11, color: Color(0xFF6E6E76))),
-              if(_selectedMod!=null) Padding(padding: const EdgeInsets.only(top:4), child: Text('Mod: $_selectedMod', style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93)))),
+              Text(_selectedMod==null? '请选择 Mod' : '暂无文件', style: TextStyle(fontSize:11, color: palette.textHint)),
+              if(_selectedMod!=null) Padding(padding: EdgeInsets.only(top:4), child: Text('Mod: $_selectedMod', style: TextStyle(fontSize:10, color: palette.textMuted))),
             ])) : ListView.builder(
               itemCount: filteredLocal.length,
               itemBuilder: (c,i){
@@ -832,14 +833,14 @@ class _CloudPageState extends State<CloudPage> {
                 final sz = e['size'] as int? ?? 0;
                 final szStr = sz>1024*1024 ? '${(sz/1024/1024).toStringAsFixed(1)} MB' : sz>1024 ? '${(sz/1024).toStringAsFixed(1)} KB' : '$sz B';
                 return Container(
-                  color: ck? const Color(0xFF2B2B31).withValues(alpha: 0.5) : Colors.transparent,
+                  color: ck? palette.hover.withValues(alpha: 0.5) : Colors.transparent,
                   child: fluent.Checkbox(
                     checked: ck,
                     onChanged:(v)=>setState(()=> v==true? _checked.add(name): _checked.remove(name)),
                     content: Expanded(child: Row(children:[
-                      Expanded(child: Text(name, style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8)), overflow:TextOverflow.ellipsis)),
+                      Expanded(child: Text(name, style: TextStyle(fontSize:11, color: palette.textPrimary), overflow:TextOverflow.ellipsis)),
                       const SizedBox(width:6),
-                      Flexible(child: Text(szStr, maxLines:1, overflow:TextOverflow.ellipsis, style: const TextStyle(fontSize:9, color: Color(0xFF6E6E76)))),
+                      Flexible(child: Text(szStr, maxLines:1, overflow:TextOverflow.ellipsis, style: TextStyle(fontSize:9, color: palette.textHint))),
                     ])),
                   ),
                 );
@@ -851,15 +852,15 @@ class _CloudPageState extends State<CloudPage> {
 
       final remoteList = Expanded(
         child: Container(
-          decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFF2A2A2E))),
+          decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(6), border: Border.all(color: palette.border)),
           child: Column(children:[
             Container(
               padding: const EdgeInsets.symmetric(horizontal:8, vertical:6),
-              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E)))),
+              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))),
               child: Row(children:[
-                const Icon(FluentIcons.cloud_24_regular, size:12, color: Color(0xFF9B9BA3)),
+                Icon(FluentIcons.cloud_24_regular, size:12, color: palette.textSecondary),
                 const SizedBox(width:6),
-                Flexible(child: Text('远端 ${_remoteFiles.length}', maxLines:1, overflow:TextOverflow.ellipsis, style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8), fontWeight: FontWeight.w600))),
+                Flexible(child: Text('远端 ${_remoteFiles.length}', maxLines:1, overflow:TextOverflow.ellipsis, style: TextStyle(fontSize:11, color: palette.textPrimary, fontWeight: FontWeight.w600))),
                 const Spacer(),
                 if(_loadingRemote) const SizedBox(width:12, height:12, child: fluent.ProgressRing(strokeWidth:2)),
                 const SizedBox(width:6),
@@ -867,10 +868,10 @@ class _CloudPageState extends State<CloudPage> {
               ]),
             ),
             Expanded(child: _remoteFiles.isEmpty? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children:[
-              const Icon(FluentIcons.cloud_24_regular, size:22, color: Color(0xFF3A3A3E)),
+              Icon(FluentIcons.cloud_24_regular, size:22, color: palette.borderHover),
               const SizedBox(height:6),
-              Text(_selectedProvider==null ? '请选择云盘' : _selectedMod==null ? '请选择 Mod' : '远端为空或未同步', style: const TextStyle(fontSize:11, color: Color(0xFF6E6E76))),
-              if(_selectedProvider!=null && _selectedMod!=null) const Padding(padding: EdgeInsets.only(top:4), child: Text('点击上传可创建远端目录', style: TextStyle(fontSize:10, color: Color(0xFF8B8B93)))),
+              Text(_selectedProvider==null ? '请选择云盘' : _selectedMod==null ? '请选择 Mod' : '远端为空或未同步', style: TextStyle(fontSize:11, color: palette.textHint)),
+              if(_selectedProvider!=null && _selectedMod!=null) Padding(padding: EdgeInsets.only(top:4), child: Text('点击上传可创建远端目录', style: TextStyle(fontSize:10, color: palette.textMuted))),
             ])) : ListView.builder(
               itemCount: _remoteFiles.length,
               itemBuilder: (c,i){
@@ -880,12 +881,12 @@ class _CloudPageState extends State<CloudPage> {
                 final sz = e['size'] as int? ?? 0;
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal:10, vertical:6),
-                  decoration: BoxDecoration(border: Border(bottom: BorderSide(color: const Color(0xFF2A2A2E).withValues(alpha: 0.5)))),
+                  decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border.withValues(alpha: 0.5)))),
                   child: Row(children:[
-                    Icon(isDir? FluentIcons.folder_24_regular : FluentIcons.document_24_regular, size:12, color: isDir? const Color(0xFFF2C25C): const Color(0xFF9B9BA3)),
+                    Icon(isDir? FluentIcons.folder_24_regular : FluentIcons.document_24_regular, size:12, color: isDir? palette.statusWarn: palette.textSecondary),
                     const SizedBox(width:8),
-                    Expanded(child: Text(name, style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8)), overflow: TextOverflow.ellipsis)),
-                    if(!isDir) Text(sz>1024? '${(sz/1024).toStringAsFixed(1)}KB':'$sz B', style: const TextStyle(fontSize:9, color: Color(0xFF6E6E76))),
+                    Expanded(child: Text(name, style: TextStyle(fontSize:11, color: palette.textPrimary), overflow: TextOverflow.ellipsis)),
+                    if(!isDir) Text(sz>1024? '${(sz/1024).toStringAsFixed(1)}KB':'$sz B', style: TextStyle(fontSize:9, color: palette.textHint)),
                   ]),
                 );
               }
@@ -905,10 +906,10 @@ class _CloudPageState extends State<CloudPage> {
               placeholder:const Text('选择 Mod', style:TextStyle(fontSize:11)),
               isExpanded:true,
               items:mods.map((m)=>fluent.ComboBoxItem(value:m.name, child: Row(children:[
-                const Icon(FluentIcons.apps_24_regular, size:12, color: Color(0xFF9B9BA3)),
+                Icon(FluentIcons.apps_24_regular, size:12, color: palette.textSecondary),
                 const SizedBox(width:6),
                 Expanded(child: Text(m.name, overflow:TextOverflow.ellipsis, style:const TextStyle(fontSize:11))),
-                Text('${m.cfgFiles.length} 配置', style: const TextStyle(fontSize:9, color: Color(0xFF6E6E76))),
+                Text('${m.cfgFiles.length} 配置', style: TextStyle(fontSize:9, color: palette.textHint)),
               ]))).toList(),
               onChanged:(v){ setState(()=>_selectedMod=v); _loadFiles(); }
             )),
@@ -919,10 +920,10 @@ class _CloudPageState extends State<CloudPage> {
           // 方向与选项
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: const Color(0xFF1A1A1E), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFF2A2A2E))),
+            decoration: BoxDecoration(color: palette.bgDeep, borderRadius: BorderRadius.circular(8), border: Border.all(color: palette.border)),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
               Row(children:[
-                const Text('方向', style: TextStyle(fontSize:11, color: Color(0xFF9B9BA3))),
+                Text('方向', style: TextStyle(fontSize:11, color: palette.textSecondary)),
                 const SizedBox(width:12),
                 Expanded(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children:[
                   _directionChip('upload', '上传', FluentIcons.arrow_upload_24_regular),
@@ -960,7 +961,7 @@ class _CloudPageState extends State<CloudPage> {
                 _direction=='upload' ? '上传：本地 → 远端（覆盖同名，跳过未变更）' :
                 _direction=='download' ? '下载：远端 → 本地（增量，本地多余文件保留）' :
                 '双向：以 mtime 新者为准，冲突时本地优先。远端无 mtime 时以本地为准',
-                style: const TextStyle(fontSize:10, color: Color(0xFF6E6E76)),
+                style: TextStyle(fontSize:10, color: palette.textHint),
               ),
             ]),
           ),
@@ -968,9 +969,9 @@ class _CloudPageState extends State<CloudPage> {
           const SizedBox(height:10),
           // 文件对比区
           Row(children:[
-            const Text('文件对比', style:TextStyle(fontSize:12, color:Color(0xFFD4D4D8), fontWeight:FontWeight.w600)),
+            Text('文件对比', style:TextStyle(fontSize:12, color:palette.textPrimary, fontWeight:FontWeight.w600)),
             const SizedBox(width:8),
-            Text('已选 ${_checked.length}/${filteredLocal.length}', style: const TextStyle(fontSize:10, color: Color(0xFF8B8B93))),
+            Text('已选 ${_checked.length}/${filteredLocal.length}', style: TextStyle(fontSize:10, color: palette.textMuted)),
             const Spacer(),
             fluent.Button(onPressed:_busy? null : _syncFiles, child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(FluentIcons.document_multiple_24_regular, size:12), const SizedBox(width:4), Text(_dryRun? '预览选中':'同步选中 (${_checked.length})', style: const TextStyle(fontSize:11))])) ,
           ]),
@@ -984,22 +985,22 @@ class _CloudPageState extends State<CloudPage> {
         ]),
       );
       return Column(children:[
-        Container(height:44, padding:const EdgeInsets.symmetric(horizontal:12), decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E)))), child:Row(children:[
+        Container(height:44, padding:EdgeInsets.symmetric(horizontal:12), decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))), child:Row(children:[
           const Icon(FluentIcons.cloud_sync_24_regular, size:16, color: Color(0xFF4F6EF7)),
           const SizedBox(width:8),
-          Flexible(child: Text('云同步 · 整Mod文件夹', maxLines:1, overflow:TextOverflow.ellipsis, style:TextStyle(fontSize:13, color:Color(0xFFD4D4D8), fontWeight:FontWeight.w600))),
+          Flexible(child: Text('云同步 · 整Mod文件夹', maxLines:1, overflow:TextOverflow.ellipsis, style:TextStyle(fontSize:13, color:palette.textPrimary, fontWeight:FontWeight.w600))),
           const SizedBox(width:8),
-          Flexible(child: Container(padding: const EdgeInsets.symmetric(horizontal:6, vertical:2), decoration: BoxDecoration(color: const Color(0xFF1E1E23), borderRadius: BorderRadius.circular(4)), child: Text('增量 · mtime+size+sha1 · 双向', maxLines:1, overflow:TextOverflow.ellipsis, style: TextStyle(fontSize:9, color: Color(0xFF8B8B93))))),
+          Flexible(child: Container(padding: const EdgeInsets.symmetric(horizontal:6, vertical:2), decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(4)), child: Text('增量 · mtime+size+sha1 · 双向', maxLines:1, overflow:TextOverflow.ellipsis, style: TextStyle(fontSize:9, color: palette.textMuted)))),
           const Spacer(),
-          if(_selectedProvider!=null) Flexible(child: Container(padding: const EdgeInsets.symmetric(horizontal:8, vertical:4), decoration: BoxDecoration(color: const Color(0xFF2B2B31), borderRadius: BorderRadius.circular(4)), child: Row(mainAxisSize: MainAxisSize.min, children:[
-            Icon(_driverIcon(_providers.firstWhere((p)=>p['id']==_selectedProvider, orElse:()=>{'type':'local'})['type']), size:12, color: const Color(0xFF9B9BA3)),
+          if(_selectedProvider!=null) Flexible(child: Container(padding: const EdgeInsets.symmetric(horizontal:8, vertical:4), decoration: BoxDecoration(color: palette.hover, borderRadius: BorderRadius.circular(4)), child: Row(mainAxisSize: MainAxisSize.min, children:[
+            Icon(_driverIcon(_providers.firstWhere((p)=>p['id']==_selectedProvider, orElse:()=>{'type':'local'})['type']), size:12, color: palette.textSecondary),
             const SizedBox(width:4),
-            Flexible(child: Text(_providers.firstWhere((p)=>p['id']==_selectedProvider, orElse:()=>{'name':'?'})['name'], maxLines:1, overflow:TextOverflow.ellipsis, style: const TextStyle(fontSize:11, color: Color(0xFFD4D4D8)))),
+            Flexible(child: Text(_providers.firstWhere((p)=>p['id']==_selectedProvider, orElse:()=>{'name':'?'})['name'], maxLines:1, overflow:TextOverflow.ellipsis, style: TextStyle(fontSize:11, color: palette.textPrimary))),
           ]))),
         ])),
         Expanded(child: narrow
-          ? Column(children:[SizedBox(height: 320, child: providerPane), const Divider(height:1, color:Color(0xFF2A2A2E)), Expanded(child: syncPane)])
-          : Row(crossAxisAlignment:CrossAxisAlignment.stretch, children:[SizedBox(width:280, child: providerPane), const VerticalDivider(width:1, color:Color(0xFF2A2A2E)), Expanded(child: syncPane)])),
+          ? Column(children:[SizedBox(height: 320, child: providerPane), Divider(height:1, color:palette.border), Expanded(child: syncPane)])
+          : Row(crossAxisAlignment:CrossAxisAlignment.stretch, children:[SizedBox(width:280, child: providerPane), VerticalDivider(width:1, color:palette.border), Expanded(child: syncPane)])),
       ]);
     });
   }

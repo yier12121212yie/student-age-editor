@@ -3,6 +3,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/models.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
+import '../../core/app_theme.dart';
 
 class StatusBar extends StatelessWidget {
   const StatusBar({
@@ -24,7 +25,7 @@ class StatusBar extends StatelessWidget {
       builder: (context, _) => Container(
         // 只约束最小高度：系统字体放大时允许自然变高，避免纵向溢出
         constraints: const BoxConstraints(minHeight: 26),
-        color: const Color(0xFF1E1E22),
+        color: palette.bgDeep,
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           physics: const ClampingScrollPhysics(),
@@ -32,11 +33,11 @@ class StatusBar extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               const SizedBox(width: 10),
-              const Icon(FluentIcons.branch_fork_24_regular, size: 13, color: Color(0xFF8B8B93)),
+              Icon(FluentIcons.branch_fork_24_regular, size: 13, color: palette.textMuted),
               const SizedBox(width: 6),
               _text('主分支'),
               const SizedBox(width: 14),
-              const Icon(FluentIcons.arrow_sync_24_regular, size: 13, color: Color(0xFF8B8B93)),
+              Icon(FluentIcons.arrow_sync_24_regular, size: 13, color: palette.textMuted),
               const SizedBox(width: 6),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 240),
@@ -47,7 +48,7 @@ class StatusBar extends StatelessWidget {
                     key: ValueKey(state.modName),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+                    style: TextStyle(fontSize: 12, color: palette.textSecondary),
                   ),
                 ),
               ),
@@ -69,7 +70,7 @@ class StatusBar extends StatelessWidget {
                 child: Text(
                   state.backendOnline ? '本地服务在线' : '本地服务离线',
                   key: ValueKey(state.backendOnline),
-                  style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary),
                 ),
               ),
               const SizedBox(width: 14),
@@ -87,12 +88,12 @@ class StatusBar extends StatelessWidget {
                             key: ValueKey(uiMode),
                             uiMode == UiMode.creation ? FluentIcons.list_24_regular : FluentIcons.paint_brush_24_regular,
                             size: 13,
-                            color: const Color(0xFF8B8B93)),
+                            color: palette.textMuted),
                       ),
                       const SizedBox(width: 6),
                       Text(
                         uiMode == UiMode.creation ? '切换经典布局' : '切换创作布局',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFFC8C8CF)),
+                        style: TextStyle(fontSize: 12, color: palette.textMid),
                       ),
                       const SizedBox(width: 14),
                     ],
@@ -100,11 +101,11 @@ class StatusBar extends StatelessWidget {
                 ),
               _HoverButton(
                 onTap: onToggleAi,
-                child: const Row(
+                child: Row(
                   children: [
-                    Icon(FluentIcons.bot_24_regular, size: 13, color: Color(0xFF8B8B93)),
+                    Icon(FluentIcons.bot_24_regular, size: 13, color: palette.textMuted),
                     SizedBox(width: 6),
-                    Text('AI', style: TextStyle(fontSize: 12, color: Color(0xFFC8C8CF))),
+                    Text('AI', style: TextStyle(fontSize: 12, color: palette.textMid)),
                     SizedBox(width: 10),
                   ],
                 ),
@@ -116,7 +117,7 @@ class StatusBar extends StatelessWidget {
     );
   }
 
-  Widget _text(String s) => Text(s, style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)));
+  Widget _text(String s) => Text(s, style: TextStyle(fontSize: 12, color: palette.textSecondary));
 }
 
 class _AnimatedText extends StatelessWidget {
@@ -127,7 +128,7 @@ class _AnimatedText extends StatelessWidget {
     return AnimatedSwitcher(
       duration: AppMotion.fast,
       transitionBuilder: (c, a) => FadeTransition(opacity: a, child: c),
-      child: Text(key: ValueKey(text), text, style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+      child: Text(key: ValueKey(text), text, style: TextStyle(fontSize: 12, color: palette.textSecondary)),
     );
   }
 }
@@ -154,7 +155,7 @@ class _HoverButtonState extends State<_HoverButton> {
           duration: AppMotion.fast,
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: _hover ? const Color(0xFF26262B) : Colors.transparent,
+            color: _hover ? palette.card : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
           ),
           child: widget.child,

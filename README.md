@@ -8,6 +8,17 @@
 对话；AI 助手（`agent`）与云同步（`cloud`）的配置为
 GUI / CLI / TUI 三端共享（`.editor_ai.json` / `.editor_cloud.json`）。
 
+## 功能一览
+
+- **模组编辑**：GUI / CLI / TUI 三端编辑 `Cfgs/zh-cn/*.json` 与资源，
+  Schema 驱动、校验、搜索、导入导出。
+- **AI 助手**：对话式改模（工具调用 + 字段级 diff 审批），配置三端共享。
+- **云同步**：WebDAV / OpenList / 百度网盘等 7 种驱动手动或实时同步 Mod。
+- **插件系统**：第三方 Python 代码扩展——HTTP 端点 / AI Agent 工具 /
+  GUI 面板 / CLI 命令，安装默认停用、**启用需高危确认**。详见
+  [`PLUGIN_GUIDE.md`](PLUGIN_GUIDE.md)，完整范例见
+  [`examples/plugins/hello_plugin`](examples/plugins/hello_plugin)。
+
 ## 支持平台
 
 | 平台 | 产物 | 后端形态 |

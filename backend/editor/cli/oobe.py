@@ -160,10 +160,48 @@ def create_mod(title: str, workspace: Path, desc: str = "") -> Path:
     return mod_dir
 
 
+def _apply_extras(ai_settings: dict | None = None,
+                  cloud_provider: dict | None = None,
+                  workspace: str | Path | None = None) -> dict:
+    """OOBE 可选配置落盘：AI 助手（.editor_ai.json）+ 云存储（.editor_cloud.json）。
+
+    供 apply_setup 与 CLI 向导共用；任一项失败静默降级，不阻塞完成标记。
+    返回实际写入项摘要 {"ai_settings": True, "cloud_provider": True, ...}。
+    """
+    result: dict = {}
+    if ai_settings:
+        try:
+            from editor.core.env_store import write_ai_settings
+            patch_ai = {k: v for k, v in ai_settings.items() if v not in (None, "")}
+            if patch_ai:
+                write_ai_settings(patch_ai)
+                result["ai_settings"] = True
+        except Exception:
+            pass
+    if cloud_provider:
+        try:
+            if workspace:
+                try:
+                    # 让云存储配置落在 <workspace>/.editor_cloud.json 而不是 cache 兜底
+                    from editor.server.api import STATE
+                    STATE.workspace_root = str(Path(workspace))
+                except Exception:
+                    pass
+            from editor.server.cloud_sync import add_provider
+            add_provider(cloud_provider)
+            result["cloud_provider"] = True
+        except Exception:
+            pass
+    return result
+
+
 def apply_setup(workspace: str | None = None,
                 mod_title: str | None = None,
-                mod_desc: str = "") -> dict:
-    """OOBE 完成时的一次性落盘：设置工作区（可选）+ 建首个 Mod（可选）+ 标记完成。
+                mod_desc: str = "",
+                ai_settings: dict | None = None,
+                cloud_provider: dict | None = None) -> dict:
+    """OOBE 完成时的一次性落盘：设置工作区（可选）+ 建首个 Mod（可选）
+    + AI 助手/云存储（可选）+ 标记完成。
 
     返回结果摘要（供 API 与向导复用）。
     """
@@ -179,6 +217,8 @@ def apply_setup(workspace: str | None = None,
         mod_dir = create_mod(mod_title, target_ws, mod_desc)
         result["mod"] = mod_dir.name
         result["mod_root"] = str(mod_dir)
+    result.update(_apply_extras(ai_settings, cloud_provider,
+                                ws_path or current_workspace()))
     patch = {}
     if "workspace" in result:
         patch["workspace_root"] = result["workspace"]
@@ -304,7 +344,161 @@ def run_cli_wizard(console=None) -> bool:
         except ValueError as e:
             con.print(f"[yellow]{e} — 已跳过创建[/]")
 
+    # ── 步骤 4: 可选 AI 助手 ──
+    ai_settings: dict = {}
+    con.print("[bold]③ AI 助手[/] [dim](可选)[/]")
+    try:
+        ai_ans = con.input("[dim]配置 AI 助手？[y=配置 / 回车跳过] > [/]").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return False
+    if ai_ans == "y":
+        try:
+            pv = con.input(
+                "[dim]协议 [openai_compatible 回车 / openai_responses / anthropic] > [/]").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        ai_settings["provider"] = pv or "openai_compatible"
+        try:
+            base = con.input("[dim]Base URL（回车=官方默认）> [/]").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        if base:
+            ai_settings["baseUrl"] = base
+        try:
+            key = con.input("[dim]API Key > [/]").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        if not key:
+            con.print("[yellow]未填 API Key — 跳过 AI 配置[/]")
+            ai_settings = {}
+        else:
+            ai_settings["apiKey"] = key
+            try:
+                model = con.input("[dim]模型（回车=默认）> [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            if model:
+                ai_settings["model"] = model
+
+    # ── 步骤 5: 可选 TTS 配音 ──
+    con.print("[bold]④ 配音 TTS[/] [dim](可选)[/]")
+    try:
+        tts_ans = con.input("[dim]服务商 [aliyun / minimax / 回车跳过] > [/]").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return False
+    if tts_ans in ("aliyun", "minimax"):
+        try:
+            tkey = con.input("[dim]API Key > [/]").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        if tkey:
+            ai_settings["ttsProvider"] = tts_ans
+            ai_settings["ttsApiKey"] = tkey
+            if tts_ans == "minimax":
+                try:
+                    gid = con.input("[dim]Group ID（MiniMax 控制台获取）> [/]").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return False
+                if gid:
+                    ai_settings["ttsGroupId"] = gid
+            try:
+                tmodel = con.input("[dim]模型（回车=默认）> [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            if tmodel:
+                ai_settings["ttsModel"] = tmodel
+            try:
+                voice = con.input("[dim]默认音色（回车=默认）> [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            if voice:
+                ai_settings["ttsVoice"] = voice
+        else:
+            con.print("[yellow]未填 API Key — 跳过 TTS 配置[/]")
+
+    # ── 步骤 6: 可选云存储（首次配置场景，简化支持 local / webdav / openlist）──
+    cloud_provider: dict | None = None
+    con.print("[bold]⑤ 云存储[/] [dim](可选)[/]")
+    try:
+        cloud_ans = con.input(
+            "[dim]类型 [local / webdav / openlist / 回车跳过] > [/]").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return False
+    if cloud_ans in ("local", "webdav", "openlist"):
+        try:
+            name = con.input("[dim]名称（回车=类型名）> [/]").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
+        cfg: dict = {}
+        if cloud_ans == "local":
+            try:
+                root = con.input("[dim]本地根目录 > [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            if not root:
+                con.print("[yellow]未填根目录 — 跳过云存储[/]")
+                cloud_ans = ""
+            else:
+                cfg["root"] = root
+        elif cloud_ans == "webdav":
+            try:
+                url = con.input("[dim]WebDAV 地址 > [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            if not url:
+                con.print("[yellow]未填地址 — 跳过云存储[/]")
+                cloud_ans = ""
+            else:
+                cfg["url"] = url
+                try:
+                    user = con.input("[dim]用户名（可空）> [/]").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return False
+                if user:
+                    cfg["username"] = user
+                try:
+                    pwd = con.input("[dim]密码（可空）> [/]").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return False
+                if pwd:
+                    cfg["password"] = pwd
+        else:  # openlist
+            try:
+                url = con.input("[dim]OpenList 地址 > [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            if not url:
+                con.print("[yellow]未填地址 — 跳过云存储[/]")
+                cloud_ans = ""
+            else:
+                cfg["url"] = url
+                try:
+                    token = con.input("[dim]Token（可空）> [/]").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return False
+                if token:
+                    cfg["token"] = token
+        if cloud_ans:
+            try:
+                remote = con.input("[dim]远端根（回车=mods）> [/]").strip()
+            except (KeyboardInterrupt, EOFError):
+                return False
+            cloud_provider = {
+                "name": name or cloud_ans,
+                "type": cloud_ans,
+                "config": cfg,
+                "remote_root": remote or "mods",
+            }
+            # 可选连接校验（与 /api/cloud/test 同一逻辑），失败不阻塞保存
+            try:
+                from editor.server.cloud_sync import get_driver
+                get_driver(cloud_ans, cfg).test()
+                con.print("[green]连接测试通过[/]")
+            except Exception as e:
+                con.print(f"[yellow]连接测试失败: {e}（配置仍会保存）[/]")
+
     # ── 完成 ──
+    extras = _apply_extras(ai_settings, cloud_provider, ws)
     con.print(_Rule())
     summary = _Table(box=_box.SIMPLE, show_header=False)
     summary.add_column(style="cyan", no_wrap=True)
@@ -312,6 +506,12 @@ def run_cli_wizard(console=None) -> bool:
     summary.add_row("工作区", str(ws))
     if mod_name:
         summary.add_row("当前模组", mod_name)
+    if extras.get("ai_settings"):
+        summary.add_row("AI 助手", "已配置 (%s)" % (ai_settings.get("provider") or ""))
+    if ai_settings.get("ttsProvider"):
+        summary.add_row("配音 TTS", "已配置 (%s)" % ai_settings.get("ttsProvider"))
+    if extras.get("cloud_provider"):
+        summary.add_row("云存储", "%s (%s)" % (cloud_provider.get("name"), cloud_provider.get("type")))
     summary.add_row("下一步", "python run_cli.py mods list   /   run_tui.py 打开三栏界面")
     con.print(_Panel(summary, title="[green]✓ 完成", border_style="green"))
     mark_done({"workspace_root": str(ws)})

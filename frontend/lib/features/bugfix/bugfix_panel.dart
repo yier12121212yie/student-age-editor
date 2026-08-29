@@ -4,6 +4,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/app_theme.dart';
 
 /// 数据诊断与一键修复侧边栏。
 class BugfixPanel extends StatefulWidget {
@@ -94,7 +95,7 @@ class _BugfixPanelState extends State<BugfixPanel> {
         flag == 'ERROR' ||
         flag == 'FIX_OPTION_1' ||
         flag == 'FIX_TALK_1') {
-      return const Color(0xFFE5484D);
+      return palette.danger;
     }
     return const Color(0xFFF57C00);
   }
@@ -114,11 +115,11 @@ class _BugfixPanelState extends State<BugfixPanel> {
                 color: Color(0xFF6C5CE7),
               ),
               const SizedBox(width: 8),
-              const Text(
+              Text(
                 '诊断修复',
                 style: TextStyle(
                   fontSize: 12,
-                  color: Color(0xFF9B9BA3),
+                  color: palette.textSecondary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -137,10 +138,10 @@ class _BugfixPanelState extends State<BugfixPanel> {
                               height: 14,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(
+                          : Icon(
                               FluentIcons.scan_camera_24_regular,
                               size: 14,
-                              color: Color(0xFF8B8B93),
+                              color: palette.textMuted,
                             ),
                     ),
                   ),
@@ -149,13 +150,13 @@ class _BugfixPanelState extends State<BugfixPanel> {
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.all(12),
             child: Text(
               _error!,
-              style: const TextStyle(fontSize: 12, color: Color(0xFFE5484D)),
+              style: TextStyle(fontSize: 12, color: palette.danger),
             ),
           ),
         Expanded(
@@ -164,18 +165,18 @@ class _BugfixPanelState extends State<BugfixPanel> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(
+                      Icon(
                         FluentIcons.shield_checkmark_24_regular,
                         size: 36,
-                        color: Color(0xFF3A3A42),
+                        color: palette.borderHover,
                       ),
                       const SizedBox(height: 12),
-                      const Text(
+                      Text(
                         '扫描 Mod 数据结构异常\n（引用断层 / 字典越界 / 格式错误）',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 12,
-                          color: Color(0xFF6E6E76),
+                          color: palette.textHint,
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -209,13 +210,13 @@ class _BugfixPanelState extends State<BugfixPanel> {
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
                               color: selected
-                                  ? const Color(0xFF2B2B31)
-                                  : const Color(0xFF1F1F24),
+                                  ? palette.hover
+                                  : palette.bgDeep,
                               borderRadius: BorderRadius.circular(6),
                               border: Border.all(
                                 color: selected
                                     ? const Color(0xFF6C5CE7)
-                                    : const Color(0xFF2A2A2E),
+                                    : palette.border,
                               ),
                             ),
                             child: Column(
@@ -247,9 +248,9 @@ class _BugfixPanelState extends State<BugfixPanel> {
                                         '$cfg → $id',
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                           fontSize: 12,
-                                          color: Color(0xFFD4D4D8),
+                                          color: palette.textPrimary,
                                         ),
                                       ),
                                     ),
@@ -259,17 +260,17 @@ class _BugfixPanelState extends State<BugfixPanel> {
                                   const SizedBox(height: 6),
                                   Text(
                                     '属性：$key',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
-                                      color: Color(0xFF9B9BA3),
+                                      color: palette.textSecondary,
                                     ),
                                   ),
                                   const SizedBox(height: 3),
                                   Text(
                                     desc,
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
-                                      color: Color(0xFFB4B4BC),
+                                      color: palette.textMid,
                                     ),
                                   ),
                                 ],

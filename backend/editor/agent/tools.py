@@ -303,10 +303,33 @@ class AgentTools:
 
         只读克隆（_readonly=True）只返回 name 在 READ_ONLY_TOOLS 里的定义
         （spawn_subagents 等不对子代理暴露，防止递归派生）。
+        末尾追加已加载插件的工具定义（只读克隆仅追加 readonly=True 的插件工具）。
         """
         if self._readonly:
-            return [t for t in self.TOOL_DEFS if t.get("name") in READ_ONLY_TOOLS]
-        return self.TOOL_DEFS
+            defs = [t for t in self.TOOL_DEFS if t.get("name") in READ_ONLY_TOOLS]
+        else:
+            defs = list(self.TOOL_DEFS)
+        try:
+            from ..core import plugin_system
+
+            pdefs = plugin_system.agent_tool_defs()
+            if self._readonly:
+                pdefs = [t for t in pdefs if t.get("readonly")]
+            defs.extend(pdefs)
+        except Exception:
+            pass
+        return defs
+
+    @staticmethod
+    def _is_plugin_readonly(name) -> bool:
+        """插件工具是否 readonly=True（只读克隆放行插件只读工具用）。"""
+        try:
+            from ..core import plugin_system
+
+            t = plugin_system.plugin_tool_info(name)
+            return bool(t and t.get("readonly"))
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ 执行
     def execute(self, call: ToolCall, confirm=None) -> str:
@@ -322,12 +345,22 @@ class AgentTools:
 
     def _dispatch(self, call: ToolCall, confirm) -> str:
         # 只读克隆的双保险：即使模型越权调用写工具也在此拒绝
+        # （readonly=True 的插件工具放行）
         if getattr(self, "_readonly", False) and call.name not in READ_ONLY_TOOLS:
-            return "错误：子代理仅允许只读工具，%s 已被拒绝" % call.name
+            if not self._is_plugin_readonly(call.name):
+                return "错误：子代理仅允许只读工具，%s 已被拒绝" % call.name
         args = call.arguments or {}
         handler = getattr(self, "_tool_" + call.name, None)
         if handler is None:
-            return f"错误：未知工具 {call.name}"
+            # 回退插件工具（惰性导入、异常隔离）
+            try:
+                from ..core import plugin_system
+
+                return plugin_system.agent_exec(call.name, args, confirm)
+            except ValueError:
+                return f"错误：未知工具 {call.name}"
+            except Exception as exc:
+                return f"工具执行失败: {exc}"
         return handler(args, confirm)
 
     # ---- 领域（只读） ----

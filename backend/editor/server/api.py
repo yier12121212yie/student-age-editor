@@ -16,9 +16,12 @@ from editor.server.fs_tools import SandboxError
 from editor.server.httpd import ApiRouter
 from editor.server import ai_domain_service
 from editor.server import ai_image_service
+from editor.server import tts_service
+from editor.server import tts_store
 from editor.server import resource_pack
 from editor.server import cloud_sync
 from editor.server import realtime_sync
+from editor.core import plugin_system
 
 try:
     from editor.core.game_schema import GAME_SCHEMA
@@ -427,6 +430,19 @@ def _read_mod_table(cfg_name):
     return data if isinstance(data, dict) else None
 
 
+def _tts_register_audio_cfg(key, body):
+    """登记 AudioCfg 行（文件 IO 在 tts_store，三端共享）并刷新 mod 配置缓存。"""
+    new_id = tts_store.register_audio_cfg(
+        STATE._cfg_dir(), key, str(body.get("title") or ""))
+    _invalidate_mod_cfgs_cache()
+    try:
+        from editor.server import preview_service as _ps
+        _ps.invalidate_cache()
+    except Exception:
+        pass
+    return new_id
+
+
 # 跨表 issue 消息前缀 -> 表名（用于 /api/validate 的 cfg 字段标注）
 _CROSS_MSG_CFG_PREFIX = (("事件", "EvtCfg"), ("对话", "TalkCfg"), ("选项", "OptionCfg"))
 
@@ -575,6 +591,11 @@ def build_router():
                 if mods and not STATE.mod_name:
                     STATE.mod_name = mods[0]["name"]
                     STATE.mod_root = mods[0]["root"]
+            # OOBE 可选配置：AI 助手 / 云存储（复用 oobe._apply_extras，失败降级不阻塞）
+            if body.get("ai_settings") or body.get("cloud_provider"):
+                from editor.cli.oobe import _apply_extras as _extras
+                _extras(body.get("ai_settings"), body.get("cloud_provider"),
+                        STATE.workspace_root or None)
             if body.get("mark_done", True):
                 patch = {"workspace_root": STATE.workspace_root} if ws else None
                 _mark_done(patch)
@@ -1315,6 +1336,156 @@ def build_router():
             )
         except ai_image_service.ImageGenError as e:
             return 400, {"error": str(e)}
+
+    # ---------- 配音（TTS：阿里云 DashScope 百炼 / MiniMax T2A V2） ----------
+    # 配置存 .editor_ai.json（env_store，字段前缀 tts*，GUI/CLI/TUI 三端共享）；
+    # 合成不落盘（职责单一），保存由 /api/tts/save 写入 mod（fs_tools 沙箱）并登记 AudioCfg。
+    @r.route("GET", r"/api/tts/settings")
+    def tts_settings_get(_query=None, _body=None):
+        try:
+            from editor.core.env_store import read_ai_settings
+            return 200, {"settings": read_ai_settings()}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+
+    @r.route("PUT", r"/api/tts/settings")
+    def tts_settings_put(_query=None, _body=None):
+        body = _body or {}
+        patch = body.get("settings", body)
+        if not isinstance(patch, dict):
+            return 400, {"error": "body must be a settings object"}
+        # 只接收 tts* 字段，避免误改对话/生图配置
+        tts_patch = {k: v for k, v in patch.items() if k.startswith("tts")}
+        try:
+            from editor.core.env_store import write_ai_settings
+            return 200, {"ok": True, "settings": write_ai_settings(tts_patch)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+
+    @r.route("POST", r"/api/tts/test")
+    def tts_test(_query=None, _body=None):
+        body = _body or {}
+        try:
+            return 200, tts_service.test_connection(
+                provider=str(body.get("provider") or ""),
+                settings=body.get("settings") or {},
+                params=body.get("params") or {},
+            )
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+
+    @r.route("GET", r"/api/tts/voices")
+    def tts_voices(_query=None, _body=None):
+        q = _query or {}
+        try:
+            from editor.core.env_store import read_ai_settings
+            settings = read_ai_settings()
+            provider = str(q.get("provider") or settings.get("ttsProvider") or "")
+            voices, source = tts_service.list_voices(provider, settings)
+            return 200, {"voices": voices, "source": source, "provider": provider}
+        except tts_service.TtsError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+
+    @r.route("POST", r"/api/tts/synthesize")
+    def tts_synthesize(_query=None, _body=None):
+        body = _body or {}
+        try:
+            from editor.core.env_store import read_ai_settings
+            settings = read_ai_settings()
+            provider = str(body.get("provider") or settings.get("ttsProvider") or "")
+            audio, ext = tts_service.synthesize(
+                provider=provider,
+                text=str(body.get("text") or ""),
+                voice=str(body.get("voice") or "") or None,
+                settings=settings,
+                params=body.get("params") or {},
+            )
+            import base64 as _b64
+            return 200, {
+                "audio": _b64.b64encode(audio).decode("ascii"),
+                "ext": ext,
+                "bytes": len(audio),
+            }
+        except tts_service.TtsError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+
+    @r.route("POST", r"/api/tts/save")
+    def tts_save(_query=None, _body=None):
+        """把合成音频写入当前 mod（audio/tts/），并按需登记 AudioCfg 行。"""
+        body = _body or {}
+        import base64 as _b64
+        try:
+            audio = _b64.b64decode(str(body.get("audio") or ""), validate=False)
+        except Exception:
+            return 400, {"error": "audio base64 decode failed"}
+        if not STATE.mod_root:
+            return 400, {"error": "未选择模组"}
+        # 只认真布尔（或字符串 "true"），避免 "false"/"0" 被当成 True 触发无谓转码
+        ogg_flag = body.get("ogg")
+        ogg = ogg_flag is True or str(ogg_flag).strip().lower() == "true"
+        try:
+            saved = tts_store.save_audio(
+                STATE.mod_root, audio, str(body.get("ext") or "wav"),
+                key=str(body.get("key") or "") or None,
+                ogg=ogg)
+        except tts_store.TtsStoreError as e:
+            return 400, {"error": str(e)}
+        audio_cfg_id = None
+        if body.get("writeCfg"):
+            try:
+                audio_cfg_id = _tts_register_audio_cfg(saved["key"], body)
+            except Exception as e:
+                return 200, {"ok": True, **saved, "audioCfgId": None,
+                             "warning": "文件已保存，登记 AudioCfg 失败: %s" % e}
+        return 200, {"ok": True, **saved, "audioCfgId": audio_cfg_id}
+
+    @r.route("GET", r"/api/tts/audio")
+    def tts_audio(_query=None, _body=None):
+        """读回 mod 内已保存的配音音频（base64 + ext），供面板重开后再试听。"""
+        q = _query or {}
+        rel = str(q.get("path") or "")
+        if not rel:
+            return 400, {"error": "path required"}
+        try:
+            blob = tts_store.read_audio(STATE.mod_root, rel)
+        except tts_store.TtsStoreError as e:
+            msg = str(e)
+            # 仅「文件本身不存在」是 404；未选模组等前置条件问题统一 400
+            return (404, {"error": msg}) if msg.startswith("文件不存在") \
+                else (400, {"error": msg})
+        import base64 as _b64
+        ext = os.path.splitext(rel)[1].lstrip(".").lower() or "wav"
+        return 200, {"path": rel, "ext": ext,
+                     "audio": _b64.b64encode(blob).decode("ascii")}
+
+    @r.route("GET", r"/api/tts/list")
+    def tts_list(_query=None, _body=None):
+        """列出当前 mod 的 audio/tts/ 下已保存的配音素材。"""
+        try:
+            items = tts_store.list_materials(STATE.mod_root)
+        except tts_store.TtsStoreError as e:
+            return 400, {"error": str(e)}
+        return 200, {"items": items}
+
+    @r.route("POST", r"/api/tts/delete")
+    def tts_delete(_query=None, _body=None):
+        """删除 mod 内一条已保存的配音素材（仅限 audio/tts/ 目录内）。"""
+        body = _body or {}
+        rel = str(body.get("path") or "")
+        if not rel:
+            return 400, {"error": "path required"}
+        try:
+            tts_store.delete_material(STATE.mod_root, rel)
+        except tts_store.TtsStoreError as e:
+            msg = str(e)
+            # 仅「文件本身不存在」是 404；未选模组等前置条件问题统一 400
+            return (404, {"error": msg}) if msg.startswith("文件不存在") \
+                else (400, {"error": msg})
+        return 200, {"ok": True, "path": rel}
 
     # ---------- AI 舞台调度（人物站位/移动/入场退场/表情/动作） ----------
     # 语义化指令 <-> TalkCfg.roles 编码，写回复用 /api/ai/domain/item（含备份与 schema 校验）。
@@ -2219,10 +2390,151 @@ def build_router():
             return 500, {"error": str(e)}
 
 
+    # ---------- 插件系统 ----------
+    @r.route("GET", r"/api/plugins")
+    def plugins_list(_query=None, _body=None):
+        try:
+            plugins = plugin_system.list_plugins()
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"plugins": plugins}
+
+    @r.route("POST", r"/api/plugins/install")
+    def plugins_install(_query=None, _body=None):
+        body = _body or {}
+        b64 = body.get("data") or ""
+        filename = body.get("filename") or "plugin.zip"
+        if not b64:
+            return 400, {"error": "zip data required"}
+        try:
+            import base64
+            raw = base64.b64decode(b64, validate=True)
+        except Exception:
+            return 400, {"error": "invalid base64"}
+        if len(raw) > 100 * 1024 * 1024:
+            return 400, {"error": "zip too large (>100MB)"}
+        try:
+            result = plugin_system.install_plugin(raw, filename)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True, "id": result["id"], "plugin": result["plugin"]}
+
+    @r.route("POST", r"/api/plugins/install_path")
+    def plugins_install_path(_query=None, _body=None):
+        body = _body or {}
+        path = str(body.get("path") or "")
+        if not path:
+            return 400, {"error": "path required"}
+        filename = body.get("filename") or os.path.basename(path) or "plugin.zip"
+        try:
+            result = plugin_system.install_plugin_from_path(path, filename)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True, "id": result["id"], "plugin": result["plugin"]}
+
+    @r.route("POST", r"/api/plugins/reload")
+    def plugins_reload(_query=None, _body=None):
+        try:
+            plugin_system.reload_plugins(r)
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True, "plugins": plugin_system.list_plugins()}
+
+    @r.route("GET", r"/api/plugins/ui")
+    def plugins_ui(_query=None, _body=None):
+        return 200, {"panels": plugin_system.ui_panels()}
+
+    @r.route("GET", r"/api/plugins/agent/tools")
+    def plugins_agent_tools(_query=None, _body=None):
+        return 200, {"tools": plugin_system.agent_tool_defs()}
+
+    @r.route("POST", r"/api/plugins/agent/exec")
+    def plugins_agent_exec(_query=None, _body=None):
+        body = _body or {}
+        name = body.get("name") or ""
+        args = body.get("args") or {}
+        if not name:
+            return 400, {"error": "name required"}
+        try:
+            # GUI 已本地确认：此端点无条件放行写工具
+            result = plugin_system.agent_exec(name, args,
+                                              confirm=lambda t, d: True)
+        except Exception as e:
+            return 400, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True, "result": result}
+
+    @r.route("GET", r"/api/plugins/(?P<pid>[^/]+)")
+    def plugins_info(pid, _query=None, _body=None):
+        try:
+            info = plugin_system.get_plugin_info(pid)
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        if not info:
+            return 404, {"error": "plugin not found"}
+        return 200, info
+
+    @r.route("POST", r"/api/plugins/(?P<pid>[^/]+)/enable")
+    def plugins_enable(pid, _query=None, _body=None):
+        body = _body or {}
+        if body.get("risk_ack") is not True:
+            return 400, {"error": "需要高危确认：该插件为第三方 Python 代码，启用后将与本编辑器同权限运行"}
+        try:
+            entry = plugin_system.set_enabled(pid, True, risk_ack=True)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True, "plugin": entry}
+
+    @r.route("POST", r"/api/plugins/(?P<pid>[^/]+)/disable")
+    def plugins_disable(pid, _query=None, _body=None):
+        try:
+            entry = plugin_system.set_enabled(pid, False)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True, "plugin": entry}
+
+    @r.route("DELETE", r"/api/plugins/(?P<pid>[^/]+)")
+    def plugins_delete(pid, _query=None, _body=None):
+        try:
+            plugin_system.uninstall_plugin(pid)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+        return 200, {"ok": True}
+
+    def _plugin_fallback(method_str):
+        """插件路由兜底：rest 精确 fullmatch 已加载插件的注册路由。"""
+        def handler(pid, rest, _query=None, _body=None):
+            try:
+                hit = plugin_system.dispatch_plugin_route(
+                    pid, method_str, rest, _query or {}, _body or {})
+            except Exception as e:
+                return 500, {"error": "%s: %s" % (type(e).__name__, e)}
+            if hit is None:
+                return 404, {"error": "no route"}
+            return int(hit[0]), hit[1]
+        return handler
+
+    for _plugin_method in ("GET", "POST", "PUT", "DELETE"):
+        r.route(_plugin_method,
+                r"/api/plugins/(?P<pid>[a-z0-9_\-]+)/(?P<rest>.+)")(
+            _plugin_fallback(_plugin_method))
+
     # auto start realtime sync if configured
     try:
         realtime_sync.rt_auto_start()
     except Exception:
         pass
+
+    # 加载已启用插件（挂载插件路由，供启动后立即可用的首轮调度）
+    plugin_system.load_all(r)
 
     return r

@@ -6,6 +6,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../editor/editor_controller.dart';
+import '../../core/app_theme.dart';
 
 /// 模组侧边栏：列表 + 新建/删除/选择。
 class ModsPage extends StatefulWidget {
@@ -37,18 +38,18 @@ class _ModsPageState extends State<ModsPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Align(
+            Align(
               alignment: Alignment.centerLeft,
               child: Text('必填：创建后显示在模组列表的名称，建议简洁明了',
-                  style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
             ),
             const SizedBox(height: 4),
             fluent.TextBox(controller: titleCtrl, placeholder: '模组标题'),
             const SizedBox(height: 12),
-            const Align(
+            Align(
               alignment: Alignment.centerLeft,
               child: Text('可选：一句话描述模组内容与玩法，便于日后区分不同模组',
-                  style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
             ),
             const SizedBox(height: 4),
             fluent.TextBox(controller: descCtrl, placeholder: '模组简介（可选）', maxLines: 3),
@@ -146,21 +147,21 @@ class _ModsPageState extends State<ModsPage> {
           onRefresh: _refresh,
           onCreate: _create,
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: ListenableBuilder(
             listenable: widget.state,
             builder: (context, _) {
               if (widget.state.mods.isEmpty) {
-                return const Center(
+                return Center(
                     child: Text('暂无模组\n点击右上角 + 新建',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Color(0xFF6E6E76), fontSize: 12)));
+                        style: TextStyle(color: palette.textHint, fontSize: 12)));
               }
               return ListView.separated(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 itemCount: widget.state.mods.length,
-                separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFF242429)),
+                separatorBuilder: (_, _) => Divider(height: 1, color: palette.panel),
                 itemBuilder: (context, i) {
                   final mod = widget.state.mods[i];
                   final selected = mod.name == widget.state.modName;
@@ -169,11 +170,11 @@ class _ModsPageState extends State<ModsPage> {
                     child: GestureDetector(
                       onTap: () => _select(mod),
                       child: Container(
-                        color: selected ? const Color(0xFF2B2B31) : Colors.transparent,
+                        color: selected ? palette.hover : Colors.transparent,
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                         child: Row(
                           children: [
-                            const Icon(FluentIcons.box_24_regular, size: 16, color: Color(0xFF9B9BA3)),
+                            Icon(FluentIcons.box_24_regular, size: 16, color: palette.textSecondary),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Column(
@@ -185,24 +186,24 @@ class _ModsPageState extends State<ModsPage> {
                                           : mod.name,
                                       style: TextStyle(
                                           fontSize: 13,
-                                          color: selected ? Colors.white : const Color(0xFFD4D4D8),
+                                          color: selected ? palette.textHigh : palette.textPrimary,
                                           fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
                                   if (mod.manifestTitle.isNotEmpty)
                                     Text(mod.name,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                            fontSize: 11, color: Color(0xFF6E6E76))),
+                                        style: TextStyle(
+                                            fontSize: 11, color: palette.textHint)),
                                   Text('${mod.cfgFiles.length} 个配置表',
-                                      style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                                      style: TextStyle(fontSize: 11, color: palette.textHint)),
                                 ],
                               ),
                             ),
                             if (selected && !_isWorkshop(mod))
                               GestureDetector(
                                 onTap: () => _delete(mod),
-                                child: const Icon(FluentIcons.delete_24_regular,
-                                    size: 15, color: Color(0xFF8B8B93)),
+                                child: Icon(FluentIcons.delete_24_regular,
+                                    size: 15, color: palette.textMuted),
                               ),
                           ],
                         ),
@@ -232,8 +233,8 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
         children: [
-          const Text('模组',
-              style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3), fontWeight: FontWeight.w600)),
+          Text('模组',
+              style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
           const Spacer(),
           MouseRegion(
             cursor: SystemMouseCursors.click,
@@ -242,8 +243,8 @@ class _Header extends StatelessWidget {
                 onTap: onRefresh,
                 child: Padding(
                     padding: EdgeInsets.all(mob ? 12 : 0),
-                    child: const Icon(FluentIcons.arrow_sync_24_regular,
-                        size: 15, color: Color(0xFF8B8B93)))),
+                    child: Icon(FluentIcons.arrow_sync_24_regular,
+                        size: 15, color: palette.textMuted))),
           ),
           const SizedBox(width: 4),
           MouseRegion(
@@ -253,8 +254,8 @@ class _Header extends StatelessWidget {
                 onTap: onCreate,
                 child: Padding(
                     padding: EdgeInsets.all(mob ? 12 : 0),
-                    child: const Icon(FluentIcons.add_24_regular,
-                        size: 16, color: Color(0xFF8B8B93)))),
+                    child: Icon(FluentIcons.add_24_regular,
+                        size: 16, color: palette.textMuted))),
           ),
         ],
       ),

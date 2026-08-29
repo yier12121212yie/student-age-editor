@@ -11,14 +11,16 @@
   - CLI / TUI：直接 import 本模块读写
 
 `.editor_ai.json` 的字段名与 Flutter ``AiSettings.toJson()`` 完全一致
-（provider/baseUrl/apiKey/model/temperature/imageModel/imageApiKey/imageBaseUrl），
-任一端的修改对其它端立即可见。含 apiKey，属于敏感文件，勿入库。
+（provider/baseUrl/apiKey/model/temperature/imageModel/imageApiKey/imageBaseUrl
+以及 tts* 配音相关字段），任一端的修改对其它端立即可见。
+含 apiKey，属于敏感文件，勿入库。
 """
 
 import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 # 合法的 Agent 服务协议（与 Flutter 设置页下拉一致）
@@ -33,6 +35,20 @@ DEFAULT_AI_SETTINGS = {
     "imageModel": "",
     "imageApiKey": "",
     "imageBaseUrl": "",
+    # 配音（TTS）：provider 取 minimax / aliyun；apiKey 为对应服务密钥
+    "ttsProvider": "",
+    "ttsApiKey": "",
+    "ttsBaseUrl": "",
+    "ttsModel": "",
+    "ttsVoice": "",
+    "ttsGroupId": "",
+    "ttsSpeed": 1.0,
+    "ttsVolume": 1.0,
+    "ttsPitch": 0,
+    "ttsFormat": "wav",
+    # 自动重连：maxRetries 次网络失败重试（0=关闭），retryDelayMs 为首个退避间隔
+    "maxRetries": 3,
+    "retryDelayMs": 1000,
 }
 
 # 频控宽松上限；便于校验 GUI/CLI 写入的取值范围
@@ -68,11 +84,24 @@ def read_json(path: Path) -> dict:
         return {}
 
 
+# 并发写保护：.editor_ai.json / editor_env.json 的「读-改-写」必须整体串行，
+# 否则 GUI 后端多线程 HTTP 并发 PUT 时，后写者会用读过时的完整快照覆盖对方
+# 刚写入的字段（与 tts_store._CFG_LOCK 同因；锁只防同进程线程，跨进程由各自
+# 触发时机避免，文件本身用 tmp+os.replace 保证不落半截）。
+_WRITE_LOCK = threading.RLock()
+
+
 def atomic_merge_write(path: Path, extra: dict) -> dict:
     """把 extra 合并进 path 的现有内容后原子替换写回，返回合并结果。
 
     tmp + os.replace 保证断电/并发下不留半截文件（与 cli/oobe.mark_done、
     cli/utils.save_cfg 同一策略）。"""
+    with _WRITE_LOCK:
+        return _merge_write_unlocked(path, extra)
+
+
+def _merge_write_unlocked(path: Path, extra: dict) -> dict:
+    """锁已持有的写盘实现；调用方必须已持有 _WRITE_LOCK。"""
     data = read_json(path)
     merged = {**data, **(extra or {})}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +135,16 @@ def normalize_ai_settings(data: dict) -> dict:
                 "imageApiKey": ("image_api_key",),
                 "imageBaseUrl": ("image_base_url",),
                 "temperature": ("temp",),
+                "ttsProvider": ("tts_provider",),
+                "ttsApiKey": ("tts_api_key",),
+                "ttsBaseUrl": ("tts_base_url",),
+                "ttsModel": ("tts_model",),
+                "ttsVoice": ("tts_voice",),
+                "ttsGroupId": ("tts_group_id",),
+                "ttsSpeed": ("tts_speed",),
+                "ttsVolume": ("tts_volume",),
+                "ttsPitch": ("tts_pitch",),
+                "ttsFormat": ("tts_format",),
             }.get(key, ())
             for a in alt:
                 if data.get(a) is not None:
@@ -119,20 +158,84 @@ def normalize_ai_settings(data: dict) -> dict:
             out[key] = val
     if out["provider"] not in AI_PROVIDERS:
         out["provider"] = DEFAULT_AI_SETTINGS["provider"]
-    try:
-        temp = float(out.get("temperature") or 0.7)
-    except (TypeError, ValueError):
+    # 注意不能用 `float(out.get("temperature") or 0.7)`：temperature=0.0 是合法
+    # 值（确定性采样），会被 `or` 当假值替换成 0.7 且无法持久化。
+    temp_raw = out.get("temperature")
+    if temp_raw is None:
         temp = 0.7
+    else:
+        try:
+            temp = float(temp_raw)
+        except (TypeError, ValueError):
+            temp = 0.7
     out["temperature"] = round(min(max(temp, _TEMPERATURE_MIN), _TEMPERATURE_MAX), 2)
     # image 字段允许留空（空值语义：复用对话配置），但显式类型归一
     for k in ("imageModel", "imageApiKey", "imageBaseUrl"):
         if not isinstance(out[k], str):
             out[k] = ""
+    # tts（配音）字段归一：provider 取值域 + 字符串留空 + 数值夹取
+    provider = out.get("ttsProvider")
+    if isinstance(provider, str):
+        provider = provider.strip().lower()
+    if provider not in ("", "minimax", "aliyun"):
+        provider = ""
+    out["ttsProvider"] = provider
+    for k in ("ttsApiKey", "ttsBaseUrl", "ttsModel", "ttsVoice",
+              "ttsGroupId", "ttsFormat"):
+        if not isinstance(out[k], str):
+            out[k] = ""
+    if not out["ttsFormat"]:
+        out["ttsFormat"] = "wav"
+    # 与 temperature 同理：0.0/0 是合法输入（静音/极慢），不能用 `or 1.0`
+    # 兜底，否则会被当假值替换成 1.0 且无法持久化。
+    speed_raw = out.get("ttsSpeed")
+    if speed_raw is None:
+        speed = 1.0
+    else:
+        try:
+            speed = float(speed_raw)
+        except (TypeError, ValueError):
+            speed = 1.0
+    out["ttsSpeed"] = round(min(max(speed, 0.5), 2.0), 2)
+    vol_raw = out.get("ttsVolume")
+    if vol_raw is None:
+        vol = 1.0
+    else:
+        try:
+            vol = float(vol_raw)
+        except (TypeError, ValueError):
+            vol = 1.0
+    out["ttsVolume"] = round(min(max(vol, 0.5), 2.0), 2)
+    try:
+        pitch = int(out.get("ttsPitch") or 0)
+    except (TypeError, ValueError):
+        pitch = 0
+    out["ttsPitch"] = min(max(pitch, -12), 12)
+    # 自动重连参数归一：整数夹取。0 是合法值（maxRetries=0 关闭重连），
+    # 不能用 `or` 兜底，否则 0 会被替换成默认值且无法持久化。
+    retries_raw = out.get("maxRetries")
+    if retries_raw is None:
+        retries = DEFAULT_AI_SETTINGS["maxRetries"]
+    else:
+        try:
+            retries = int(retries_raw)
+        except (TypeError, ValueError):
+            retries = DEFAULT_AI_SETTINGS["maxRetries"]
+    out["maxRetries"] = min(max(retries, 0), 10)
+    delay_raw = out.get("retryDelayMs")
+    if delay_raw is None:
+        delay = DEFAULT_AI_SETTINGS["retryDelayMs"]
+    else:
+        try:
+            delay = int(delay_raw)
+        except (TypeError, ValueError):
+            delay = DEFAULT_AI_SETTINGS["retryDelayMs"]
+    out["retryDelayMs"] = min(max(delay, 0), 30000)
     return out
 
 
 def is_ai_settings_meaningful(settings: dict) -> bool:
-    """配置是否可用于发起对话（有 key 且有 baseUrl/model 至少其一）。"""
+    """配置是否可用于发起对话（有 apiKey 即视为已配置；baseUrl/model 是否就绪由调用方单独校验）。"""
     return bool((settings or {}).get("apiKey"))
 
 
@@ -142,11 +245,16 @@ def read_ai_settings() -> dict:
 
 
 def write_ai_settings(patch: dict) -> dict:
-    """合并写入 AI 配置（只覆盖给出的字段），返回写盘后的完整规整结果。"""
-    current = read_ai_settings()
-    merged_raw = {**current, **{k: v for k, v in (patch or {}).items() if v is not None}}
-    normalized = normalize_ai_settings(merged_raw)
-    atomic_merge_write(ai_settings_path(), normalized)
+    """合并写入 AI 配置（只覆盖给出的字段），返回写盘后的完整规整结果。
+
+    读-合并-写整体持锁：normalized 是含全部默认键的完整字典，若在锁外计算，
+    并发 PUT 会把对方刚写入的字段用陈旧快照覆盖掉。
+    """
+    with _WRITE_LOCK:
+        current = read_ai_settings()
+        merged_raw = {**current, **{k: v for k, v in (patch or {}).items() if v is not None}}
+        normalized = normalize_ai_settings(merged_raw)
+        _merge_write_unlocked(ai_settings_path(), normalized)
     return normalized
 
 

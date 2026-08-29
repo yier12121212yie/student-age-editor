@@ -15,6 +15,20 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../settings/settings_page.dart';
 import 'ai_client.dart';
+import '../../core/app_theme.dart';
+
+/// 插件声明的 AI 工具：OpenAI function 格式（name/description/parameters），
+/// 附带 confirm 标记（true 时执行前需用户确认）。
+class _PluginAiTool extends AiToolDef {
+  _PluginAiTool({
+    required super.name,
+    required super.description,
+    super.parameters,
+    this.confirm = false,
+  });
+
+  final bool confirm;
+}
 
 /// 上传的附件（docx/txt/md/xlsx → 文本；png/jpg → 图片）。
 /// 文本内容与图片 base64 仅保留在内存（发送时使用），
@@ -259,6 +273,9 @@ class AiPanelState extends State<AiPanel> {
   /// 当前工具轮次号（= 已拆出的过渡文本条数）；ToolRecord.round 据此赋值，
   /// 使工具卡片能插到对应过渡文本之后。
   int _toolRound = 0;
+  /// 插件声明的 AI 工具（GET /api/plugins/agent/tools，OpenAI function 格式
+  /// name/description/parameters + 附加 confirm 标记）。
+  final List<_PluginAiTool> _pluginTools = [];
 
   /// 旧版单会话存储 key（v1，启动时迁移到多会话后清理）。
   static const _historyKey = 'ai_chat_messages_v1';
@@ -470,6 +487,7 @@ class AiPanelState extends State<AiPanel> {
   void initState() {
     super.initState();
     _restore();
+    unawaited(_loadPluginTools());
   }
 
   @override
@@ -739,7 +757,9 @@ class AiPanelState extends State<AiPanel> {
   }
 
   Future<void> _sendText(String text,
-      {bool appendUser = true, List<AiAttachment> attachments = const []}) async {
+      {bool appendUser = true,
+      List<AiAttachment> attachments = const [],
+      AiChatMessage? retryInto}) async {
     if (_busy || !_loaded) return;
     // 默认只修改「当前选定的 mod」：未选 mod 时阻止操作；
     // 后端与前端不一致时先同步，避免 AI 改到其他模组。
@@ -755,8 +775,20 @@ class AiPanelState extends State<AiPanel> {
         _lastUserHistStart = _history.length; // 用户消息在 _history 中的下标
         _history.add({'role': 'user', 'content': content});
       }
-      _streamingMsg = AiChatMessage(role: 'assistant');
-      _messages.add(_streamingMsg!);
+      if (retryInto != null) {
+        // 重试复用失败的气泡：已流出的部分文本保留，追加重连提示后继续流式输出，
+        // 不清空该消息；工具卡片/过渡文本归属已回滚的那次尝试，随重试从 0 轮重来。
+        retryInto
+          ..error = null
+          ..toolRecords.clear()
+          ..toolRoundTexts.clear();
+        final sep = retryInto.text.isEmpty ? '' : '\n\n';
+        retryInto.text = '${retryInto.text}$sep⚠ 连接中断，正在重试…\n';
+        _streamingMsg = retryInto;
+      } else {
+        _streamingMsg = AiChatMessage(role: 'assistant');
+        _messages.add(_streamingMsg!);
+      }
       _busy = true;
       _pendingRoundBuf = '';
       _toolRound = 0;
@@ -767,7 +799,7 @@ class AiPanelState extends State<AiPanel> {
     try {
       await client.send(
         history: _history,
-        tools: _tools,
+        tools: [..._tools, ..._pluginTools],
         callbacks: AiCallbacks(
           onText: (delta) {
             if (!mounted || _streamingMsg == null) return;
@@ -910,24 +942,22 @@ class AiPanelState extends State<AiPanel> {
     await _persist();
   }
 
-  /// 重试：移除失败的那条回复（保留用户消息及历史中的 user 条目），重新生成。
+  /// 重试：回滚结构化历史（保留用户消息及其 user 条目），在同一失败气泡内
+  /// 续写——已流出的部分文本保留，追加重连提示后重新流式生成，不清空该消息。
   Future<void> _retry() async {
     if (_busy || _messages.isEmpty) return;
     final lastUser = _messages.lastWhere((m) => m.role == 'user', orElse: () => _messages.first);
     if (lastUser.role != 'user') return;
+    final failed = _messages.last;
+    if (failed.role != 'assistant' || failed.error == null) return; // 只有失败气泡可重试
     setState(() {
-      // 移除失败/不完整的 assistant 回复（它紧跟最后一条 user 消息）
-      var i = _messages.length - 1;
-      while (i >= 0 && _messages[i].role != 'user') {
-        i--;
-      }
-      _messages.removeRange(i + 1, _messages.length);
-      // 回退结构化历史到该轮起点之后（保留用户消息本身）
+      // 只回退结构化历史到该轮起点之后（保留用户消息本身）；
+      // 失败气泡不删除，重试在同一气泡续写
       if (_lastUserHistStart < _history.length) {
         _history.removeRange(_lastUserHistStart + 1, _history.length);
       }
     });
-    await _sendText(lastUser.text, appendUser: false);
+    await _sendText(lastUser.text, appendUser: false, retryInto: failed);
   }
 
   Future<void> _clearChat() async {
@@ -1079,6 +1109,38 @@ class AiPanelState extends State<AiPanel> {
     } catch (e) {
       _toast('同步当前模组失败：$e');
       return false;
+    }
+  }
+
+  /// 拉取插件声明的 AI 工具，追加到发送给模型的 tools 列表；
+  /// 失败静默（后端暂不支持插件工具时不阻塞聊天）。
+  Future<void> _loadPluginTools() async {
+    try {
+      final r = await ApiClient.instance.get('/api/plugins/agent/tools');
+      if (!mounted) return;
+      final list = r is Map ? (r['tools'] as List? ?? const []) : const [];
+      final tools = <_PluginAiTool>[];
+      for (final e in list) {
+        if (e is! Map) continue;
+        final m = Map<String, dynamic>.from(e);
+        final name = (m['name'] as String? ?? '').trim();
+        if (name.isEmpty) continue;
+        tools.add(_PluginAiTool(
+          name: name,
+          description: m['description'] as String? ?? '',
+          parameters: m['parameters'] is Map
+              ? Map<String, dynamic>.from(m['parameters'] as Map)
+              : const {},
+          confirm: m['confirm'] == true,
+        ));
+      }
+      setState(() {
+        _pluginTools
+          ..clear()
+          ..addAll(tools);
+      });
+    } catch (_) {
+      // 静默：插件工具不可用时不打断聊天
     }
   }
 
@@ -1339,11 +1401,113 @@ class AiPanelState extends State<AiPanel> {
         case 'edit_image':
           return await _runEditImage(call, rec);
         default:
+          // 插件工具兜底分支（置于内置工具之后）
+          for (final pt in _pluginTools) {
+            if (pt.name == call.name) {
+              return await _runPluginTool(pt, call, rec);
+            }
+          }
           return '错误：未知工具 ${call.name}';
       }
     } catch (e) {
       return '工具执行失败: $e';
     }
+  }
+
+  // ---------------- 插件工具 ----------------
+
+  /// 插件工具兜底分支：confirm 标记为 true 时先请求用户确认（复用图片审批框模式），
+  /// 确认后 POST /api/plugins/agent/exec {"name": 全名, "args"}；
+  /// 异常由 _runTool 外层 catch 折算为「工具执行失败: …」。
+  Future<String> _runPluginTool(_PluginAiTool tool, AiToolCall call, ToolRecord rec) async {
+    if (tool.confirm) {
+      final approved = await _confirmPluginTool(tool.name, call.arguments);
+      if (!approved) {
+        rec.approved = false;
+        if (mounted) setState(() {});
+        return '用户拒绝了插件工具 ${tool.name} 的调用。请停止该操作并向用户说明。';
+      }
+    }
+    final r = await ApiClient.instance.post('/api/plugins/agent/exec', body: {
+      'name': tool.name,
+      'args': call.arguments,
+    });
+    final result = r is Map ? r['result'] : r;
+    if (result == null) return '';
+    return result.toString();
+  }
+
+  /// 插件工具确认对话框（对齐 _confirmImageAction：不可点背景关闭）。
+  Future<bool> _confirmPluginTool(String toolName, Map<String, dynamic> args) {
+    final completer = Completer<bool>();
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final size = MediaQuery.sizeOf(ctx);
+        return fluent.ContentDialog(
+          title: const Text('确认调用插件工具'),
+          content: SizedBox(
+            width: min(520, size.width - 48),
+            height: min(320, size.height * 0.6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0x1AE5484D),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: const Color(0x55E5484D)),
+                  ),
+                  child: Text(
+                    '⚠ 将调用第三方插件工具 $toolName。插件以与编辑器相同的用户权限在本机运行，'
+                    '可读写文件、访问网络，请确认工具与参数无误后再允许。',
+                    style: TextStyle(
+                        fontSize: 11, color: palette.statusDanger, height: 1.5),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: palette.bgDeep,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: palette.border),
+                    ),
+                    padding: const EdgeInsets.all(8),
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        '【工具】$toolName\n\n【参数】\n${jsonEncode(args)}',
+                        style: const TextStyle(fontSize: 12, height: 1.5),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () {
+                completer.complete(false);
+                Navigator.pop(ctx);
+              },
+              child: const Text('拒绝'),
+            ),
+            fluent.FilledButton(
+              onPressed: () {
+                completer.complete(true);
+                Navigator.pop(ctx);
+              },
+              child: const Text('允许'),
+            ),
+          ],
+        );
+      },
+    );
+    return completer.future;
   }
 
   // ---------------- 图片生成（openai-image-api） ----------------
@@ -1532,16 +1696,16 @@ class AiPanelState extends State<AiPanel> {
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(color: const Color(0x3357A0FF)),
                 ),
-                child: const Text('⚠ 将调用 OpenAI Images API（产生费用），且生成的图片会写入当前模组。',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF9DB8FF))),
+                child: Text('⚠ 将调用 OpenAI Images API（产生费用），且生成的图片会写入当前模组。',
+                    style: TextStyle(fontSize: 11, color: palette.statusInfo)),
               ),
               const SizedBox(height: 8),
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: const Color(0xFF141418),
+                    color: palette.bgDeep,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: const Color(0xFF2A2A2E)),
+                    border: Border.all(color: palette.border),
                   ),
                   padding: const EdgeInsets.all(8),
                   child: SingleChildScrollView(
@@ -1613,15 +1777,15 @@ class AiPanelState extends State<AiPanel> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('（预览基于原始 patch，实际写入以服务器校验与规整结果为准）',
-                  style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+              Text('（预览基于原始 patch，实际写入以服务器校验与规整结果为准）',
+                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
               const SizedBox(height: 8),
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: const Color(0xFF141418),
+                    color: palette.bgDeep,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: const Color(0xFF2A2A2E)),
+                    border: Border.all(color: palette.border),
                   ),
                   padding: const EdgeInsets.all(8),
                   child: SingleChildScrollView(
@@ -1747,8 +1911,8 @@ class AiPanelState extends State<AiPanel> {
               children: [
                 const Icon(FluentIcons.bot_24_regular, size: 15, color: Color(0xFF6C5CE7)),
                 const SizedBox(width: 8),
-                const Text('AI 助手',
-                    style: TextStyle(fontSize: 12, color: Color(0xFFD4D4D8), fontWeight: FontWeight.w600)),
+                Text('AI 助手',
+                    style: TextStyle(fontSize: 12, color: palette.textPrimary, fontWeight: FontWeight.w600)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: _ModBadge(name: widget.state.modName),
@@ -1785,7 +1949,7 @@ class AiPanelState extends State<AiPanel> {
             ),
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Expanded(
           child: Stack(
             children: [
@@ -1826,7 +1990,7 @@ class AiPanelState extends State<AiPanel> {
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Padding(
           padding: const EdgeInsets.all(10),
           child: Column(
@@ -1835,7 +1999,7 @@ class AiPanelState extends State<AiPanel> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text('对话输入框：向 AI 提问或下达修改模组文件的指令，可附带 docx/txt/md/xlsx/png/jpg 附件',
-                    style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
               ),
               const SizedBox(height: 4),
               _buildInput(),
@@ -1858,7 +2022,7 @@ class AiPanelState extends State<AiPanel> {
                         ? '未配置模型'
                         : '$_providerLabel · ${widget.settings.model}',
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76))),
+                        style: TextStyle(fontSize: 11, color: palette.textHint)),
                   ),
                   if (_busy)
                     fluent.Button(
@@ -1918,16 +2082,16 @@ class AiPanelState extends State<AiPanel> {
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
                   onTap: _closeHistory,
-                  child: const Icon(FluentIcons.arrow_left_24_regular,
-                      size: 15, color: Color(0xFFD4D4D8)),
+                  child: Icon(FluentIcons.arrow_left_24_regular,
+                      size: 15, color: palette.textPrimary),
                 ),
               ),
               const SizedBox(width: 8),
               const Icon(FluentIcons.chat_history_24_regular,
                   size: 15, color: Color(0xFF6C5CE7)),
               const SizedBox(width: 8),
-              const Text('历史对话',
-                  style: TextStyle(fontSize: 12, color: Color(0xFFD4D4D8),
+              Text('历史对话',
+                  style: TextStyle(fontSize: 12, color: palette.textPrimary,
                       fontWeight: FontWeight.w600)),
               const Spacer(),
               MouseRegion(
@@ -1936,10 +2100,10 @@ class AiPanelState extends State<AiPanel> {
                   onTap: _newChat,
                   child: fluent.Tooltip(
                     message: '新建对话',
-                    child: const Padding(
+                    child: Padding(
                       padding: EdgeInsets.all(4),
                       child: Icon(FluentIcons.add_24_regular,
-                          size: 14, color: Color(0xFF8B8B93)),
+                          size: 14, color: palette.textMuted),
                     ),
                   ),
                 ),
@@ -1947,7 +2111,7 @@ class AiPanelState extends State<AiPanel> {
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         Padding(
           padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
           child: fluent.TextBox(
@@ -1961,7 +2125,7 @@ class AiPanelState extends State<AiPanel> {
               ? Center(
                   child: Text(
                       _historyQuery.trim().isEmpty ? '暂无历史对话' : '没有匹配的对话',
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF8B8B93))))
+                      style: TextStyle(fontSize: 12, color: palette.textMuted)))
               : ListView.builder(
                   padding: const EdgeInsets.all(8),
                   itemCount: sessions.length,
@@ -1991,14 +2155,14 @@ class AiPanelState extends State<AiPanel> {
               onRemove: () => setState(() => _pendingAttachments.remove(a)),
             ),
           if (_uploading)
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(vertical: 4),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 SizedBox(width: 12, height: 12,
                     child: CircularProgressIndicator(strokeWidth: 1.5)),
                 SizedBox(width: 6),
                 Text('解析中…',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93))),
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
               ]),
             ),
         ],
@@ -2082,10 +2246,10 @@ class _HistoryTile extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
-        color: active ? const Color(0xFF23232A) : const Color(0xFF1A1A1E),
+        color: active ? palette.panel : palette.bgDeep,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
-            color: active ? const Color(0xFF6C5CE7) : const Color(0xFF2A2A2E)),
+            color: active ? const Color(0xFF6C5CE7) : palette.border),
       ),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
@@ -2095,8 +2259,8 @@ class _HistoryTile extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
             child: Row(
               children: [
-                const Icon(FluentIcons.chat_24_regular,
-                    size: 14, color: Color(0xFF8B8B93)),
+                Icon(FluentIcons.chat_24_regular,
+                    size: 14, color: palette.textMuted),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
@@ -2108,8 +2272,8 @@ class _HistoryTile extends StatelessWidget {
                             child: Text(session.title,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 12.5, color: Color(0xFFD4D4D8),
+                                style: TextStyle(
+                                    fontSize: 12.5, color: palette.textPrimary,
                                     fontWeight: FontWeight.w600)),
                           ),
                           if (active) ...[
@@ -2124,12 +2288,12 @@ class _HistoryTile extends StatelessWidget {
                       Text(_preview(session),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 11, color: Color(0xFF8B8B93))),
+                          style: TextStyle(
+                              fontSize: 11, color: palette.textMuted)),
                       const SizedBox(height: 2),
                       Text(_fmtTime(session.updatedAt),
-                          style: const TextStyle(
-                              fontSize: 10, color: Color(0xFF6E6E76))),
+                          style: TextStyle(
+                              fontSize: 10, color: palette.textHint)),
                     ],
                   ),
                 ),
@@ -2140,10 +2304,10 @@ class _HistoryTile extends StatelessWidget {
                     onTap: onDelete,
                     child: fluent.Tooltip(
                       message: '删除该对话',
-                      child: const Padding(
+                      child: Padding(
                         padding: EdgeInsets.all(4),
                         child: Icon(FluentIcons.delete_24_regular,
-                            size: 13, color: Color(0xFF8B8B93)),
+                            size: 13, color: palette.textMuted),
                       ),
                     ),
                   ),
@@ -2171,16 +2335,16 @@ class _ModBadge extends StatelessWidget {
       height: 24,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
-        color: empty ? const Color(0xFF2A2420) : const Color(0xFF1E2A22),
+        color: empty ? palette.tintWarn : palette.tintOk,
         borderRadius: BorderRadius.circular(4),
         border: Border.all(
-            color: empty ? const Color(0xFF6B4A2A) : const Color(0xFF2E4A36)),
+            color: empty ? const Color(0xFF6B4A2A) : palette.tintOk),
       ),
       child: Row(
         children: [
           Icon(empty ? FluentIcons.error_circle_24_regular : FluentIcons.box_24_regular,
               size: 11,
-              color: empty ? const Color(0xFFE08A3C) : const Color(0xFF6FBF8F)),
+              color: empty ? palette.warning : palette.statusOk),
           const SizedBox(width: 5),
           Expanded(
             child: Text(
@@ -2189,7 +2353,7 @@ class _ModBadge extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                   fontSize: 11,
-                  color: empty ? const Color(0xFFE08A3C) : const Color(0xFF9BD4AE)),
+                  color: empty ? palette.warning : palette.statusOk),
             ),
           ),
         ],
@@ -2213,9 +2377,9 @@ class _AttachmentChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E22),
+        color: palette.bgDeep,
         borderRadius: BorderRadius.circular(5),
-        border: Border.all(color: const Color(0xFF2A2A2E)),
+        border: Border.all(color: palette.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -2228,12 +2392,12 @@ class _AttachmentChip extends StatelessWidget {
             child: Text(a.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Color(0xFFD4D4D8))),
+                style: TextStyle(fontSize: 11, color: palette.textPrimary)),
           ),
           if (a.size > 0) ...[
             const SizedBox(width: 5),
             Text(AiAttachment.fmtSize(a.size),
-                style: const TextStyle(fontSize: 10, color: Color(0xFF6E6E76))),
+                style: TextStyle(fontSize: 10, color: palette.textHint)),
           ],
           if (onRemove != null) ...[
             const SizedBox(width: 4),
@@ -2241,8 +2405,8 @@ class _AttachmentChip extends StatelessWidget {
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
                 onTap: onRemove,
-                child: const Icon(FluentIcons.dismiss_24_regular,
-                    size: 11, color: Color(0xFF8B8B93)),
+                child: Icon(FluentIcons.dismiss_24_regular,
+                    size: 11, color: palette.textMuted),
               ),
             ),
           ],
@@ -2275,12 +2439,12 @@ class _MessageBubble extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E22),
+          color: palette.bgDeep,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: const Color(0xFF2A2A2E)),
+          border: Border.all(color: palette.border),
         ),
         child: Text(msg.text,
-            style: const TextStyle(fontSize: 12, color: Color(0xFF8B8B93), height: 1.5)),
+            style: TextStyle(fontSize: 12, color: palette.textMuted, height: 1.5)),
       );
     }
     final isUser = msg.role == 'user';
@@ -2301,8 +2465,8 @@ class _MessageBubble extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: SelectableText(msg.text,
-                  style: const TextStyle(
-                      fontSize: 13, color: Colors.white, height: 1.5)),
+                  style: TextStyle(
+                      fontSize: 13, color: palette.textHigh, height: 1.5)),
             )
           else ...[
             // AI 回复/工具调用情况：无气泡
@@ -2315,8 +2479,8 @@ class _MessageBubble extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(msg.toolRoundTexts[i],
-                      style: const TextStyle(
-                          fontSize: 12, color: Color(0xFF8B8B93), height: 1.5)),
+                      style: TextStyle(
+                          fontSize: 12, color: palette.textMuted, height: 1.5)),
                 ),
               for (final t in msg.toolRecords.where((r) => r.round == i + 1))
                 _ToolCard(rec: t),
@@ -2351,14 +2515,14 @@ class _MessageBubble extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(_fmtTime(msg.time),
-                    style: const TextStyle(fontSize: 10.5, color: Color(0xFF6E6E76))),
+                    style: TextStyle(fontSize: 10.5, color: palette.textHint)),
                 const SizedBox(width: 8),
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
                     onTap: onCopy,
-                    child: const Icon(FluentIcons.copy_24_regular,
-                        size: 12, color: Color(0xFF6E6E76)),
+                    child: Icon(FluentIcons.copy_24_regular,
+                        size: 12, color: palette.textHint),
                   ),
                 ),
               ],
@@ -2369,7 +2533,7 @@ class _MessageBubble extends StatelessWidget {
               margin: const EdgeInsets.only(top: 6),
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: const Color(0xFF3A1F1F),
+                color: palette.tintDanger,
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Row(
@@ -2377,7 +2541,7 @@ class _MessageBubble extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text('⚠ ${msg.error}',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFFFF8A8A))),
+                        style: TextStyle(fontSize: 12, color: palette.statusDanger)),
                   ),
                   const SizedBox(width: 8),
                   MouseRegion(
@@ -2387,11 +2551,11 @@ class _MessageBubble extends StatelessWidget {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4A2A2A),
+                          color: palette.tintDanger,
                           borderRadius: BorderRadius.circular(4),
                         ),
-                        child: const Text('重试',
-                            style: TextStyle(fontSize: 11, color: Color(0xFFFFB0B0))),
+                        child: Text('重试',
+                            style: TextStyle(fontSize: 11, color: palette.statusDanger)),
                       ),
                     ),
                   ),
@@ -2406,38 +2570,38 @@ class _MessageBubble extends StatelessWidget {
 
 // ---------------- Markdown 渲染 ----------------
 
-final MarkdownStyleSheet _mdStyle = MarkdownStyleSheet(
-  p: const TextStyle(fontSize: 13, color: Color(0xFFE4E4E8), height: 1.55),
-  h1: const TextStyle(fontSize: 16, color: Color(0xFFF0F0F4), fontWeight: FontWeight.w700),
-  h2: const TextStyle(fontSize: 15, color: Color(0xFFF0F0F4), fontWeight: FontWeight.w700),
-  h3: const TextStyle(fontSize: 14, color: Color(0xFFF0F0F4), fontWeight: FontWeight.w600),
-  h4: const TextStyle(fontSize: 13.5, color: Color(0xFFF0F0F4), fontWeight: FontWeight.w600),
-  strong: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFF0F0F4)),
+MarkdownStyleSheet _mdStyle() => MarkdownStyleSheet(
+  p: TextStyle(fontSize: 13, color: palette.textBody, height: 1.55),
+  h1: TextStyle(fontSize: 16, color: palette.textHigh, fontWeight: FontWeight.w700),
+  h2: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w700),
+  h3: TextStyle(fontSize: 14, color: palette.textHigh, fontWeight: FontWeight.w600),
+  h4: TextStyle(fontSize: 13.5, color: palette.textHigh, fontWeight: FontWeight.w600),
+  strong: TextStyle(fontWeight: FontWeight.w700, color: palette.textHigh),
   em: const TextStyle(fontStyle: FontStyle.italic),
-  code: const TextStyle(
-      fontFamily: 'Consolas', fontSize: 12, color: Color(0xFFE8B48A),
-      backgroundColor: Color(0xFF1E1E22)),
+  code: TextStyle(
+      fontFamily: 'Consolas', fontSize: 12, color: palette.statusTan,
+      backgroundColor: palette.bgDeep),
   codeblockPadding: EdgeInsets.zero,
   codeblockDecoration: const BoxDecoration(),
   blockSpacing: 8,
-  listBullet: const TextStyle(fontSize: 13, color: Color(0xFF9B9BA3)),
+  listBullet: TextStyle(fontSize: 13, color: palette.textSecondary),
   listIndent: 18,
-  blockquote: const TextStyle(fontSize: 13, color: Color(0xFF9B9BA3), height: 1.5),
-  blockquoteDecoration: const BoxDecoration(
-    color: Color(0xFF202026),
+  blockquote: TextStyle(fontSize: 13, color: palette.textSecondary, height: 1.5),
+  blockquoteDecoration: BoxDecoration(
+    color: palette.panel,
     border: Border(left: BorderSide(color: Color(0xFF6C5CE7), width: 3)),
   ),
-  horizontalRuleDecoration: const BoxDecoration(
-      border: Border(top: BorderSide(color: Color(0xFF2A2A2E)))),
-  tableHead: const TextStyle(fontSize: 12, color: Color(0xFFE4E4E8), fontWeight: FontWeight.w600),
-  tableBody: const TextStyle(fontSize: 12, color: Color(0xFFC8C8CE)),
-  tableBorder: const TableBorder(
-    horizontalInside: BorderSide(color: Color(0xFF2A2A2E)),
-    verticalInside: BorderSide(color: Color(0xFF2A2A2E)),
-    top: BorderSide(color: Color(0xFF2A2A2E)),
-    bottom: BorderSide(color: Color(0xFF2A2A2E)),
-    left: BorderSide(color: Color(0xFF2A2A2E)),
-    right: BorderSide(color: Color(0xFF2A2A2E)),
+  horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: palette.border))),
+  tableHead: TextStyle(fontSize: 12, color: palette.textBody, fontWeight: FontWeight.w600),
+  tableBody: TextStyle(fontSize: 12, color: palette.textMid),
+  tableBorder: TableBorder(
+    horizontalInside: BorderSide(color: palette.border),
+    verticalInside: BorderSide(color: palette.border),
+    top: BorderSide(color: palette.border),
+    bottom: BorderSide(color: palette.border),
+    left: BorderSide(color: palette.border),
+    right: BorderSide(color: palette.border),
   ),
 );
 
@@ -2465,7 +2629,7 @@ class _MdView extends StatelessWidget {
     final segments = _split(text);
     if (segments.length == 1) {
       return MarkdownBody(
-          data: text, selectable: true, styleSheet: _mdStyle);
+          data: text, selectable: true, styleSheet: _mdStyle());
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2477,7 +2641,7 @@ class _MdView extends StatelessWidget {
             MarkdownBody(
                 data: (seg as String).trim().isEmpty ? ' ' : seg,
                 selectable: true,
-                styleSheet: _mdStyle),
+                styleSheet: _mdStyle()),
       ],
     );
   }
@@ -2522,9 +2686,9 @@ class _CodeBlockCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFF141418),
+        color: palette.bgDeep,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: const Color(0xFF2A2A2E)),
+        border: Border.all(color: palette.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2535,8 +2699,8 @@ class _CodeBlockCard extends StatelessWidget {
               child: Row(
                 children: [
                   Text(lang,
-                      style: const TextStyle(
-                          fontSize: 10.5, color: Color(0xFF8B8B93),
+                      style: TextStyle(
+                          fontSize: 10.5, color: palette.textMuted,
                           fontFamily: 'Consolas')),
                   const Spacer(),
                   MouseRegion(
@@ -2544,10 +2708,10 @@ class _CodeBlockCard extends StatelessWidget {
                     child: GestureDetector(
                       onTap: () =>
                           Clipboard.setData(ClipboardData(text: code)),
-                      child: const Padding(
+                      child: Padding(
                         padding: EdgeInsets.all(4),
                         child: Icon(FluentIcons.copy_24_regular,
-                            size: 12, color: Color(0xFF8B8B93)),
+                            size: 12, color: palette.textMuted),
                       ),
                     ),
                   ),
@@ -2559,9 +2723,9 @@ class _CodeBlockCard extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.all(10),
               child: SelectableText(code,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontFamily: 'Consolas', fontSize: 11.5, height: 1.45,
-                      color: Color(0xFFD4D4D8))),
+                      color: palette.textPrimary)),
             ),
           ),
         ],
@@ -2596,8 +2760,8 @@ class _TypingDotsState extends State<_TypingDots>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('思考中',
-              style: TextStyle(fontSize: 12, color: Color(0xFF8B8B93))),
+          Text('思考中',
+              style: TextStyle(fontSize: 12, color: palette.textMuted)),
           const SizedBox(width: 6),
           for (var i = 0; i < 3; i++)
             AnimatedBuilder(
@@ -2612,8 +2776,8 @@ class _TypingDotsState extends State<_TypingDots>
                     child: Container(
                       width: 5,
                       height: 5,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF9B9BA3),
+                      decoration: BoxDecoration(
+                        color: palette.textSecondary,
                         shape: BoxShape.circle,
                       ),
                     ),
@@ -2649,9 +2813,9 @@ class _ToolCardState extends State<_ToolCard> {
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1E),
+        color: palette.bgDeep,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: rec.approved ? const Color(0xFF2A2A2E) : const Color(0xFF7A4A2A)),
+        border: Border.all(color: rec.approved ? palette.border : const Color(0xFF7A4A2A)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2671,15 +2835,15 @@ class _ToolCardState extends State<_ToolCard> {
                                 ? FluentIcons.apps_24_regular
                                 : FluentIcons.folder_open_24_regular,
                 size: 13,
-                color: rec.approved ? const Color(0xFF6C5CE7) : const Color(0xFFE08A3C),
+                color: rec.approved ? const Color(0xFF6C5CE7) : palette.warning,
               ),
               const SizedBox(width: 6),
               Text(rec.name,
-                  style: const TextStyle(fontSize: 12, color: Color(0xFFD4D4D8),
+                  style: TextStyle(fontSize: 12, color: palette.textPrimary,
                       fontWeight: FontWeight.w600)),
               const Spacer(),
               if (!rec.approved)
-                const Text('已拒绝', style: TextStyle(fontSize: 11, color: Color(0xFFE08A3C))),
+                Text('已拒绝', style: TextStyle(fontSize: 11, color: palette.warning)),
               if (rec.result != null || args.isNotEmpty) ...[
                 const SizedBox(width: 6),
                 MouseRegion(
@@ -2689,7 +2853,7 @@ class _ToolCardState extends State<_ToolCard> {
                     child: Icon(_expanded
                             ? FluentIcons.chevron_up_24_regular
                             : FluentIcons.chevron_down_24_regular,
-                        size: 12, color: const Color(0xFF8B8B93)),
+                        size: 12, color: palette.textMuted),
                   ),
                 ),
               ],
@@ -2701,8 +2865,8 @@ class _ToolCardState extends State<_ToolCard> {
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Text(args,
-                  style: const TextStyle(
-                      fontFamily: 'Consolas', fontSize: 11, color: Color(0xFF8B8B93))),
+                  style: TextStyle(
+                      fontFamily: 'Consolas', fontSize: 11, color: palette.textMuted)),
             ),
             if (rec.images.isNotEmpty) ...[
               const SizedBox(height: 6),
@@ -2720,15 +2884,15 @@ class _ToolCardState extends State<_ToolCard> {
                 padding: const EdgeInsets.all(6),
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF141418),
+                  color: palette.bgDeep,
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Text(rec.result!,
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontFamily: 'Consolas', fontSize: 11,
-                          color: Color(0xFF9B9BA3))),
+                          color: palette.textSecondary)),
                 ),
               ),
           ],
@@ -2778,13 +2942,13 @@ class _ModImageThumbState extends State<_ModImageThumb> {
         height: 88,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: const Color(0xFF141418),
+          color: palette.bgDeep,
           borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: const Color(0xFF2A2A2E)),
+          border: Border.all(color: palette.border),
         ),
         child: _failed
-            ? const Icon(FluentIcons.image_off_24_regular,
-                size: 16, color: Color(0xFF6E6E76))
+            ? Icon(FluentIcons.image_off_24_regular,
+                size: 16, color: palette.textHint)
             : const SizedBox(
                 width: 14,
                 height: 14,
@@ -2802,7 +2966,7 @@ class _ModImageThumbState extends State<_ModImageThumb> {
             height: 88,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: const Color(0xFF2A2A2E)),
+              border: Border.all(color: palette.border),
               image: DecorationImage(
                 image: MemoryImage(bytes),
                 fit: BoxFit.cover,
@@ -2871,8 +3035,8 @@ class _HoverIconBtnState extends State<_HoverIconBtn> {
   Widget build(BuildContext context) {
     final enabled = widget.onTap != null;
     final color = !enabled
-        ? const Color(0xFF55555C)
-        : (_hover ? const Color(0xFFE4E4E8) : const Color(0xFF8B8B93));
+        ? palette.textFaint
+        : (_hover ? palette.textBody : palette.textMuted);
     return MouseRegion(
       cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
       onEnter: (_) => setState(() => _hover = true),
@@ -2885,7 +3049,7 @@ class _HoverIconBtnState extends State<_HoverIconBtn> {
           padding: const EdgeInsets.all(5),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(5),
-            color: _hover && enabled ? const Color(0xFF26262E) : Colors.transparent,
+            color: _hover && enabled ? palette.card : Colors.transparent,
           ),
           child: fluent.Tooltip(
             message: widget.tip,
@@ -2924,9 +3088,9 @@ class _JumpLatestButtonState extends State<_JumpLatestButton> {
           curve: Curves.easeOut,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
-            color: _hover ? const Color(0xFF2E2E38) : const Color(0xFF26262C),
+            color: _hover ? palette.surface : palette.card,
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: const Color(0xFF3A3A44)),
+            border: Border.all(color: palette.borderHover),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.35),
@@ -2935,12 +3099,12 @@ class _JumpLatestButtonState extends State<_JumpLatestButton> {
               ),
             ],
           ),
-          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
             Icon(FluentIcons.arrow_down_24_regular,
-                size: 12, color: Color(0xFFB9A7FF)),
+                size: 12, color: palette.accentLighter),
             SizedBox(width: 4),
             Text('回到最新',
-                style: TextStyle(fontSize: 11, color: Color(0xFFD4D4D8))),
+                style: TextStyle(fontSize: 11, color: palette.textPrimary)),
           ]),
         ),
       ),
@@ -2984,19 +3148,19 @@ class _WelcomeView extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: const Color(0x556C5CE7)),
                 ),
-                child: const Icon(FluentIcons.bot_24_regular,
-                    size: 22, color: Color(0xFF9B8DF2)),
+                child: Icon(FluentIcons.bot_24_regular,
+                    size: 22, color: palette.accentLighter),
               ),
               const SizedBox(height: 12),
-              const Text('AI 助手已就绪',
-                  style: TextStyle(fontSize: 15, color: Color(0xFFF0F0F4),
+              Text('AI 助手已就绪',
+                  style: TextStyle(fontSize: 15, color: palette.textHigh,
                       fontWeight: FontWeight.w700)),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 '我可以直接读取并修改当前模组内容（剧情、人物、舞台调度、配图等）。'
                 '所有修改都会先展示改动并等你确认。',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: Color(0xFF8B8B93), height: 1.6),
+                style: TextStyle(fontSize: 12, color: palette.textMuted, height: 1.6),
               ),
               const SizedBox(height: 16),
               Wrap(
@@ -3041,14 +3205,14 @@ class _SuggestChipState extends State<_SuggestChip> {
           curve: Curves.easeOut,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
-            color: _hover ? const Color(0xFF23232A) : Colors.transparent,
+            color: _hover ? palette.panel : Colors.transparent,
             borderRadius: BorderRadius.circular(999),
             border: Border.all(
-                color: _hover ? const Color(0xFF6C5CE7) : const Color(0xFF2F2F36)),
+                color: _hover ? const Color(0xFF6C5CE7) : palette.surface),
           ),
           child: Text(widget.text,
               style: TextStyle(fontSize: 11.5,
-                  color: _hover ? const Color(0xFFCFD3FF) : const Color(0xFFB4B4BC))),
+                  color: _hover ? palette.accentPale : palette.textMid)),
         ),
       ),
     );

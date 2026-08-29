@@ -7,6 +7,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/app_theme.dart';
 
 /// 弹窗内容安全尺寸：宽度不超屏，高度留出标题/操作按钮的空间。
 BoxConstraints _dialogBodyConstraints(BuildContext context, double w, double h) {
@@ -98,16 +99,16 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
+            Text(
               '事件 ID（纯数字，对话 ID 自动从 <事件ID>001 开始）',
-              style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+              style: TextStyle(fontSize: 12, color: palette.textSecondary),
             ),
             const SizedBox(height: 6),
             fluent.TextBox(controller: _startId),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               '剧本文本（格式：角色名：台词，支持（表情）[动作] 等标注）',
-              style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+              style: TextStyle(fontSize: 12, color: palette.textSecondary),
             ),
             const SizedBox(height: 6),
             SizedBox(
@@ -139,12 +140,12 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1D1D22),
+                  color: palette.bgDeep,
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
                   _info!,
-                  style: const TextStyle(fontSize: 12, color: Color(0xFF9BD1A6)),
+                  style: TextStyle(fontSize: 12, color: palette.statusOk),
                 ),
               ),
             ],
@@ -152,7 +153,7 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
               const SizedBox(height: 10),
               Text(
                 _error!,
-                style: const TextStyle(fontSize: 12, color: Color(0xFFE5484D)),
+                style: TextStyle(fontSize: 12, color: palette.danger),
               ),
             ],
           ],
@@ -270,16 +271,16 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
             if (_loadError != null) ...[
               Text(
                 _loadError!,
-                style: const TextStyle(fontSize: 12, color: Color(0xFFE5484D)),
+                style: TextStyle(fontSize: 12, color: palette.danger),
               ),
               const SizedBox(height: 8),
             ],
             Wrap(
               runSpacing: 6,
               children: [
-                const Text(
+                Text(
                   '选项：',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary),
                 ),
                 const SizedBox(width: 8),
                 _optChip('纯剧情', 'pure'),
@@ -302,11 +303,11 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
               ],
             ),
             const SizedBox(height: 10),
-            const Align(
+            Align(
               alignment: Alignment.centerLeft,
               child: Text(
                 '输入事件 ID 或标题关键词，过滤下方可选事件列表',
-                style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+                style: TextStyle(fontSize: 11, color: palette.textMuted),
               ),
             ),
             const SizedBox(height: 4),
@@ -344,7 +345,7 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
                             size: 16,
                             color: checked
                                 ? const Color(0xFF6C5CE7)
-                                : const Color(0xFF6E6E76),
+                                : palette.textHint,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -352,9 +353,9 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
                               '[$id] ${evt['title']}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 12,
-                                color: Color(0xFFD4D4D8),
+                                color: palette.textPrimary,
                               ),
                             ),
                           ),
@@ -420,15 +421,15 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
                 height: 220,
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1D1D22),
+                  color: palette.bgDeep,
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: SingleChildScrollView(
                   child: Text(
                     _result!,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
-                      color: Color(0xFFE4E4E8),
+                      color: palette.textBody,
                     ),
                   ),
                 ),
@@ -465,12 +466,12 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
           margin: const EdgeInsets.only(right: 6),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
-            color: checked ? const Color(0xFF3A3154) : const Color(0xFF26262B),
+            color: checked ? palette.tintAccent : palette.card,
             borderRadius: BorderRadius.circular(4),
             border: Border.all(
               color: checked
                   ? const Color(0xFF6C5CE7)
-                  : const Color(0xFF33333A),
+                  : palette.borderHover,
             ),
           ),
           child: Text(
@@ -478,8 +479,8 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
             style: TextStyle(
               fontSize: 11,
               color: checked
-                  ? const Color(0xFFC7C0F9)
-                  : const Color(0xFF9B9BA3),
+                  ? palette.accentPale
+                  : palette.textSecondary,
             ),
           ),
         ),

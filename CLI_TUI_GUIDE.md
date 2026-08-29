@@ -8,7 +8,11 @@
 
 ### OOBE 首次使用引导
 
-首次访问任一端时会自动开启一次 OOBE 向导（欢迎 → 工作区选择 → 可选创建首个 Mod）。完成标记写入 `editor_env.json` 的 `oobe_completed`，**CLI / TUI / GUI 三端共用**，任一端完成后不再自动弹出。
+首次访问任一端时会自动开启一次 OOBE 向导（欢迎 → 工作区选择 → 可选创建首个 Mod → **可选 AI 助手 → 可选 TTS 配音 → 可选云存储**）。完成标记写入 `editor_env.json` 的 `oobe_completed`，**CLI / TUI / GUI 三端共用**，任一端完成后不再自动弹出。
+
+- GUI 额外含「界面风格（创作/经典）」步骤（终端无 UI 模式概念，CLI/TUI 无此步）
+- AI / TTS 配置写入三端共享的 `.editor_ai.json`；云存储写入工作区 `.editor_cloud.json`
+- 所有新步骤均「全空跳过」即不配置，之后可在设置页 / 云同步面板随时补充
 
 ```powershell
 # 强制重新开启 OOBE
@@ -331,6 +335,11 @@ model / temperature，可保存前测试连通；REPL 内 `/agent setting`（或
 最多 4 个只读子代理并汇总结论（子代理只读，不可写）；所有写操作仍由主代理
 执行并需 `y/N` 确认。
 
+自动重连：连接失败 / 流式中断 / HTTP 429、5xx 会自动按指数退避重试（默认 3 次、
+首个间隔 1 秒，`agent config` 里可调 `maxRetries` / `retryDelayMs`，`maxRetries=0`
+关闭）；重连前输出「⚠ 连接中断，正在自动重连 (n/N)…」，断流前已显示的半截文本
+会随重连重新生成。用户主动取消（Ctrl+C）不会触发重连。
+
 TUI 内按 `a` 打开聊天面板（Esc 关闭，写操作弹出确认框），按 `u` 检查更新；
 REPL 内 `/agent`、`/agent setting|config`、`/agent chat`（当前 `/mods use`
 选定的 mod 自动作为 `-m` 默认）。
@@ -376,3 +385,68 @@ REPL（`python run_cli.py` 无参进入）内 Tab 补全已覆盖 `agent` / `clo
   `--remote-root`（mods/cfgs/save）、`--provider`（三种 AI 协议）、
   `-m/--mod`（Mod 列表）；`cloud add --cfg` 提示为 `<驱动字段 k=v>`
 - Flag 补全：未用过的 flag 自动去重提示（含 `--dry-run`、`--delete-extra`、`--reveal` 等）
+
+## 9. 配音（TTS：合成 / 音色 / 素材）
+
+CLI 可把文本合成为语音素材（阿里云 DashScope 百炼 / MiniMax T2A V2），保存到
+`<mod>/audio/tts/` 并登记 `Cfgs/zh-cn/AudioCfg.json`。配音配置与 GUI 设置页共用
+`.editor_ai.json` 的 `tts*` 字段（**三端共享**；`agent config` 的交互流程里也可顺带配置）。
+
+```powershell
+# 查看 / 交互式配置配音服务（provider、apiKey、groupId、baseUrl、model、voice、speed）
+python run_cli.py tts config
+python run_cli.py tts config --json      # JSON 输出（完整设置，ttsApiKey 打码为 ***）
+
+# 列出音色（缺省取设置里的 ttsProvider，再缺省 aliyun；并标注来源：在线拉取 / 内置音色表）
+python run_cli.py tts voices
+python run_cli.py tts voices aliyun
+python run_cli.py tts voices aliyun --model cosyvoice-v2   # 按模型切换内置音色表
+
+# 连通性测试（minimax 拉一次音色列表；aliyun 会真实合成一句短文本后丢弃）
+python run_cli.py tts test
+python run_cli.py tts test minimax
+
+# 合成并保存（默认自动登记 AudioCfg；wav 自动转 Ogg，本机需装 ffmpeg/oggenc）
+python run_cli.py tts synthesize "欢迎来到学生时代" --mod test
+python run_cli.py tts synthesize --mod test --key talk_intro_01 --voice Cherry "正文文本"
+echo 长文本… | python run_cli.py tts synthesize - --mod test     # '-' 从 stdin 读取
+python run_cli.py tts synthesize "文本" --mod test --no-cfg --raw-wav  # 不登记 / 保留 wav
+
+# 素材管理（模组定位与 cfg 命令一致：唯一模组自动选定，多模组需 --mod）
+python run_cli.py tts list --mod test
+python run_cli.py tts delete talk_intro_01.ogg --mod test        # y/N 二次确认
+python run_cli.py tts delete audio/tts/talk_intro_01.ogg --mod test --force
+```
+
+说明：
+
+- `--provider/--voice/--model/--speed` 可单次覆盖共享设置（不改 `.editor_ai.json`）。
+- `--key` 为素材键名（缺省 `tts_<时间戳>`），AudioCfg 的 `url` 登记为 `audio/tts/<key>`（与落盘路径一致、不带扩展名）；建议以 `talk_` 等前缀自行命名。
+- 不写 `TalkCfg.vocals`（原版无逐行配音通道），只登记 AudioCfg，素材由 mod 作者自行接入。
+- 未配置 apiKey 时 `synthesize` / `test` 返回中文错误提示；先运行 `tts config` 完成配置。
+- 合成结果为 wav；`ffmpeg` / `oggenc` 任一存在即自动转 Ogg（游戏原生格式），无编码器时保留 wav。
+
+## 10. 插件管理（Plugin）
+
+插件是第三方 Python 代码，可与编辑器同权限运行（读文件 / 网络 / 系统调用）。
+**安装默认停用；启用是唯一闸门**——三端每次启用都要高危确认，确认后才写
+`risk_ack_at` 留痕（服务端强制校验，无法绕过）。详见 `PLUGIN_GUIDE.md`。
+
+```powershell
+python run_cli.py plugin list                     # 列出全部插件
+python run_cli.py plugin info hello_plugin        # 详情（含四类贡献 / risk_ack_at）
+python run_cli.py plugin install ./hello_plugin.zip   # 安装（默认停用；已被占用 id 拒绝）
+python run_cli.py plugin enable hello_plugin      # 启用：高危确认 y/N
+python run_cli.py plugin enable hello_plugin --yes     # 跳过高危确认（CI / 脚本）
+python run_cli.py plugin disable hello_plugin     # 停用
+python run_cli.py plugin uninstall hello_plugin   # 卸载（须先停用）
+python run_cli.py plugin reload                   # 重载全部已启用插件（改代码后生效）
+```
+
+- 插件贡献四类：HTTP 路由、AI Agent 工具、GUI 面板、CLI 命令。
+- 已启用插件注册的 CLI 命令按全名直接调用：`python run_cli.py hello_plugin.greet 同学`。
+- REPL（`python run_cli.py` 无参进入）内 `/plugins` 查看与操作插件；插件命令同样
+  可直接输入。
+- TUI 插件屏：**空格** = 启用 / 停用（启用走确认框）、**i** = 详情、**r** = 重载、
+  **d** = 卸载。
+- 示例插件与完整指南：`examples/plugins/hello_plugin`、`PLUGIN_GUIDE.md`。

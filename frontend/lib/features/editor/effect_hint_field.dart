@@ -6,6 +6,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
 import 'field_utils.dart';
+import '../../core/app_theme.dart';
 
 /// 全角标点 → 半角映射（官方指南仅允许英文符号；顿号按逗号处理）。
 const _fullWidthToHalf = <String, String>{
@@ -85,7 +86,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
 
   // 校验状态
   String _statusText = '准备就绪';
-  Color _statusColor = const Color(0xFF8B8B93);
+  Color _statusColor = palette.textMuted;
   bool _statusIsError = false;
   // 非法字符提示（空格/全角符号），仅提示不阻断输入
   String? _illegalHint;
@@ -286,9 +287,9 @@ class _EffectHintFieldState extends State<EffectHintField> {
             width: width,
             constraints: const BoxConstraints(maxHeight: overlayMaxH),
             decoration: BoxDecoration(
-              color: const Color(0xFF26262E),
+              color: palette.card,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFF3A3A44)),
+              border: Border.all(color: palette.borderHover),
               boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 10, offset: Offset(0, 3))],
             ),
             child: ListView.separated(
@@ -296,7 +297,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
               padding: const EdgeInsets.symmetric(vertical: 2),
               shrinkWrap: true,
               itemCount: _suggestions.length,
-              separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFF2E2E38)),
+              separatorBuilder: (_, __) => Divider(height: 1, color: palette.surface),
               itemBuilder: (c, i) {
                 final it = _suggestions[i];
                 final isSelected = i == _selectedIndex;
@@ -306,14 +307,14 @@ class _EffectHintFieldState extends State<EffectHintField> {
                     _onItemClicked(it);
                   },
                   child: Container(
-                    color: isSelected ? const Color(0xFF2A3B52) : Colors.transparent,
+                    color: isSelected ? palette.tintInfo : Colors.transparent,
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(it['desc'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5, color: Color(0xFFE8E8EE), height: 1.3)),
+                        Text(it['desc'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, color: palette.textBody, height: 1.3)),
                         const SizedBox(height: 1),
-                        Text(it['code'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Color(0xFF9B9BA3), fontFamily: 'Consolas')),
+                        Text(it['code'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, color: palette.textSecondary, fontFamily: 'Consolas')),
                       ],
                     ),
                   ),
@@ -470,7 +471,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
         if (!mounted) return;
         setState(() {
           _statusText = '✅ 无附加条件/效果';
-          _statusColor = const Color(0xFF4CAF82);
+          _statusColor = palette.statusOk;
           _statusIsError = false;
         });
         return;
@@ -484,20 +485,20 @@ class _EffectHintFieldState extends State<EffectHintField> {
         if (errors.isNotEmpty) {
           setState(() {
             _statusText = '❌ ' + errors.join('\n');
-            _statusColor = const Color(0xFFE05A5A);
+            _statusColor = palette.statusDanger;
             _statusIsError = true;
           });
         } else if (valid) {
           final trans = translations.map((e) => e.toString()).join('、\n');
           setState(() {
             _statusText = trans.isEmpty ? '✅ 格式正确' : '✅ 逻辑校验通过：\n$trans';
-            _statusColor = const Color(0xFF4CAF82);
+            _statusColor = palette.statusOk;
             _statusIsError = false;
           });
         } else {
           setState(() {
             _statusText = resp['message']?.toString() ?? '格式错误';
-            _statusColor = const Color(0xFFFFA726);
+            _statusColor = palette.statusWarn;
             _statusIsError = true;
           });
         }
@@ -505,7 +506,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
         if (!mounted) return;
         setState(() {
           _statusText = '校验失败：$e';
-          _statusColor = const Color(0xFF9B9BA3);
+          _statusColor = palette.textSecondary;
           _statusIsError = false;
         });
       }
@@ -535,9 +536,9 @@ class _EffectHintFieldState extends State<EffectHintField> {
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
-            color: _statusIsError ? const Color(0xFF2A1B1E) : const Color(0xFF1E2420),
+            color: _statusIsError ? palette.tintDanger : palette.tintOk,
             borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: _statusIsError ? const Color(0xFF4A2A2E) : const Color(0xFF263028)),
+            border: Border.all(color: _statusIsError ? palette.tintDanger : palette.tintOk),
           ),
           child: Text(
             _statusText,
@@ -549,9 +550,9 @@ class _EffectHintFieldState extends State<EffectHintField> {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               _illegalHint!,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
-                color: Color(0xFFE08A3C),
+                color: palette.warning,
                 height: 1.4,
               ),
             ),
@@ -563,7 +564,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
               _overlayVisible
                   ? '候选 ${_suggestions.length} 项 · Tab/Enter 补全 · ↑↓ 切换 · 点击插入'
                   : '候选 ${_suggestions.length} 项 · Tab 补全 · 点击插入',
-              style: const TextStyle(fontSize: 10.5, color: Color(0xFF6E6E76)),
+              style: TextStyle(fontSize: 10.5, color: palette.textHint),
             ),
           ),
       ],

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'app_theme.dart';
 
 // Unified motion tokens for StudentAge Editor
 // Duration / curve consistent across shell, tabs, cards
@@ -208,10 +209,10 @@ class _ShimmerBoxState extends State<ShimmerBox>
             gradient: LinearGradient(
               begin: Alignment(-1.0 + 2 * _c.value, -1),
               end: Alignment(1.0 + 2 * _c.value, 1),
-              colors: const [
-                Color(0xFF26262B),
-                Color(0xFF2E2E35),
-                Color(0xFF26262B),
+              colors: [
+                palette.card,
+                palette.surface,
+                palette.card,
               ],
             ),
           ),

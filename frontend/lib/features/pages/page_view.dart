@@ -9,6 +9,7 @@ import '../story/story_director_view.dart';
 import 'manifest_card.dart';
 import 'classic_page_layouts.dart';
 import 'pages_catalog.dart';
+import '../../core/app_theme.dart';
 
 /// 编辑页面视图：页面说明 + 配置表选择 + schema 驱动编辑器。
 class EditorPageView extends StatefulWidget {
@@ -62,9 +63,9 @@ class _PageViewState extends State<EditorPageView> {
               const SizedBox(width: 10),
               Text(
                 widget.page.title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 14,
-                  color: Colors.white,
+                  color: palette.textHigh,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -76,9 +77,9 @@ class _PageViewState extends State<EditorPageView> {
                     widget.page.description,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
-                      color: Color(0xFF8B8B93),
+                      color: palette.textMuted,
                     ),
                   ),
                 ),
@@ -86,7 +87,7 @@ class _PageViewState extends State<EditorPageView> {
               ],
               Text(
                 '配置表',
-                style: const TextStyle(fontSize: 12, color: Color(0xFF8B8B93)),
+                style: TextStyle(fontSize: 12, color: palette.textMuted),
               ),
               const SizedBox(width: 8),
               // 注意：Row 给子项无界宽度约束，isExpanded: true 的 ComboBox 内部用
@@ -115,7 +116,7 @@ class _PageViewState extends State<EditorPageView> {
             ],
           ),
         ),
-        const Divider(height: 1, color: Color(0xFF2A2A2E)),
+        Divider(height: 1, color: palette.border),
         if (widget.page.id == 'official') const ManifestStatusCard(),
         Expanded(
           child: widget.classic
@@ -162,14 +163,14 @@ class _StoryMobilePlaceholder extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(FluentIcons.chat_24_regular, size: 40, color: Color(0xFF8B7FEF)),
+            Icon(FluentIcons.chat_24_regular, size: 40, color: palette.accentLight),
             const SizedBox(height: 14),
-            const Text('剧情导演请在桌面端使用',
-                style: TextStyle(fontSize: 15, color: Colors.white, fontWeight: FontWeight.w600)),
+            Text('剧情导演请在桌面端使用',
+                style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
-            const Text('三栏编排视图更适合大屏；移动端可用事件预览与剧情库查看剧情',
+            Text('三栏编排视图更适合大屏；移动端可用事件预览与剧情库查看剧情',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                style: TextStyle(fontSize: 12, color: palette.textSecondary)),
             if (onOpenSearch != null) ...[
               const SizedBox(height: 16),
               fluent.FilledButton(onPressed: onOpenSearch, child: const Text('前往剧情库')),

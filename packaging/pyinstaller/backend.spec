@@ -14,6 +14,7 @@
   产物即 build/release/backend_dist/{backend.exe, editor_cmd.exe, _internal/}。
 """
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
@@ -22,21 +23,22 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = os.path.normpath(os.path.join(os.path.abspath(SPECPATH), "..", ".."))
 ENTRY = os.path.join(ROOT, "packaging", "backend_entry.py")
 BACKEND = os.path.join(ROOT, "backend")
+# collect_submodules/collect_data_files 在 spec 执行期按 sys.path 导入包来
+# 枚举子模块，需显式加入 backend/ 才能枚举 editor.* 子模块。
+if BACKEND not in sys.path:
+    sys.path.insert(0, BACKEND)
 
 datas = []
 hiddenimports = []
 datas += collect_data_files('UnityPy')
 hiddenimports += collect_submodules('UnityPy')
 # CLI/TUI 依赖：rich / textual / prompt_toolkit 及其子模块，以及本项目 editor.cli / editor.tui
+# 这些是 CLI/TUI 的硬依赖：构建机缺任何一个都必须让构建直接失败，
+# 绝不能静默跳过（静默跳过会产出缺 rich 的 exe，用户运行 editor-cli 时
+# 才报 ModuleNotFoundError: No module named 'rich'）。
 for _pkg in ('rich', 'textual', 'prompt_toolkit', 'editor.cli', 'editor.tui', 'editor.agent'):
-    try:
-        hiddenimports += collect_submodules(_pkg)
-    except Exception:
-        pass
-    try:
-        datas += collect_data_files(_pkg)
-    except Exception:
-        pass
+    hiddenimports += collect_submodules(_pkg)
+    datas += collect_data_files(_pkg)
 # 额外：内置资源与数据（若存在则随包分发，便于 Android/Linux 无游戏启动）
 import pathlib as _pl
 for _extra in [
@@ -47,6 +49,17 @@ for _extra in [
     _src, _dst = _extra
     if os.path.isdir(_src):
         datas.append((_src, _dst))
+
+# 应用图标：design/app_icon.svg 的渲染产物（frontend/windows 的 ico）。
+# GUI 与 TUI/CLI（editor_cmd.exe）三端统一使用同一图标；后端 exe 仅在
+# 任务管理器等处展示。仅 Windows 生效，macOS/Linux 的图标由 .app 与
+# 桌面入口各自处理。
+APP_ICON = os.path.join(ROOT, "frontend", "windows", "runner", "resources", "app_icon.ico")
+if sys.platform == "win32":
+    if not os.path.isfile(APP_ICON):
+        raise SystemExit("错误：找不到应用图标 %s，无法设置 exe 图标" % APP_ICON)
+else:
+    APP_ICON = None
 
 
 a = Analysis(
@@ -109,6 +122,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     console=False,
+    icon=APP_ICON,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -132,6 +146,7 @@ cmd_exe = EXE(
     upx=True,
     upx_exclude=[],
     console=True,
+    icon=APP_ICON,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

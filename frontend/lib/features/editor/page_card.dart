@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/motion.dart';
+import '../../core/app_theme.dart';
 
 class PageCard extends StatefulWidget {
   const PageCard({
@@ -34,9 +35,9 @@ class _PageCardState extends State<PageCard> {
         duration: AppMotion.fast,
         curve: AppMotion.easeOut,
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E23),
+          color: palette.panel,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: _hover ? const Color(0xFF3A3A42) : const Color(0xFF2E2E35)),
+          border: Border.all(color: _hover ? palette.borderHover : palette.surface),
           boxShadow: _hover
               ? [BoxShadow(color: Colors.black.withValues(alpha: 0.22), blurRadius: 16, offset: const Offset(0, 6))]
               : [],
@@ -63,7 +64,7 @@ class _PageCardState extends State<PageCard> {
                       widget.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600),
+                      style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600),
                     ),
                   ),
                   if (widget.actions != null && widget.actions!.isNotEmpty) ...[

@@ -11,6 +11,7 @@ import '../editor/schema_editor_view.dart';
 import '../story/story_director_view.dart';
 import '../story/story_transfer_dialogs.dart';
 import 'pages_catalog.dart';
+import '../../core/app_theme.dart';
 
 /// 经典布局页面体系（类友商心知版三栏/双栏工作流 + 暗黑主题）。
 class ClassicPageLayouts extends StatefulWidget {
@@ -153,10 +154,10 @@ class _PersonLayoutState extends State<_PersonLayout> {
     showDialog(
       context: context,
       builder: (ctx) => Dialog(
-        backgroundColor: const Color(0xFF1E1E23),
+        backgroundColor: palette.panel,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: const BorderSide(color: Color(0xFF2E2E35)),
+          side: BorderSide(color: palette.surface),
         ),
         child: Container(
           width: dialogWidth(context, desktopWidth: 760),
@@ -167,13 +168,13 @@ class _PersonLayoutState extends State<_PersonLayout> {
             children: [
               Row(
                 children: [
-                  const Text(
+                  Text(
                     '📖 提取原版配置 / 检索剧情库',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: palette.textHigh),
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(FluentIcons.dismiss_24_regular, size: 16, color: Colors.white70),
+                    icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
                     onPressed: () {
                       Navigator.of(ctx).pop();
                       setState(() => _refreshCounter++);
@@ -181,7 +182,7 @@ class _PersonLayoutState extends State<_PersonLayout> {
                   ),
                 ],
               ),
-              const Divider(color: Color(0xFF2E2E35), height: 18),
+              Divider(color: palette.surface, height: 18),
               Expanded(child: BaseSearchPage(state: widget.state)),
             ],
           ),
@@ -199,17 +200,17 @@ class _PersonLayoutState extends State<_PersonLayout> {
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E23),
+            color: palette.panel,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFF2E2E35)),
+            border: Border.all(color: palette.surface),
           ),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                const Text('🎛️ 角色操作', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                Text('🎛️ 角色操作', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: palette.textHigh)),
                 const SizedBox(width: 16),
-                const Text('当前模式:', style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                Text('当前模式:', style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 210,
@@ -287,9 +288,9 @@ class _PersonLayoutState extends State<_PersonLayout> {
                             width: double.infinity,
                             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF26262B),
+                              color: palette.card,
                               borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: const Color(0xFF3A3A42)),
+                              border: Border.all(color: palette.borderHover),
                             ),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -301,7 +302,7 @@ class _PersonLayoutState extends State<_PersonLayout> {
                                     '当前: ${_stages[_stageIndex]} (点击切换)',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 12, color: Color(0xFFC8C8CF), fontWeight: FontWeight.w500),
+                                    style: TextStyle(fontSize: 12, color: palette.textMid, fontWeight: FontWeight.w500),
                                   ),
                                 ),
                               ],
@@ -313,19 +314,19 @@ class _PersonLayoutState extends State<_PersonLayout> {
                       Expanded(
                         child: Container(
                           decoration: BoxDecoration(
-                            color: const Color(0xFF18181C),
+                            color: palette.bgAlt,
                             borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: const Color(0xFF2A2A2E)),
+                            border: Border.all(color: palette.border),
                           ),
                           child: Center(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(FluentIcons.image_24_regular, size: 36, color: Color(0xFF4A4A52)),
+                                Icon(FluentIcons.image_24_regular, size: 36, color: palette.iconDisabled),
                                 const SizedBox(height: 8),
                                 Text(
                                   _selectedPersonId != null ? '角色 [$_selectedPersonId] 立绘' : '暂无立绘预览',
-                                  style: const TextStyle(color: Color(0xFF6E6E76), fontSize: 12),
+                                  style: TextStyle(color: palette.textHint, fontSize: 12),
                                 ),
                               ],
                             ),
@@ -333,9 +334,9 @@ class _PersonLayoutState extends State<_PersonLayout> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      const Align(
+                      Align(
                         alignment: Alignment.centerLeft,
-                        child: Text('👥 角色列表:', style: TextStyle(fontSize: 11.5, color: Color(0xFF9B9BA3), fontWeight: FontWeight.w600)),
+                        child: Text('👥 角色列表:', style: TextStyle(fontSize: 11.5, color: palette.textSecondary, fontWeight: FontWeight.w600)),
                       ),
                       const SizedBox(height: 4),
                       Expanded(
@@ -472,7 +473,7 @@ class _ResourceLayoutState extends State<_ResourceLayout> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('📝 资源列表:', style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3), fontWeight: FontWeight.w600)),
+                Text('📝 资源列表:', style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
                 Expanded(
                   child: _ConfigEntryList(
@@ -642,12 +643,12 @@ class _FunctionLayoutState extends State<_FunctionLayout> {
                 fluent.Checkbox(
                   checked: _showOriginal,
                   onChanged: (v) => setState(() => _showOriginal = v ?? false),
-                  content: const Flexible(
+                  content: Flexible(
                     child: Text(
                       '显示原版资源 (修改后将覆盖至Mod)',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 11.5, color: Color(0xFFC8C8CF)),
+                      style: TextStyle(fontSize: 11.5, color: palette.textMid),
                     ),
                   ),
                 ),
@@ -710,24 +711,24 @@ class _FunctionLayoutState extends State<_FunctionLayout> {
                   margin: const EdgeInsets.only(bottom: 8),
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF2A2418),
+                    color: palette.tintWarn,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: const Color(0xFF4A3818)),
+                    border: Border.all(color: palette.tintWarn),
                   ),
-                  child: const Text(
+                  child: Text(
                     '这里是行动配置模块，你可以在这里添加新的行动或对原有行动进行修改，行动类型1是官方的场景行动(如买东西)，行动类型2是功能行动(如空间)，修改原版这两类行动需要双击解锁。',
-                    style: TextStyle(fontSize: 12, color: Color(0xFFE0A454), height: 1.4),
+                    style: TextStyle(fontSize: 12, color: palette.statusTan, height: 1.4),
                   ),
                 ),
                 fluent.Checkbox(
                   checked: _enableRandomAction,
                   onChanged: (v) => setState(() => _enableRandomAction = v ?? false),
-                  content: const Flexible(
+                  content: Flexible(
                     child: Text(
                       '启用随机行动触发事件 (关联 ActionEvtCfg)',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, color: Color(0xFFC8C8CF)),
+                      style: TextStyle(fontSize: 12, color: palette.textMid),
                     ),
                   ),
                 ),
@@ -811,10 +812,10 @@ class _StoryLayoutState extends State<_StoryLayout> {
     showDialog(
       context: context,
       builder: (ctx) => Dialog(
-        backgroundColor: const Color(0xFF1E1E23),
+        backgroundColor: palette.panel,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: const BorderSide(color: Color(0xFF2E2E35)),
+          side: BorderSide(color: palette.surface),
         ),
         child: Container(
           width: dialogWidth(context, desktopWidth: 760),
@@ -825,13 +826,13 @@ class _StoryLayoutState extends State<_StoryLayout> {
             children: [
               Row(
                 children: [
-                  const Text(
+                  Text(
                     '📖 提取原版剧情 / 检索剧情库',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: palette.textHigh),
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(FluentIcons.dismiss_24_regular, size: 16, color: Colors.white70),
+                    icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
                     onPressed: () {
                       Navigator.of(ctx).pop();
                       setState(() => _refreshCounter++);
@@ -839,7 +840,7 @@ class _StoryLayoutState extends State<_StoryLayout> {
                   ),
                 ],
               ),
-              const Divider(color: Color(0xFF2E2E35), height: 18),
+              Divider(color: palette.surface, height: 18),
               Expanded(child: BaseSearchPage(state: widget.state)),
             ],
           ),
@@ -857,9 +858,9 @@ class _StoryLayoutState extends State<_StoryLayout> {
             margin: const EdgeInsets.only(bottom: 8),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E23),
+              color: palette.panel,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFF2E2E35)),
+              border: Border.all(color: palette.surface),
             ),
             child: Row(
               children: [
@@ -868,11 +869,11 @@ class _StoryLayoutState extends State<_StoryLayout> {
                   onPressed: () => setState(() => _tabIndex = 0),
                 ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Text('🎬 剧情处理器 (TalkCfg / OptionCfg)',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: palette.textHigh)),
                 ),
               ],
             ),
@@ -1090,15 +1091,15 @@ class _SpaceEndingLayoutState extends State<_SpaceEndingLayout> {
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E23),
+            color: palette.panel,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0xFF2E2E35)),
+            border: Border.all(color: palette.surface),
           ),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                const Text('🏷️ 选择模块:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                Text('🏷️ 选择模块:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: palette.textHigh)),
                 const SizedBox(width: 12),
                 SizedBox(
                   width: 260,
@@ -1502,8 +1503,8 @@ Future<void> _promptDeleteEntry({
           child: const Text('取消'),
         ),
         fluent.FilledButton(
-          style: const fluent.ButtonStyle(
-            backgroundColor: WidgetStatePropertyAll(Color(0xFFE5484D)),
+          style: fluent.ButtonStyle(
+            backgroundColor: WidgetStatePropertyAll(palette.danger),
           ),
           onPressed: () async {
             try {
@@ -1551,18 +1552,18 @@ class _ActionPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Color bg = const Color(0xFF26262B);
-    Color fg = const Color(0xFFD4D4D8);
-    Color? borderColor = const Color(0xFF3A3A42);
+    Color bg = palette.card;
+    Color fg = palette.textPrimary;
+    Color? borderColor = palette.borderHover;
 
     if (primary) {
       bg = const Color(0xFF6C5CE7);
       fg = Colors.white;
       borderColor = null;
     } else if (danger) {
-      bg = const Color(0xFF2D1E1E);
-      fg = const Color(0xFFFF6B6B);
-      borderColor = const Color(0xFF4D2A2A);
+      bg = palette.tintDanger;
+      fg = palette.statusDanger;
+      borderColor = palette.tintDanger;
     }
 
     return MouseRegion(
@@ -1609,8 +1610,8 @@ class _ToolActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = primary ? const Color(0xFF6C5CE7) : const Color(0xFF26262B);
-    final fg = primary ? Colors.white : const Color(0xFFD4D4D8);
+    final bg = primary ? const Color(0xFF6C5CE7) : palette.card;
+    final fg = primary ? Colors.white : palette.textPrimary;
 
     return MouseRegion(
       cursor: onPressed != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
@@ -1623,7 +1624,7 @@ class _ToolActionButton extends StatelessWidget {
           decoration: BoxDecoration(
             color: bg,
             borderRadius: BorderRadius.circular(6),
-            border: primary ? null : Border.all(color: const Color(0xFF3A3A42)),
+            border: primary ? null : Border.all(color: palette.borderHover),
           ),
           child: Row(
             children: [
@@ -1723,18 +1724,18 @@ class _ConfigEntryListState extends State<_ConfigEntryList> {
       return const Center(child: fluent.ProgressRing());
     }
     if (_error != null) {
-      return const Center(
+      return Center(
         child: Text(
           '资源列表加载失败',
-          style: TextStyle(fontSize: 12, color: Color(0xFF8B8B93)),
+          style: TextStyle(fontSize: 12, color: palette.textMuted),
         ),
       );
     }
     if (_items.isEmpty) {
-      return const Center(
+      return Center(
         child: Text(
           '暂无配置条目',
-          style: TextStyle(fontSize: 12, color: Color(0xFF6E6E76)),
+          style: TextStyle(fontSize: 12, color: palette.textHint),
         ),
       );
     }
@@ -1755,7 +1756,7 @@ class _ConfigEntryListState extends State<_ConfigEntryList> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               decoration: BoxDecoration(
-                color: isSelected ? const Color(0xFF332F4C) : const Color(0xFF26262B),
+                color: isSelected ? palette.tintAccent : palette.card,
                 borderRadius: BorderRadius.circular(4),
                 border: isSelected ? Border.all(color: const Color(0xFF6C5CE7), width: 1) : null,
               ),
@@ -1764,7 +1765,7 @@ class _ConfigEntryListState extends State<_ConfigEntryList> {
                   Icon(
                     FluentIcons.document_24_regular,
                     size: 13,
-                    color: isSelected ? const Color(0xFF6C5CE7) : const Color(0xFF8B7FEF),
+                    color: isSelected ? const Color(0xFF6C5CE7) : palette.accentLight,
                   ),
                   const SizedBox(width: 6),
                   Expanded(
@@ -1774,7 +1775,7 @@ class _ConfigEntryListState extends State<_ConfigEntryList> {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
-                        color: isSelected ? Colors.white : const Color(0xFFD4D4D8),
+                        color: isSelected ? palette.textHigh : palette.textPrimary,
                         fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                       ),
                     ),
@@ -1783,7 +1784,7 @@ class _ConfigEntryListState extends State<_ConfigEntryList> {
                     id,
                     style: TextStyle(
                       fontSize: 10,
-                      color: isSelected ? const Color(0xFFA99FF4) : const Color(0xFF6E6E76),
+                      color: isSelected ? palette.accentLighter : palette.textHint,
                     ),
                   ),
                 ],

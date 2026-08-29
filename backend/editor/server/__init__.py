@@ -21,6 +21,7 @@ def start_server(port=0, on_ready=None, data_root=None, packs_root=None, bundled
     """
     if data_root:
         os.environ.setdefault("EDITOR_DATA_ROOT", data_root)
+        os.environ.setdefault("EDITOR_PLUGINS_ROOT", os.path.join(data_root, "plugins"))
     if packs_root:
         os.environ.setdefault("EDITOR_PACKS_ROOT", packs_root)
     _extract_bundled(bundled_zip, packs_root)

@@ -19,6 +19,7 @@ SSE 逐行读取 ``data:`` 负载，行为对齐 dart 端（含 [DONE]、tool_ca
 import io
 import json
 import socket
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -38,7 +39,16 @@ _HTTP_TIMEOUT = 30
 
 
 class LlmError(Exception):
-    """请求失败（HTTP ≥400、网络中断、响应不可解析）。"""
+    """请求失败（HTTP ≥400、网络中断、响应不可解析）。
+
+    retryable 标注该失败是否值得自动重连（连接失败/流式中断/HTTP 429、5xx 为
+    True）；retry_after 为 429 场景服务端要求的等待秒数（无则为 None）。
+    """
+
+    def __init__(self, message, retryable=False, retry_after=None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
 
 
 
@@ -97,7 +107,7 @@ class LlmClient:
     def cancelled(self) -> bool:
         return self._cancelled
 
-    def round(self, history: list, tools: list, system_prompt: str, on_text=None):
+    def round(self, history: list, tools: list, system_prompt: str, on_text=None, on_retry=None):
         """执行一轮「模型生成」。
 
         history : OpenAI 风格结构化消息（与 dart 端 send() 的入参同构；
@@ -105,20 +115,63 @@ class LlmClient:
         tools   : [{name, description, parameters(JSON schema)}] 开放格式，
                   按协议自动转为 function / input_schema 规格。
         on_text : 文本增量回调（含以工具调用结束的轮次），用于流式打印。
+        on_retry: 自动重连回调 on_retry(attempt, total_retries, reason)，在每次
+                  网络失败重试前调用；total_retries 为 settings["maxRetries"]。
 
         返回 (list[ToolCall], str)。工具调用非空表示本轮以工具调用结束，
         引擎需执行工具并把结果回填 history 后再次 round()。
+
+        自动重连：连接失败 / 流式中断 / HTTP 429、5xx 按指数退避自动重发本
+        轮（请求无状态、携带全量 history，重发即恢复）；不可重试的错误
+        （其它 4xx、未配置 Key）与用户取消（LlmCancelled）保持原样直抛。
+        断流前已输出的部分文本会随重试重新生成，UI 层用 on_retry 提示用户。
         """
         if self._cancelled:
             raise LlmCancelled("已取消")
         if not (self.settings.get("apiKey") or "").strip():
             raise LlmError("未配置 API Key，请先运行 `agent config` 或在 GUI 设置中配置")
         provider = self.settings["provider"]
-        if provider == "anthropic":
-            return self._anthropic_round(history, tools, system_prompt, on_text)
-        if provider == "openai_responses":
-            return self._responses_round(history, tools, system_prompt, on_text)
-        return self._openai_round(history, tools, system_prompt, on_text)
+        max_retries = int(self.settings.get("maxRetries") or 0)
+        delay_ms = int(self.settings.get("retryDelayMs") or 1000)
+
+        attempt = 0
+        while True:
+            try:
+                if provider == "anthropic":
+                    return self._anthropic_round(history, tools, system_prompt, on_text)
+                if provider == "openai_responses":
+                    return self._responses_round(history, tools, system_prompt, on_text)
+                return self._openai_round(history, tools, system_prompt, on_text)
+            except LlmCancelled:
+                raise
+            except LlmError as exc:
+                if not exc.retryable or attempt >= max_retries:
+                    raise
+                attempt += 1
+                if on_retry:
+                    on_retry(attempt, max_retries, str(exc))
+                self._sleep_cancellable(
+                    self._retry_delay_ms(attempt, delay_ms, exc.retry_after))
+
+    @staticmethod
+    def _retry_delay_ms(attempt: int, base_ms: int, retry_after) -> int:
+        """指数退避：base_ms * 2^(attempt-1)，上限 10s；429 场景取 Retry-After（上限 60s）。"""
+        ms = base_ms * (2 ** (attempt - 1)) if base_ms > 0 else 0
+        ms = min(ms, 10_000)
+        if retry_after:
+            ms = max(ms, int(min(retry_after * 1000, 60_000)))
+        return ms
+
+    def _sleep_cancellable(self, ms: int):
+        """可中断的退避睡眠：0.2s 切片检查取消标志，避免长退避卡住 cancel()。"""
+        end = time.monotonic() + ms / 1000
+        while True:
+            if self._cancelled:
+                raise LlmCancelled("已取消")
+            remain = end - time.monotonic()
+            if remain <= 0:
+                return
+            time.sleep(min(remain, 0.2))
 
     # ------------------------------------------------------------------ URI / 头
     def _uri(self, path: str) -> str:
@@ -153,6 +206,18 @@ class LlmClient:
         except LlmCancelled:
             raise
         except urllib.error.HTTPError as exc:
+            code = exc.code
+            retryable = code in (429,) or code >= 500
+            retry_after = None
+            try:
+                header = exc.headers.get("Retry-After") if exc.headers else None
+                if header:
+                    try:
+                        retry_after = max(float(header), 0.0)
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
             raw = b""
             try:
                 raw = exc.read(64 * 1024) or b""
@@ -160,11 +225,15 @@ class LlmClient:
                 pass
             finally:
                 exc.close()
-            raise LlmError(f"HTTP {exc.code}: {self._trim_err(raw.decode('utf-8', 'replace'))}") from exc
+            raise LlmError(
+                f"HTTP {code}: {self._trim_err(raw.decode('utf-8', 'replace'))}",
+                retryable=retryable,
+                retry_after=retry_after,
+            ) from exc
         except (urllib.error.URLError, socket.timeout, OSError) as exc:
             if self._cancelled:
                 raise LlmCancelled("已取消") from exc
-            raise LlmError(f"连接失败: {exc}") from exc
+            raise LlmError(f"连接失败: {exc}", retryable=True) from exc
         if self._cancelled:
             resp.close()
             raise LlmCancelled("已取消")
@@ -192,7 +261,7 @@ class LlmClient:
             # 取消导致的流中断：静默结束（对齐 dart 的 handleError 分支）
             if self._cancelled:
                 raise LlmCancelled("已取消") from exc
-            raise LlmError(f"流式连接中断: {exc}") from exc
+            raise LlmError(f"流式连接中断: {exc}", retryable=True) from exc
         finally:
             self._resp = None
             try:

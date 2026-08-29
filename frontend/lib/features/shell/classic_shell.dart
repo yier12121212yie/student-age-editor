@@ -4,6 +4,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
@@ -14,11 +15,13 @@ import '../editor/editor_controller.dart';
 import '../mods/mods_page.dart';
 import '../pages/classic_page_layouts.dart';
 import '../pages/pages_catalog.dart';
+import '../plugins/plugins_page.dart';
 import '../resources/resources_page.dart';
 import '../settings/settings_page.dart';
 import 'shell_state.dart';
 import 'shell_widgets.dart';
 import 'status_bar.dart';
+import '../../core/app_theme.dart';
 
 /// 经典布局（类友商风格 + 暗黑主题）：
 /// 顶部大标题 + 横向工具栏 | 左侧三大类宽分组导航 | 中央类友商卡片工作流 | 底部状态栏。
@@ -27,12 +30,14 @@ class ClassicShell extends StatefulWidget {
     super.key,
     required this.state,
     required this.shell,
+    required this.pluginState,
     required this.uiMode,
     required this.onUiModeChanged,
   });
 
   final AppState state;
   final ShellState shell;
+  final PluginState pluginState;
   final UiMode uiMode;
   final ValueChanged<UiMode> onUiModeChanged;
 
@@ -86,11 +91,11 @@ class _ClassicShellState extends State<ClassicShell> {
       barrierColor: Colors.black54,
       transitionDuration: AppMotion.normal,
       pageBuilder: (ctx, a1, a2) => Dialog(
-        backgroundColor: const Color(0xFF1E1E23),
+        backgroundColor: palette.panel,
         insetPadding: EdgeInsets.symmetric(horizontal: isMob ? 12 : 40, vertical: isMob ? 24 : 40),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: const BorderSide(color: Color(0xFF2E2E35)),
+          side: BorderSide(color: palette.surface),
         ),
         child: Container(
           width: dialogWidth(context, desktopWidth: 760),
@@ -103,20 +108,20 @@ class _ClassicShellState extends State<ClassicShell> {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: palette.textHigh,
                     ),
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(FluentIcons.dismiss_24_regular, size: 16, color: Colors.white70),
+                    icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
                     onPressed: () => Navigator.of(ctx).pop(),
                   ),
                 ],
               ),
-              const Divider(color: Color(0xFF2E2E35), height: 18),
+              Divider(color: palette.surface, height: 18),
               Expanded(child: content),
             ],
           ),
@@ -210,6 +215,11 @@ class _ClassicShellState extends State<ClassicShell> {
                 ),
                 onExport: _exportMod,
                 onImport: _importMod,
+                onPlugins: () {
+                  shell.selectPane(SidePane.plugins);
+                  shell.setActivePluginPanel(null);
+                  _showToolModal('🧩 插件', PluginsPage(pluginState: widget.pluginState));
+                },
                 onToggleAi: shell.toggleAi,
                 onSettings: () => _showToolModal(
                   '⚙️ 系统设置',
@@ -245,7 +255,7 @@ class _ClassicShellState extends State<ClassicShell> {
                     ),
                     Expanded(
                       child: Container(
-                        color: const Color(0xFF131316),
+                        color: palette.bgDeep2,
                         padding: const EdgeInsets.all(10),
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -305,7 +315,7 @@ class _ClassicShellState extends State<ClassicShell> {
                                                   child: ClipRRect(
                                                     borderRadius: BorderRadius.circular(8),
                                                     child: Container(
-                                                      color: const Color(0xFF1E1E23),
+                                                      color: palette.panel,
                                                       child: AiPanel(
                                                         state: state,
                                                         settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
@@ -363,6 +373,7 @@ class _ClassicHeader extends StatelessWidget {
     required this.onDiagnose,
     required this.onExport,
     required this.onImport,
+    required this.onPlugins,
     required this.onToggleAi,
     required this.onSettings,
     required this.onToggleUiMode,
@@ -376,6 +387,7 @@ class _ClassicHeader extends StatelessWidget {
   final VoidCallback onDiagnose;
   final VoidCallback onExport;
   final VoidCallback onImport;
+  final VoidCallback onPlugins;
   final VoidCallback onToggleAi;
   final VoidCallback onSettings;
   final VoidCallback onToggleUiMode;
@@ -390,15 +402,16 @@ class _ClassicHeader extends StatelessWidget {
       _ToolbarButton(emoji: '🛠️', label: '扫描修复', onPressed: onDiagnose, delay: 4),
       _ToolbarButton(emoji: '📤', label: '导出', onPressed: onExport, delay: 5),
       _ToolbarButton(emoji: '📥', label: '导入', onPressed: onImport, delay: 6),
-      _ToolbarButton(emoji: '🤖', label: 'AI 助手', onPressed: onToggleAi, delay: 7),
-      _ToolbarButton(emoji: '⚙️', label: '设置', onPressed: onSettings, delay: 8),
+      _ToolbarButton(emoji: '🧩', label: '插件', onPressed: onPlugins, delay: 7),
+      _ToolbarButton(emoji: '🤖', label: 'AI 助手', onPressed: onToggleAi, delay: 8),
+      _ToolbarButton(emoji: '⚙️', label: '设置', onPressed: onSettings, delay: 9),
     ];
 
     return Container(
       constraints: const BoxConstraints(minHeight: 92),
-      decoration: const BoxDecoration(
-        color: Color(0xFF1B1B1F),
-        border: Border(bottom: BorderSide(color: Color(0xFF2A2A2E), width: 1)),
+      decoration: BoxDecoration(
+        color: palette.bg,
+        border: Border(bottom: BorderSide(color: palette.border, width: 1)),
       ),
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       child: Column(
@@ -413,13 +426,13 @@ class _ClassicHeader extends StatelessWidget {
                 children: [
                   const Icon(FluentIcons.box_24_regular, size: 18, color: Color(0xFF6C5CE7)),
                   const SizedBox(width: 8),
-                  const Text('学生时代模组编辑器', style: TextStyle(fontSize: 14, color: Colors.white, fontWeight: FontWeight.w600)),
+                  Text('学生时代模组编辑器', style: TextStyle(fontSize: 14, color: palette.textHigh, fontWeight: FontWeight.w600)),
                   const SizedBox(width: 14),
-                  const Icon(FluentIcons.person_24_regular, size: 13, color: Color(0xFF6E6E76)),
+                  Icon(FluentIcons.person_24_regular, size: 13, color: palette.textHint),
                   const SizedBox(width: 4),
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 320),
-                    child: Text('欢迎：神秘造物主 - 当前工作区: $modName', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+                    child: Text('欢迎：神秘造物主 - 当前工作区: $modName', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: palette.textSecondary)),
                   ),
                   const SizedBox(width: 16),
                   _HoverScale(
@@ -432,13 +445,13 @@ class _ClassicHeader extends StatelessWidget {
                           onTap: onToggleUiMode,
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(color: const Color(0xFF26262B), borderRadius: BorderRadius.circular(4), border: Border.all(color: const Color(0xFF3A3A42))),
-                            child: const Row(
+                            decoration: BoxDecoration(color: palette.card, borderRadius: BorderRadius.circular(4), border: Border.all(color: palette.borderHover)),
+                            child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(FluentIcons.paint_brush_24_regular, size: 13, color: Color(0xFF6C5CE7)),
                                 SizedBox(width: 6),
-                                Text('创作布局', style: TextStyle(fontSize: 11, color: Color(0xFFC8C8CF))),
+                                Text('创作布局', style: TextStyle(fontSize: 11, color: palette.textMid)),
                               ],
                             ),
                           ),
@@ -509,8 +522,8 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
   bool _pressed = false;
   @override
   Widget build(BuildContext context) {
-    final bg = widget.primary ? const Color(0xFF6C5CE7) : const Color(0xFF26262B);
-    final hoverBg = widget.primary ? const Color(0xFF7B6EF0) : const Color(0xFF2E2E35);
+    final bg = widget.primary ? const Color(0xFF6C5CE7) : palette.card;
+    final hoverBg = widget.primary ? const Color(0xFF7B6EF0) : palette.surface;
     return FadeSlide(
       delay: AppMotion.stagger(widget.delay, baseMs: 30),
       offset: const Offset(0, 6),
@@ -531,7 +544,7 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
             decoration: BoxDecoration(
               color: _pressed ? bg.withValues(alpha: 0.85) : _hover ? hoverBg : bg,
               borderRadius: BorderRadius.circular(5),
-              border: widget.primary ? null : Border.all(color: _hover ? const Color(0xFF3A3A42) : const Color(0xFF2E2E35)),
+              border: widget.primary ? null : Border.all(color: _hover ? palette.borderHover : palette.surface),
               boxShadow: _hover ? [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 8, offset: const Offset(0, 2))] : [],
             ),
             transform: Matrix4.identity()..scaleByDouble(_pressed ? 0.97 : _hover ? 1.02 : 1.0, _pressed ? 0.97 : _hover ? 1.02 : 1.0, _pressed ? 0.97 : _hover ? 1.02 : 1.0, 1.0),
@@ -540,7 +553,7 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
               children: [
                 Text(widget.emoji, style: const TextStyle(fontSize: 13)),
                 const SizedBox(width: 6),
-                Text(widget.label, style: TextStyle(fontSize: 12, color: widget.primary ? Colors.white : const Color(0xFFD4D4D8), fontWeight: FontWeight.w500)),
+                Text(widget.label, style: TextStyle(fontSize: 12, color: widget.primary ? Colors.white : palette.textPrimary, fontWeight: FontWeight.w500)),
               ],
             ),
           ),
@@ -592,7 +605,7 @@ class _ClassicNav extends StatelessWidget {
     final indTop = _indicatorTop(activePageId);
     return Container(
       width: 190,
-      color: const Color(0xFF17171B),
+      color: palette.bgDeep2,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -609,7 +622,7 @@ class _ClassicNav extends StatelessWidget {
                           delay: AppMotion.stagger(gi, baseMs: 60),
                           child: Padding(
                             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                            child: Text(_groups[gi].$1, style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76), fontWeight: FontWeight.w600)),
+                            child: Text(_groups[gi].$1, style: TextStyle(fontSize: 11, color: palette.textHint, fontWeight: FontWeight.w600)),
                           ),
                         ),
                         for (var ii = 0; ii < _groups[gi].$2.length; ii++)
@@ -647,7 +660,7 @@ class _ClassicNav extends StatelessWidget {
               ],
             ),
           ),
-          const Divider(color: Color(0xFF2A2A2E), height: 1),
+          Divider(color: palette.border, height: 1),
           // 底部 AI/设置仍保留原有选中态（AI 用淡入紫条，设置无条）
           Stack(
             children: [
@@ -716,17 +729,17 @@ class _NavItemState extends State<_NavItem> {
           margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
-            color: widget.selected ? const Color(0xFF26262B) : _hover ? const Color(0xFF1E1E23) : Colors.transparent,
+            color: widget.selected ? palette.card : _hover ? palette.panel : Colors.transparent,
             borderRadius: BorderRadius.circular(6),
           ),
           child: Row(
             children: [
-              Icon(widget.icon, size: 15, color: widget.selected ? const Color(0xFF6C5CE7) : _hover ? const Color(0xFFD4D4D8) : const Color(0xFF9B9BA3)),
+              Icon(widget.icon, size: 15, color: widget.selected ? const Color(0xFF6C5CE7) : _hover ? palette.textPrimary : palette.textSecondary),
               const SizedBox(width: 9),
               Expanded(
                 child: AnimatedDefaultTextStyle(
                   duration: AppMotion.fast,
-                  style: TextStyle(fontSize: 12.5, fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal, color: widget.selected ? Colors.white : _hover ? const Color(0xFFD4D4D8) : const Color(0xFF9B9BA3)),
+                  style: TextStyle(fontSize: 12.5, fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal, color: widget.selected ? palette.textHigh : _hover ? palette.textPrimary : palette.textSecondary),
                   child: Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis),
                 ),
               ),

@@ -11,6 +11,7 @@ import '../settings/settings_page.dart';
 import 'effect_hint_field.dart';
 import 'field_utils.dart';
 import 'section_card.dart';
+import '../../core/app_theme.dart';
 
 /// Schema 驱动数据编辑器：左侧条目列表 + 右侧字段表单。
 class SchemaEditorView extends StatefulWidget {
@@ -465,21 +466,21 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
               Text(
                 '发现 $nError 个错误、$nWarn 条警告、$nInfo 条提示'
                 '（依据官方《学生时代》Mod 指南）。',
-                style: const TextStyle(fontSize: 12.5, color: Color(0xFFD4D4D8)),
+                style: TextStyle(fontSize: 12.5, color: palette.textPrimary),
               ),
               const SizedBox(height: 8),
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1B1B1F),
+                    color: palette.bg,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: const Color(0xFF2A2A2E)),
+                    border: Border.all(color: palette.border),
                   ),
                   child: ListView.separated(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     itemCount: issues.length,
                     separatorBuilder: (_, _) =>
-                        const Divider(height: 1, color: Color(0xFF26262B)),
+                        Divider(height: 1, color: palette.card),
                     itemBuilder: (context, i) => _buildIssueRow(issues[i]),
                   ),
                 ),
@@ -510,13 +511,13 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     Color color;
     String label;
     if (level == 'error') {
-      color = const Color(0xFFE05A5A);
+      color = palette.statusDanger;
       label = '错误';
     } else if (level == 'warn') {
-      color = const Color(0xFFFFA726);
+      color = palette.statusWarn;
       label = '警告';
     } else {
-      color = const Color(0xFF9B9BA3);
+      color = palette.textSecondary;
       label = '提示';
     }
     return Padding(
@@ -536,9 +537,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           Expanded(
             child: Text(
               rid.isNotEmpty ? '$msg（$rid）' : msg,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
-                color: Color(0xFFD4D4D8),
+                color: palette.textPrimary,
                 height: 1.4,
               ),
             ),
@@ -563,7 +564,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       return Center(
         child: Text(
           '加载失败: $_error',
-          style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 13),
+          style: TextStyle(color: palette.textSecondary, fontSize: 13),
         ),
       );
     }
@@ -595,9 +596,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         '${widget.cfgName}（${_data.length}）',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
-                          color: Color(0xFF9B9BA3),
+                          color: palette.textSecondary,
                         ),
                       ),
                     ),
@@ -615,26 +616,26 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                               vertical: 3,
                             ),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF2E2A45),
+                              color: palette.tintAccent,
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(
                                 color: const Color(0xFF4A3DB8),
                               ),
                             ),
-                            child: const Row(
+                            child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(
                                   FluentIcons.play_24_regular,
                                   size: 12,
-                                  color: Color(0xFF8B7FEF),
+                                  color: palette.accentLight,
                                 ),
                                 SizedBox(width: 4),
                                 Text(
                                   '预览',
                                   style: TextStyle(
                                     fontSize: 11,
-                                    color: Color(0xFFA99FF4),
+                                    color: palette.accentLighter,
                                   ),
                                 ),
                               ],
@@ -648,10 +649,10 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                       cursor: SystemMouseCursors.click,
                       child: GestureDetector(
                         onTap: _addEntry,
-                        child: const Icon(
+                        child: Icon(
                           FluentIcons.add_24_regular,
                           size: 15,
-                          color: Color(0xFF8B8B93),
+                          color: palette.textMuted,
                         ),
                       ),
                     ),
@@ -665,10 +666,10 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                     horizontal: 12,
                     vertical: 6,
                   ),
-                  color: const Color(0xFF2A2418),
-                  child: const Text(
+                  color: palette.tintWarn,
+                  child: Text(
                     '该配置表尚不存在，添加条目并保存后将自动创建',
-                    style: TextStyle(fontSize: 11, color: Color(0xFFE08A3C)),
+                    style: TextStyle(fontSize: 11, color: palette.warning),
                   ),
                 ),
               // 筛选
@@ -683,7 +684,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                   suffix: const Icon(FluentIcons.search_24_regular, size: 12),
                 ),
               ),
-              const Divider(height: 1, color: Color(0xFF2A2A2E)),
+              Divider(height: 1, color: palette.border),
               Expanded(
                 child: ListView.builder(
                   itemCount: _filteredIds.length,
@@ -701,14 +702,14 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           ),
         ),
         if (!isMobileWidth(context)) ...[
-          const VerticalDivider(width: 1, color: Color(0xFF2A2A2E)),
+          VerticalDivider(width: 1, color: palette.border),
           // 右侧字段表单
           Expanded(
           child: _selectedRecord == null
-              ? const Center(
+              ? Center(
                   child: Text(
                     '选择左侧条目进行编辑',
-                    style: TextStyle(color: Color(0xFF6E6E76), fontSize: 13),
+                    style: TextStyle(color: palette.textHint, fontSize: 13),
                   ),
                 )
               : Column(
@@ -718,11 +719,11 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Row(
                         children: [
-                          const Text(
+                          Text(
                             '字段编辑',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Color(0xFF9B9BA3),
+                              color: palette.textSecondary,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -730,9 +731,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                           if (_dirty) ...[
                             Text(
                               '有未保存修改',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11,
-                                color: Color(0xFFE08A3C),
+                                color: palette.warning,
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -755,7 +756,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         ],
                       ),
                     ),
-                    const Divider(height: 1, color: Color(0xFF2A2A2E)),
+                    Divider(height: 1, color: palette.border),
                     Expanded(
                       child: _FieldForm(
                         cfgName: widget.cfgName,
@@ -787,7 +788,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       child: GestureDetector(
         onTap: () => _selectEntry(id, translator),
         child: Container(
-          color: selected ? const Color(0xFF2B2B31) : Colors.transparent,
+          color: selected ? palette.hover : Colors.transparent,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
@@ -802,15 +803,15 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                       style: TextStyle(
                         fontSize: 12.5,
                         color: selected
-                            ? Colors.white
-                            : const Color(0xFFD4D4D8),
+                            ? palette.textHigh
+                            : palette.textPrimary,
                       ),
                     ),
                     Text(
                       'ID: $id',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: Color(0xFF6E6E76),
+                        color: palette.textHint,
                       ),
                     ),
                   ],
@@ -818,10 +819,10 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
               ),
               GestureDetector(
                 onTap: () => _deleteEntry(id),
-                child: const Icon(
+                child: Icon(
                   FluentIcons.delete_24_regular,
                   size: 14,
-                  color: Color(0xFF6E6E76),
+                  color: palette.textHint,
                 ),
               ),
             ],
@@ -887,9 +888,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
         const SizedBox(height: 8),
       ],
       if (showTools)
-        const Text(
+        Text(
           '更多高级工具（剧本导入导出、批量处理等）请在创作布局中使用。',
-          style: TextStyle(fontSize: 11, color: Color(0xFF8B8B93), height: 1.5),
+          style: TextStyle(fontSize: 11, color: palette.textMuted, height: 1.5),
         ),
     ];
     return Padding(
@@ -944,14 +945,14 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         vertical: 6,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2A2418),
+                        color: palette.tintWarn,
                         borderRadius: BorderRadius.circular(6),
                       ),
-                      child: const Text(
+                      child: Text(
                         '该配置表尚不存在，添加条目并保存后将自动创建',
                         style: TextStyle(
                           fontSize: 11,
-                          color: Color(0xFFE08A3C),
+                          color: palette.warning,
                         ),
                       ),
                     ),
@@ -978,11 +979,11 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
             child: SectionCard(
               title: '📝 字段编辑',
               child: _selectedRecord == null
-                  ? const Center(
+                  ? Center(
                       child: Text(
                         '选择左侧条目进行编辑',
                         style: TextStyle(
-                          color: Color(0xFF6E6E76),
+                          color: palette.textHint,
                           fontSize: 13,
                         ),
                       ),
@@ -1007,11 +1008,11 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         Row(
                           children: [
                             if (_dirty)
-                              const Text(
+                              Text(
                                 '有未保存修改',
                                 style: TextStyle(
                                   fontSize: 11,
-                                  color: Color(0xFFE08A3C),
+                                  color: palette.warning,
                                 ),
                               ),
                             const Spacer(),
@@ -1053,11 +1054,11 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(FluentIcons.edit_24_regular, size: 36, color: Color(0xFF4A4A52)),
+            Icon(FluentIcons.edit_24_regular, size: 36, color: palette.iconDisabled),
             const SizedBox(height: 8),
             Text(
               _data.isEmpty ? '该配置表暂无数据，请新建条目' : '请在左侧选择条目进行编辑',
-              style: const TextStyle(color: Color(0xFF6E6E76), fontSize: 13),
+              style: TextStyle(color: palette.textHint, fontSize: 13),
             ),
           ],
         ),
@@ -1081,11 +1082,11 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
         ),
         const SizedBox(height: 8),
         if (_dirty)
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(bottom: 4),
             child: Text(
               '● 有未保存修改',
-              style: TextStyle(fontSize: 11, color: Color(0xFFE08A3C)),
+              style: TextStyle(fontSize: 11, color: palette.warning),
             ),
           ),
         SizedBox(
@@ -1133,16 +1134,16 @@ class _MobileFormPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF131316),
+      backgroundColor: palette.bgDeep2,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1B1B1F),
+        backgroundColor: palette.bg,
         elevation: 0,
-        leading: const BackButton(color: Colors.white),
+        leading: BackButton(color: palette.textHigh),
         title: Text(
           entryTitle,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 15, color: Colors.white),
+          style: TextStyle(fontSize: 15, color: palette.textHigh),
         ),
         actions: [
           fluent.FilledButton(
@@ -1190,8 +1191,8 @@ class _ClassicToolButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = onPressed != null;
-    final bg = primary ? const Color(0xFF6C5CE7) : const Color(0xFF26262B);
-    final fg = primary ? Colors.white : const Color(0xFFD4D4D8);
+    final bg = primary ? const Color(0xFF6C5CE7) : palette.card;
+    final fg = primary ? Colors.white : palette.textPrimary;
     return Opacity(
       opacity: enabled ? 1 : 0.45,
       child: MouseRegion(
@@ -1205,7 +1206,7 @@ class _ClassicToolButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(5),
               border: primary
                   ? null
-                  : Border.all(color: const Color(0xFF3A3A42)),
+                  : Border.all(color: palette.borderHover),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -1388,18 +1389,18 @@ class _FieldFormState extends State<_FieldForm> {
                 children: [
                   Text(
                     'ID: ${record['id'] ?? record.keys.first}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
-                      color: Colors.white,
+                      color: palette.textHigh,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                   const Spacer(),
                   Text(
                     widget.cfgName,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
-                      color: Color(0xFF6E6E76),
+                      color: palette.textHint,
                     ),
                   ),
                 ],
@@ -1422,9 +1423,9 @@ class _FieldFormState extends State<_FieldForm> {
                         label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12.5,
-                          color: Color(0xFFD4D4D8),
+                          color: palette.textPrimary,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1435,18 +1436,18 @@ class _FieldFormState extends State<_FieldForm> {
                         key,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 11,
-                          color: Color(0xFF5E5E66),
+                          color: palette.textFaint,
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Text(
                       '[$type]',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: Color(0xFF5E5E66),
+                        color: palette.textFaint,
                       ),
                     ),
                   ],
@@ -1454,9 +1455,9 @@ class _FieldFormState extends State<_FieldForm> {
                 const SizedBox(height: 4),
                 Text(
                   '「$label」字段的值：类型为 [$type]，按编码格式输入',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
-                    color: Color(0xFF8B8B93),
+                    color: palette.textMuted,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -1500,18 +1501,18 @@ class _FieldFormState extends State<_FieldForm> {
                 children: [
                   Text(
                     'ID: ${record['id'] ?? record.keys.first}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
-                      color: Colors.white,
+                      color: palette.textHigh,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(width: 16),
                   Text(
                     widget.cfgName,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      color: Color(0xFF6E6E76),
+                      color: palette.textHint,
                     ),
                   ),
                 ],
@@ -1520,9 +1521,9 @@ class _FieldFormState extends State<_FieldForm> {
           ),
           // 表头
           Container(
-            color: const Color(0xFF26262B),
+            color: palette.card,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-            child: const Row(
+            child: Row(
               children: [
                 Expanded(
                   flex: 3,
@@ -1530,7 +1531,7 @@ class _FieldFormState extends State<_FieldForm> {
                     '属性名称',
                     style: TextStyle(
                       fontSize: 12,
-                      color: Color(0xFF9B9BA3),
+                      color: palette.textSecondary,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -1541,7 +1542,7 @@ class _FieldFormState extends State<_FieldForm> {
                     '属性值',
                     style: TextStyle(
                       fontSize: 12,
-                      color: Color(0xFF9B9BA3),
+                      color: palette.textSecondary,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -1553,9 +1554,9 @@ class _FieldFormState extends State<_FieldForm> {
           for (final key in fieldKeys) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 border: Border(
-                  bottom: BorderSide(color: Color(0xFF26262B), width: 1),
+                  bottom: BorderSide(color: palette.card, width: 1),
                 ),
               ),
               child: Row(
@@ -1568,18 +1569,18 @@ class _FieldFormState extends State<_FieldForm> {
                       children: [
                         Text(
                           widget.translator.translate(key, widget.cfgName),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12.5,
-                            color: Color(0xFFD4D4D8),
+                            color: palette.textPrimary,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
                           key,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 10.5,
-                            color: Color(0xFF5E5E66),
+                            color: palette.textFaint,
                           ),
                         ),
                       ],
@@ -1872,9 +1873,9 @@ class _FieldInputState extends State<_FieldInput> {
                     padding: const EdgeInsets.only(top: 3),
                     child: Text(
                       preview,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: Color(0xFF8B8B93),
+                        color: palette.textMuted,
                       ),
                     ),
                   ),
@@ -1926,7 +1927,7 @@ class _FieldInputState extends State<_FieldInput> {
             padding: const EdgeInsets.only(top: 3),
             child: Text(
               preview,
-              style: const TextStyle(fontSize: 11, color: Color(0xFF8B8B93)),
+              style: TextStyle(fontSize: 11, color: palette.textMuted),
             ),
           ),
       ],
@@ -1982,10 +1983,10 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
             const SizedBox(height: 8),
             Expanded(
               child: items.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text(
                         '无匹配候选',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF8B8B93)),
+                        style: TextStyle(fontSize: 12, color: palette.textMuted),
                       ),
                     )
                   : ListView.builder(
@@ -2007,7 +2008,7 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
                             }),
                             child: Container(
                               color: selected
-                                  ? const Color(0xFF2A3B52)
+                                  ? palette.tintInfo
                                   : Colors.transparent,
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 8),
@@ -2029,9 +2030,9 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
                                       o.$2.isEmpty ? o.$1 : '${o.$1} · ${o.$2}',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                         fontSize: 12,
-                                        color: Color(0xFFD4D4D8),
+                                        color: palette.textPrimary,
                                       ),
                                     ),
                                   ),
@@ -2047,7 +2048,7 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
               padding: const EdgeInsets.only(top: 6),
               child: Text(
                 '共 ${widget.options.length} 项候选，已选 ${_selected.length} 项',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76)),
+                style: TextStyle(fontSize: 11, color: palette.textHint),
               ),
             ),
           ],

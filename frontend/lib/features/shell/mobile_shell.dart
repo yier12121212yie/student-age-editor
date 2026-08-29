@@ -3,11 +3,14 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/models.dart';
+import '../../core/plugin_state.dart';
 import '../../core/ui_mode.dart';
 import '../ai/ai_panel.dart';
 import '../base/base_search_page.dart';
 import '../bugfix/bugfix_panel.dart';
 import '../cloud/cloud_page.dart';
+import '../plugins/plugin_pane.dart';
+import '../plugins/plugins_page.dart';
 import '../resources/pack_manager_page.dart';
 import '../resources/resources_page.dart';
 import '../settings/settings_page.dart';
@@ -16,6 +19,7 @@ import '../../core/motion.dart';
 import 'mobile_subpage.dart';
 import 'shell_state.dart';
 import 'shell_widgets.dart';
+import '../../core/app_theme.dart';
 
 /// 移动端外壳：底部导航 + 抽屉 + 全屏内容 + 可滑出 AI。
 /// 在宽度 < 720 时由 app.dart 自动启用，替代 CreationShell / ClassicShell。
@@ -24,12 +28,14 @@ class MobileShell extends StatefulWidget {
     super.key,
     required this.state,
     required this.shell,
+    required this.pluginState,
     required this.uiMode,
     required this.onUiModeChanged,
   });
 
   final AppState state;
   final ShellState shell;
+  final PluginState pluginState;
   final UiMode uiMode;
   final ValueChanged<UiMode> onUiModeChanged;
 
@@ -63,12 +69,12 @@ class _MobileShellState extends State<MobileShell> {
       ),
       child: Theme(
         data: ThemeData.dark().copyWith(
-          scaffoldBackgroundColor: const Color(0xFF131316),
-          navigationBarTheme: const NavigationBarThemeData(backgroundColor: Color(0xFF1B1B1F)),
+          scaffoldBackgroundColor: palette.bgDeep2,
+          navigationBarTheme: NavigationBarThemeData(backgroundColor: palette.bg),
         ),
         child: Scaffold(
           key: _scaffoldKey,
-          backgroundColor: const Color(0xFF131316),
+          backgroundColor: palette.bgDeep2,
           appBar: _MobileAppBar(
             state: state,
             onMenu: () => _scaffoldKey.currentState?.openDrawer(),
@@ -84,8 +90,6 @@ class _MobileShellState extends State<MobileShell> {
               Navigator.of(context).pop();
               _showAiSheet();
             },
-            uiMode: widget.uiMode,
-            onUiModeChanged: widget.onUiModeChanged,
           ),
           body: SafeArea(
             child: _buildBody(),
@@ -120,6 +124,8 @@ class _MobileShellState extends State<MobileShell> {
               return SidePaneView(
                 pane: SidePane.mods,
                 state: state,
+                shell: shell,
+                pluginState: widget.pluginState,
                 controller: shell.controller,
                 aiSettings: shell.aiSettings,
                 onAiChanged: shell.setAiSettings,
@@ -131,6 +137,8 @@ class _MobileShellState extends State<MobileShell> {
               return SidePaneView(
                 pane: SidePane.pages,
                 state: state,
+                shell: shell,
+                pluginState: widget.pluginState,
                 controller: shell.controller,
                 aiSettings: shell.aiSettings,
                 onAiChanged: shell.setAiSettings,
@@ -142,6 +150,8 @@ class _MobileShellState extends State<MobileShell> {
               return SidePaneView(
                 pane: SidePane.files,
                 state: state,
+                shell: shell,
+                pluginState: widget.pluginState,
                 controller: shell.controller,
                 aiSettings: shell.aiSettings,
                 onAiChanged: shell.setAiSettings,
@@ -160,6 +170,7 @@ class _MobileShellState extends State<MobileShell> {
               return _MobileMorePage(
                 state: state,
                 shell: shell,
+                pluginState: widget.pluginState,
                 uiMode: widget.uiMode,
                 onUiModeChanged: widget.onUiModeChanged,
                 onOpenAi: () => _showAiSheet(),
@@ -196,41 +207,45 @@ class _MobileShellState extends State<MobileShell> {
   }
 
   /// 通用底部滑出层：可拖拽，头部带手柄与可选操作按钮。
+  /// 底部随键盘抬升（viewInsets），避免输入法遮挡 AI 输入框等内容。
   void _showSheet(Widget child, {List<Widget>? headerActions}) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF1E1E23),
+      backgroundColor: palette.panel,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
       ),
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.92,
-        maxChildSize: 0.96,
-        minChildSize: 0.5,
-        expand: false,
-        builder: (ctx, ctrl) => Column(
-          children: [
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const SizedBox(width: 14),
-                Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF3A3A42),
-                    borderRadius: BorderRadius.circular(2),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+        child: DraggableScrollableSheet(
+          initialChildSize: 0.92,
+          maxChildSize: 0.96,
+          minChildSize: 0.5,
+          expand: false,
+          builder: (ctx, ctrl) => Column(
+            children: [
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const SizedBox(width: 14),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: palette.borderHover,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
-                ),
-                const Spacer(),
-                ...?headerActions,
-                const SizedBox(width: 4),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(child: child),
-          ],
+                  const Spacer(),
+                  ...?headerActions,
+                  const SizedBox(width: 4),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(child: child),
+            ],
+          ),
         ),
       ),
     );
@@ -249,10 +264,10 @@ class _MobileShellState extends State<MobileShell> {
       ),
       headerActions: [
         IconButton(
-          icon: const Icon(
+          icon: Icon(
             FluentIcons.full_screen_maximize_24_regular,
             size: 18,
-            color: Color(0xFF9B9BA3),
+            color: palette.textSecondary,
           ),
           onPressed: () {
             Navigator.of(context).pop();
@@ -304,30 +319,30 @@ class _MobileAppBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     final mod = state.modName.isEmpty ? '未加载' : state.modName;
     return AppBar(
-      backgroundColor: const Color(0xFF1B1B1F),
+      backgroundColor: palette.bg,
       elevation: 0,
       leading: IconButton(
-        icon: const Icon(FluentIcons.navigation_24_regular, color: Colors.white),
+        icon: Icon(FluentIcons.navigation_24_regular, color: palette.textHigh),
         onPressed: onMenu,
       ),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             '学生时代模组编辑器',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white),
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: palette.textHigh),
           ),
           Text(
             '工作区: $mod',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: Color(0xFF9B9BA3)),
+            style: TextStyle(fontSize: 11, color: palette.textSecondary),
           ),
         ],
       ),
       actions: [
         IconButton(
-          icon: const Icon(FluentIcons.search_24_regular, color: Color(0xFF9B9BA3)),
+          icon: Icon(FluentIcons.search_24_regular, color: palette.textSecondary),
           onPressed: onSearch,
         ),
         IconButton(
@@ -347,8 +362,6 @@ class _MobileDrawer extends StatelessWidget {
     required this.onSelectTab,
     required this.onSelectPane,
     required this.onOpenAi,
-    required this.uiMode,
-    required this.onUiModeChanged,
   });
 
   final AppState state;
@@ -356,13 +369,11 @@ class _MobileDrawer extends StatelessWidget {
   final ValueChanged<int> onSelectTab;
   final ValueChanged<SidePane> onSelectPane;
   final VoidCallback onOpenAi;
-  final UiMode uiMode;
-  final ValueChanged<UiMode> onUiModeChanged;
 
   @override
   Widget build(BuildContext context) {
     return Drawer(
-      backgroundColor: const Color(0xFF17171B),
+      backgroundColor: palette.bgDeep2,
       width: 300,
       child: SafeArea(
         child: ListView(
@@ -370,7 +381,7 @@ class _MobileDrawer extends StatelessWidget {
           children: [
             Container(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-              color: const Color(0xFF1B1B1F),
+              color: palette.bg,
               child: Row(
                 children: [
                   Container(
@@ -380,15 +391,15 @@ class _MobileDrawer extends StatelessWidget {
                       color: const Color(0xFF6C5CE7),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(FluentIcons.box_24_regular, color: Colors.white, size: 18),
+                    child: Icon(FluentIcons.box_24_regular, color: palette.textHigh, size: 18),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('学生时代', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                        Text('模组编辑器', style: TextStyle(color: Color(0xFF9B9BA3), fontSize: 12)),
+                        Text('学生时代', style: TextStyle(color: palette.textHigh, fontWeight: FontWeight.w600)),
+                        Text('模组编辑器', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
                       ],
                     ),
                   ),
@@ -408,20 +419,8 @@ class _MobileDrawer extends StatelessWidget {
             ]),
             _drawerSection('系统', [
               _drawerItem(FluentIcons.settings_24_regular, '设置', currentTab == 4, () => onSelectTab(4)),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  children: [
-                    const Icon(FluentIcons.paint_brush_24_regular, size: 16, color: Color(0xFF6E6E76)),
-                    const SizedBox(width: 12),
-                    const Expanded(child: Text('布局', style: TextStyle(color: Color(0xFF9B9BA3), fontSize: 13))),
-                    fluent.ToggleSwitch(
-                      checked: uiMode == UiMode.classic,
-                      onChanged: (v) => onUiModeChanged(v ? UiMode.classic : UiMode.creation),
-                    ),
-                  ],
-                ),
-              ),
+              // 布局偏好（经典/创作）仅影响桌面端外壳，移动端固定使用底部导航，
+              // 因此不在抽屉里提供该开关；如需修改可进「设置 → 布局偏好」。
             ]),
             const SizedBox(height: 16),
             Padding(
@@ -432,7 +431,7 @@ class _MobileDrawer extends StatelessWidget {
                   const SizedBox(width: 8),
                   Text(
                     state.backendOnline ? '本地服务已连接' : '本地服务离线',
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF9B9BA3)),
+                    style: TextStyle(fontSize: 12, color: palette.textSecondary),
                   ),
                 ],
               ),
@@ -449,17 +448,17 @@ class _MobileDrawer extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-            child: Text(title, style: const TextStyle(fontSize: 11, color: Color(0xFF6E6E76), fontWeight: FontWeight.w600)),
+            child: Text(title, style: TextStyle(fontSize: 11, color: palette.textHint, fontWeight: FontWeight.w600)),
           ),
           ...items,
         ],
       );
 
   Widget _drawerItem(IconData icon, String label, bool selected, VoidCallback onTap) => ListTile(
-        leading: Icon(icon, size: 18, color: selected ? const Color(0xFF6C5CE7) : const Color(0xFF9B9BA3)),
-        title: Text(label, style: TextStyle(fontSize: 13, color: selected ? Colors.white : const Color(0xFFD4D4D8), fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
+        leading: Icon(icon, size: 18, color: selected ? const Color(0xFF6C5CE7) : palette.textSecondary),
+        title: Text(label, style: TextStyle(fontSize: 13, color: selected ? palette.textHigh : palette.textPrimary, fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
         selected: selected,
-        selectedTileColor: const Color(0xFF26262B),
+        selectedTileColor: palette.card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16),
         dense: true,
@@ -484,8 +483,8 @@ class _MobileBottomBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return NavigationBar(
       height: 64,
-      backgroundColor: const Color(0xFF1B1B1F),
-      indicatorColor: const Color(0xFF26262B),
+      backgroundColor: palette.bg,
+      indicatorColor: palette.card,
       selectedIndex: current,
       onDestinationSelected: onTap,
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
@@ -552,19 +551,19 @@ class _MobileEditorEmpty extends StatelessWidget {
             width: 64,
             height: 64,
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E23),
+              color: palette.panel,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFF2E2E35)),
+              border: Border.all(color: palette.surface),
             ),
             child: const Icon(FluentIcons.document_24_regular, size: 30, color: Color(0xFF6C5CE7)),
           ),
           const SizedBox(height: 14),
-          const Text('还没有打开任何文档',
-              style: TextStyle(fontSize: 15, color: Colors.white, fontWeight: FontWeight.w600)),
+          Text('还没有打开任何文档',
+              style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
-          const Text('从「页面」选择一个配置表，或从「文件」浏览模组目录',
+          Text('从「页面」选择一个配置表，或从「文件」浏览模组目录',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: Color(0xFF9B9BA3))),
+              style: TextStyle(fontSize: 12, color: palette.textSecondary)),
           const SizedBox(height: 18),
           Row(
             mainAxisSize: MainAxisSize.min,
@@ -584,6 +583,7 @@ class _MobileMorePage extends StatelessWidget {
   const _MobileMorePage({
     required this.state,
     required this.shell,
+    required this.pluginState,
     required this.uiMode,
     required this.onUiModeChanged,
     required this.onOpenAi,
@@ -591,6 +591,7 @@ class _MobileMorePage extends StatelessWidget {
 
   final AppState state;
   final ShellState shell;
+  final PluginState pluginState;
   final UiMode uiMode;
   final ValueChanged<UiMode> onUiModeChanged;
   final VoidCallback onOpenAi;
@@ -631,6 +632,25 @@ class _MobileMorePage extends StatelessWidget {
           onTap: () => _push(context, '诊断修复', BugfixPanel(state: state)),
         ),
         _moreCard(
+          icon: Icons.extension,
+          title: '插件',
+          subtitle: '安装与启用插件，查看扩展面板',
+          onTap: () {
+            shell.selectPane(SidePane.plugins);
+            shell.setActivePluginPanel(null);
+            _push(context, '插件', PluginsPage(pluginState: pluginState));
+          },
+        ),
+        // 已启用插件声明的动态面板入口
+        for (final panel in pluginState.uiPanels) ...[
+          _moreCard(
+            icon: pluginPanelIcon(panel['icon'] as String?),
+            title: (panel['title'] as String? ?? '插件面板'),
+            subtitle: '${panel['plugin_id'] ?? ''} / ${panel['panel_id'] ?? ''}',
+            onTap: () => _openPluginPanel(context, panel),
+          ),
+        ],
+        _moreCard(
           icon: FluentIcons.bot_24_regular,
           title: 'AI 助手',
           subtitle: shell.aiOpen ? '已开启，点击打开面板' : '已关闭',
@@ -662,14 +682,40 @@ class _MobileMorePage extends StatelessWidget {
     );
   }
 
+  /// 打开插件动态面板：与桌面活动栏一致设置 pane/activePluginPanel，
+  /// 以全屏子页展示（子页自带返回），返回后清除面板状态。
+  void _openPluginPanel(BuildContext context, Map<String, dynamic> panel) {
+    final pluginId = (panel['plugin_id'] as String? ?? '').trim();
+    final panelId = (panel['panel_id'] as String? ?? '').trim();
+    final title = (panel['title'] as String? ?? '插件面板').trim();
+    if (pluginId.isEmpty || panelId.isEmpty) return;
+    shell.selectPane(SidePane.plugins);
+    shell.setActivePluginPanel('$pluginId/$panelId');
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute<void>(
+            builder: (_) => MobileSubPage(
+              title: title.isEmpty ? '插件面板' : title,
+              body: PluginPane(
+                pluginId: pluginId,
+                panelId: panelId,
+                showHeader: false,
+                onClosed: () => shell.setActivePluginPanel(null),
+              ),
+            ),
+          ),
+        )
+        .then((_) => shell.setActivePluginPanel(null));
+  }
+
   Widget _moreCard({required IconData icon, required String title, required String subtitle, required VoidCallback onTap}) => Card(
-        color: const Color(0xFF1E1E23),
+        color: palette.panel,
         margin: const EdgeInsets.only(bottom: 8),
         child: ListTile(
           leading: Icon(icon, color: const Color(0xFF6C5CE7)),
-          title: Text(title, style: const TextStyle(color: Colors.white, fontSize: 14)),
-          subtitle: Text(subtitle, style: const TextStyle(color: Color(0xFF9B9BA3), fontSize: 12)),
-          trailing: const Icon(FluentIcons.chevron_right_24_regular, size: 16, color: Color(0xFF6E6E76)),
+          title: Text(title, style: TextStyle(color: palette.textHigh, fontSize: 14)),
+          subtitle: Text(subtitle, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+          trailing: Icon(FluentIcons.chevron_right_24_regular, size: 16, color: palette.textHint),
           onTap: onTap,
         ),
       );
