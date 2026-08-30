@@ -277,6 +277,23 @@ class AiPanelState extends State<AiPanel> {
   /// name/description/parameters + 附加 confirm 标记）。
   final List<_PluginAiTool> _pluginTools = [];
 
+  /// 完全访问模式（AI 权限 = full）：写操作直接执行，不再弹出审批框。
+  bool get _fullAccess => widget.settings.isFullAccess;
+
+  /// 快速开关是否可用：AI 尚未配置（或外壳还没加载完设置）时不允许切换，
+  /// 防止把占位的空设置写穿三端共享的 .editor_ai.json。
+  bool get _canTogglePermission =>
+      widget.settings.apiKey.isNotEmpty || widget.settings.model.isNotEmpty;
+
+  /// 切换 AI 权限模式（变更前确认 ↔ 完全访问）：持久化并通知外壳刷新。
+  Future<void> _togglePermissionMode() async {
+    if (!_canTogglePermission) return;
+    final s = AiSettings.fromJson(widget.settings.toJson())
+      ..permissionMode = _fullAccess ? 'confirm' : 'full';
+    await s.save();
+    widget.onChanged(s);
+  }
+
   /// 旧版单会话存储 key（v1，启动时迁移到多会话后清理）。
   static const _historyKey = 'ai_chat_messages_v1';
   static const _structuredKey = 'ai_chat_history_v1';
@@ -296,14 +313,16 @@ class AiPanelState extends State<AiPanel> {
   final List<AiAttachment> _pendingAttachments = [];
   bool _uploading = false;
 
-  static const _systemHint = 'AI 助手已就绪。我可以直接读取并修改当前模组内容（剧情/背景/人物/社交/恋爱等细分领域），例如：\n'
+  /// 会话提示语随 AI 权限模式变化（完全访问时不承诺逐项确认）。
+  String get _systemHint => 'AI 助手已就绪。我可以直接读取并修改当前模组内容（剧情/背景/人物/社交/恋爱等细分领域），例如：\n'
       '「帮我看看剧情里有哪些事件」\n'
       '「把事件 320101 的标题改成 xxx」\n'
       '「给人物 102 换一句自我介绍」\n'
       '「把背景 5 换成另一张图」\n'
       '「让薛诗蕾滑动入场到左侧，表情开心，然后滑动退场」\n'
       '「生成一张夏日校园操场背景图」「把这张图改成夜晚场景」\n'
-      '修改会先展示改动并等你确认，不会直接写入；生图/改图也会先经你审批后再调用图片服务。';
+      '${_fullAccess ? '当前为完全访问模式：修改会直接执行，不再弹出确认框。'
+          : '修改会先展示改动并等你确认，不会直接写入；生图/改图也会先经你审批后再调用图片服务。'}';
 
   /// 细分领域工具集：AI 以「领域 + 条目」粒度读写模组内容，
   /// 不再直接整文件覆盖（领域见 list_domains，写操作需用户确认）。
@@ -1438,7 +1457,9 @@ class AiPanelState extends State<AiPanel> {
   }
 
   /// 插件工具确认对话框（对齐 _confirmImageAction：不可点背景关闭）。
-  Future<bool> _confirmPluginTool(String toolName, Map<String, dynamic> args) {
+  /// 完全访问模式下直接放行，不弹审批框。
+  Future<bool> _confirmPluginTool(String toolName, Map<String, dynamic> args) async {
+    if (_fullAccess) return true;
     final completer = Completer<bool>();
     showDialog<void>(
       context: context,
@@ -1673,7 +1694,9 @@ class AiPanelState extends State<AiPanel> {
   }
 
   /// 图片操作确认对话框：生图/改图前必须经过用户审批。
-  Future<bool> _confirmImageAction(String title, String detailText) {
+  /// 完全访问模式下直接放行，不弹审批框。
+  Future<bool> _confirmImageAction(String title, String detailText) async {
+    if (_fullAccess) return true;
     final completer = Completer<bool>();
     showDialog<void>(
       context: context,
@@ -1762,7 +1785,9 @@ class AiPanelState extends State<AiPanel> {
   }
 
   /// 领域写操作确认对话框（展示 JSON diff）。
-  Future<bool> _confirmDomainChange(String title, String diffText) {
+  /// 完全访问模式下直接放行，不弹审批框。
+  Future<bool> _confirmDomainChange(String title, String diffText) async {
+    if (_fullAccess) return true;
     final completer = Completer<bool>();
     showDialog<void>(
       context: context,
@@ -1933,6 +1958,19 @@ class AiPanelState extends State<AiPanel> {
                 ),
                 const SizedBox(width: 2),
                 _HoverIconBtn(
+                  icon: _fullAccess
+                      ? FluentIcons.shield_dismiss_24_regular
+                      : FluentIcons.shield_24_regular,
+                  tip: !_canTogglePermission
+                      ? 'AI 权限：先在 AI 设置中完成配置后可切换'
+                      : _fullAccess
+                          ? 'AI 权限：完全访问（修改不再弹确认框）· 点击切回变更前确认'
+                          : 'AI 权限：变更前确认 · 点击切换为完全访问（不再弹确认框）',
+                  onTap: _canTogglePermission ? _togglePermissionMode : null,
+                  size: 15,
+                ),
+                const SizedBox(width: 2),
+                _HoverIconBtn(
                   icon: FluentIcons.settings_24_regular,
                   tip: 'AI 设置',
                   onTap: widget.onOpenSettings,
@@ -1956,6 +1994,7 @@ class AiPanelState extends State<AiPanel> {
               Positioned.fill(
                 child: showWelcome
                     ? _WelcomeView(
+                        fullAccess: _fullAccess,
                         onPick: (t) {
                           setState(() => _input.text = t);
                           _focusInput.requestFocus();
@@ -2020,9 +2059,14 @@ class AiPanelState extends State<AiPanel> {
                   Expanded(
                     child: Text(widget.settings.model.isEmpty
                         ? '未配置模型'
-                        : '$_providerLabel · ${widget.settings.model}',
+                        : '$_providerLabel · ${widget.settings.model}'
+                            '${_fullAccess ? ' · 完全访问' : ''}',
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: palette.textHint)),
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: _fullAccess
+                                ? palette.statusWarn
+                                : palette.textHint)),
                   ),
                   if (_busy)
                     fluent.Button(
@@ -3116,8 +3160,9 @@ class _JumpLatestButtonState extends State<_JumpLatestButton> {
 
 /// 新对话的欢迎引导：能力说明 + 可一键填入输入框的示例指令。
 class _WelcomeView extends StatelessWidget {
-  const _WelcomeView({required this.onPick});
+  const _WelcomeView({required this.onPick, this.fullAccess = false});
   final ValueChanged<String> onPick;
+  final bool fullAccess;
 
   static const _suggestions = <String>[
     '帮我看看剧情里有哪些事件',
@@ -3158,7 +3203,7 @@ class _WelcomeView extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 '我可以直接读取并修改当前模组内容（剧情、人物、舞台调度、配图等）。'
-                '所有修改都会先展示改动并等你确认。',
+                '${fullAccess ? '当前为完全访问模式：修改会直接执行，不再弹出确认框。' : '所有修改都会先展示改动并等你确认。'}',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: palette.textMuted, height: 1.6),
               ),

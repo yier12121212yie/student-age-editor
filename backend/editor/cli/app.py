@@ -1360,6 +1360,17 @@ def cmd_agent_config(args):
         except ValueError:
             err_console.print("[yellow]retryDelayMs 需为整数，保留原值[/]")
 
+    pm_cur = settings.get("permissionMode") or "confirm"
+    raw = console.input(
+        f"permissionMode [dim]回车={pm_cur}（1=confirm 变更前确认 / 2=full 完全访问，AI 直接修改不弹确认）[/]: ").strip().lower()
+    if raw:
+        if raw in ("1", "confirm"):
+            patch["permissionMode"] = "confirm"
+        elif raw in ("2", "full"):
+            patch["permissionMode"] = "full"
+        else:
+            err_console.print("[yellow]permissionMode 需为 confirm 或 full，保留原值[/]")
+
     # 配音（TTS）可选配置：aliyun（DashScope 百炼）/ minimax（T2A V2）
     if console.input("\n配置配音(TTS)服务? [y/N]: ").strip().lower() in ("y", "yes"):
         tts_cur = settings.get("ttsProvider") or "空"
@@ -1454,9 +1465,21 @@ def _make_agent_hooks(mod_name: str):
     return on_text, on_tool_round_text, on_tool_result, confirm, on_retry
 
 
+def _print_history_transcript(title: str, history: list, max_lines: int, border: str = "cyan"):
+    """恢复/查看会话时的文稿回显（超出 max_lines 只保留最近若干行）。"""
+    from editor.agent import history_store
+
+    transcript = history_store.render_transcript(history)
+    lines = transcript.splitlines() if transcript else []
+    if len(lines) > max_lines:
+        lines = ["（较早 %d 行已省略，完整内容见会话文件）" % (len(lines) - max_lines)] + lines[-max_lines:]
+    console.print(Panel("\n".join(lines) or "（空会话）", title=title, border_style=border))
+
+
 def cmd_agent_chat(args):
     from editor.core.env_store import read_ai_settings, is_ai_settings_meaningful
     from editor.agent import LlmClient, LlmError, LlmCancelled, AgentTools, AgentEngine
+    from editor.agent import history_store
 
     settings = _apply_agent_overrides(args, read_ai_settings())
     if not is_ai_settings_meaningful(settings):
@@ -1485,6 +1508,10 @@ def cmd_agent_chat(args):
     tools = AgentTools()
     tools.use_mod(mod_root, ws)
     on_text, on_round, on_result, confirm, on_retry = _make_agent_hooks(mod_name)
+    if settings.get("permissionMode") == "full":
+        # 完全访问：写操作不再逐项审批（与 GUI 完全访问模式同一语义）
+        console.print("[yellow]⚠ 完全访问模式：AI 的写操作将直接执行，不再逐项确认（/agent setting 可切回）。[/]")
+        confirm = lambda title, detail: True  # noqa: E731
     engine = AgentEngine(
         tools,
         confirm=confirm,
@@ -1497,10 +1524,38 @@ def cmd_agent_chat(args):
     )
     client = LlmClient(settings)
 
+    # ── 会话历史：默认记录到 .editor_ai_history（--no-history 关闭；--resume 续聊）──
+    no_hist = getattr(args, "no_history", False)
+    resume_ref = (getattr(args, "resume", None) or "").strip()
+    if resume_ref and no_hist:
+        console.print("[dim]已忽略 --resume（--no-history 生效）[/]")
+    session = None
+    if not no_hist:
+        if resume_ref:
+            session, err = history_store.resolve_session_ref(resume_ref)
+            if err or session is None:
+                err_console.print(f"[red]{escape(err or '会话不存在')}[/]")
+                raise SystemExit(1)
+            engine.history = history_store.to_openai_history(session.get("history") or [])
+            session["source"] = session.get("source") or "cli"
+        else:
+            session = history_store.new_session(
+                provider=settings["provider"], model=settings["model"] or "",
+                mod=mod_name, source="cli")
+
+    def _persist():
+        if session is not None:
+            try:
+                session["history"] = list(engine.history)
+                history_store.save_session(session)
+            except Exception as e:
+                err_console.print(f"[yellow]会话历史保存失败: {escape(str(e))}[/]")
+
     task = " ".join(getattr(args, "task", None) or []).strip()
     if task:
         try:
             engine.run(task, client)
+            _persist()
         except (LlmError, LlmCancelled) as e:
             console.print()
             err_console.print(f"[red]{escape(str(e))}[/]")
@@ -1511,7 +1566,12 @@ def cmd_agent_chat(args):
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             return
 
-    # 交互聊天子会话：多轮上下文保存在 engine.history（内存态）
+    # 交互聊天子会话：多轮上下文保存在 engine.history（内存态），
+    # 每轮结束后同步落盘到 .editor_ai_history（agent history 查看/恢复）
+    if resume_ref:
+        _print_history_transcript(
+            f"已恢复会话 {session['id']} · {escape(session.get('title') or '(无标题)')}",
+            engine.history, max_lines=60, border="dim")
     console.print(Panel(
         f"AI 助手聊天  [dim]（{escape(settings['provider'])} · {escape(settings['model'])}）[/]\n"
         + (f"当前模组：[bold green]{escape(mod_name)}[/]\n" if mod_name else "[yellow]未选定模组（只读查询仍可用 list_mods）[/]\n")
@@ -1531,6 +1591,7 @@ def cmd_agent_chat(args):
             return
         try:
             engine.run(line, client)
+            _persist()
             console.print("\n")
         except KeyboardInterrupt:
             client.cancel()
@@ -1540,6 +1601,79 @@ def cmd_agent_chat(args):
         except LlmError as e:
             console.print()
             err_console.print(f"[red]{escape(str(e))}[/]")
+
+
+def cmd_agent_history(args):
+    """agent history list|show|resume|delete|clear — AI 会话历史管理。"""
+    from editor.agent import history_store
+
+    action = (getattr(args, "action", None) or "list").lower()
+    if action == "list":
+        sessions = history_store.list_sessions()
+        if not sessions:
+            console.print("[dim]暂无 AI 会话历史（agent chat / TUI 聊天面板自动记录）[/]")
+            return
+        t = Table(title=f"AI 会话历史（{len(sessions)}）· {history_store.sessions_dir()}")
+        t.add_column("时间", style="cyan")
+        t.add_column("来源", style="magenta", justify="center")
+        t.add_column("模组", style="green", overflow="fold")
+        t.add_column("消息", justify="right")
+        t.add_column("标题", overflow="fold")
+        t.add_column("id", style="dim")
+        for s in sessions:
+            t.add_row(
+                str(s.get("updated_at") or "-"),
+                str(s.get("source") or "-"),
+                str(s.get("mod") or "-"),
+                str(s.get("message_count") or 0),
+                escape(str(s.get("title") or "(无标题)")),
+                str(s.get("id")),
+            )
+        console.print(t)
+        console.print("[dim]show / resume / delete 的会话 id 可用 last 代指最新一条；"
+                      "resume 恢复后可接着对话[/]")
+        return
+    if action == "show":
+        session, err = history_store.resolve_session_ref(getattr(args, "session_id", ""))
+        if err or session is None:
+            err_console.print(f"[red]{escape(err or '会话不存在')}[/]")
+            return
+        meta = "%s · %s · 模组 %s · %s 条消息" % (
+            session.get("id"), session.get("provider") or "-",
+            session.get("mod") or "-", session.get("message_count") or 0)
+        _print_history_transcript(
+            f"{escape(session.get('title') or '(无标题)')}  [dim]{escape(meta)}[/]",
+            session.get("history") or [], max_lines=200)
+        return
+    if action == "resume":
+        ns = argparse.Namespace(
+            task=[], mod=None, provider=None, base_url=None, api_key=None,
+            model=None, temperature=None, workspace=getattr(args, "workspace", None),
+            resume=getattr(args, "session_id", ""), no_history=False)
+        cmd_agent_chat(ns)
+        return
+    if action == "delete":
+        session, err = history_store.resolve_session_ref(getattr(args, "session_id", ""))
+        if err or session is None:
+            err_console.print(f"[red]{escape(err or '会话不存在')}[/]")
+            return
+        if history_store.delete_session(session["id"]):
+            console.print(f"[green]已删除[/] {session['id']} · {escape(session.get('title') or '(无标题)')}")
+        else:
+            err_console.print("[red]删除失败[/]")
+        return
+    if action == "clear":
+        if not getattr(args, "yes", False):
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                err_console.print("[red]非交互终端请显式加 --yes[/]")
+                raise SystemExit(1)
+            if console.input("[yellow]确认清空全部 AI 会话历史? [y/N]: [/]").strip().lower() not in ("y", "yes"):
+                console.print("[dim]已取消[/]")
+                return
+        n = history_store.clear_sessions()
+        console.print(f"[green]已清空 {n} 个会话[/]")
+        return
+    console.print("[dim]history: list | show <id|last> | resume <id|last> | delete <id|last> | clear[/]")
 
 
 # ---------------------------------------------------------------------------
@@ -2461,7 +2595,24 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--api-key", dest="api_key", default=None, help="覆盖 apiKey")
     a.add_argument("--model", default=None, help="覆盖 model")
     a.add_argument("--temperature", type=float, default=None, help="覆盖 temperature")
+    a.add_argument("--resume", default=None, metavar="ID|last",
+                   help="恢复历史会话继续对话（id 或 last，agent history list 查看）")
+    a.add_argument("--no-history", dest="no_history", action="store_true",
+                   help="本次会话不写入 AI 历史（默认自动记录）")
     a.set_defaults(func=cmd_agent_chat)
+    a = ags.add_parser("history", help="AI 会话历史：list / show / resume / delete / clear")
+    hs = a.add_subparsers(dest="action")
+    h = hs.add_parser("list", help="列出会话（省略子命令时同效）")
+    h.set_defaults(action="list")
+    h = hs.add_parser("show", help="查看某次会话内容")
+    h.add_argument("session_id", metavar="ID|last", help="会话 id 或 last")
+    h = hs.add_parser("resume", help="恢复会话并继续对话（等价 agent chat --resume）")
+    h.add_argument("session_id", metavar="ID|last", help="会话 id 或 last")
+    h = hs.add_parser("delete", help="删除一个会话")
+    h.add_argument("session_id", metavar="ID|last", help="会话 id 或 last")
+    h = hs.add_parser("clear", help="清空全部会话（交互确认，-y 跳过）")
+    h.add_argument("-y", "--yes", action="store_true", help="跳过确认")
+    a.set_defaults(func=cmd_agent_history)
 
     # cloud
     cl = sub.add_parser("cloud", help="云同步 (.editor_cloud.json 三端共享)")

@@ -88,6 +88,26 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(out["maxRetries"], 5)
         self.assertEqual(out["retryDelayMs"], 2500)
 
+    def test_permission_mode_default_and_valid_values(self):
+        # 缺省为 confirm（变更前确认）；合法取值大小写/空白归一后保留
+        self.assertEqual(s.normalize_ai_settings({})["permissionMode"], "confirm")
+        self.assertEqual(
+            s.normalize_ai_settings({"permissionMode": "confirm"})["permissionMode"],
+            "confirm")
+        self.assertEqual(
+            s.normalize_ai_settings({"permissionMode": " FULL "})["permissionMode"],
+            "full")
+
+    def test_permission_mode_invalid_falls_back_to_confirm(self):
+        # 非法值一律回退最安全的 confirm，且 snake_case 别名可识别
+        for bad in ("yolo", "auto", 123, True, None):
+            self.assertEqual(
+                s.normalize_ai_settings({"permissionMode": bad})["permissionMode"],
+                "confirm")
+        self.assertEqual(
+            s.normalize_ai_settings({"permission_mode": "full"})["permissionMode"],
+            "full")
+
 
 class WriteRoundTripTest(_EnvStoreBase):
     def test_zero_temperature_persists(self):
@@ -95,6 +115,16 @@ class WriteRoundTripTest(_EnvStoreBase):
             s.write_ai_settings({"temperature": 0.0})
             cur = s.read_ai_settings()
         self.assertEqual(cur["temperature"], 0.0)
+
+    def test_permission_mode_round_trips_through_write(self):
+        with self._patch_ai_path():
+            s.write_ai_settings({"permissionMode": "full"})
+            cur = s.read_ai_settings()
+        self.assertEqual(cur["permissionMode"], "full")
+        with self._patch_ai_path():
+            s.write_ai_settings({"permissionMode": "confirm"})
+            cur = s.read_ai_settings()
+        self.assertEqual(cur["permissionMode"], "confirm")
 
     def test_patch_merges_and_keeps_other_fields(self):
         with self._patch_ai_path():

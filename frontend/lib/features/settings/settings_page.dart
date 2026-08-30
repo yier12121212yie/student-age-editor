@@ -31,6 +31,7 @@ class AiSettings {
     this.ttsVolume = 1.0,
     this.ttsPitch = 0,
     this.ttsFormat = 'wav',
+    this.permissionMode = 'confirm',
   });
 
   String provider; // openai_compatible | openai_responses | anthropic
@@ -53,8 +54,13 @@ class AiSettings {
   double ttsVolume;
   int ttsPitch;
   String ttsFormat; // wav | ogg
+  /// AI 写操作权限模式：confirm=变更前逐项弹窗确认（默认），full=完全访问（不弹确认）。
+  String permissionMode; // confirm | full
 
   static const prefsKey = 'ai_settings_v1';
+
+  /// 当前是否为完全访问模式（AI 写操作跳过确认弹窗）。
+  bool get isFullAccess => permissionMode == 'full';
 
   /// 图片生成实际使用的模型：图片模型 > 对话模型 > 默认 gpt-image-2。
   String get effectiveImageModel {
@@ -96,6 +102,7 @@ class AiSettings {
         'ttsVolume': ttsVolume,
         'ttsPitch': ttsPitch,
         'ttsFormat': ttsFormat,
+        'permissionMode': permissionMode,
       };
 
   factory AiSettings.fromJson(Map<String, dynamic> json) => AiSettings(
@@ -117,6 +124,7 @@ class AiSettings {
         ttsVolume: (json['ttsVolume'] as num?)?.toDouble() ?? 1.0,
         ttsPitch: (json['ttsPitch'] as num?)?.toInt() ?? 0,
         ttsFormat: json['ttsFormat'] as String? ?? 'wav',
+        permissionMode: json['permissionMode'] as String? ?? 'confirm',
       );
 
   Future<void> save() async {
@@ -255,6 +263,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String _ttsProvider = '';
   double _ttsSpeed = 1.0;
   bool _ttsTesting = false;
+  String _permissionMode = 'confirm';
 
   @override
   void initState() {
@@ -274,6 +283,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _ttsVoiceCtrl = TextEditingController(text: widget.settings.ttsVoice);
     _ttsSpeed = widget.settings.ttsSpeed.clamp(0.5, 2.0);
     _temperature = widget.settings.temperature;
+    _permissionMode = widget.settings.permissionMode;
   }
 
   @override
@@ -358,6 +368,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ttsVolume: widget.settings.ttsVolume,
       ttsPitch: widget.settings.ttsPitch,
       ttsFormat: widget.settings.ttsFormat,
+      permissionMode: _permissionMode,
     );
     await s.save();
     widget.onChanged(s);
@@ -453,6 +464,27 @@ class _SettingsPageState extends State<SettingsPage> {
                   max: 2,
                   onChanged: (v) => setState(() => _temperature = v),
                   label: _temperature.toStringAsFixed(1),
+                ),
+                const SizedBox(height: 12),
+                Text('AI 权限', style: TextStyle(fontSize: 12, color: hintColor)),
+                const SizedBox(height: 4),
+                Text('变更前确认：AI 的每次写入/删除/生图都会弹出审批框；'
+                    '完全访问：AI 直接执行修改，不再弹出确认框',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
+                const SizedBox(height: 6),
+                fluent.ComboBox<String>(
+                  value: _permissionMode == 'full' ? 'full' : 'confirm',
+                  isExpanded: true,
+                  items: const [
+                    fluent.ComboBoxItem(
+                        value: 'confirm',
+                        child: Text('变更前确认（每次修改弹出审批框）')),
+                    fluent.ComboBoxItem(
+                        value: 'full',
+                        child: Text('完全访问（不再弹出确认框，AI 直接修改）')),
+                  ],
+                  onChanged: (v) =>
+                      setState(() => _permissionMode = v ?? _permissionMode),
                 ),
                 const SizedBox(height: 20),
                 Divider(color: palette.border),

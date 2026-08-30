@@ -212,13 +212,14 @@ python -m editor.tui --mod test         # 需 PYTHONPATH=backend
 |------|------|
 | `q` | 退出 |
 | `r` | 刷新 workspace / 当前 cfg |
-| `n` | 新建记录（基于 schema 自动填默认值，ID= max+1） |
+| `n` | 新建记录（基于 schema 自动填默认值，ID= max+1）；未选中 cfg 时转入新建 Mod |
+| `N`（Shift+N） | 新建 Mod：在 workspace 下生成 manifest.json + Cfgs/zh-cn 空骨架并自动选中 |
 | `e` | 聚焦右侧 JSON 编辑区 |
 | `d` | 删除（按两次确认） |
 | `s` | 保存：先暂存 TextArea JSON → 写入 `Cfgs/zh-cn/*.json`（原子替换） |
 | `/` | 搜索（当前 mod / 当前 cfg 内大小写不敏感） |
 | `c` | 云同步面板（provider 增删改查 / 测试 / 同步） |
-| `a` | AI 助手聊天面板（对话式改模，写操作需确认；面板内「⚙ 配置」可直接改 AI 配置） |
+| `a` | AI 助手聊天面板（对话式改模，写操作需确认；面板内「⚙ 配置」可直接改 AI 配置，「📜 历史」回看/恢复 AI 会话） |
 | `u` | 检查更新（比对 GitHub Release，弹窗展示最新版本 / 发布说明 / 下载链接） |
 | `?` | 帮助 |
 | `Enter` | 左树展开 / 打开 cfg；中表选中 |
@@ -325,15 +326,21 @@ REPL（`python run_cli.py` 无参进入）内亦可：`/agent` 直接进入 AI �
 一次性执行（非交互，等价 `python run_cli.py agent chat <任务>`）。
 
 TUI 修改配置：聊天面板（`a`）内点「⚙ 配置」直接编辑协议 / baseUrl / apiKey /
-model / temperature，可保存前测试连通；REPL 内 `/agent setting`（或
+model / temperature / AI 权限，可保存前测试连通；REPL 内 `/agent setting`（或
 `/agent config`）同效。
 
 安全语义与 GUI 一致：所有写操作（update/create/delete/set_talk_stage）都会
 先展示字段级 diff，等待 `y/N` 审批；工具循环上限 20 轮；未配置时给出引导而非报错栈。
 
+AI 权限（`permissionMode`，三端共享）：`confirm`=变更前确认（默认，每次写操作
+弹出审批框 / `y/N`）；`full`=完全访问（AI 直接执行修改，不再弹出确认框）。
+GUI 在设置页「AI 权限」或 AI 面板顶栏的盾牌按钮切换；CLI 在 `agent config` 里
+切换，`agent chat` 以完全访问启动时会提示 ⚠；TUI 在「⚙ 配置」里切换，标题栏
+会显示「完全访问」标识。
+
 并行子代理：AI 可通过 `spawn_subagents` 把可独立完成的调研类子任务并行分派给
 最多 4 个只读子代理并汇总结论（子代理只读，不可写）；所有写操作仍由主代理
-执行并需 `y/N` 确认。
+执行并按当前 AI 权限模式确认。
 
 自动重连：连接失败 / 流式中断 / HTTP 429、5xx 会自动按指数退避重试（默认 3 次、
 首个间隔 1 秒，`agent config` 里可调 `maxRetries` / `retryDelayMs`，`maxRetries=0`
@@ -343,6 +350,27 @@ model / temperature，可保存前测试连通；REPL 内 `/agent setting`（或
 TUI 内按 `a` 打开聊天面板（Esc 关闭，写操作弹出确认框），按 `u` 检查更新；
 REPL 内 `/agent`、`/agent setting|config`、`/agent chat`（当前 `/mods use`
 选定的 mod 自动作为 `-m` 默认）。
+
+### AI 会话历史（CLI / TUI 共享）
+
+CLI 聊天与 TUI 聊天面板的每轮对话会**自动记录**到 editor 根目录下的
+`.editor_ai_history/`（一会话一 JSON，含 provider / model / 模组 / 全量消息），
+最多保留 50 个会话、超出自动淘汰最旧；`--no-history`（CLI）可对单次会话关闭。
+GUI 不读取该目录。
+
+```powershell
+python run_cli.py agent history                 # 列出会话（时间/来源/模组/消息数/标题/id）
+python run_cli.py agent history show last       # 回看某次会话内容（last=最新一条）
+python run_cli.py agent history resume last     # 恢复会话并继续对话（上下文接上）
+python run_cli.py agent chat --resume <id>      # 同上，chat 方式进入
+python run_cli.py agent history delete <id>     # 删除一个会话
+python run_cli.py agent history clear           # 清空全部（交互确认，-y 跳过）
+```
+
+恢复时历史消息会自动归一化为 OpenAI 风格，因此换协议（如 anthropic →
+openai_compatible）后仍能无缝续聊。REPL 内 `/agent history` 同效；TUI 聊天
+面板点「📜 历史」打开会话列表，↑↓ 选择即预览，回车 / 「▶ 继续会话」载入
+聊天面板接着对话（继续写回同一会话文件），另支持删除 / 清空 / 刷新。
 
 ## 8. 云同步（手动上传 / 下载 Mod）
 
@@ -379,8 +407,10 @@ python run_cli.py cloud sync <id> --mod test --files readme.txt,Cfgs/zh-cn/EvtCf
 REPL（`python run_cli.py` 无参进入）内 Tab 补全已覆盖 `agent` / `cloud` 全族
 （裸词 `agent` / `cloud` 也可直接输入）：
 
-- 子命令级：`/cloud ` → providers/add/test/show/remove/sync；`/agent ` → setting/config/chat
+- 子命令级：`/cloud ` → providers/add/test/show/remove/sync；`/agent ` → setting/config/chat/history
 - 网盘 ID：`cloud test|show|remove|sync <Tab>` → 已配置 provider 的 id + 名称 [类型]
+- 会话 ID：`agent history show|resume|delete <Tab>` / `agent chat --resume <Tab>`
+  → 最近 30 个会话的 id + 标题·条数（`last` = 最新一条）
 - 值补全：`--type`（10 种驱动）、`--direction`（upload/download/sync）、
   `--remote-root`（mods/cfgs/save）、`--provider`（三种 AI 协议）、
   `-m/--mod`（Mod 列表）；`cloud add --cfg` 提示为 `<驱动字段 k=v>`

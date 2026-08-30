@@ -296,7 +296,7 @@ def run_cli_wizard(console=None) -> bool:
         shown_default = str(default_ws) if default_ws else str(suggested_workspace())
         try:
             ans = con.input(
-                f"[dim]回车=使用 [green]{shown_default}[/]，或输入其它路径，s=跳过 > [/]"
+                f"[dim]回车=使用 [green]{shown_default}[/]（或输入其它路径，s=跳过）> [/]"
             ).strip()
         except (KeyboardInterrupt, EOFError):
             con.print("\n[dim]已中止引导（未标记完成，下次仍会提示）[/]")
@@ -312,7 +312,7 @@ def run_cli_wizard(console=None) -> bool:
             ws = default_ws
         else:
             try:
-                ok = con.input(f"[yellow]将创建/使用 {Path(ans).expanduser()} ，确认? [y/N]: [/]").strip().lower()
+                ok = con.input(f"[yellow]将创建/使用 {Path(ans).expanduser()}，确认？(y/n，回车=N) > [/]").strip().lower()
             except (KeyboardInterrupt, EOFError):
                 return False
             if ok != "y":
@@ -326,15 +326,15 @@ def run_cli_wizard(console=None) -> bool:
     con.print(f"[green]工作区:[/] {ws}\n")
 
     # ── 步骤 3: 可选建首个 Mod ──
-    con.print("[bold]② 创建第一个模组[/] [dim](可选)[/]")
+    con.print("[bold]② 创建第一个模组[/] [dim](可选)[/] — 在工作区生成模组目录（manifest.json + Cfgs/zh-cn 空白骨架）")
     mod_name = ""
     try:
-        ans = con.input("[dim]输入模组名并回车创建，回车跳过 > [/]").strip()
+        ans = con.input("[dim]输入模组名并回车创建（直接回车=跳过）> [/]").strip()
     except (KeyboardInterrupt, EOFError):
         return False
     if ans:
         try:
-            desc = con.input("[dim]描述(可空) > [/]").strip()
+            desc = con.input("[dim]描述（可空，直接回车=跳过）> [/]").strip()
         except (KeyboardInterrupt, EOFError):
             return False
         try:
@@ -346,15 +346,15 @@ def run_cli_wizard(console=None) -> bool:
 
     # ── 步骤 4: 可选 AI 助手 ──
     ai_settings: dict = {}
-    con.print("[bold]③ AI 助手[/] [dim](可选)[/]")
+    con.print("[bold]③ AI 助手[/] [dim](可选)[/] — 填一次 API Key，编辑器内即可使用 AI 辅助（之后可在设置中修改）")
     try:
-        ai_ans = con.input("[dim]配置 AI 助手？[y=配置 / 回车跳过] > [/]").strip().lower()
+        ai_ans = con.input("[dim]配置 AI 助手？(y/n，回车=跳过) > [/]").strip().lower()
     except (KeyboardInterrupt, EOFError):
         return False
-    if ai_ans == "y":
+    if ai_ans in ("y", "yes"):
         try:
             pv = con.input(
-                "[dim]协议 [openai_compatible 回车 / openai_responses / anthropic] > [/]").strip()
+                "[dim]协议 (回车=openai_compatible / openai_responses / anthropic) > [/]").strip()
         except (KeyboardInterrupt, EOFError):
             return False
         ai_settings["provider"] = pv or "openai_compatible"
@@ -365,7 +365,7 @@ def run_cli_wizard(console=None) -> bool:
         if base:
             ai_settings["baseUrl"] = base
         try:
-            key = con.input("[dim]API Key > [/]").strip()
+            key = con.input("[dim]API Key（必填，回车=跳过 AI 配置）> [/]").strip()
         except (KeyboardInterrupt, EOFError):
             return False
         if not key:
@@ -381,14 +381,14 @@ def run_cli_wizard(console=None) -> bool:
                 ai_settings["model"] = model
 
     # ── 步骤 5: 可选 TTS 配音 ──
-    con.print("[bold]④ 配音 TTS[/] [dim](可选)[/]")
+    con.print("[bold]④ 配音 TTS[/] [dim](可选)[/] — 为剧情文本配音，支持 阿里云 / MiniMax")
     try:
-        tts_ans = con.input("[dim]服务商 [aliyun / minimax / 回车跳过] > [/]").strip().lower()
+        tts_ans = con.input("[dim]服务商 (aliyun / minimax，回车=跳过) > [/]").strip().lower()
     except (KeyboardInterrupt, EOFError):
         return False
     if tts_ans in ("aliyun", "minimax"):
         try:
-            tkey = con.input("[dim]API Key > [/]").strip()
+            tkey = con.input("[dim]API Key（必填，回车=跳过 TTS 配置）> [/]").strip()
         except (KeyboardInterrupt, EOFError):
             return False
         if tkey:
@@ -396,7 +396,7 @@ def run_cli_wizard(console=None) -> bool:
             ai_settings["ttsApiKey"] = tkey
             if tts_ans == "minimax":
                 try:
-                    gid = con.input("[dim]Group ID（MiniMax 控制台获取）> [/]").strip()
+                    gid = con.input("[dim]Group ID（MiniMax 控制台获取，可空）> [/]").strip()
                 except (KeyboardInterrupt, EOFError):
                     return False
                 if gid:
@@ -418,10 +418,10 @@ def run_cli_wizard(console=None) -> bool:
 
     # ── 步骤 6: 可选云存储（首次配置场景，简化支持 local / webdav / openlist）──
     cloud_provider: dict | None = None
-    con.print("[bold]⑤ 云存储[/] [dim](可选)[/]")
+    con.print("[bold]⑤ 云存储[/] [dim](可选)[/] — 把模组同步到本地其它目录 / WebDAV / OpenList")
     try:
         cloud_ans = con.input(
-            "[dim]类型 [local / webdav / openlist / 回车跳过] > [/]").strip().lower()
+            "[dim]类型 (local / webdav / openlist，回车=跳过) > [/]").strip().lower()
     except (KeyboardInterrupt, EOFError):
         return False
     if cloud_ans in ("local", "webdav", "openlist"):
@@ -432,7 +432,7 @@ def run_cli_wizard(console=None) -> bool:
         cfg: dict = {}
         if cloud_ans == "local":
             try:
-                root = con.input("[dim]本地根目录 > [/]").strip()
+                root = con.input("[dim]本地根目录（必填，回车=跳过云存储）> [/]").strip()
             except (KeyboardInterrupt, EOFError):
                 return False
             if not root:
@@ -442,7 +442,7 @@ def run_cli_wizard(console=None) -> bool:
                 cfg["root"] = root
         elif cloud_ans == "webdav":
             try:
-                url = con.input("[dim]WebDAV 地址 > [/]").strip()
+                url = con.input("[dim]WebDAV 地址（必填，回车=跳过云存储）> [/]").strip()
             except (KeyboardInterrupt, EOFError):
                 return False
             if not url:
@@ -464,7 +464,7 @@ def run_cli_wizard(console=None) -> bool:
                     cfg["password"] = pwd
         else:  # openlist
             try:
-                url = con.input("[dim]OpenList 地址 > [/]").strip()
+                url = con.input("[dim]OpenList 地址（必填，回车=跳过云存储）> [/]").strip()
             except (KeyboardInterrupt, EOFError):
                 return False
             if not url:

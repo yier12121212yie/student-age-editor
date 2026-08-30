@@ -49,7 +49,12 @@ DEFAULT_AI_SETTINGS = {
     # 自动重连：maxRetries 次网络失败重试（0=关闭），retryDelayMs 为首个退避间隔
     "maxRetries": 3,
     "retryDelayMs": 1000,
+    # AI 写操作权限模式：confirm=变更前逐项弹窗确认（默认），full=完全访问（直接执行）
+    "permissionMode": "confirm",
 }
+
+# permissionMode 的合法取值（与 GUI 设置页 / TUI 配置弹窗 / CLI agent config 一致）
+AI_PERMISSION_MODES = ("confirm", "full")
 
 # 频控宽松上限；便于校验 GUI/CLI 写入的取值范围
 _TEMPERATURE_MIN, _TEMPERATURE_MAX = 0.0, 2.0
@@ -145,6 +150,7 @@ def normalize_ai_settings(data: dict) -> dict:
                 "ttsVolume": ("tts_volume",),
                 "ttsPitch": ("tts_pitch",),
                 "ttsFormat": ("tts_format",),
+                "permissionMode": ("permission_mode",),
             }.get(key, ())
             for a in alt:
                 if data.get(a) is not None:
@@ -231,6 +237,14 @@ def normalize_ai_settings(data: dict) -> dict:
         except (TypeError, ValueError):
             delay = DEFAULT_AI_SETTINGS["retryDelayMs"]
     out["retryDelayMs"] = min(max(delay, 0), 30000)
+    # 权限模式归一：仅接受 confirm / full，其余一律回退默认（confirm 最安全）
+    pm = out.get("permissionMode")
+    if not isinstance(pm, str):
+        pm = ""
+    pm = pm.strip().lower() or None
+    if pm not in AI_PERMISSION_MODES:
+        pm = "confirm"
+    out["permissionMode"] = pm
     return out
 
 

@@ -57,3 +57,6 @@ OpenList-main/
 
 # 空目录占位
 website/
+
+# AI 会话历史（运行时数据，agent/history_store.py 落盘）
+.editor_ai_history/

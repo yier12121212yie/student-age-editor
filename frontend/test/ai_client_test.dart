@@ -208,6 +208,16 @@ void main() {
     expect(sysMsg, contains('PhoneMsgCfg 的 role（发送者）'));
     expect(sysMsg, contains('KZoneContentCfg 的 role（发布者）'));
     expect(sysMsg, contains('roleName（自定义名字）只是覆盖显示名的可选字段'));
+    // 扩写的操作细节：TalkCfg.roles 是舞台编码不能手改；修改纪律防编造
+    expect(sysMsg, contains('由 set_talk_stage 维护'));
+    expect(sysMsg, contains('不要编造 id 或字段'));
+    // 跨类联动：缺角色新建而非复用，引用存 ID
+    expect(sysMsg, contains('【跨类联动】'));
+    expect(sysMsg, contains('缺角色就新建，不要复用'));
+    expect(sysMsg, contains('跨表引用存的都是 ID 不是名字'));
+    // 剧情链路与社交挂接的具体引用字段
+    expect(sysMsg, contains('nextEvtId 跳转到下一个事件'));
+    expect(sysMsg, contains('parent 指向所属动态'));
   });
 
   test('OpenAI Responses API 流式 + 工具循环', () async {

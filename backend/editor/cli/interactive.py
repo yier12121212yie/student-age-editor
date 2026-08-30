@@ -90,7 +90,8 @@ _SUB_META = {
             ("edit", "<Cfg> $EDITOR 打开"), ("delete", "<Cfg> 删记录"),
             ("validate", "校验当前 Mod"), ("export", "batch 导出"), ("import", "batch 导入")],
     "workspace": [("show", "显示工作区"), ("set", "<path> 设置工作区")],
-    "agent": [("setting", "查看/修改 AI 配置"), ("chat", "[任务] 对话式改模（直接 /agent 亦可）")],
+    "agent": [("setting", "查看/修改 AI 配置"), ("chat", "[任务] 对话式改模（直接 /agent 亦可）"),
+              ("history", "AI 会话历史 (list/show/resume/delete/clear)")],
     "cloud": [("providers", "列出网盘"), ("add", "新增网盘配置"), ("test", "<id> 测试连接"),
               ("show", "<id> 详情"), ("remove", "<id> 删除"), ("sync", "<id> 同步 Mod")],
     "plugins": [("list", "列出插件"), ("info", "<id> 详情"), ("install", "<zip路径> 安装"),
@@ -107,6 +108,7 @@ _FLAG_META = {
     "-m": "<Mod 名>", "--provider": "<协议 openai_compatible/…>",
     "--base-url": "<API 地址>", "--api-key": "<密钥>", "--model": "<模型名>",
     "--temperature": "<0.0-2.0>",
+    "--resume": "<会话 id 或 last>", "--no-history": "本次会话不记录 AI 历史",
     # cloud
     "--type": "<驱动 local/webdav/…>", "--remote-root": "<远端根 mods/cfgs/save>",
     "--reveal": "敏感字段明文", "--direction": "<upload/download/sync>",
@@ -117,9 +119,10 @@ _FLAG_META = {
 }
 _VALUE_FLAGS = {"--id", "--key", "--mod", "--cfg", "--value", "--file", "--desc",
                 "-m", "--provider", "--base-url", "--api-key", "--model", "--temperature",
+                "--resume",
                 "--type", "--remote-root", "--direction", "--files"}
 _BOOL_FLAGS = {"--force", "--all", "--json", "--verbose",
-               "--dry-run", "--delete-extra", "--reveal", "--yes", "-y"}
+               "--dry-run", "--delete-extra", "--reveal", "--yes", "-y", "--no-history"}
 
 _SUB_WORDS = {"get", "set", "list", "edit", "delete", "validate", "export", "import",
               "show", "use", "create", "add", "remove", "workshop",
@@ -148,7 +151,15 @@ _SUB_SPECS = {
         "config": {"pos": [], "flags": ["--json"]},
         "setting": {"pos": [], "flags": ["--json"]},
         "chat": {"pos": ["task"], "flags": ["-m", "--mod", "--provider", "--base-url",
-                                            "--api-key", "--model", "--temperature"]},
+                                            "--api-key", "--model", "--temperature",
+                                            "--resume", "--no-history"]},
+        "history": {
+            "list": {"pos": [], "flags": []},
+            "show": {"pos": ["session_id"], "flags": []},
+            "resume": {"pos": ["session_id"], "flags": []},
+            "delete": {"pos": ["session_id"], "flags": []},
+            "clear": {"pos": [], "flags": ["-y", "--yes"]},
+        },
     },
     "cloud": {
         "providers": {"pos": [], "flags": ["--json"]},
@@ -407,6 +418,21 @@ class EditorCompleter(Completer if HAS_PT else object):
                 return []
         return self._cached(("cloudp", str(self._ctx().get("workspace"))), _load, ttl=2.0)
 
+    def _session_cands(self):
+        """AI 会话历史 (id, 标题·条数) 候选（agent history / chat --resume）。"""
+        def _load():
+            try:
+                from editor.agent import history_store
+                return [(s.get("id") or "",
+                         f"{s.get('title') or '（无标题）'} · {s.get('message_count') or 0}条")
+                        for s in history_store.list_sessions(limit=30)]
+            except Exception:
+                return []
+        return self._cached(("aisess",), _load, ttl=2.0)
+
+    def _session_ref_cands(self):
+        return [("last", "最新一条")] + self._session_cands()
+
     # ------------------------------------------------------------- mention (@)
     def _mention_cands(self):
         seen, out = set(), []
@@ -493,6 +519,8 @@ class EditorCompleter(Completer if HAS_PT else object):
                     pairs = [(p, "") for p in AI_PROVIDERS]
                 except Exception:
                     pairs = []
+            elif pend_flag == "--resume":
+                pairs = self._session_ref_cands()
             elif pend_flag in ("--api-key", "--base-url", "--model", "--temperature"):
                 return [], None
             else:
@@ -524,6 +552,9 @@ class EditorCompleter(Completer if HAS_PT else object):
         if next_type == "id":
             # cloud test/show/remove/sync 的网盘 id
             return self._rank(self._cloud_provider_cands(), frag), None
+        if next_type == "session_id":
+            # agent history show|resume|delete 的会话 id
+            return self._rank(self._session_ref_cands(), frag), None
         if next_type == "dir":
             return self._path_cands(frag, dirs_only=True), None
         if frag:
@@ -622,6 +653,7 @@ def _print_help():
         ("/doctor", "环境自检", "/doctor"),
         ("/agent [任务]", "AI 助手直接对话改模", "/agent 把开局事件标题改成…"),
         ("/agent setting", "AI 配置查看/修改 (config 别名)", "/agent setting"),
+        ("/agent history", "AI 会话历史 (list/show/resume/delete/clear)", "/agent history resume last"),
         ("/update", "检查 GitHub 更新", "/update"),
         ("/cloud providers|add|test|sync", "云同步网盘", "/cloud sync p1 --mod test --dry-run"),
         ("/plugins list|enable <id>|disable|install|uninstall|reload", "插件管理 (第三方 Python)", "/plugins list"),
@@ -910,7 +942,7 @@ class InteractiveCLI:
             self._dispatch_via_app(["update"] + args)
             return False
         if cmd == "agent":
-            if not args or args[0].lower() not in ("config", "setting", "chat"):
+            if not args or args[0].lower() not in ("config", "setting", "chat", "history"):
                 # 裸 /agent 或 /agent <任务描述> → 直接进入 agent 对话
                 argv = ["agent", "chat"] + args
             else:

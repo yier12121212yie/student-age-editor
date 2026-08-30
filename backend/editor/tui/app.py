@@ -927,6 +927,7 @@ class HelpScreen(ModalScreen):
                 "  [cyan]Ctrl+K[/] 全局搜索   跨 cfg 搜索（/ 也会进入全局若未选中 cfg）\n"
 
                 "  [cyan]r[/]  刷新           重载 workspace + 当前 cfg\n"
+                "  [green]N[/]  新建 Mod        在 workspace 下生成 manifest.json + Cfgs/zh-cn 骨架（n 未选 cfg 时也会转入）\n"
                 "  [green]c[/]  云同步         网盘 provider 列表 / 测试 / 上传下载同步\n"
                 "  [green]a[/]  AI 助手        对话式修改模组（写操作需确认）\n"
                 "  [green]t[/]  配音 (TTS)     语音合成 / 测试连接 / 素材管理\n"
@@ -997,6 +998,8 @@ class ConfirmScreen(ModalScreen[bool]):
     #confirm-title { text-style: bold; color: $warning; }
 
     #confirm-msg { margin: 1 0; }
+
+    #confirm-dialog Horizontal { height: auto; }
 
     """
 
@@ -1093,6 +1096,8 @@ class PromptScreen(ModalScreen[str | None]):
     #prompt-msg { margin: 1 0 1 0; color: $text-muted; }
 
     #prompt-input { margin-bottom: 1; }
+
+    #prompt-dialog Horizontal { height: auto; }
 
     """
 
@@ -2585,6 +2590,7 @@ class AgentConfigScreen(ModalScreen):
     #ac-dialog { width: 68; height: auto; background: $surface; border: thick $primary; padding: 1 2; }
     #ac-title { text-style: bold; color: $primary; margin-bottom: 1; }
     AgentConfigScreen Input, AgentConfigScreen RadioSet { margin-bottom: 1; }
+    #ac-perm-label { color: $text-muted; margin-top: 1; }
     #ac-buttons { height: 3; margin-top: 1; }
     #ac-result { color: $text-muted; margin-top: 1; }
     """
@@ -2606,6 +2612,12 @@ class AgentConfigScreen(ModalScreen):
             yield Input(placeholder="apiKey — 密钥", id="ac-key", password=True)
             yield Input(placeholder="model — 模型名", id="ac-model")
             yield Input(placeholder="temperature — 0.0 ~ 2.0", id="ac-temp")
+            yield Static("AI 权限（写操作是否逐项确认）", id="ac-perm-label")
+            yield RadioSet(
+                "变更前确认 — 每次修改弹出审批框（默认）",
+                "完全访问 — AI 直接修改，不再弹出确认框",
+                id="ac-perm",
+            )
             with Horizontal(id="ac-buttons"):
                 yield Button("保存", id="ac-save", variant="success")
                 yield Button("测试连接", id="ac-test", variant="default")
@@ -2622,6 +2634,9 @@ class AgentConfigScreen(ModalScreen):
         self.query_one("#ac-key", Input).value = s.get("apiKey") or ""
         self.query_one("#ac-model", Input).value = s.get("model") or ""
         self.query_one("#ac-temp", Input).value = str(s.get("temperature", 0.7))
+        perm = s.get("permissionMode") or "confirm"
+        for i, rb in enumerate(self.query_one("#ac-perm", RadioSet).query(RadioButton)):
+            rb.value = (i == (1 if perm == "full" else 0))
 
     def _collect_patch(self):
         from editor.core.env_store import AI_PROVIDERS
@@ -2633,6 +2648,8 @@ class AgentConfigScreen(ModalScreen):
         raw = self.query_one("#ac-temp", Input).value.strip()
         if raw:
             patch["temperature"] = float(raw)  # ValueError 由 _save 捕获
+        patch["permissionMode"] = (
+            "full" if self.query_one("#ac-perm", RadioSet).pressed_index == 1 else "confirm")
         return patch
 
     @on(Button.Pressed, "#ac-cancel")
@@ -2651,7 +2668,8 @@ class AgentConfigScreen(ModalScreen):
         except Exception as e:
             res.update(f"保存失败: {type(e).__name__}: {e}")
             return
-        res.update(f"✓ 已保存 → .editor_ai.json（provider={merged['provider']} model={merged['model'] or '空'}）")
+        res.update(f"✓ 已保存 → .editor_ai.json（provider={merged['provider']} "
+                   f"model={merged['model'] or '空'} 权限={merged.get('permissionMode') or 'confirm'}）")
         if callable(self._on_saved):
             try:
                 self._on_saved(merged)
@@ -2727,6 +2745,7 @@ class TtsScreen(ModalScreen):
     #tts-section, .tts-section { text-style: bold; margin-top: 1; }
     TtsScreen Input, TtsScreen RadioSet, TtsScreen Checkbox { margin-bottom: 1; }
     #tts-cfg-buttons, #tts-mat-buttons { height: 3; }
+    #tts-synth-row { height: auto; }
     #tts-keyname { width: 32; }
     #tts-mats { height: 8; border: round $panel; margin-bottom: 1; }
     #tts-result { height: 7; margin-top: 1; border: round $panel; }
@@ -2763,7 +2782,7 @@ class TtsScreen(ModalScreen):
                 yield Button("音色列表", id="tts-voices", variant="default")
             yield Static("合成并保存", classes="tts-section")
             yield Input(placeholder="合成文本 — 要转成语音的台词", id="tts-text")
-            with Horizontal():
+            with Horizontal(id="tts-synth-row"):
                 yield Input(placeholder="文件名 key（可选，缺省按时间戳）", id="tts-keyname")
                 yield Checkbox("登记 AudioCfg", id="tts-regcfg", value=True)
                 yield Button("合成并保存", id="tts-synth", variant="primary")
@@ -3302,6 +3321,163 @@ class CloudScreen(ModalScreen):
         self.dismiss(None)
 
 
+class AgentHistoryScreen(ModalScreen):
+    """AI 会话历史面板：列出 .editor_ai_history 里的会话，预览 / 恢复 / 删除 / 清空。
+
+    恢复 = 把该会话的 history 归一化后载入 AgentChatScreen 的 engine（可接着
+    对话，继续写回同一会话文件）；本面板只做选择与展示，不直接持有 engine。
+    """
+
+    BINDINGS = [Binding("escape", "close", "关闭", priority=True)]
+
+    DEFAULT_CSS = """
+    AgentHistoryScreen { align: center middle; }
+    #ah-dialog { width: 86; height: 88%; background: $surface; border: thick $primary; padding: 1 2; }
+    #ah-title { text-style: bold; color: $primary; margin-bottom: 1; }
+    #ah-list { height: 12; border: round $panel; margin-bottom: 1; }
+    #ah-preview { height: 1fr; border: round $panel; margin-bottom: 1; }
+    #ah-buttons { height: 3; }
+    #ah-hint { color: $text-muted; padding: 0 0 1 0; }
+    """
+
+    def __init__(self, on_resume=None):
+        super().__init__()
+        self._on_resume = on_resume
+        self._sessions = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ah-dialog"):
+            yield Static("📜 AI 会话历史（CLI / TUI 共享存储）", id="ah-title")
+            yield OptionList(id="ah-list")
+            yield RichLog(id="ah-preview", markup=False, wrap=True)
+            with Horizontal(id="ah-buttons"):
+                yield Button("▶ 继续会话", id="ah-resume", variant="primary")
+                yield Button("🗑 删除", id="ah-delete", variant="error")
+                yield Button("🧹 清空", id="ah-clear", variant="error")
+                yield Button("⟳ 刷新", id="ah-reload", variant="default")
+                yield Button("关闭", id="ah-close", variant="default")
+            yield Static("↑↓ 选择并预览 · 回车 / 「继续会话」载入聊天面板接着对话", id="ah-hint")
+
+    def on_mount(self):
+        self._reload()
+
+    # ---- 列表 ----
+    def _reload(self):
+        from editor.agent import history_store
+        lst = self.query_one("#ah-list", OptionList)
+        lst.clear_options()
+        self._sessions = history_store.list_sessions()
+        if not self._sessions:
+            lst.add_option(Option("（暂无会话 — 聊天面板会自动记录历史）", id=None))
+            self._preview_selected()
+            return
+        for s in self._sessions:
+            title = escape(s.get("title") or "（无标题）")
+            label = (f"{s.get('updated_at') or '-'}  {title}"
+                     f"  ({s.get('mod') or '-'} · {s.get('message_count') or 0} 条)")
+            lst.add_option(Option(label, id=s.get("id")))
+        lst.highlighted = 0
+        self._preview_selected()
+
+    def _selected(self):
+        lst = self.query_one("#ah-list", OptionList)
+        try:
+            opt = lst.get_option_at_index(lst.highlighted or 0)
+        except Exception:
+            return None
+        return next((s for s in self._sessions if s.get("id") == opt.id), None)
+
+    # ---- 预览 ----
+    @on(OptionList.OptionSelected)
+    def option_selected(self, _event):
+        self._resume_selected()
+
+    def on_option_list_option_highlighted(self, _event):
+        self._preview_selected()
+
+    def _preview_selected(self):
+        from editor.agent import history_store
+        s = self._selected()
+        prev = self.query_one("#ah-preview", RichLog)
+        try:
+            prev.clear()
+        except Exception:
+            pass
+        if not s:
+            prev.write("（未选择会话）")
+            return
+        full = history_store.load_session(s["id"]) or {}
+        lines = history_store.render_transcript(full.get("history") or []).splitlines()
+        if len(lines) > 200:
+            lines = ["（较早 %d 行已省略）" % (len(lines) - 200)] + lines[-200:]
+        prev.write(f"{s.get('title') or '（无标题）'}")
+        prev.write(f"{s.get('id')} · {s.get('provider') or '-'} · 模组 {s.get('mod') or '-'} · "
+                   f"{s.get('message_count') or 0} 条消息")
+        prev.write("─" * 46)
+        if lines:
+            for ln in lines:
+                prev.write(ln)
+        else:
+            prev.write("（空会话）")
+
+    # ---- 动作 ----
+    def _resume_selected(self):
+        s = self._selected()
+        if not s:
+            return
+        if callable(self._on_resume):
+            self.dismiss(s["id"])
+            try:
+                self._on_resume(s["id"])
+            except Exception:
+                pass
+
+    @on(Button.Pressed, "#ah-resume")
+    def resume_pressed(self):
+        self._resume_selected()
+
+    @on(Button.Pressed, "#ah-delete")
+    def delete_pressed(self):
+        s = self._selected()
+        if not s:
+            return
+
+        def _cb(ok):
+            if not ok:
+                return
+            from editor.agent import history_store
+            history_store.delete_session(s["id"])
+            self._reload()
+
+        self.app.push_screen(ConfirmScreen(
+            "删除会话", f"删除会话 {s['id']} ？\n{s.get('title') or '（无标题）'}",
+            ok_label="删除"), _cb)
+
+    @on(Button.Pressed, "#ah-clear")
+    def clear_pressed(self):
+        if not self._sessions:
+            return
+
+        def _cb(ok):
+            if not ok:
+                return
+            from editor.agent import history_store
+            history_store.clear_sessions()
+            self._reload()
+
+        self.app.push_screen(ConfirmScreen(
+            "清空历史", f"确认清空全部 {len(self._sessions)} 个 AI 会话历史？",
+            ok_label="清空"), _cb)
+
+    @on(Button.Pressed, "#ah-reload")
+    def reload_pressed(self):
+        self._reload()
+
+    @on(Button.Pressed, "#ah-close")
+    def action_close(self):
+        self.dismiss(None)
+
+
 class AgentChatScreen(ModalScreen):
     """AI 助手聊天面板：TextArea 流式回复 + 工具记录 + ConfirmScreen 审批桥接。"""
 
@@ -3325,6 +3501,7 @@ class AgentChatScreen(ModalScreen):
         self._workspace = workspace
         self._client = None
         self._engine = None
+        self._session = None  # AI 会话历史（.editor_ai_history），首次发送时创建
         self._transcript = ""
         self._busy = False
         self._pending = queue.SimpleQueue()  # 流式 delta 缓冲（worker 线程投递，UI 线程攒批刷出）
@@ -3336,6 +3513,7 @@ class AgentChatScreen(ModalScreen):
                            show_line_numbers=False, show_cursor=False)
             with Horizontal(id="agent-inputbar"):
                 yield Input(placeholder="输入任务或问题…（exit 关闭面板）", id="agent-input")
+                yield Button("📜 历史", id="agent-history", variant="default")
                 yield Button("⚙ 配置", id="agent-config", variant="default")
                 yield Button("发送", id="agent-send", variant="primary")
             yield Static("Esc 关闭 · 修改会先弹出确认框（选择「允许」或「取消」）", id="agent-hint")
@@ -3347,10 +3525,18 @@ class AgentChatScreen(ModalScreen):
     def _init_chat(self, note=None):
         from editor.core.env_store import read_ai_settings, is_ai_settings_meaningful
         settings = read_ai_settings()
+        self._permission_mode = settings.get("permissionMode") or "confirm"
+        full_access = self._permission_mode == "full"
         title = f"🤖 AI 助手  {settings['provider']} · {settings['model'] or '-'}"
+        if full_access:
+            title += "  · 完全访问"
         if self._mod_name:
             title += f"  · 模组：{self._mod_name}"
         self.query_one("#agent-title", Static).update(title)
+        self.query_one("#agent-hint", Static).update(
+            "Esc 关闭 · 完全访问模式：AI 修改直接执行，不再弹出确认框"
+            if full_access else
+            "Esc 关闭 · 修改会先弹出确认框（选择「允许」或「取消」）")
         log = self.query_one("#agent-log", TextArea)
         if note:
             self._append(note + "\n")
@@ -3376,6 +3562,7 @@ class AgentChatScreen(ModalScreen):
             on_tool_round_text=self._on_round_text, on_tool_result=self._on_tool_result,
             on_retry=self._on_retry, mod_context=mod_ctx)
         self._client = LlmClient(settings)
+        self._session = None  # 引擎重建后旧会话不再续写，避免空 history 覆盖会话文件
         if not note:
             log.text = "已就绪。描述你想对模组做的修改，例如：\n  把开局事件的标题改成「新的开始」\n  给某角色加一段对白\n"
         self._transcript = log.text
@@ -3386,6 +3573,51 @@ class AgentChatScreen(ModalScreen):
     def config_pressed(self):
         self.app.push_screen(AgentConfigScreen(
             on_saved=lambda _s: self._init_chat(note="✓ 配置已保存，会话已按新配置重新加载。")))
+
+    @on(Button.Pressed, "#agent-history")
+    def history_pressed(self):
+        self.app.push_screen(AgentHistoryScreen(on_resume=self._load_history_session))
+
+    # ---- 会话历史（.editor_ai_history，与 CLI 共享）----
+    def _persist_session(self):
+        """每轮对话结束后落盘（worker 线程调用；失败静默，不影响聊天）。"""
+        if self._engine is None:
+            return
+        try:
+            from editor.agent import history_store
+            if self._session is None:
+                from editor.core.env_store import read_ai_settings
+                s = read_ai_settings()
+                self._session = history_store.new_session(
+                    provider=s.get("provider") or "", model=s.get("model") or "",
+                    mod=self._mod_name or "", source="tui")
+            self._session["history"] = list(self._engine.history)
+            history_store.save_session(self._session)
+        except Exception:
+            pass
+
+    def _load_history_session(self, session_id):
+        """历史面板「继续会话」回调：载入历史并回显文稿（UI 线程）。"""
+        from editor.agent import history_store
+        if self._busy:
+            self._append("\n⚠ 当前有请求进行中，待回复完成后再恢复会话。\n")
+            return
+        if self._engine is None:
+            self._append("\n⚠ AI 未配置或未就绪，无法恢复会话。\n")
+            return
+        session = history_store.load_session(session_id)
+        if not session:
+            self._append("\n⚠ 会话不存在或已被删除。\n")
+            return
+        self._engine.history = history_store.to_openai_history(session.get("history") or [])
+        session["history"] = self._engine.history
+        self._session = session  # 续写同一会话文件
+        lines = history_store.render_transcript(self._engine.history).splitlines()
+        if len(lines) > 60:
+            lines = ["（较早 %d 行已省略）" % (len(lines) - 60)] + lines[-60:]
+        self._append(f"\n── 已恢复会话 {session['id']} · {session.get('title') or '（无标题）'}，可继续对话 ──\n")
+        if lines:
+            self._append("\n".join(lines) + "\n")
 
     # ---- 流式回调（worker 线程只入队，UI 侧 set_interval 攒批刷出）----
     def _append(self, text):
@@ -3443,7 +3675,11 @@ class AgentChatScreen(ModalScreen):
         self.app.call_from_thread(done)
 
     def _confirm_bridge(self, title, detail):
-        """worker 线程审批：push ConfirmScreen + Event 等待用户选择。"""
+        """worker 线程审批：push ConfirmScreen + Event 等待用户选择。
+
+        完全访问模式（permissionMode=full）直接放行，不弹确认框。"""
+        if getattr(self, "_permission_mode", "confirm") == "full":
+            return True
         import threading
         ev = threading.Event()
         box = {"ok": False}
@@ -3488,6 +3724,7 @@ class AgentChatScreen(ModalScreen):
         def job():
             try:
                 engine.run(text, client)
+                self._persist_session()
                 self.app.call_from_thread(self._append, "\n")
             except Exception as e:
                 self.app.call_from_thread(self._append, f"⚠ {e}\n")
@@ -3890,6 +4127,8 @@ class EditorTUI(App):
 
         Binding("n", "new_record", "新建"),
 
+        Binding("N", "new_mod", "新建Mod"),
+
         Binding("y", "duplicate", "复制"),
 
         Binding("d", "delete_record", "删除"),
@@ -3993,7 +4232,7 @@ class EditorTUI(App):
 
                 yield Input(placeholder="过滤 Mod/Cfg…", id="tree-filter", compact=True)
 
-                yield Static("↑↓ 选择  Enter 打开  → 展开", id="left-hint", classes="panel-hint")
+                yield Static("↑↓ 选择  Enter 打开  → 展开  N 新建Mod", id="left-hint", classes="panel-hint")
 
             # 中
 
@@ -5033,11 +5272,11 @@ class EditorTUI(App):
 
         total = len(mods)
 
-        self.query_one("#left-hint", Static).update(f"[dim]{total} mods · ↑↓ 选择  Enter 打开  → 展开  r 刷新[/]")
+        self.query_one("#left-hint", Static).update(f"[dim]{total} mods · ↑↓ 选择  Enter 打开  → 展开  r 刷新  N 新建Mod[/]")
 
         if not mods:
 
-            self._update_status("未发现任何 Mod · 请检查 workspace 路径或新建 Mod", "warning")
+            self._update_status("未发现任何 Mod · 请检查 workspace 路径，或按 N 新建 Mod", "warning")
 
         # auto-select initial mod
 
@@ -6080,13 +6319,61 @@ class EditorTUI(App):
 
 
 
+    def action_new_mod(self):
+        """在 workspace 下新建 Mod（manifest.json + Cfgs/zh-cn 空骨架），与 OOBE/CLI 行为一致。"""
+
+        def _after_desc(title: str, desc: str | None):
+            if desc is None:
+                desc = ""
+            try:
+                from editor.cli.oobe import create_mod
+
+                create_mod(title, self.workspace, desc.strip())
+            except ValueError as e:
+                self.notify(str(e), severity="error", timeout=4)
+                return
+            except Exception as e:
+                self.notify(f"创建失败: {e}", severity="error", timeout=4)
+                return
+            # 复用 _load_workspace 的自动选中/展开逻辑定位到新 Mod
+            self.initial_mod = title
+            self._load_workspace()
+            self._update_status(f"[green]已创建 Mod: {title}[/] · 左栏 Enter 展开后选 cfg，n 新建记录", "success")
+            self.notify(f"已创建 Mod: {title}", timeout=3)
+
+        def _after_title(result: str | None):
+            if result is None:
+                return
+            title = result.strip()
+            if not title:
+                self.notify("Mod 名不能为空", severity="error")
+                return
+
+            def _cb(desc: str | None):
+                _after_desc(title, desc)
+
+            self.push_screen(
+                PromptScreen("Mod 描述", f"为 {title} 添加描述（可直接回车跳过）", placeholder="例如：我的第一个剧情 Mod"),
+                _cb,
+            )
+
+        self.push_screen(
+            PromptScreen("新建 Mod", f"输入 Mod 名称（即 workspace 下的目录名）\n[dim]{self.workspace}[/]",
+                         placeholder="例如：MyFirstMod"),
+            _after_title,
+        )
+
     def action_new_record(self):
 
         if not self.current_mod_root or not self.current_cfg:
 
-            self._update_status("请先在左栏选择一个 cfg", "warning")
+            self._update_status("请先在左栏选择一个 cfg · 或按 N 新建 Mod", "warning")
 
-            self.notify("请先选择一个 cfg", severity="warning")
+            self.notify("请先选择一个 cfg", severity="warning", timeout=3)
+
+            # 未选中 cfg 时「新建」退化为新建 Mod，避免无入口死路
+
+            self.action_new_mod()
 
             return
 

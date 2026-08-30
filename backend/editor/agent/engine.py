@@ -8,7 +8,9 @@
   - 工具轮次消息按 provider 追加对应结构（anthropic 块 / OpenAI tool_calls），
     client 层负责跨协议转换，history 始终是调用方持有引用的同一列表。
 
-会话历史为内存态（engine.history 跨 run() 保留，实现多轮对话），不落盘。
+会话历史为内存态（engine.history 跨 run() 保留，实现多轮对话），引擎本身
+不落盘；TUI / CLI 的 UI 层通过 history_store.py 把 history 写入
+.editor_ai_history 供跨进程回看与恢复，引擎保持纯净。
 
 只读并行子代理：主代理可调用 spawn_subagents 把 1-4 个相互独立的调研子任务
 并行分派给子代理（每个子代理 = 独立 AgentEngine + 独立 LlmClient + 只读工具集
