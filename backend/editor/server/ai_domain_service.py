@@ -17,6 +17,7 @@ import os
 import re
 
 from editor.server import fs_tools
+from editor.server import cfg_store
 from editor.server.fs_tools import SandboxError
 
 try:
@@ -352,7 +353,11 @@ def _backup_path(cfg_name):
 
 
 def save_cfg(cfg_name, data, backup=True):
-    """原子写回配置表；写前把当前内容备份为 <表>.json.bak（滚动 1 份）。"""
+    """原子写回配置表；写前把当前内容备份为 <表>.json.bak（滚动 1 份）。
+
+    落盘统一走 cfg_store.write_cfg（覆盖前另留 .editor_history 历史快照，
+    与 GUI / CLI 写入链路一致）；.bak 作为双保险保留。
+    """
     path = _cfg_path(cfg_name)
     if backup and os.path.isfile(path):
         try:
@@ -360,11 +365,9 @@ def save_cfg(cfg_name, data, backup=True):
                 dst.write(src.read())
         except OSError:
             pass  # 备份失败不阻塞写入
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = fs_tools._tmp_path_for(path)
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    result = cfg_store.write_cfg(path, data, snapshot=True)
+    if not result.get("ok"):
+        raise OSError(result.get("error") or "配置表写入失败")
 
 
 # ---------------------------------------------------------------------------

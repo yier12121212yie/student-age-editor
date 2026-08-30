@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
 import '../editor/editor_controller.dart';
@@ -30,14 +33,108 @@ class EditorArea extends StatefulWidget {
 }
 
 class _EditorAreaState extends State<EditorArea> {
+  /// 撤销/重做成功后的刷新信号：传给 SchemaEditorView 触发重新加载磁盘内容。
+  int _cfgReloadToken = 0;
+  bool _historyBusy = false;
+
+  /// 撤销/重做当前 cfg 文档（POST /api/history/undo|redo）。
+  Future<void> _historyOp(String op) async {
+    final doc = widget.controller.current;
+    if (doc == null || doc.kind != 'cfg' || _historyBusy) return;
+    _historyBusy = true;
+    try {
+      await ApiClient.instance.post(
+        '/api/history/$op',
+        body: {'cfg': doc.cfgName},
+      );
+      if (!mounted) return;
+      setState(() => _cfgReloadToken++);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      final nothing = e.message.contains('nothing to undo') ||
+          e.message.contains('nothing to redo');
+      fluent.displayInfoBar(
+        context,
+        builder: (ctx, close) => fluent.InfoBar(
+          title: Text(op == 'undo'
+              ? (nothing ? '没有可撤销的操作' : '撤销失败')
+              : (nothing ? '没有可重做的操作' : '重做失败')),
+          content: nothing
+              ? null
+              : Text(e.toString(), style: const TextStyle(fontSize: 12)),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      fluent.displayInfoBar(
+        context,
+        builder: (ctx, close) => fluent.InfoBar(
+          title: Text(op == 'undo' ? '撤销失败' : '重做失败'),
+          content: Text(e.toString(), style: const TextStyle(fontSize: 12)),
+          severity: fluent.InfoBarSeverity.error,
+        ),
+      );
+    } finally {
+      _historyBusy = false;
+    }
+  }
+
+  /// 主焦点是否位于文本输入控件内：是则让位给输入框自身的 Ctrl+Z / Ctrl+Y。
+  bool _focusInEditableText() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    final self = ctx.widget;
+    if (self is EditableText || self is TextField) return true;
+    bool found = false;
+    ctx.visitAncestorElements((e) {
+      final w = e.widget;
+      if (w is EditableText || w is TextField) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
+
+  /// Ctrl+Z / Ctrl+Y（及 Ctrl+Shift+Z）→ 撤销 / 重做。
+  /// 仅在 cfg 文档激活且焦点不在文本输入内时响应，其余按键事件放行。
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    if (!ctrl) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final isUndo = key == LogicalKeyboardKey.keyZ &&
+        !HardwareKeyboard.instance.isShiftPressed;
+    final isRedo = key == LogicalKeyboardKey.keyY ||
+        (key == LogicalKeyboardKey.keyZ &&
+            HardwareKeyboard.instance.isShiftPressed);
+    if (!isUndo && !isRedo) return KeyEventResult.ignored;
+    final doc = widget.controller.current;
+    if (doc == null || doc.kind != 'cfg') return KeyEventResult.ignored;
+    if (_focusInEditableText()) return KeyEventResult.ignored;
+    _historyOp(isUndo ? 'undo' : 'redo');
+    return KeyEventResult.handled;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        if (widget.showTabs) ...[
-          _TabBar(controller: widget.controller),
-          Divider(height: 1, color: palette.border),
-        ],
+    return Focus(
+      // 挂在内容区上层拦截 Ctrl+Z / Ctrl+Y：焦点在文本输入内时放行给输入框
+      onKeyEvent: _handleKeyEvent,
+      canRequestFocus: false,
+      skipTraversal: true,
+      child: Column(
+        children: [
+          if (widget.showTabs) ...[
+            _TabBar(
+              controller: widget.controller,
+              onUndo: () => _historyOp('undo'),
+              onRedo: () => _historyOp('redo'),
+            ),
+            Divider(height: 1, color: palette.border),
+          ],
         Expanded(
           child: ListenableBuilder(
             listenable: widget.controller,
@@ -52,6 +149,7 @@ class _EditorAreaState extends State<EditorArea> {
                   state: widget.state,
                   cfgName: doc.cfgName,
                   classic: widget.classic,
+                  reloadToken: _cfgReloadToken,
                   onPreview: (evtId) =>
                       widget.controller.open(OpenDoc.preview(eventId: evtId)),
                   onOpenSearch: widget.onOpenSearch,
@@ -112,13 +210,16 @@ class _EditorAreaState extends State<EditorArea> {
           ),
         ),
       ],
+      ),
     );
   }
 }
 
 class _TabBar extends StatelessWidget {
-  const _TabBar({required this.controller});
+  const _TabBar({required this.controller, this.onUndo, this.onRedo});
   final EditorController controller;
+  final VoidCallback? onUndo;
+  final VoidCallback? onRedo;
   static IconData _tabIcon(OpenDoc doc) {
     if (doc.kind == 'cfg') return FluentIcons.table_24_regular;
     final i = doc.path.lastIndexOf('.');
@@ -138,28 +239,95 @@ class _TabBar extends StatelessWidget {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
+        final doc = controller.current;
+        final canHistory = doc != null && doc.kind == 'cfg';
         return Container(
           height: isMob ? 44 : 36,
           color: palette.bg,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-            itemCount: controller.docs.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 2),
-            itemBuilder: (context, i) {
-              final doc = controller.docs[i];
-              final selected = i == controller.currentIndex;
-              return _TabItem(
-                doc: doc,
-                selected: selected,
-                onTap: () => controller.open(doc),
-                onClose: () => controller.close(i),
-                icon: _tabIcon(doc),
-              );
-            },
+          child: Row(
+            children: [
+              Expanded(
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  itemCount: controller.docs.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 2),
+                  itemBuilder: (context, i) {
+                    final doc = controller.docs[i];
+                    final selected = i == controller.currentIndex;
+                    return _TabItem(
+                      doc: doc,
+                      selected: selected,
+                      onTap: () => controller.open(doc),
+                      onClose: () => controller.close(i),
+                      icon: _tabIcon(doc),
+                    );
+                  },
+                ),
+              ),
+              // 撤销/重做仅对 cfg 文档生效（历史按表维度记录在 .editor_history）
+              if (!isMob) ...[
+                _HistoryButton(
+                  icon: FluentIcons.arrow_undo_24_regular,
+                  label: '撤销 (Ctrl+Z)',
+                  onTap: canHistory ? onUndo : null,
+                ),
+                _HistoryButton(
+                  icon: FluentIcons.arrow_redo_24_regular,
+                  label: '重做 (Ctrl+Y)',
+                  onTap: canHistory ? onRedo : null,
+                ),
+                const SizedBox(width: 4),
+              ],
+            ],
           ),
         );
       },
+    );
+  }
+}
+
+/// 标签栏右侧的撤销/重做小按钮（仅 cfg 文档激活时可用）。
+class _HistoryButton extends StatefulWidget {
+  const _HistoryButton({required this.icon, required this.label, this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  @override
+  State<_HistoryButton> createState() => _HistoryButtonState();
+}
+
+class _HistoryButtonState extends State<_HistoryButton> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.onTap != null;
+    return Tooltip(
+      message: widget.label,
+      waitDuration: const Duration(milliseconds: 500),
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: enabled && _hover ? palette.panel : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Icon(
+              widget.icon,
+              size: 14,
+              color: enabled
+                  ? (_hover ? palette.textHigh : palette.textSecondary)
+                  : palette.textHint,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

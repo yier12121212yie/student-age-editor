@@ -1888,8 +1888,8 @@ def _list_local_files(mod_name, compute_sha=False):
         return {}
     out = {}
     for root, dirs, files in os.walk(mod_dir):
-        # 跳过常见的缓存/临时目录
-        dirs[:] = [d for d in dirs if not d.startswith("_cache") and not d.startswith(".tmp") and d != "__pycache__"]
+        # 跳过常见的缓存/临时目录与编辑器历史快照目录（.editor_history）
+        dirs[:] = [d for d in dirs if not d.startswith("_cache") and not d.startswith(".tmp") and d != "__pycache__" and d != ".editor_history"]
         rel_root = os.path.relpath(root, mod_dir).replace("\\", "/")
         if rel_root == ".":
             rel_root = ""
@@ -1898,6 +1898,9 @@ def _list_local_files(mod_name, compute_sha=False):
             rel = (rel_root + "/" + fn).lstrip("/") if rel_root else fn
             # 忽略缓存/临时
             if rel.startswith("_cache") or rel.startswith(".git/") or rel.endswith(".tmp"):
+                continue
+            # 忽略编辑器内部状态文件（流程配置不参与同步）
+            if rel == ".editor_flow.json":
                 continue
             # 忽略隐藏的临时文件
             if fn.startswith("~") or fn.startswith("."):

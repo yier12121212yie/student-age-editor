@@ -261,8 +261,10 @@ def _detect_changes(prev, cur):
             modified.add(k)
     # ignore temp files
     def _valid(rel):
-        # skip hidden, tmp
+        # skip hidden, tmp, editor-internal history/flow state
         base = rel.split("/")[-1]
+        if rel == ".editor_flow.json" or rel.startswith(".editor_history/"):
+            return False
         if base.startswith(".") and not base.endswith(".json"):
             return False
         if base.startswith("~") or base.endswith(".tmp") or base.endswith(".swp"):

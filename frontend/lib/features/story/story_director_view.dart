@@ -138,6 +138,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Map<String, dynamic> _audioCfg = {};
   Map<String, dynamic> _evtTypeCfg = {};
 
+  // 误操作保护：三张可写表的磁盘 mtime（保存时回传做乐观锁冲突检测）
+  int? _evtMtimeNs;
+  int? _talkMtimeNs;
+  int? _optMtimeNs;
+
   /// 当前事件相关数据。
   String? _evtId;
   List<String> _prefixes = const [];
@@ -189,6 +194,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         _bgCfg = _asMap(results[4]['data']);
         _audioCfg = _asMap(results[5]['data']);
         _evtTypeCfg = _asMap(results[6]['data']);
+        _evtMtimeNs = _asInt(results[0]['mtime_ns']);
+        _talkMtimeNs = _asInt(results[1]['mtime_ns']);
+        _optMtimeNs = _asInt(results[2]['mtime_ns']);
         _loaded = true;
       });
       // 默认选中第一个事件（首次加载无未保存修改，不会弹确认框）
@@ -207,6 +215,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
 
   Map<String, dynamic> _asMap(dynamic v) =>
       v is Map ? v.cast<String, dynamic>() : <String, dynamic>{};
+
+  int? _asInt(dynamic v) => v is int ? v : null;
 
   // ---------- 事件维度 ----------
 
@@ -610,6 +620,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   // ---------- 保存 ----------
 
   /// 保存全部修改；成功返回 true，失败返回 false（由调用方决定是否继续切换）。
+  ///
+  /// 三张表顺序 PUT，各带 expect_mtime_ns 乐观锁；某表被外部改写（409）时
+  /// 弹冲突对话框逐表处理：强制覆盖继续写，重新加载则放弃该表本地修改并中止
+  /// 后续表（避免半新半旧状态扩散）。
   Future<bool> _save() async {
     try {
       mergeStageBack(_talkCfg, _talkBaseline, _stageTalks, _prefixes);
@@ -620,15 +634,30 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         _prefixes,
         isOption: true,
       );
-      await ApiClient.instance.put(
-        '/api/cfg/TalkCfg',
-        body: {'data': _talkCfg},
-      );
-      await ApiClient.instance.put(
-        '/api/cfg/OptionCfg',
-        body: {'data': _optCfg},
-      );
-      await ApiClient.instance.put('/api/cfg/EvtCfg', body: {'data': _evtCfg});
+      if (!await _putTableWithConflictCheck(
+        'TalkCfg',
+        _talkCfg,
+        expect: () => _talkMtimeNs,
+        onMtime: (v) => _talkMtimeNs = v,
+      )) {
+        return false;
+      }
+      if (!await _putTableWithConflictCheck(
+        'OptionCfg',
+        _optCfg,
+        expect: () => _optMtimeNs,
+        onMtime: (v) => _optMtimeNs = v,
+      )) {
+        return false;
+      }
+      if (!await _putTableWithConflictCheck(
+        'EvtCfg',
+        _evtCfg,
+        expect: () => _evtMtimeNs,
+        onMtime: (v) => _evtMtimeNs = v,
+      )) {
+        return false;
+      }
       if (!mounted) return false;
       setState(() {
         _dirty = false;
@@ -656,6 +685,98 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       }
       return false;
     }
+  }
+
+  /// 单表 PUT（带 expect_mtime_ns 冲突检测）。
+  ///
+  /// 返回 true 表示该表已写入成功（可继续下一张表）；返回 false 表示链路中止。
+  Future<bool> _putTableWithConflictCheck(
+    String cfg,
+    Map<String, dynamic> data, {
+    required int? Function() expect,
+    required ValueChanged<int?> onMtime,
+  }) async {
+    Future<bool> put({bool force = false}) async {
+      final r = await ApiClient.instance.put(
+        '/api/cfg/$cfg',
+        body: {
+          'data': data,
+          if (!force) 'expect_mtime_ns': expect(),
+          if (force) 'force': true,
+        },
+      );
+      onMtime(_asInt(r is Map ? r['mtime_ns'] : null));
+      return true;
+    }
+
+    try {
+      return await put();
+    } on ApiException catch (e) {
+      if (e.statusCode != 409) rethrow;
+      if (!mounted) return false;
+      final action = await _showConflictDialog(cfg);
+      if (!mounted) return false;
+      if (action == 'force') {
+        return put(force: true);
+      }
+      if (action == 'reload') {
+        // 重新加载该表：放弃该表未保存的本地修改（对白/选项舞台同步重置）
+        final r = await ApiClient.instance.get('/api/cfg/$cfg');
+        if (!mounted) return false;
+        final disk = _asMap(r['data']);
+        final mtime = _asInt(r['mtime_ns']);
+        setState(() {
+          switch (cfg) {
+            case 'TalkCfg':
+              _talkCfg = disk;
+              _talkMtimeNs = mtime;
+              _stageTalks = stageOf(_talkCfg, _prefixes);
+              _talkBaseline = stageOf(_talkCfg, _prefixes);
+              break;
+            case 'OptionCfg':
+              _optCfg = disk;
+              _optMtimeNs = mtime;
+              _stageOpts = stageOf(_optCfg, _prefixes, isOption: true);
+              _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+              break;
+            default:
+              _evtCfg = disk;
+              _evtMtimeNs = mtime;
+          }
+        });
+        _showInfo('提示', '$cfg 已从磁盘重新加载，该表未保存的改动已放弃。');
+      }
+      return false;
+    }
+  }
+
+  /// 保存冲突（HTTP 409）弹窗：重新加载（放弃该表本地修改）或强制覆盖。
+  Future<String?> _showConflictDialog(String cfg) {
+    return fluent.showDialog<String>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: const Text('文件冲突'),
+        content: Text(
+          '$cfg 文件已被外部修改（可能被游戏或其他端改写）。\n'
+          '重新加载将放弃该表本地未保存的改动；强制覆盖将用当前内容覆盖磁盘文件。',
+          style: TextStyle(fontSize: 12.5, color: palette.textPrimary, height: 1.5),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx, 'reload'),
+            child: const Text('重新加载(放弃该表修改)'),
+          ),
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          fluent.FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'force'),
+            child: const Text('强制覆盖'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<bool> _confirm(String title, String message) async {

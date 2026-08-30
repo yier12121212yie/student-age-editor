@@ -11,6 +11,7 @@ import threading
 import time
 
 from editor.server import fs_tools
+from editor.server import cfg_store
 from editor.server.fs_tools import SandboxError
 
 AUDIO_DIR = "audio/tts"
@@ -148,13 +149,12 @@ def register_audio_cfg(cfg_dir, key, title=""):
             "uiType": 0,
         }
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = fs_tools._tmp_path_for(path)
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, path)
+            # 统一写入口：原子写 + 覆盖前留 .editor_history 历史快照
+            result = cfg_store.write_cfg(path, data, snapshot=True)
         except OSError as e:
             raise TtsStoreError("登记 AudioCfg 失败: %s" % e)
+        if not result.get("ok"):
+            raise TtsStoreError("登记 AudioCfg 失败: %s" % (result.get("error") or "未知错误"))
         return new_id
 
 

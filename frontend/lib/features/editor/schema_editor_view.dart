@@ -25,6 +25,7 @@ class SchemaEditorView extends StatefulWidget {
     this.embedInCard = false,
     this.selectedId,
     this.onSelectedIdChanged,
+    this.reloadToken = 0,
   });
   final AppState state;
   final String cfgName;
@@ -47,6 +48,9 @@ class SchemaEditorView extends StatefulWidget {
   /// 选中条目变更回调。
   final ValueChanged<String?>? onSelectedIdChanged;
 
+  /// 外部刷新信号（撤销/重做成功后自增）：变化时重新加载磁盘内容并更新 mtime。
+  final int reloadToken;
+
   @override
   State<SchemaEditorView> createState() => _SchemaEditorViewState();
 }
@@ -58,6 +62,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   String? _error;
   String? _selectedId;
   bool _dirty = false;
+  // 误操作保护：加载时记录的磁盘 mtime（保存时回传做乐观锁冲突检测）
+  int? _mtimeNs;
   // 性能：条目列表排序与过滤缓存，避免每帧重算
   List<String> _sortedIds = [];
   String _filter = '';
@@ -164,7 +170,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   @override
   void didUpdateWidget(covariant SchemaEditorView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cfgName != widget.cfgName) {
+    if (oldWidget.cfgName != widget.cfgName ||
+        oldWidget.reloadToken != widget.reloadToken) {
       _load();
     } else if (widget.selectedId != null && widget.selectedId != _selectedId) {
       setState(() => _selectedId = widget.selectedId);
@@ -183,16 +190,17 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     setState(() {
       _idCandidatesCache.clear(); // 配置表重载后候选缓存失效
       _data = (r['data'] as Map).cast<String, dynamic>();
-        _missing = r['exists'] == false;
-        _loaded = true;
-        _rebuildSortedIds();
-        if (widget.selectedId != null && _data.containsKey(widget.selectedId)) {
-          _selectedId = widget.selectedId;
-        } else {
-          _selectedId = _sortedIds.isNotEmpty ? _sortedIds.first : null;
-        }
-        _dirty = false;
-      });
+      _mtimeNs = r['mtime_ns'] is int ? r['mtime_ns'] as int : null;
+      _missing = r['exists'] == false;
+      _loaded = true;
+      _rebuildSortedIds();
+      if (widget.selectedId != null && _data.containsKey(widget.selectedId)) {
+        _selectedId = widget.selectedId;
+      } else {
+        _selectedId = _sortedIds.isNotEmpty ? _sortedIds.first : null;
+      }
+      _dirty = false;
+    });
       if (widget.onSelectedIdChanged != null) {
         widget.onSelectedIdChanged!(_selectedId);
       }
@@ -205,7 +213,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     }
   }
 
-  Future<void> _save() async {
+  Future<void> _save({bool force = false}) async {
     // 保存前指南校验：请求失败（网络/后端旧版本）时静默降级，直接保存不阻塞
     List<Map<String, dynamic>>? issues;
     try {
@@ -241,17 +249,25 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       }
       if (nError > 0 && await SaveValidatePrefs.load()) {
         // 严格模式：错误阻止保存，弹窗确认（可选择「仍要保存」强制继续）
-        final force = await _showValidateConfirm(issues, nError, nWarn, nInfo);
-        if (!force || !mounted) return;
+        final proceed = await _showValidateConfirm(issues, nError, nWarn, nInfo);
+        if (!proceed || !mounted) return;
       }
     }
 
     try {
-      await ApiClient.instance.put(
+      final resp = await ApiClient.instance.put(
         '/api/cfg/${widget.cfgName}',
-        body: {'data': _data},
+        body: {
+          'data': _data,
+          // 乐观锁：加载时的磁盘 mtime，被外部改写时后端返回 409
+          'expect_mtime_ns': _mtimeNs,
+          if (force) 'force': true,
+        },
       );
       if (!mounted) return;
+      if (resp is Map && resp['mtime_ns'] is int) {
+        _mtimeNs = resp['mtime_ns'] as int;
+      }
       setState(() => _dirty = false);
       // 结果提示：错误/警告优先于成功提示
       if (nError > 0) {
@@ -280,6 +296,27 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           ),
         );
       }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      if (e.statusCode == 409) {
+        // 误操作保护：文件已被外部修改（可能被游戏或其他端改写）
+        final action = await _showConflictDialog(widget.cfgName);
+        if (!mounted) return;
+        if (action == 'reload') {
+          await _load(); // 重新加载磁盘内容（放弃本地修改）
+        } else if (action == 'force') {
+          await _save(force: true); // 强制覆盖
+        }
+        return;
+      }
+      fluent.displayInfoBar(
+        context,
+        builder: (ctx, close) => fluent.InfoBar(
+          title: Text('保存失败'),
+          content: Text(e.toString()),
+          severity: fluent.InfoBarSeverity.error,
+        ),
+      );
     } catch (e) {
       if (mounted) {
         fluent.displayInfoBar(
@@ -292,6 +329,35 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
         );
       }
     }
+  }
+
+  /// 保存冲突（HTTP 409）弹窗：重新加载（放弃本地修改）或强制覆盖。
+  Future<String?> _showConflictDialog(String cfgName) {
+    return fluent.showDialog<String>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: const Text('文件冲突'),
+        content: Text(
+          '$cfgName 文件已被外部修改（可能被游戏或其他端改写）。\n'
+          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
+          style: TextStyle(fontSize: 12.5, color: palette.textPrimary, height: 1.5),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx, 'reload'),
+            child: const Text('重新加载(放弃本地修改)'),
+          ),
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          fluent.FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'force'),
+            child: const Text('强制覆盖'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _addEntry() async {
@@ -739,7 +805,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                             const SizedBox(width: 10),
                           ],
                           fluent.FilledButton(
-                            onPressed: _save,
+                            onPressed: () => _save(),
                             style: const fluent.ButtonStyle(
                               padding: WidgetStatePropertyAll(
                                 EdgeInsets.symmetric(
@@ -857,7 +923,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           gameDicts: widget.state.gameDicts,
           loadIdCandidates: _loadIdCandidates,
           onChanged: () => setState(() => _dirty = true),
-          onSave: _save,
+          onSave: () => _save(),
         ),
       ),
     );
@@ -1021,7 +1087,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         SizedBox(
                           width: double.infinity,
                           child: fluent.FilledButton(
-                            onPressed: _save,
+                            onPressed: () => _save(),
                             child: Text('💾 保存修改至 ${widget.cfgName}'),
                           ),
                         ),
@@ -1093,7 +1159,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           width: double.infinity,
           height: 32,
           child: fluent.FilledButton(
-            onPressed: _save,
+            onPressed: () => _save(),
             style: const fluent.ButtonStyle(
               backgroundColor: WidgetStatePropertyAll(Color(0xFF6C5CE7)),
             ),

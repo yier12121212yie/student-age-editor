@@ -1444,33 +1444,52 @@ Future<void> _promptCreateEntry({
           onPressed: () => Navigator.of(ctx).pop(),
           child: const Text('取消'),
         ),
-        fluent.FilledButton(
-          onPressed: () async {
-            final id = idController.text.trim();
-            if (id.isEmpty) return;
-            try {
-              final r = await ApiClient.instance.get('/api/cfg/$cfgName');
-              final data = (r['data'] as Map? ?? {}).cast<String, dynamic>();
-              final name = nameController.text.trim();
-              data[id] = {'id': id, if (name.isNotEmpty) 'name': name};
-              await ApiClient.instance.put('/api/cfg/$cfgName', body: {'data': data});
-              if (ctx.mounted) Navigator.of(ctx).pop();
-              onCreated(id);
-            } catch (e) {
-              if (ctx.mounted) {
-                fluent.displayInfoBar(
-                  ctx,
-                  builder: (bctx, close) => fluent.InfoBar(
-                    title: const Text('新建失败'),
-                    content: Text(e.toString()),
-                    severity: fluent.InfoBarSeverity.error,
-                  ),
-                );
+          fluent.FilledButton(
+            onPressed: () async {
+              final id = idController.text.trim();
+              if (id.isEmpty) return;
+              try {
+                final r = await ApiClient.instance.get('/api/cfg/$cfgName');
+                final data = (r['data'] as Map? ?? {}).cast<String, dynamic>();
+                final name = nameController.text.trim();
+                data[id] = {'id': id, if (name.isNotEmpty) 'name': name};
+                // expect_mtime_ns：刚 GET 到的磁盘 mtime，被外部改写时后端返回 409
+                await ApiClient.instance.put('/api/cfg/$cfgName', body: {
+                  'data': data,
+                  'expect_mtime_ns': r['mtime_ns'],
+                });
+                if (ctx.mounted) Navigator.of(ctx).pop();
+                onCreated(id);
+              } on ApiException catch (e) {
+                if (ctx.mounted) {
+                  fluent.displayInfoBar(
+                    ctx,
+                    builder: (bctx, close) => fluent.InfoBar(
+                      title: const Text('新建失败'),
+                      content: Text(
+                        e.statusCode == 409
+                            ? '$cfgName 文件已被外部修改（可能被游戏或其他端改写），请重试'
+                            : e.toString(),
+                      ),
+                      severity: fluent.InfoBarSeverity.error,
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (ctx.mounted) {
+                  fluent.displayInfoBar(
+                    ctx,
+                    builder: (bctx, close) => fluent.InfoBar(
+                      title: const Text('新建失败'),
+                      content: Text(e.toString()),
+                      severity: fluent.InfoBarSeverity.error,
+                    ),
+                  );
+                }
               }
-            }
-          },
-          child: const Text('确定创建'),
-        ),
+            },
+            child: const Text('确定创建'),
+          ),
       ],
     ),
   );
@@ -1511,9 +1530,28 @@ Future<void> _promptDeleteEntry({
               final r = await ApiClient.instance.get('/api/cfg/$cfgName');
               final data = (r['data'] as Map? ?? {}).cast<String, dynamic>();
               data.remove(selectedId);
-              await ApiClient.instance.put('/api/cfg/$cfgName', body: {'data': data});
+              // expect_mtime_ns：刚 GET 到的磁盘 mtime，被外部改写时后端返回 409
+              await ApiClient.instance.put('/api/cfg/$cfgName', body: {
+                'data': data,
+                'expect_mtime_ns': r['mtime_ns'],
+              });
               if (ctx.mounted) Navigator.of(ctx).pop();
               onDeleted();
+            } on ApiException catch (e) {
+              if (ctx.mounted) {
+                fluent.displayInfoBar(
+                  ctx,
+                  builder: (bctx, close) => fluent.InfoBar(
+                    title: const Text('删除失败'),
+                    content: Text(
+                      e.statusCode == 409
+                          ? '$cfgName 文件已被外部修改（可能被游戏或其他端改写），请重试'
+                          : e.toString(),
+                    ),
+                    severity: fluent.InfoBarSeverity.error,
+                  ),
+                );
+              }
             } catch (e) {
               if (ctx.mounted) {
                 fluent.displayInfoBar(

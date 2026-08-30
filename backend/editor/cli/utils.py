@@ -236,18 +236,19 @@ def load_cfg(mod_root: Path | str, cfg_name: str, *, strict: bool = False):
 def save_cfg(mod_root: Path | str, cfg_name: str, data: dict):
     cfg_name = cfg_name_normalize(cfg_name)
     path = cfg_path(mod_root, cfg_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
     # keep a one-generation .bak so a bad write can be undone manually
-    bak = None
     try:
         if path.is_file():
             bak = path.with_suffix(path.suffix + ".bak")
             bak.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
     except Exception:
-        bak = None
-    tmp = path.with_suffix(path.suffix + f".tmp_{os.getpid()}")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+        pass
+    # 落盘统一走服务端 cfg_store：原子写 + .editor_history 历史快照 + 撤销/重做，
+    # 与 GUI 写入链路一致（cfg_store 不依赖 api.STATE，无循环 import）。
+    from editor.server import cfg_store as _cfg_store
+    result = _cfg_store.write_cfg(str(path), data, snapshot=True)
+    if not result.get("ok"):
+        raise OSError(result.get("error") or "配置表写入失败")
     return path
 
 

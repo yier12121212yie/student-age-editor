@@ -13,6 +13,7 @@ import threading
 from editor.server import ai_files
 from editor.server import fs_tools
 from editor.server.fs_tools import SandboxError
+from editor.server import cfg_store
 from editor.server.httpd import ApiRouter
 from editor.server import ai_domain_service
 from editor.server import ai_image_service
@@ -372,13 +373,11 @@ def _invalidate_mod_cfgs_cache():
 
 
 def _save_mod_cfg(cfg_name, data):
-    """原子写回单个配置表（与 cfg_write 行为一致），并刷新缓存。"""
+    """原子写回单个配置表（统一走 cfg_store，覆盖前留 .editor_history 快照），并刷新缓存。"""
     path = _cfg_path(cfg_name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = fs_tools._tmp_path_for(path)
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    result = cfg_store.write_cfg(path, data, snapshot=True)
+    if not result.get("ok"):
+        raise OSError(result.get("error") or "配置表写入失败")
     # 写回后刷新单表缓存并失效指纹，下次读取会重新比对
     with _MOD_CFGS_LOCK:
         _MOD_CFGS_CACHE[cfg_name] = data if isinstance(data, dict) else {}
@@ -722,9 +721,17 @@ def build_router():
     def cfg_read(name, _query=None, _body=None):
         cfg_name = _cfg_name(name)
         path = _cfg_path(cfg_name)
+        # mtime_ns：前端保存时回传做乐观锁（冲突检测用）；文件缺失为 None
+        mtime_ns = None
+        if os.path.isfile(path):
+            try:
+                mtime_ns = os.stat(path).st_mtime_ns
+            except OSError:
+                mtime_ns = None
         if not os.path.isfile(path):
             # 配置表尚不存在：返回空表（exists=false），前端可新建，保存时自动创建
-            return 200, {"cfg": cfg_name, "data": {}, "keys": [], "exists": False}
+            return 200, {"cfg": cfg_name, "data": {}, "keys": [], "exists": False,
+                         "mtime_ns": None}
         try:
             # utf-8-sig：兼容外部工具写出的带 BOM 文件
             with open(path, "r", encoding="utf-8-sig") as f:
@@ -732,7 +739,8 @@ def build_router():
         except OSError as e:
             return 500, {"error": "读取配置表失败: %s" % e, "cfg": cfg_name}
         if not content:
-            return 200, {"cfg": cfg_name, "data": {}, "keys": [], "exists": True}
+            return 200, {"cfg": cfg_name, "data": {}, "keys": [], "exists": True,
+                         "mtime_ns": mtime_ns}
         try:
             data = json.loads(content)
         except (ValueError, TypeError) as e:
@@ -740,7 +748,7 @@ def build_router():
             return 400, {"error": "配置表 JSON 解析失败: %s" % e, "cfg": cfg_name}
         return 200, {"cfg": cfg_name, "data": data if isinstance(data, dict) else {},
                      "keys": sorted(data.keys()) if isinstance(data, dict) else [],
-                     "exists": True}
+                     "exists": True, "mtime_ns": mtime_ns}
 
     @r.route("PUT", r"/api/cfg/(?P<name>[^/]+)")
     def cfg_write(name, _query=None, _body=None):
@@ -750,11 +758,21 @@ def build_router():
             return 400, {"error": "data must be a dict"}
         cfg_name = _cfg_name(name)
         path = _cfg_path(cfg_name)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = fs_tools._tmp_path_for(path)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        # 可选乐观锁：expect_mtime_ns 与磁盘不一致且未 force 时拒绝写入（409）
+        expect = body.get("expect_mtime_ns")
+        try:
+            expect = int(expect) if expect is not None else None
+        except (TypeError, ValueError):
+            expect = None
+        result = cfg_store.write_cfg(
+            path, data, expect_mtime_ns=expect, force=bool(body.get("force")),
+            snapshot=True)
+        if not result.get("ok"):
+            if result.get("conflict"):
+                return 409, {"error": "conflict", "cfg": cfg_name,
+                             "mtime_ns": result.get("mtime_ns"),
+                             "data": result.get("data")}
+            return 500, {"error": result.get("error") or "写入失败", "cfg": cfg_name}
         with _MOD_CFGS_LOCK:
             _MOD_CFGS_CACHE[cfg_name] = data if isinstance(data, dict) else {}
             global _MOD_CFGS_FP
@@ -764,7 +782,66 @@ def build_router():
             _ps.invalidate_cache()
         except Exception:
             pass
-        return 200, {"ok": True, "cfg": cfg_name, "keys": sorted(data.keys())}
+        return 200, {"ok": True, "cfg": cfg_name, "keys": sorted(data.keys()),
+                     "mtime_ns": result.get("mtime_ns"),
+                     "snapshot": result.get("snapshot")}
+
+    # ---------- 误操作保护：历史快照 / 撤销 / 重做 ----------
+    @r.route("GET", r"/api/history")
+    def history_list(_query=None, _body=None):
+        cfg_name = _cfg_name(str((_query or {}).get("cfg") or ""))
+        if not cfg_name:
+            return 400, {"error": "cfg required"}
+        try:
+            path = _cfg_path(cfg_name)
+        except SandboxError as e:
+            return 400, {"error": str(e)}
+        return 200, {"cfg": cfg_name, "entries": cfg_store.list_history(path)}
+
+    def _history_op(cfg_name, op):
+        """撤销/重做公共流程：成功后失效 mod 配置缓存与预览缓存。
+
+        返回 (ok, result)；ok=False 时 result 即失败响应体（如 nothing to undo）。
+        """
+        path = _cfg_path(cfg_name)
+        result = cfg_store.undo(path) if op == "undo" else cfg_store.redo(path)
+        if not result.get("ok"):
+            return False, result
+        _invalidate_mod_cfgs_cache()
+        try:
+            from editor.server import preview_service as _ps
+            _ps.invalidate_cache()
+        except Exception:
+            pass
+        return True, result
+
+    @r.route("POST", r"/api/history/undo")
+    def history_undo(_query=None, _body=None):
+        body = _body or {}
+        cfg_name = _cfg_name(str(body.get("cfg") or ""))
+        if not cfg_name:
+            return 400, {"error": "cfg required"}
+        try:
+            ok, result = _history_op(cfg_name, "undo")
+        except SandboxError as e:
+            return 400, {"error": str(e)}
+        if not ok:
+            return 400, result
+        return 200, result
+
+    @r.route("POST", r"/api/history/redo")
+    def history_redo(_query=None, _body=None):
+        body = _body or {}
+        cfg_name = _cfg_name(str(body.get("cfg") or ""))
+        if not cfg_name:
+            return 400, {"error": "cfg required"}
+        try:
+            ok, result = _history_op(cfg_name, "redo")
+        except SandboxError as e:
+            return 400, {"error": str(e)}
+        if not ok:
+            return 400, result
+        return 200, result
 
     # ---------- 指南校验 / 引用数据源 ----------
     @r.route("POST", r"/api/validate")
