@@ -77,6 +77,8 @@ class _BugfixPanelState extends State<BugfixPanel> {
         return '逻辑断层';
       case 'ERROR':
         return '致命错误';
+      case 'REF':
+        return '悬挂引用';
       case 'FIX_OPTION_1':
         return '恶性冲突';
       case 'FIX_TALK_1':

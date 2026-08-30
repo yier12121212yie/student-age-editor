@@ -374,6 +374,23 @@ def scan_bugs(mod_data, base_data):
                 except Exception as e:
                     add_bug(cfg_name, item_id, key, original_val, None, "引擎解析失败: %s" % e, "ERROR")
 
+    # ================== 5. 跨表引用完整性（声明式规则，ref_rules.py） ==================
+    # 覆盖 guide_rules.validate_cross 之表的字段级引用（npc/mapId/audio/bg/evtId…）。
+    # 数组字段给出 healed（剔除悬挂引用后可一键修复）；单值字段仅报告。
+    try:
+        from editor.core import ref_rules as _ref
+        base_ids = {cfg: set((b_data.get(cfg) or {}).keys()) for cfg in b_data}
+        for it in _ref.check_refs(m_data, base_ids):
+            desc = it["desc"]
+            if it["healed"] is not None:
+                add_bug(it["cfg"], it["rid"], it["field"], it["value"], it["healed"],
+                        "%s（可一键修复：剔除悬挂引用）" % desc, "REF")
+            else:
+                add_bug(it["cfg"], it["rid"], it["field"], it["value"], None,
+                        desc, "REF")
+    except Exception:
+        pass
+
     return bugs
 
 

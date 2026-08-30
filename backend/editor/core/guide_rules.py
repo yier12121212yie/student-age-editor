@@ -409,6 +409,16 @@ def validate_cross(tables, base_ids=None):
             if ne and ne not in evt_ids:
                 issues.append(("warn", "选项 %s: 下一事件ID %s 不存在（本Mod与原版均未找到）" % (rid, ne)))
 
+    # ---- 扩展：声明式跨表引用规则（其余表的字段级引用，见 ref_rules.py） ----
+    # 仅在调用方传入全量表时生效（bugfix 全量扫描 / CLI-TUI validate）；
+    # /api/validate 只载入三张核心表，超出范围的规则自然不触发。
+    try:
+        from editor.core import ref_rules as _ref
+        for it in _ref.check_refs(tables, base_ids):
+            issues.append(("warn", "%s %s: %s" % (it["cfg"], it["rid"], it["desc"])))
+    except Exception:
+        pass
+
     return issues
 
 

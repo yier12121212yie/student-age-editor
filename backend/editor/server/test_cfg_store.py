@@ -45,6 +45,10 @@ class WriteSnapshotTest(CfgStoreTestBase):
     def test_overwrite_creates_snapshot_with_old_content(self):
         self._write_direct({"1": {"id": 1, "name": "old"}})
         old_mtime = self._mtime()
+        # Windows 文件时间戳以系统时钟刻度（约 15.6ms）为粒度，连续两次写入
+        # 可能落在同一刻度内得到相同 mtime_ns；等待一个刻度再写保证时间推进。
+        import time
+        time.sleep(0.02)
         r = s.write_cfg(self.path, {"1": {"id": 1, "name": "new"}})
         self.assertTrue(r["ok"])
         self.assertIsNotNone(r["snapshot"])
