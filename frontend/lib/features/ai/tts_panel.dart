@@ -215,6 +215,11 @@ class _TtsPanelState extends State<TtsPanel> {
       final keyBase =
           widget.initTalkId.isNotEmpty ? widget.initTalkId : 'tts';
       final key = '${keyBase}_${DateTime.now().millisecondsSinceEpoch}';
+      // 从剧情导演打开时 initTalkId 形如 'talk_<对白id>'：剥离前缀得到真实对白 id，
+      // 供"配音打通"使用（后端写回 TalkCfg.audio，即引擎的逐句配音通道）
+      final bindTalkId = widget.initTalkId.startsWith('talk_')
+          ? widget.initTalkId.substring(5)
+          : (widget.initTalkId.isEmpty ? '' : widget.initTalkId);
       final r = await ApiClient.instance
           .post('/api/tts/save',
               body: {
@@ -223,6 +228,7 @@ class _TtsPanelState extends State<TtsPanel> {
                 'key': key,
                 'ogg': true, // 有 ffmpeg/oggenc 时自动转 Ogg（游戏原生格式）
                 'writeCfg': true,
+                if (bindTalkId.isNotEmpty) 'bindTalkId': bindTalkId,
                 'title': widget.initTitle.isNotEmpty
                     ? widget.initTitle
                     : _textCtrl.text.trim(),
@@ -240,7 +246,10 @@ class _TtsPanelState extends State<TtsPanel> {
       _refreshMaterials();
       final cfgNote =
           r['audioCfgId'] != null ? '，已登记 AudioCfg #${r['audioCfgId']}' : '';
-      _toast('已保存：$_savedPath$cfgNote');
+      final boundNote = r['boundTalkId'] != null
+          ? '，已绑定对白 ${r['boundTalkId']}'
+          : '';
+      _toast('已保存：$_savedPath$cfgNote$boundNote');
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);

@@ -2174,9 +2174,23 @@ def cmd_tts_synthesize(args):
                                         info["key"], title=text[:24])
         except TtsStoreError as e:
             err_console.print(f"[yellow]文件已保存，登记 AudioCfg 失败: {escape(str(e))}[/]")
+    # 配音打通：--bind-talk <对白id> 时把 TalkCfg.audio 指向新登记的 AudioCfg id
+    bind_talk = (getattr(args, "bind_talk", None) or "").strip()
+    bound_talk = None
+    if bind_talk:
+        if cfg_id is None:
+            err_console.print("[yellow]未登记 AudioCfg，跳过绑定（--no-cfg 时无法绑定）[/]")
+        else:
+            try:
+                from editor.server.tts_store import bind_talk_audio
+                bind_talk_audio(mod_root, bind_talk, cfg_id)
+                bound_talk = bind_talk
+            except TtsStoreError as e:
+                err_console.print(f"[yellow]绑定失败: {escape(str(e))}[/]")
     result = {"provider": provider, "mod": Path(mod_root).name, "key": info["key"],
               "path": info["path"], "ext": info["ext"], "bytes": info["bytes"],
-              "convertedOgg": info["convertedOgg"], "audioCfgId": cfg_id}
+              "convertedOgg": info["convertedOgg"], "audioCfgId": cfg_id,
+              "boundTalkId": bound_talk}
     if _want_json(args):
         _json_out(result)
         return
@@ -2186,6 +2200,8 @@ def cmd_tts_synthesize(args):
         console.print(f"[green]已登记[/] AudioCfg id={cfg_id}")
     else:
         console.print("[dim]未登记 AudioCfg (--no-cfg)[/]")
+    if bound_talk:
+        console.print(f"[green]已绑定对白[/] {bound_talk} → AudioCfg #{cfg_id} (TalkCfg.audio)")
     if not info["convertedOgg"] and not args.raw_wav:
         console.print("[dim]未检测到 ffmpeg/oggenc，保持 wav 格式（游戏原生为 Ogg，安装后可重试）[/]")
 
@@ -2709,6 +2725,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--key", default=None,
                    help="素材键名 (缺省 tts_<时间戳>; 建议自行命名如 talk_xxx)")
     a.add_argument("--no-cfg", dest="no_cfg", action="store_true", help="不登记 AudioCfg")
+    a.add_argument("--bind-talk", dest="bind_talk", default=None,
+                   help="绑定对白 id（配音打通：写回 TalkCfg.audio 指向该 AudioCfg）")
     a.add_argument("--raw-wav", dest="raw_wav", action="store_true",
                    help="跳过 Ogg 自动转码 (保留 wav)")
     a.add_argument("--json", action="store_true", help="JSON 输出")

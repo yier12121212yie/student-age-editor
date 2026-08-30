@@ -105,9 +105,8 @@ def save_audio(mod_root, audio, ext, key=None, ogg=False):
 def register_audio_cfg(cfg_dir, key, title=""):
     """在 cfg_dir/AudioCfg.json 登记一行配音（id 取当前最大+1），返回新 id。
 
-    原版 TalkCfg 无逐行配音通道（vocals 仅供人声效果叠加），因此只登记
-    AudioCfg（url 为 audio/tts/<key>，与落盘路径一致、不带扩展名），不碰
-    TalkCfg.vocals；素材供 mod 作者自行接入。
+    只登记 AudioCfg（url 为 audio/tts/<key>，与落盘路径一致、不带扩展名）；
+    素材接入对白用 bind_talk_audio（写 TalkCfg.audio）。
     """
     if not cfg_dir:
         raise TtsStoreError("未选择模组，无法登记 AudioCfg")
@@ -156,6 +155,39 @@ def register_audio_cfg(cfg_dir, key, title=""):
         if not result.get("ok"):
             raise TtsStoreError("登记 AudioCfg 失败: %s" % (result.get("error") or "未知错误"))
         return new_id
+
+
+def bind_talk_audio(mod_root, talk_id, audio_cfg_id):
+    """把对白的逐句配音通道 TalkCfg.audio 指向已登记的 AudioCfg id。
+
+    引擎语义依据：基表 TalkCfg 的 talk.audio 取值 58/58 均落在 AudioCfg id 上，
+    而 TalkCfg.vocals 在引擎二进制中无任何消费点（遗留字段，反序列化被忽略），
+    故"配音打通"写 audio 而非 vocals。走 cfg_store 统一写入口，
+    覆盖前自动留 .editor_history 历史快照。
+    """
+    talk_id = str(talk_id)
+    candidates = [
+        os.path.join(str(mod_root), "Cfgs", "zh-cn", "TalkCfg.json"),
+        os.path.join(str(mod_root), "Cfgs", "TalkCfg.json"),
+    ]
+    path = next((p for p in candidates if os.path.isfile(p)), None)
+    if path is None:
+        raise TtsStoreError("TalkCfg.json 不存在，无法绑定对白")
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise TtsStoreError("读取 TalkCfg 失败: %s" % e)
+    if not isinstance(data, dict):
+        raise TtsStoreError("TalkCfg 结构异常，无法绑定")
+    rec = data.get(talk_id)
+    if not isinstance(rec, dict):
+        raise TtsStoreError("对白 %s 不存在于 TalkCfg" % talk_id)
+    rec["audio"] = int(audio_cfg_id)
+    result = cfg_store.write_cfg(path, data, snapshot=True)
+    if not result.get("ok"):
+        raise TtsStoreError("写回 TalkCfg 失败: %s" % (result.get("error") or "未知错误"))
+    return {"talkId": talk_id, "audioCfgId": int(audio_cfg_id)}
 
 
 def list_materials(mod_root):

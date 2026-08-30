@@ -1518,7 +1518,24 @@ def build_router():
             except Exception as e:
                 return 200, {"ok": True, **saved, "audioCfgId": None,
                              "warning": "文件已保存，登记 AudioCfg 失败: %s" % e}
-        return 200, {"ok": True, **saved, "audioCfgId": audio_cfg_id}
+        # 配音打通：bindTalkId 非空时把 TalkCfg.audio 指向新登记的 AudioCfg id
+        # （引擎的逐句配音通道为 TalkCfg.audio，vocals 不被引擎消费）；
+        # 走 tts_store.bind_talk_audio 统一写入口并失效配置/预览缓存。
+        bind_talk = str(body.get("bindTalkId") or "").strip()
+        if audio_cfg_id is not None and bind_talk:
+            try:
+                tts_store.bind_talk_audio(STATE.mod_root, bind_talk, audio_cfg_id)
+                _invalidate_mod_cfgs_cache()
+                try:
+                    from editor.server import preview_service as _ps
+                    _ps.invalidate_cache()
+                except Exception:
+                    pass
+            except tts_store.TtsStoreError as e:
+                return 200, {"ok": True, **saved, "audioCfgId": audio_cfg_id,
+                             "warning": "音频已保存并登记，绑定对白失败: %s" % e}
+        return 200, {"ok": True, **saved, "audioCfgId": audio_cfg_id,
+                     "boundTalkId": bind_talk or None}
 
     @r.route("GET", r"/api/tts/audio")
     def tts_audio(_query=None, _body=None):
