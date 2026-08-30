@@ -193,6 +193,7 @@ class _ClassicShellState extends State<ClassicShell> {
           return Column(
             children: [
               _ClassicHeader(
+                uiMode: widget.uiMode,
                 modName: state.modName.isEmpty ? '(未加载/空白)' : state.modName,
                 onGlobalSearch: () => _showToolModal(
                   '🔍 全局搜索',
@@ -230,9 +231,7 @@ class _ClassicShellState extends State<ClassicShell> {
                     onUiModeChanged: widget.onUiModeChanged,
                   ),
                 ),
-                onToggleUiMode: () => widget.onUiModeChanged(
-                  uiMode == UiMode.creation ? UiMode.classic : UiMode.creation,
-                ),
+                onToggleUiMode: () => widget.onUiModeChanged(uiMode.nextCycle()),
               ),
               Expanded(
                 child: Row(
@@ -377,6 +376,7 @@ class _ClassicHeader extends StatelessWidget {
     required this.onToggleAi,
     required this.onSettings,
     required this.onToggleUiMode,
+    required this.uiMode,
   });
 
   final String modName;
@@ -391,6 +391,16 @@ class _ClassicHeader extends StatelessWidget {
   final VoidCallback onToggleAi;
   final VoidCallback onSettings;
   final VoidCallback onToggleUiMode;
+
+  /// 当前 UI 模式（循环切换按钮显示"下一模式"）。
+  final UiMode uiMode;
+
+  /// 循环切换按钮的目标模式图标：创作=画笔，经典=列表，剧情图=流程图。
+  IconData _nextModeIcon(UiMode m) => switch (m) {
+        UiMode.creation => FluentIcons.paint_brush_24_regular,
+        UiMode.classic => FluentIcons.list_24_regular,
+        UiMode.storyFlow => FluentIcons.flow_24_regular,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -437,7 +447,7 @@ class _ClassicHeader extends StatelessWidget {
                   const SizedBox(width: 16),
                   _HoverScale(
                     child: Tooltip(
-                      message: '切换到创作布局 (Cursor IDE 风格)',
+                      message: '切换到${uiMode.nextCycle().label}布局 (循环切换三种布局)',
                       child: MouseRegion(
                         cursor: SystemMouseCursors.click,
                         child: GestureDetector(
@@ -449,9 +459,9 @@ class _ClassicHeader extends StatelessWidget {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(FluentIcons.paint_brush_24_regular, size: 13, color: Color(0xFF6C5CE7)),
+                                Icon(_nextModeIcon(uiMode.nextCycle()), size: 13, color: Color(0xFF6C5CE7)),
                                 SizedBox(width: 6),
-                                Text('创作布局', style: TextStyle(fontSize: 11, color: palette.textMid)),
+                                Text('${uiMode.nextCycle().label}布局', style: TextStyle(fontSize: 11, color: palette.textMid)),
                               ],
                             ),
                           ),

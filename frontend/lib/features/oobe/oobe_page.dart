@@ -721,6 +721,14 @@ class _OobePageState extends State<OobePage> {
                 selected: _uiMode == UiMode.classic,
                 onTap: () => setState(() => _uiMode = UiMode.classic),
               ),
+              const SizedBox(height: 8),
+              _styleTile(
+                icon: FluentIcons.flow_24_regular,
+                title: '剧情图',
+                desc: '节点画布编排剧情分支（连线式流程）',
+                selected: _uiMode == UiMode.storyFlow,
+                onTap: () => setState(() => _uiMode = UiMode.storyFlow),
+              ),
             ],
           ),
         );

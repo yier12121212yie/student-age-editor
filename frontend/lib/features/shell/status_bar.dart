@@ -78,7 +78,7 @@ class StatusBar extends StatelessWidget {
               const SizedBox(width: 14),
               if (uiMode != null && onUiModeChanged != null)
                 _HoverButton(
-                  onTap: () => onUiModeChanged!(uiMode == UiMode.creation ? UiMode.classic : UiMode.creation),
+                  onTap: () => onUiModeChanged!(uiMode!.nextCycle()),
                   child: Row(
                     children: [
                       AnimatedSwitcher(
@@ -86,13 +86,13 @@ class StatusBar extends StatelessWidget {
                         transitionBuilder: (c, a) => RotationTransition(turns: a, child: c),
                         child: Icon(
                             key: ValueKey(uiMode),
-                            uiMode == UiMode.creation ? FluentIcons.list_24_regular : FluentIcons.paint_brush_24_regular,
+                            _nextModeIcon(uiMode!.nextCycle()),
                             size: 13,
                             color: palette.textMuted),
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        uiMode == UiMode.creation ? '切换经典布局' : '切换创作布局',
+                        '切换${uiMode!.nextCycle().label}布局',
                         style: TextStyle(fontSize: 12, color: palette.textMid),
                       ),
                       const SizedBox(width: 14),
@@ -118,6 +118,13 @@ class StatusBar extends StatelessWidget {
   }
 
   Widget _text(String s) => Text(s, style: TextStyle(fontSize: 12, color: palette.textSecondary));
+
+  /// 目标模式的图标（循环切换按钮用）：创作=画笔，经典=列表，剧情图=流程图。
+  IconData _nextModeIcon(UiMode m) => switch (m) {
+        UiMode.creation => FluentIcons.paint_brush_24_regular,
+        UiMode.classic => FluentIcons.list_24_regular,
+        UiMode.storyFlow => FluentIcons.flow_24_regular,
+      };
 }
 
 class _AnimatedText extends StatelessWidget {

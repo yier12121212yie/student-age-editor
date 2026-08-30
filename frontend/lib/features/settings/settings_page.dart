@@ -629,29 +629,47 @@ class _SettingsPageState extends State<SettingsPage> {
                   Text('界面风格',
                       style: TextStyle(fontSize: 13, color: palette.textHigh, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _StyleCard(
-                          title: '创作',
-                          desc: '图标活动栏 + 侧边栏 + 标签编辑区（当前默认）',
-                          icon: FluentIcons.paint_brush_24_regular,
-                          selected: widget.uiMode == UiMode.creation,
-                          onTap: () => widget.onUiModeChanged!(UiMode.creation),
+                  // 三种风格用 Wrap：宽度足够时单行三等分（与旧行布局一致），窄窗口自动换行避免溢出
+                  LayoutBuilder(builder: (context, box) {
+                    final w = box.maxWidth;
+                    final cardW = ((w - 20) / 3).clamp(140.0, 260.0);
+                    return Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        SizedBox(
+                          width: cardW,
+                          child: _StyleCard(
+                            title: '创作',
+                            desc: '图标活动栏 + 侧边栏 + 标签编辑区（当前默认）',
+                            icon: FluentIcons.paint_brush_24_regular,
+                            selected: widget.uiMode == UiMode.creation,
+                            onTap: () => widget.onUiModeChanged!(UiMode.creation),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _StyleCard(
-                          title: '经典',
-                          desc: '顶部工具栏 + 左侧分组导航（传统桌面风格）',
-                          icon: FluentIcons.list_24_regular,
-                          selected: widget.uiMode == UiMode.classic,
-                          onTap: () => widget.onUiModeChanged!(UiMode.classic),
+                        SizedBox(
+                          width: cardW,
+                          child: _StyleCard(
+                            title: '经典',
+                            desc: '顶部工具栏 + 左侧分组导航（传统桌面风格）',
+                            icon: FluentIcons.list_24_regular,
+                            selected: widget.uiMode == UiMode.classic,
+                            onTap: () => widget.onUiModeChanged!(UiMode.classic),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                        SizedBox(
+                          width: cardW,
+                          child: _StyleCard(
+                            title: '剧情图',
+                            desc: '节点画布编排剧情分支（连线式流程）',
+                            icon: FluentIcons.flow_24_regular,
+                            selected: widget.uiMode == UiMode.storyFlow,
+                            onTap: () => widget.onUiModeChanged!(UiMode.storyFlow),
+                          ),
+                        ),
+                      ],
+                    );
+                  }),
                   const SizedBox(height: 8),
                   Text('切换后立即生效，已打开的文档与 AI 配置会保留',
                       style: TextStyle(fontSize: 11, color: palette.textMuted)),

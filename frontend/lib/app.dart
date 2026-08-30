@@ -19,6 +19,7 @@ import 'features/shell/classic_shell.dart';
 import 'features/shell/editor_shell.dart';
 import 'features/shell/mobile_shell.dart';
 import 'features/shell/shell_state.dart';
+import 'features/shell/story_flow_shell.dart';
 
 const accentColor = Color(0xFF6C5CE7);
 
@@ -70,8 +71,12 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
 
   Future<void> _initUiMode() async {
     final mode = await UiMode.load();
-    final shell = ShellState(
-        defaultSidebarWidth: mode == UiMode.classic ? 280.0 : 320.0);
+    // 经典布局侧栏偏窄（分组导航），创作/剧情图使用相同宽度
+    final sidebar = switch (mode) {
+      UiMode.classic => 280.0,
+      UiMode.creation || UiMode.storyFlow => 320.0,
+    };
+    final shell = ShellState(defaultSidebarWidth: sidebar);
     unawaited(shell.loadSettings());
     if (!mounted) return;
     setState(() {
@@ -225,6 +230,9 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
           }
           if (_uiMode == UiMode.classic) {
             return ClassicShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
+          }
+          if (_uiMode == UiMode.storyFlow) {
+            return StoryFlowShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
           }
           return CreationShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
         },
