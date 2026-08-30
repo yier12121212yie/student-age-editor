@@ -1436,6 +1436,31 @@ def _cli_confirm_change(title: str, detail: str) -> bool:
     return ans in ("y", "yes")
 
 
+def _cli_ask(question: str, options=None) -> str:
+    """ask_user 回调：AI 主动向用户提问（面板 + 编号选项），阻塞等答案。
+
+    与写操作审批（_cli_confirm_change）并列的交互，返回文本直接回填给模型；
+    完全访问模式不跳过——提问永远要问。输入序号选选项，或直接输入自定义
+    回答；空输入 / EOF（非交互管道）视为「用户未回答」。Ctrl+C 向上抛出，
+    与聊天循环里既有的「已取消本轮请求」路径一致。
+    """
+    console.print(Panel(escape(question), title="AI 向你提问", border_style="cyan"))
+    opts = [str(o).strip() for o in (options or []) if isinstance(o, str) and o.strip()][:6]
+    if opts:
+        for i, o in enumerate(opts, 1):
+            console.print(f"  [bold cyan]{i}.[/] {escape(o)}")
+        prompt = "[bold green]输入序号选择，或直接输入你的回答（回车=未回答）: [/]"
+    else:
+        prompt = "[bold green]输入你的回答（回车=未回答）: [/]"
+    try:
+        ans = console.input(prompt).strip()
+    except EOFError:  # 非交互管道：无人应答
+        return "用户未回答"
+    if ans.isdigit() and 1 <= int(ans) <= len(opts):
+        return opts[int(ans) - 1]
+    return ans if ans else "用户未回答"
+
+
 def _make_agent_hooks(mod_name: str):
     """agent chat 的流式打印 / 工具记录 / 审批回调。"""
     state = {"round_text": False}
@@ -1515,6 +1540,7 @@ def cmd_agent_chat(args):
     engine = AgentEngine(
         tools,
         confirm=confirm,
+        ask=_cli_ask,  # ask_user 提问：与写审批并列，完全访问模式也不跳过
         on_text=on_text,
         on_tool_round_text=on_round,
         on_tool_result=on_result,

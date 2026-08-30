@@ -38,6 +38,7 @@ class AgentEngine:
         self,
         tools: AgentTools,
         confirm: Optional[Callable[[str, str], bool]] = None,
+        ask: Optional[Callable] = None,
         on_text: Optional[Callable[[str], None]] = None,
         on_tool_round_text: Optional[Callable[[str], None]] = None,
         on_tool_result: Optional[Callable[[str, str], None]] = None,
@@ -49,6 +50,10 @@ class AgentEngine:
     ):
         self.tools = tools
         self.confirm = confirm
+        # ask_user 提问回调 ask(question, options) -> str：AI 主动向用户提问时
+        # 阻塞等待回答；None 时 ask_user 返回「环境不支持」提示。与 confirm
+        # 并列注入（完全访问模式也不短路提问）。子代理引擎绝不传 ask。
+        self.ask = ask
         self.on_text = on_text
         self.on_tool_round_text = on_tool_round_text
         self.on_tool_result = on_tool_result
@@ -110,7 +115,7 @@ class AgentEngine:
                     # 结果同样是普通字符串，走下方既有 provider 回填路径
                     result = self._run_parallel_subagents(call.arguments)
                 else:
-                    result = self.tools.execute(call, confirm=self.confirm)
+                    result = self.tools.execute(call, confirm=self.confirm, ask=self.ask)
                 results.append(result)
                 if self.on_tool_result:
                     self.on_tool_result(call.name, result)
@@ -186,7 +191,7 @@ class AgentEngine:
 
         def _one(t):
             sub_tools = self.tools.clone_readonly()
-            sub_engine = AgentEngine(sub_tools, confirm=None, mod_context=self.mod_context,
+            sub_engine = AgentEngine(sub_tools, confirm=None, ask=None, mod_context=self.mod_context,
                                      max_rounds=8, system_builder=prompt.subagent_system_prompt)
             sub_client = LlmClient(dict(self._client_settings))
             try:

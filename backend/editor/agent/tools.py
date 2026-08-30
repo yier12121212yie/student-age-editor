@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Agent 工具注册表与离线执行器——ai_panel.dart _tools/_runTool 的 Python 移植。
 
-14 个工具——13 个文本工具（GUI 的 generate_image / edit_image 不在终端版范围内）
-+ 1 个终端版专属的并行子代理派生工具：
+15 个工具——13 个文本工具（GUI 的 generate_image / edit_image 不在终端版范围内）
++ 1 个终端版专属的并行子代理派生工具
++ 1 个三端通用的向用户提问工具：
   领域 CRUD×6  list_domains / list_domain_items / get_domain_item /
                update_domain_item / create_domain_item / delete_domain_item
   字典         get_game_dicts
@@ -11,6 +12,9 @@
   舞台×3       get_stage_dicts / get_talk_stage / set_talk_stage
   子代理       spawn_subagents（由 engine 特判执行，把只读调研子任务
                并行分派给只读克隆工具集的子代理，见 READ_ONLY_TOOLS）
+  提问         ask_user（经 execute 注入的 ask(question, options) 回调
+               阻塞等待用户回答，与 confirm 并列；不进 READ_ONLY_TOOLS，
+               子代理永远拿不到 ask 回调）
 
 数据面直接复用 server 离线服务（ai_domain_service / stage_service / fs_tools），
 经 ai_domain_service.set_offline_cfg_dir 注入「当前模组」，与 GUI 同一份逻辑
@@ -72,6 +76,9 @@ class AgentTools:
         self._workspace_root: Path | None = None
         # 只读克隆标记（clone_readonly 置 True）：仅暴露/放行 READ_ONLY_TOOLS
         self._readonly: bool = False
+        # ask_user 提问回调，execute(call, confirm, ask) 每次调用时暂存；
+        # 命名为 _ask_user_cb 以避开类方法 _ask（写审批助手）的名字遮蔽
+        self._ask_user_cb = None
 
     # ------------------------------------------------------------------ 上下文
     def use_mod(self, mod_root, workspace_root=None):
@@ -296,6 +303,18 @@ class AgentTools:
                 },
             },
         },
+        {
+            "name": "ask_user",
+            "description": "向用户提问并等待回答。当任务信息不足、或存在多种合理做法需要用户决策时使用；不要用它闲聊或问已知道的信息。",
+            "parameters": {
+                "type": "object",
+                "required": ["question"],
+                "properties": {
+                    "question": {"type": "string", "description": "要问用户的问题，一句话说清楚"},
+                    "options": {"type": "array", "items": {"type": "string"}, "description": "可选：给用户的候选项（2-4 个）；不给则用户自由输入"},
+                },
+            },
+        },
     ]
 
     def tool_defs(self) -> list:
@@ -332,12 +351,19 @@ class AgentTools:
             return False
 
     # ------------------------------------------------------------------ 执行
-    def execute(self, call: ToolCall, confirm=None) -> str:
+    def execute(self, call: ToolCall, confirm=None, ask=None) -> str:
         """执行一次工具调用并返回结果字符串（直接回填给模型）。
 
         confirm(title, detail) -> bool 为写操作审批回调，由 UI 层注入
         （CLI 终端 y/N、TUI 弹窗）；None 时写操作一律拒绝。
+        ask(question, options) -> str 为 ask_user 提问回调，同样由 UI 层
+        注入（阻塞等待用户回答）；None 时 ask_user 返回「环境不支持」提示。
+
+        为了让既有 14 个 _tool_*(args, confirm) 签名保持不变，ask 在 execute
+        开头暂存到实例属性 _ask_user_cb（引擎对单个 AgentTools 是单线程顺序
+        调用；只读子代理持有独立克隆实例且引擎不传 ask，因此并发安全）。
         """
+        self._ask_user_cb = ask
         try:
             return self._dispatch(call, confirm)
         except Exception as exc:  # 与 dart _runTool 的 catch 一致：错误回填模型
@@ -526,6 +552,21 @@ class AgentTools:
             return "用户拒绝修改舞台。请停止该操作并向用户说明。"
         ai_domain_service.update_domain_item("story", "TalkCfg", talk_id, {"roles": preview["new_roles"]})
         return "已更新对白 %s 的人物舞台：\n%s" % (talk_id, preview["new_desc"])
+
+    # ---- 提问 ----
+    def _tool_ask_user(self, args, confirm) -> str:
+        """向用户提问并等待回答：ask 回调由 execute 暂存（见 _ask_user_cb）。
+
+        返回值（用户答案文本 / 「用户未回答」/ 环境不支持提示）直接回填给
+        模型。不走 confirm 审批，也与完全访问模式无关——提问永远要问。
+        """
+        question = str(args.get("question") or "").strip()
+        raw = args.get("options")
+        options = ([o.strip() for o in raw if isinstance(o, str) and o.strip()][:6]
+                   if isinstance(raw, list) else [])
+        if self._ask_user_cb is None:
+            return "当前环境不支持向用户提问，请基于已有信息继续，或明确说明你缺少哪些信息。"
+        return self._ask_user_cb(question, options)
 
     # ------------------------------------------------------------------ 审批
     @staticmethod

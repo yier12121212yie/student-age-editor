@@ -500,6 +500,18 @@ class AiPanelState extends State<AiPanel> {
             },
           },
         ),
+        AiToolDef(
+          name: 'ask_user',
+          description: '向用户提问并等待回答。当任务信息不足、或存在多种合理做法需要用户决策时使用；不要用它闲聊或问已知道的信息。',
+          parameters: {
+            'type': 'object',
+            'required': ['question'],
+            'properties': {
+              'question': {'type': 'string', 'description': '要问用户的问题，一句话说清楚'},
+              'options': {'type': 'array', 'items': {'type': 'string'}, 'description': '可选：给用户的候选项（2-4 个）；不给则用户自由输入'},
+            },
+          },
+        ),
       ];
 
   @override
@@ -1419,6 +1431,15 @@ class AiPanelState extends State<AiPanel> {
           return await _runGenerateImage(call, rec);
         case 'edit_image':
           return await _runEditImage(call, rec);
+        case 'ask_user':
+          final question = ((call.arguments['question'] as String?) ?? '').trim();
+          final rawOpts = call.arguments['options'];
+          final options = <String>[
+            if (rawOpts is List)
+              for (final o in rawOpts)
+                if (o is String && o.trim().isNotEmpty) o.trim(),
+          ].take(6).toList();
+          return await _askUser(question, options);
         default:
           // 插件工具兜底分支（置于内置工具之后）
           for (final pt in _pluginTools) {
@@ -1844,6 +1865,80 @@ class AiPanelState extends State<AiPanel> {
       );
     });
     return completer.future;
+  }
+
+  /// ask_user 提问对话框：AI 主动向用户提问并等待回答（答案回填给模型）。
+  /// 与写操作审批不同：不检查 isFullAccess——完全访问模式同样要弹。
+  /// 选项按钮点按即以该选项文本完成；自由输入可提交自定义回答；
+  /// 跳过 / 空输入返回「用户未回答」。
+  Future<String> _askUser(String question, List<String> options) async {
+    final completer = Completer<String>();
+    final inputCtrl = TextEditingController();
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final size = MediaQuery.sizeOf(ctx);
+        return fluent.ContentDialog(
+          title: const Text('AI 向你提问'),
+          content: SizedBox(
+            width: min(480, size.width - 48),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText(question),
+                if (options.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final opt in options)
+                        fluent.Button(
+                          onPressed: () {
+                            completer.complete(opt);
+                            Navigator.pop(ctx);
+                          },
+                          child: Text(opt),
+                        ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 10),
+                fluent.TextBox(
+                  controller: inputCtrl,
+                  placeholder: options.isEmpty ? '输入你的回答…' : '或输入自定义回答…',
+                  onSubmitted: (v) {
+                    final t = v.trim();
+                    completer.complete(t.isEmpty ? '用户未回答' : t);
+                    Navigator.pop(ctx);
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () {
+                completer.complete('用户未回答');
+                Navigator.pop(ctx);
+              },
+              child: const Text('跳过'),
+            ),
+            fluent.FilledButton(
+              onPressed: () {
+                final t = inputCtrl.text.trim();
+                completer.complete(t.isEmpty ? '用户未回答' : t);
+                Navigator.pop(ctx);
+              },
+              child: const Text('提交回答'),
+            ),
+          ],
+        );
+      },
+    );
+    return completer.future.whenComplete(inputCtrl.dispose);
   }
 
   /// 两个 JSON 对象的行级 diff（- 删除行 / + 新增行 / 相同行保留）。

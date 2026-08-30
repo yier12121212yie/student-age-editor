@@ -3478,6 +3478,75 @@ class AgentHistoryScreen(ModalScreen):
         self.dismiss(None)
 
 
+class AskScreen(ModalScreen[str]):
+    """ask_user 提问弹窗：AI 主动向用户提问（选项按钮 + 自由输入 + 跳过）。
+
+    dismiss 值为回答文本直接回填给模型；跳过 / 空输入 / Esc 统一
+    dismiss("用户未回答")。与写操作审批无关——完全访问模式同样要弹。
+    """
+
+    DEFAULT_CSS = """
+    AskScreen { align: center middle; }
+    #ask-dialog {
+        width: 64;
+        height: auto;
+        max-height: 80%;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+    #ask-title { text-style: bold; color: $primary; }
+    #ask-text { margin: 1 0; }
+    #ask-options { height: auto; margin-bottom: 1; }
+    #ask-options Button { margin-right: 1; }
+    #ask-inputbar { height: 3; margin-bottom: 1; }
+    #ask-input { width: 1fr; }
+    #ask-hint { color: $text-muted; }
+    """
+
+    def __init__(self, question: str, options=None):
+        super().__init__()
+        self._question = question
+        self._options = [str(o).strip() for o in (options or []) if str(o).strip()][:6]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ask-dialog"):
+            yield Static("🤖 AI 向你提问", id="ask-title")
+            yield Static(self._question, id="ask-text")
+            if self._options:
+                with Horizontal(id="ask-options"):
+                    for i, opt in enumerate(self._options):
+                        yield Button(f"{i + 1}. {opt}", id=f"ask-opt-{i}")
+            with Horizontal(id="ask-inputbar"):
+                yield Input(placeholder="或输入自定义回答…", id="ask-input")
+                yield Button("发送", id="ask-send", variant="primary")
+                yield Button("跳过", id="ask-skip")
+            yield Static("点选项或输入回答后发送；跳过 / 留空 = 未回答", id="ask-hint")
+
+    def on_mount(self):
+        self.query_one("#ask-input", Input).focus()
+
+    @on(Button.Pressed)
+    def _button(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid.startswith("ask-opt-"):
+            self.dismiss(self._options[int(bid[len("ask-opt-"):])])
+        elif bid == "ask-send":
+            text = self.query_one("#ask-input", Input).value.strip()
+            self.dismiss(text or "用户未回答")
+        elif bid == "ask-skip":
+            self.dismiss("用户未回答")
+
+    @on(Input.Submitted, "#ask-input")
+    def on_submit(self, event: Input.Submitted):
+        self.dismiss(event.value.strip() or "用户未回答")
+
+    def on_key(self, event):
+        if event.key == "escape":
+            event.stop()
+            self.dismiss("用户未回答")
+
+
 class AgentChatScreen(ModalScreen):
     """AI 助手聊天面板：TextArea 流式回复 + 工具记录 + ConfirmScreen 审批桥接。"""
 
@@ -3558,7 +3627,8 @@ class AgentChatScreen(ModalScreen):
         mod_ctx = (f"当前模组：{self._mod_name}。默认只修改这个模组，不要读取或修改其他模组的内容。"
                    if self._mod_name else "")
         self._engine = AgentEngine(
-            tools, confirm=self._confirm_bridge, on_text=self._on_text,
+            tools, confirm=self._confirm_bridge, ask=self._ask_bridge,
+            on_text=self._on_text,
             on_tool_round_text=self._on_round_text, on_tool_result=self._on_tool_result,
             on_retry=self._on_retry, mod_context=mod_ctx)
         self._client = LlmClient(settings)
@@ -3694,6 +3764,26 @@ class AgentChatScreen(ModalScreen):
         self.app.call_from_thread(ask)
         ev.wait()
         return box["ok"]
+
+    def _ask_bridge(self, question, options):
+        """worker 线程提问桥：push AskScreen + Event 等待用户回答。
+
+        与 _confirm_bridge 同一跨线程模式；区别是**不做**完全访问短路——
+        ask_user 是 AI 主动向用户提问，任何权限模式都必须弹给用户。"""
+        import threading
+        ev = threading.Event()
+        box = {"answer": "用户未回答"}
+
+        def ask():
+            def _cb(answer):
+                text = answer.strip() if isinstance(answer, str) else ""
+                box["answer"] = text or "用户未回答"
+                ev.set()
+            self.app.push_screen(AskScreen(question, options), _cb)
+
+        self.app.call_from_thread(ask)
+        ev.wait()
+        return box["answer"]
 
     # ---- 发送 ----
     @on(Input.Submitted, "#agent-input")
