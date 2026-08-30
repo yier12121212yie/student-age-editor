@@ -58,6 +58,15 @@ def setup(ctx):
     ctx.register_command("greet", "say hi", cmd_greet)
 
     ctx.register_panel("p1", "Dice Panel", "dice", "roll dice")
+
+    ctx.register_flow_card("phone", {
+        "name": "打电话",
+        "applies_to": "talk",
+        "color": "#3498DB",
+        "match": {"field": "screenEffect", "equals": [4007]},
+        "body_fields": ["content"],
+        "description": "屏幕效果 4007（打电话）模式的对白卡",
+    })
 '''
 
 
@@ -291,6 +300,12 @@ class ContextRegistrationTest(PluginSystemBase):
         self.assertIn("test1__dice", info["contributions"]["tools"])
         self.assertIn("test1.greet", info["contributions"]["commands"])
         self.assertEqual(info["contributions"]["panels"][0]["panel_id"], "p1")
+        self.assertEqual(info["contributions"]["flow_cards"],
+                         [{"type_id": "phone", "name": "打电话", "applies_to": "talk"}])
+        fc = s.flow_cards()
+        self.assertTrue(any(c["type_id"] == "phone" and c["color"] == "#3498DB"
+                            and c["match"] == {"field": "screenEffect", "equals": [4007]}
+                            for c in fc))
         self.assertIsNone(s.get_plugin_info("nope"))
 
     def test_agent_exec_confirm_and_unknown(self):

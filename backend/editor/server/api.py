@@ -2542,6 +2542,10 @@ def build_router():
     def plugins_ui(_query=None, _body=None):
         return 200, {"panels": plugin_system.ui_panels()}
 
+    @r.route("GET", r"/api/plugins/ui/flow_cards")
+    def plugins_flow_cards(_query=None, _body=None):
+        return 200, {"flow_cards": plugin_system.flow_cards()}
+
     @r.route("GET", r"/api/plugins/agent/tools")
     def plugins_agent_tools(_query=None, _body=None):
         return 200, {"tools": plugin_system.agent_tool_defs()}

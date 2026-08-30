@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import '../lib/features/story/story_flow_models.dart';
+import 'package:student_age_editor/features/story/story_flow_models.dart';
 
 void main() {
   group('buildFlowGraph 线性链', () {
@@ -195,6 +195,57 @@ void main() {
           starts: ['1000001001']);
       final pos = layoutFlow(graph: g);
       expect(pos['1000001002']!.dy, isNot(pos['1000001003']!.dy));
+    });
+  });
+
+  group('插件流程卡片', () {
+    test('match 命中 → 对白节点带卡型标注', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': 'x', 'screenEffect': [[4007]]},
+        '1000001002': {'content': 'y'},
+      };
+      final cards = <Map<String, dynamic>>[
+        {
+          'type_id': 'phone',
+          'name': '打电话',
+          'applies_to': 'talk',
+          'color': '#3498DB',
+          'match': {'field': 'screenEffect', 'equals': [4007]},
+        },
+      ];
+      final g = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: cards);
+      final a = g.nodeById('1000001001')!;
+      expect(a.cardKey, 'phone');
+      expect(a.cardLabel, '打电话');
+      expect(a.cardColor, '#3498DB');
+      expect(g.nodeById('1000001002')!.cardKey, isEmpty);
+    });
+
+    test('选项卡型标注 option 节点且不影响缺失节点', () {
+      final talks = <String, dynamic>{
+        '1000001001': {
+          'content': '问', 'nextTalk': [], 'option': [100000101],
+        },
+      };
+      final opts = <String, dynamic>{
+        '100000101': {'content': '表白', 'talkId': [], 'talkId2': []},
+      };
+      final cards = <Map<String, dynamic>>[
+        {
+          'type_id': 'confess',
+          'name': '告白选项',
+          'applies_to': 'option',
+          'color': '#E91E63',
+          'match': {'field': 'content', 'equals': '表白'},
+        },
+      ];
+      final g = buildFlowGraph(
+          talks: talks, options: opts, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: cards);
+      expect(g.nodeById('100000101')!.cardKey, 'confess');
+      expect(g.nodeById('100000101')!.cardColor, '#E91E63');
     });
   });
 

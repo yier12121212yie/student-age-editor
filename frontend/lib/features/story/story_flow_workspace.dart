@@ -44,6 +44,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
 
   // 全量表（GET /api/cfg 的 data）
   final Map<String, Map<String, dynamic>> _tablesData = {};
+
+  /// 插件流程卡片声明（GET /api/plugins/ui/flow_cards）。
+  List<Map<String, dynamic>> _flowCards = [];
   bool _loading = true;
   String _error = '';
 
@@ -101,6 +104,16 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         _tablesData[_tables[i]] = raw is Map
             ? {for (final e in raw.entries) e.key.toString(): e.value}
             : {};
+      }
+      // 插件流程卡片声明（引擎无影响，命中 match 的节点按卡型渲染）
+      try {
+        final fc = await ApiClient.instance.get('/api/plugins/ui/flow_cards');
+        final list = fc['flow_cards'];
+        _flowCards = list is List
+            ? [for (final c in list) if (c is Map) Map<String, dynamic>.from(c)]
+            : [];
+      } catch (_) {
+        _flowCards = [];
       }
       if (mounted) {
         setState(() {
@@ -276,6 +289,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       starts: _evtId == null
           ? const []
           : storyStartIds(_evtId!, _tablesData['EvtCfg']!, _stageTalks),
+      cardStyles: _flowCards,
     );
   }
 
@@ -453,6 +467,75 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       _selectedEdge = null;
       _dirty = true;
     });
+  }
+
+  /// 插件流程卡片：以内置新节点预置卡型 match 字段，使其按插件定义渲染。
+  void _addPluginCard(String typeId, String appliesTo) {
+    Map<String, dynamic>? style;
+    for (final c in _flowCards) {
+      if (c['type_id'] == typeId) {
+        style = c;
+        break;
+      }
+    }
+    if (style == null) return;
+    void applyMatch(Map<String, dynamic> rec) {
+      final m = style!['match'];
+      if (m is Map && m['field'] is String && m['equals'] != null) {
+        rec[m['field'] as String] = m['equals'];
+      }
+    }
+
+    final selPos = _positions[_selectedNode] ?? const Offset(60, 40);
+    if (appliesTo == 'talk') {
+      final newId = appendTalkId(null, _evtId ?? '', _stageTalks);
+      if (newId.isEmpty) {
+        _toast('无法分配对白 ID', fluent.InfoBarSeverity.warning);
+        return;
+      }
+      final rec = <String, dynamic>{
+        'id': int.tryParse(newId) ?? 0,
+        'roleIds': <dynamic>[],
+        'content': '【${style['name'] ?? '新对白'}】',
+        'nextTalk': <dynamic>[],
+        'nextTalk2': <dynamic>[],
+        'option': <dynamic>[],
+      };
+      applyMatch(rec);
+      _stageTalks[newId] = rec;
+      _positions[newId] = selPos + const Offset(0, kFlowNodeH + 24);
+      setState(() {
+        _selectedNode = newId;
+        _selectedEdge = null;
+        _dirty = true;
+      });
+    } else {
+      final sel = _selectedNode;
+      if (sel == null || !_stageTalks.containsKey(sel)) {
+        _toast('请先选中一个对白节点', fluent.InfoBarSeverity.warning);
+        return;
+      }
+      final oid = allocOptionId(getTalkPrefix(sel), _stageOpts.keys.toSet());
+      if (oid == null) {
+        _toast('选项 ID 已用尽', fluent.InfoBarSeverity.warning);
+        return;
+      }
+      final rec = <String, dynamic>{
+        'id': int.tryParse(oid) ?? 0,
+        'content': '【${style['name'] ?? '新选项'}】',
+        'talkId': <dynamic>[],
+        'talkId2': <dynamic>[],
+      };
+      applyMatch(rec);
+      _stageOpts[oid] = rec;
+      pushEdgeTarget(_stageTalks[sel], 'option', oid);
+      _positions[oid] = selPos + const Offset(kFlowNodeW + 60, 20);
+      setState(() {
+        _selectedNode = oid;
+        _selectedEdge = null;
+        _dirty = true;
+      });
+    }
   }
 
   // ---------- 事件增删 ----------
@@ -795,9 +878,13 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                 onSelected: (v) {
                   if (v == 'talk') _addTalkAfterSelected();
                   if (v == 'option') _addOptionForSelected();
+                  if (v.startsWith('card:')) {
+                    final parts = v.split(':');
+                    if (parts.length >= 3) _addPluginCard(parts[1], parts[2]);
+                  }
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
                     value: 'talk',
                     child: Row(children: [
                       Icon(Icons.add_comment, size: 14),
@@ -805,7 +892,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                       Text('插入新对白（选中对白后）', style: TextStyle(fontSize: 12)),
                     ]),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'option',
                     child: Row(children: [
                       Icon(Icons.alt_route, size: 14),
@@ -813,6 +900,23 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                       Text('为选中对白添加选项', style: TextStyle(fontSize: 12)),
                     ]),
                   ),
+                  if (_flowCards.isNotEmpty) const PopupMenuDivider(),
+                  // 插件流程卡片：创建节点时预置 match 字段，节点按卡型渲染
+                  for (final c in _flowCards)
+                    PopupMenuItem(
+                      value: 'card:${c['type_id']}:${c['applies_to']}',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.extension, size: 14),
+                          const SizedBox(width: 8),
+                          Text(
+                            '插件卡片 · ${c['name'] ?? c['type_id']}'
+                            '（${c['applies_to'] == 'talk' ? '对白' : '选项'}）',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
                 child: fluent.Button(
                   onPressed: _evtId == null ? null : () {},

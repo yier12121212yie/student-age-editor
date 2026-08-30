@@ -420,6 +420,10 @@ class _FlowNodeCard extends StatelessWidget {
   final List<_OutPort> outputPorts;
 
   Color get _tint {
+    if (node.cardColor.isNotEmpty) {
+      final hex = int.tryParse(node.cardColor.replaceFirst('#', ''), radix: 16);
+      if (hex != null) return Color(0xFF000000 | hex);
+    }
     if (node.isMissing) return const Color(0xFFE74C3C);
     if (node.isOption) return const Color(0xFF6C5CE7);
     if (node.hasCheck) return const Color(0xFFE67E22);
@@ -491,7 +495,9 @@ class _FlowNodeCard extends StatelessWidget {
                           SizedBox(width: 5 * scale),
                           Expanded(
                             child: Text(
-                              node.title,
+                              node.cardLabel.isNotEmpty
+                                  ? '${node.title} · ${node.cardLabel}'
+                                  : node.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(

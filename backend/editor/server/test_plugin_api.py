@@ -145,7 +145,8 @@ class PluginApiDetailTest(PluginApiTest):
         self.assertEqual(status, 200)
         self.assertEqual(payload["id"], "p1")
         self.assertEqual(payload["contributions"],
-                         {"routes": [], "tools": [], "commands": [], "panels": []})
+                         {"routes": [], "tools": [], "commands": [], "panels": [],
+                          "flow_cards": []})
         status, payload = self.router.dispatch("GET", "/api/plugins/nope", {}, None)
         self.assertEqual(status, 404)
 

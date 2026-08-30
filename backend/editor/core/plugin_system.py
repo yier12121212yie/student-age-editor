@@ -414,6 +414,7 @@ def get_plugin_info(pid):
         ctx = _loaded.get(pid)
         entry["contributions"] = ctx.contributions() if ctx is not None else {
             "routes": [], "tools": [], "commands": [], "panels": [],
+            "flow_cards": [],
         }
         return entry
 
@@ -466,6 +467,7 @@ class PluginContext(object):
         self.tools = []
         self.commands = []
         self.panels = []
+        self.flow_cards = []
 
     @property
     def data_dir(self):
@@ -537,6 +539,39 @@ class PluginContext(object):
             "description": description or "",
         })
 
+    def register_flow_card(self, type_id, spec):
+        """声明剧情流程图的自定义节点卡片类型（声明型贡献，无执行体）。
+
+        spec 字段：
+          name         必填，卡片显示名
+          applies_to   必填，"talk" | "option"（作用对象节点类型）
+          icon         可选，图标名（白名单映射由前端决定）
+          color        可选，"#RRGGBB" 卡片主色
+          match        可选，{"field": 字段名, "equals": 值} 识别规则——
+                       该对白/选项记录的字段等于该值时按此卡片渲染
+          body_fields  可选，卡片正文优先展示的字段名列表（content 之外）
+          hidden_ports 可选，隐藏的输出端口名列表（如 ["checkFail"]）
+          description  可选
+        """
+        self._check_active()
+        if not type_id or not isinstance(spec, dict):
+            raise ValueError("register_flow_card: type_id 与 spec(dict) 必填")
+        applies_to = str(spec.get("applies_to") or "talk")
+        if applies_to not in ("talk", "option"):
+            raise ValueError("register_flow_card: applies_to 须为 talk 或 option")
+        self.flow_cards.append({
+            "type_id": str(type_id),
+            "name": str(spec.get("name") or type_id),
+            "icon": str(spec.get("icon") or ""),
+            "color": str(spec.get("color") or ""),
+            "applies_to": applies_to,
+            "match": spec.get("match") if isinstance(spec.get("match"), dict) else None,
+            "body_fields": list(spec.get("body_fields") or []),
+            "hidden_ports": list(spec.get("hidden_ports") or []),
+            "description": str(spec.get("description") or ""),
+            "plugin_id": self.pid,
+        })
+
     def contributions(self):
         return {
             "routes": ["%s %s" % (r["method"], r["pattern"]) for r in self.routes],
@@ -545,6 +580,9 @@ class PluginContext(object):
             "panels": [{"panel_id": p["panel_id"], "title": p["title"],
                         "icon": p["icon"], "description": p["description"]}
                        for p in self.panels],
+            "flow_cards": [{"type_id": c["type_id"], "name": c["name"],
+                            "applies_to": c["applies_to"]}
+                           for c in self.flow_cards],
         }
 
 
@@ -619,6 +657,19 @@ def ui_panels():
             for p in _loaded[pid].panels:
                 out.append({"panel_id": p["panel_id"], "title": p["title"],
                             "icon": p["icon"], "description": p["description"]})
+        return out
+
+
+def flow_cards():
+    """聚合已加载插件的流程卡片声明（供剧情图工作区注册表）。"""
+    with _lock:
+        out = []
+        for pid in sorted(_loaded):
+            for c in _loaded[pid].flow_cards:
+                out.append({k: c[k] for k in (
+                    "type_id", "name", "icon", "color", "applies_to",
+                    "match", "body_fields", "hidden_ports", "description",
+                    "plugin_id")})
         return out
 
 

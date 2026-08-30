@@ -1,0 +1,7 @@
+{
+  "id": "flow_cards_demo",
+  "name": "流程卡片示例",
+  "version": "1.0.0",
+  "author": "示例作者",
+  "description": "演示插件流程卡片：对白与选项两种卡型，按 match 自动渲染，并可预置新建节点"
+}

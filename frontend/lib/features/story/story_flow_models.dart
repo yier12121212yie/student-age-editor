@@ -64,6 +64,9 @@ class FlowNode {
     this.content = '',
     this.hasCheck = false,
     this.isNarrator = false,
+    this.cardKey = '',
+    this.cardLabel = '',
+    this.cardColor = '',
   });
 
   final FlowNodeKind kind;
@@ -74,6 +77,11 @@ class FlowNode {
   /// 检定双支（check 非空且 nextTalk2 非空）。
   final bool hasCheck;
   final bool isNarrator;
+
+  /// 插件流程卡片标注（空=未命中任何卡型）。
+  final String cardKey;
+  final String cardLabel;
+  final String cardColor; // #RRGGBB
 
   /// 缺失/跨事件引用目标（终端徽标，不可编辑）。
   bool get isMissing => kind == FlowNodeKind.missing;
@@ -139,14 +147,41 @@ class FlowGraph {
 /// 由当前事件的舞台副本构建流程图。
 ///
 /// [evtTitles] 事件 id → 标题，用于跨事件终端边显示。
+/// [cardStyles] 插件流程卡片声明（GET /api/plugins/ui/flow_cards），按
+/// match 规则给节点标注卡型（颜色/名称随后端插件定义渲染）。
 FlowGraph buildFlowGraph({
   required Map<String, dynamic> talks,
   required Map<String, dynamic> options,
   required List<String> prefixes,
   Map<String, String> evtTitles = const {},
   List<String>? starts,
+  List<Map<String, dynamic>> cardStyles = const [],
 }) {
   final nodes = <String, FlowNode>{};
+
+  /// 卡型 match 命中即返回带卡片标注的节点副本。
+  FlowNode applyCardStyle(FlowNode n, dynamic rec, String appliesTo) {
+    for (final s in cardStyles) {
+      if (s['applies_to'] != appliesTo) continue;
+      final m = s['match'];
+      if (m is! Map) continue;
+      final field = cln(m['field']);
+      if (field.isEmpty) continue;
+      if (!_cardMatch(rec, field, m['equals'])) continue;
+      return FlowNode(
+        kind: n.kind,
+        id: n.id,
+        roleName: n.roleName,
+        content: n.content,
+        hasCheck: n.hasCheck,
+        isNarrator: n.isNarrator,
+        cardKey: cln(s['type_id']),
+        cardLabel: cln(s['name']),
+        cardColor: cln(s['color']),
+      );
+    }
+    return n;
+  }
 
   void ensureOption(String id) {
     if (nodes.containsKey(id)) return;
@@ -177,24 +212,24 @@ FlowGraph buildFlowGraph({
     final talk = value;
     final role = cln(talk['roleName']);
     final check = talk['check'];
-    nodes[key] = FlowNode(
+    nodes[key] = applyCardStyle(FlowNode(
       kind: FlowNodeKind.talk,
       id: key,
       roleName: role,
       content: cln(talk['content']),
       hasCheck: check is List && check.isNotEmpty,
       isNarrator: role == '旁白',
-    );
+    ), talk, 'talk');
   });
   options.forEach((key, value) {
     if (value is! Map) return;
     if (!storyIsInPrefixes(prefixes, key, isOption: true)) return;
-    nodes[key] = FlowNode(
+    nodes[key] = applyCardStyle(FlowNode(
       kind: FlowNodeKind.option,
       id: key,
       roleName: '',
       content: cln(value['content']),
-    );
+    ), value, 'option');
   });
 
   final edges = <FlowEdge>[];
@@ -263,6 +298,21 @@ String _eventOf(String id) {
   final s = cln(id);
   if (s.length > 3) return s.substring(0, s.length - 3);
   return s;
+}
+
+/// 卡型 match 判定：字段值（含嵌套 List，如 screenEffect [[4007]]）与
+/// equals 做 cln 归一比较（List → toString）。
+bool _cardMatch(dynamic rec, String field, dynamic eq) {
+  if (rec is! Map) return false;
+  final val = rec[field];
+  if (val == null) return false;
+  if (cln(val) == cln(eq)) return true;
+  if (val is List) {
+    for (final x in val) {
+      if (cln(x) == cln(eq)) return true;
+    }
+  }
+  return false;
 }
 
 /// 分层 DAG 自动布局：从事件起点 BFS 定深度（列），同列按到达顺序定行。

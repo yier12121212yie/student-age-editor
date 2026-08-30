@@ -2341,7 +2341,7 @@ def cmd_plugin_info(args):
     console.print(t)
     contrib = info.get("contributions") or {}
     console.print("\n[bold]contributions[/]")
-    for kind in ("routes", "tools", "commands", "panels"):
+    for kind in ("routes", "tools", "commands", "panels", "flow_cards"):
         items = contrib.get(kind) or []
         if items:
             for it in items:
