@@ -198,15 +198,20 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
             AppThemeMode.light => ThemeMode.light,
             AppThemeMode.dark => ThemeMode.dark,
           },
-          home: _loaded && _shell != null
-              ? (_showOobe
-                  ? OobePage(
-                      onFinished: _onOobeFinished,
-                      forced: widget.forceOobe,
-                      onUiModeChanged: _setUiMode,
-                    )
-                  : _buildShell())
-              : _buildLoading(),
+          home: Material(
+            // 壳基于 Fluent UI，但部分控件（InkWell/PopupMenuButton 等）来自 Material，
+            // 全局提供透明 Material 祖先满足其渲染校验
+            type: MaterialType.transparency,
+            child: _loaded && _shell != null
+                ? (_showOobe
+                    ? OobePage(
+                        onFinished: _onOobeFinished,
+                        forced: widget.forceOobe,
+                        onUiModeChanged: _setUiMode,
+                      )
+                    : _buildShell())
+                : _buildLoading(),
+          ),
         );
       },
     );

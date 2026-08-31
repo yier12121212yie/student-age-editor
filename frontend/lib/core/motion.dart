@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'app_theme.dart';
 
@@ -39,23 +41,22 @@ class FadeSlide extends StatefulWidget {
 class _FadeSlideState extends State<FadeSlide>
     with SingleTickerProviderStateMixin {
   late final AnimationController _c;
-  late final Animation<double> _opacity;
-  late final Animation<Offset> _slide;
+  late final CurvedAnimation _curve;
+  Timer? _delayTimer;
 
   @override
   void initState() {
     super.initState();
     _c = AnimationController(vsync: this, duration: widget.duration);
-    _opacity = CurvedAnimation(parent: _c, curve: AppMotion.easeOut);
-    _slide = Tween<Offset>(begin: widget.offset, end: Offset.zero)
-        .animate(CurvedAnimation(parent: _c, curve: AppMotion.easeOut));
-    Future.delayed(widget.delay, () {
+    _curve = CurvedAnimation(parent: _c, curve: AppMotion.easeOut);
+    _delayTimer = Timer(widget.delay, () {
       if (mounted) _c.forward();
     });
   }
 
   @override
   void dispose() {
+    _delayTimer?.cancel();
     _c.dispose();
     super.dispose();
   }
@@ -63,8 +64,21 @@ class _FadeSlideState extends State<FadeSlide>
   @override
   Widget build(BuildContext context) {
     return FadeTransition(
-      opacity: _opacity,
-      child: SlideTransition(position: _slide, child: widget.child),
+      opacity: _curve,
+      // SlideTransition 的 position 是「子项尺寸的比例」而非像素，
+      // 直接喂像素值会把动画放大到子项高度的数值倍（44px 高按钮 × 12 = 528px 位移）。
+      // 用 Transform.translate 保持像素语义，位移量与控件尺寸无关。
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, child) {
+          final v = _curve.value;
+          return Transform.translate(
+            offset: widget.offset * (1 - v),
+            child: child,
+          );
+        },
+        child: widget.child,
+      ),
     );
   }
 }
@@ -83,6 +97,7 @@ class _ScaleFadeState extends State<ScaleFade>
   late final AnimationController _c;
   late final Animation<double> _opacity;
   late final Animation<double> _scale;
+  Timer? _delayTimer;
   @override
   void initState() {
     super.initState();
@@ -90,13 +105,14 @@ class _ScaleFadeState extends State<ScaleFade>
     _opacity = CurvedAnimation(parent: _c, curve: AppMotion.easeOut);
     _scale = Tween<double>(begin: 0.92, end: 1.0)
         .animate(CurvedAnimation(parent: _c, curve: AppMotion.spring));
-    Future.delayed(widget.delay, () {
+    _delayTimer = Timer(widget.delay, () {
       if (mounted) _c.forward();
     });
   }
 
   @override
   void dispose() {
+    _delayTimer?.cancel();
     _c.dispose();
     super.dispose();
   }

@@ -112,9 +112,10 @@ class ActivityBar extends StatelessWidget {
                   padding: EdgeInsets.zero,
                   child: ConstrainedBox(
                     constraints: BoxConstraints(minHeight: layoutH),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
+                    child: IntrinsicHeight(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
                     const SizedBox(height: 8),
                     FadeSlide(delay: AppMotion.stagger(0), child: _BarItem(pane: SidePane.mods, icon: FluentIcons.box_24_regular, tip: '模组', selected: current == SidePane.mods, onTap: () => onSelect(SidePane.mods))),
                     const SizedBox(height: 2),
@@ -173,6 +174,7 @@ class ActivityBar extends StatelessWidget {
                     FadeSlide(delay: AppMotion.stagger(9 + pluginState.uiPanels.length), child: _BarItem(pane: SidePane.settings, icon: FluentIcons.settings_24_regular, tip: '设置', selected: current == SidePane.settings, onTap: () => onSelect(SidePane.settings))),
                     const SizedBox(height: 8),
                   ],
+                  ),
                 ),
               ),
             ),

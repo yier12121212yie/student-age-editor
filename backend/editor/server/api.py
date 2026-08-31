@@ -19,6 +19,7 @@ from editor.server import ai_domain_service
 from editor.server import ai_image_service
 from editor.server import tts_service
 from editor.server import tts_store
+from editor.server import flow_assets
 from editor.server import resource_pack
 from editor.server import cloud_sync
 from editor.server import realtime_sync
@@ -1740,8 +1741,10 @@ def build_router():
     def aa_keys(_query=None, _body=None):
         idx = _ensure_aa_index()
         store = _ensure_pack_store()
-        q = ((_query or {}).get("q") or "").strip().lower()
-        limit = int((_query or {}).get("limit") or 500)
+        query = _query or {}
+        q = (query.get("q") or "").strip().lower()
+        limit = int(query.get("limit") or 500)
+        scope = (query.get("scope") or "").strip().lower()
 
         # 游戏索引与内置包键集合取并集（去重），统一按数量截断
         def pick(*groups):
@@ -1760,6 +1763,83 @@ def build_router():
                 if len(out) >= limit:
                     break
             return out
+
+        # ---------- scope=flow：剧情图媒体资产（仅 CG 图片 + 音乐） ----------
+        if scope == "flow":
+            # BGM 判定信号：base + mod 的 AudioCfg（type==1 的 url basename）
+            audio_rows = {}
+            base = STATE.base
+            if base is not None:
+                try:
+                    audio_rows.update((base.data or {}).get("AudioCfg") or {})
+                except Exception:
+                    pass
+            try:
+                audio_rows.update(_load_mod_cfgs().get("AudioCfg") or {})
+            except Exception:
+                pass
+            music_urls = flow_assets.music_url_basenames(audio_rows)
+            # 纹理过滤可行性：游戏索引已按 v3 重扫（带 texmeta），或内置包可读图头
+            tex_filterable = bool(idx is not None and idx.has_texmeta()) \
+                or bool(store is not None and store.active)
+
+            def flow_pick(groups, keep):
+                """groups=[(keys, bundle_fn, size_fn), ...]，keep(k, bundle, size)。"""
+                out = []
+                seen = set()
+                for keys, bundle_fn, size_fn in groups:
+                    for k in keys or []:
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        if q and q not in k.lower():
+                            continue
+                        size = size_fn(k) if size_fn else None
+                        if keep(k, bundle_fn(k) if bundle_fn else "", size):
+                            out.append(k)
+                        if len(out) >= limit:
+                            return out
+                return out
+
+            tex_groups = []
+            if idx is not None:
+                tex_groups.append((idx.tex_keys(), idx.tex_bundle, idx.tex_meta))
+            if store is not None and store.active:
+                tex_groups.append((store.tex_keys(), store.tex_path, store.tex_meta))
+            aud_groups = []
+            if idx is not None:
+                aud_groups.append((idx.aud_keys(), idx.aud_bundle, None))
+            if store is not None and store.active:
+                aud_groups.append((store.aud_keys(), None, None))
+
+            tex = flow_pick(
+                tex_groups,
+                lambda k, b, s: (not tex_filterable)
+                or flow_assets.is_cg_image(k, b, (s or [0, 0])[0], (s or [0, 0])[1]))
+            # 过滤后全空但源不缺 key：判据不可用（如旧索引/无 PIL），回退全量
+            tex_had_source = any(keys for keys, _, _ in tex_groups)
+            if not tex and tex_had_source and not q:
+                tex_filterable = False
+                tex = flow_pick(tex_groups, lambda k, b, s: True)
+            # 音乐：bundle 分组/表信号恒可用；两者皆缺时回退全量并标记未过滤
+            music_filterable = bool(idx is not None) or bool(music_urls)
+            aud = flow_pick(
+                aud_groups,
+                lambda k, b, s: (not music_filterable) or flow_assets.is_music(k, b, music_urls))
+            meta = {}
+            if tex_filterable:
+                for k in tex:
+                    for keys, _, size_fn in tex_groups:
+                        if k in (keys or []) and size_fn:
+                            s = size_fn(k)
+                            if s:
+                                meta[k] = s
+                            break
+            status = "ready" if (idx is not None or (store is not None and store.active)) else STATE.aa_status
+            return 200, {"status": status, "tex": tex, "aud": aud,
+                         "txt": pick(idx.txt_keys() if idx else [],
+                                     store.txt_keys() if store else []),
+                         "meta": meta, "flow_filtered": bool(tex_filterable)}
 
         tex = pick(idx.tex_keys() if idx else [], store.tex_keys() if store else [])
         aud = pick(idx.aud_keys() if idx else [], store.aud_keys() if store else [])

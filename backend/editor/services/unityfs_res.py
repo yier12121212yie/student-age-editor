@@ -14,7 +14,8 @@ AUD_PREFIX = "unityfs_aud://"
 _SLOW_TAG = "_role_"
 _MAX_ENVS = 2
 # aa_index.json 缓存格式版本：索引结构变化（如新增 cabs 映射）时递增以强制重建
-CACHE_VERSION = 2
+# v3：tex 增加 texmeta（宽/高）采集，剧情图资源面板按分辨率识别 CG 图
+CACHE_VERSION = 3
 
 
 def _collect_cabs(env, bundle_path, out):
@@ -46,8 +47,21 @@ def detect_game_aa_dir():
         return ""
 
 
-def _collect_env(env, bundle_path, tex, aud, txt):
-    """从 env 收集纹理/音频/配置表键。"""
+def _tex_size(obj):
+    """读 Texture2D/Sprite 头部取宽高（不解码像素）；失败返回 None。"""
+    try:
+        o = obj.read()
+        w = int(getattr(o, "m_Width", 0) or 0)
+        h = int(getattr(o, "m_Height", 0) or 0)
+        if w > 0 and h > 0:
+            return [w, h]
+    except Exception:
+        pass
+    return None
+
+
+def _collect_env(env, bundle_path, tex, aud, txt, texmeta=None):
+    """从 env 收集纹理/音频/配置表键；texmeta 顺带记录 [w, h]（供 CG 判定）。"""
     for obj in env.objects:
         obj_type = obj.type.name
         if obj_type not in ("Texture2D", "Sprite", "AudioClip", "TextAsset"):
@@ -72,10 +86,14 @@ def _collect_env(env, bundle_path, tex, aud, txt):
                 txt[key] = [bundle_path, obj.path_id]
         elif key not in tex:
             tex[key] = [bundle_path, obj.path_id]
+            if texmeta is not None:
+                size = _tex_size(obj)
+                if size:
+                    texmeta[key] = size
 
 
 def _index_bundle_batch(paths):
-    """进程池 worker：批量扫 bundle，返回 [(path, tex, aud, txt, cabs), ...] 供主进程合并。"""
+    """进程池 worker：批量扫 bundle，返回 [(path, tex, aud, txt, cabs, texmeta), ...]。"""
     import UnityPy
     results = []
     for bundle_path in paths:
@@ -83,13 +101,14 @@ def _index_bundle_batch(paths):
         aud = {}
         txt = {}
         cabs = {}
+        texmeta = {}
         try:
             env = UnityPy.load(bundle_path)
-            _collect_env(env, bundle_path, tex, aud, txt)
+            _collect_env(env, bundle_path, tex, aud, txt, texmeta)
             _collect_cabs(env, bundle_path, cabs)
         except Exception:
             pass
-        results.append((bundle_path, tex, aud, txt, cabs))
+        results.append((bundle_path, tex, aud, txt, cabs, texmeta))
     return results
 
 
@@ -103,6 +122,7 @@ class UnityFsIndex(object):
         self._aud = {}
         self._txt = {}
         self._cabs = {}
+        self._texmeta = {}
         self._bundle_set = set()
         self._envs = {}
         self._lock = threading.Lock()
@@ -136,6 +156,7 @@ class UnityFsIndex(object):
             self._aud = dict(data.get("aud") or {})
             self._txt = dict(data.get("txt") or {})
             self._cabs = dict(data.get("cabs") or {})
+            self._texmeta = dict(data.get("texmeta") or {})
             self._bundle_set = set(data.get("bundles") or [])
             return True
         except Exception:
@@ -191,6 +212,7 @@ class UnityFsIndex(object):
                 "aud": aud,
                 "txt": txt,
                 "cabs": dict(self._cabs),
+                "texmeta": dict(self._texmeta),
                 "bundles": bundles,
             }
             tmp = idx + ".tmp"
@@ -201,7 +223,7 @@ class UnityFsIndex(object):
             pass
 
     def _merge_batch(self, results):
-        for path, tex, aud, txt, cabs in results:
+        for path, tex, aud, txt, cabs, texmeta in results:
             self._bundle_set.add(path)
             for k, v in tex.items():
                 if k not in self._tex:
@@ -215,6 +237,8 @@ class UnityFsIndex(object):
             for k, v in cabs.items():
                 if k not in self._cabs:
                     self._cabs[k] = v
+            for k, v in (texmeta or {}).items():
+                self._texmeta.setdefault(k, v)
         self.index_done = len(self._bundle_set)
 
     def _run_pool(self, paths):
@@ -290,7 +314,7 @@ class UnityFsIndex(object):
             return
         self._bundle_set.add(path)
         self.index_done = len(self._bundle_set)
-        _collect_env(env, path, self._tex, self._aud, self._txt)
+        _collect_env(env, path, self._tex, self._aud, self._txt, self._texmeta)
         _collect_cabs(env, path, self._cabs)
 
     def has_tex(self, key):
@@ -310,6 +334,25 @@ class UnityFsIndex(object):
 
     def txt_keys(self):
         return list(self._txt)
+
+    def tex_meta(self, key):
+        """返回纹理 [w, h]（缺省 None）。旧 v2 缓存无此信息。"""
+        m = self._texmeta.get(_norm_key(key))
+        return list(m) if isinstance(m, (list, tuple)) and len(m) == 2 else None
+
+    def tex_bundle(self, key):
+        """纹理所在 bundle 文件路径（缺省空串）：Addressable 分组名信号。"""
+        item = self._tex.get(_norm_key(key))
+        return str(item[0]) if item else ""
+
+    def aud_bundle(self, key):
+        """音频所在 bundle 文件路径（缺省空串）。"""
+        item = self._aud.get(_norm_key(key))
+        return str(item[0]) if item else ""
+
+    def has_texmeta(self):
+        """缓存是否携带纹理尺寸（v3 扫描后为真）。"""
+        return bool(self._texmeta)
 
     def export_text(self, key):
         """读取配置表 TextAsset 内容（utf-8 字节）。"""

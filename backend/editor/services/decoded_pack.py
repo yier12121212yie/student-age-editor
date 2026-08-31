@@ -47,6 +47,7 @@ class DecodedPackStore(object):
         self._tex = {}
         self._aud = {}
         self._txt = []
+        self._texsizes = {}
         tex_dir = os.path.join(pack_dir, "tex")
         aud_dir = os.path.join(pack_dir, "aud")
         try:
@@ -107,6 +108,32 @@ class DecodedPackStore(object):
 
     def aud_path(self, key):
         return self._aud.get((key or "").strip().lower())
+
+    def tex_meta(self, key):
+        """返回贴图文件 [w, h]：PIL 只读图像头部，按需缓存；失败 None。
+
+        与 UnityFsIndex.tex_meta 接口对齐（剧情图 CG 判定用）。资源包目录
+        是平铺的解码文件（无 bundle 分组信息），仅有尺寸信号可用。
+        """
+        path = self.tex_path(key)
+        if not path:
+            return None
+        ck = (key or "").strip().lower()
+        if not hasattr(self, "_texsizes"):
+            self._texsizes = {}
+        if ck in self._texsizes:
+            return self._texsizes[ck]
+        size = None
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                w, h = im.size
+            if w > 0 and h > 0:
+                size = [int(w), int(h)]
+        except Exception:
+            size = None
+        self._texsizes[ck] = size
+        return size
 
     def read_file(self, path):
         """读取解码文件字节与扩展名；失败返回 None。"""

@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
-import 'package:flutter/material.dart' hide Card;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/api_client.dart';
@@ -9,11 +10,14 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import 'story_flow_graph.dart';
 import 'story_flow_models.dart';
+import 'story_flow_node_presets.dart';
+import 'story_flow_side_toolbar.dart';
 import 'story_logic.dart';
 
-/// 剧情图模式工作区：左=事件列表，中=流程图画布，右=节点编辑面板。
+/// 剧情图模式工作区：满铺流程图画布 + 浮动层（事件切换器、操作簇、
+/// 左侧工具栏、媒体资产面板），节点内联展开编辑参数。
 ///
-/// 数据流与故事导演一致：并行加载 7 张表 → 选事件用 stageOf 切舞台副本 →
+/// 数据流与故事导演一致：并行加载 8 张表 → 选事件用 stageOf 切舞台副本 →
 /// 编辑副本 → mergeStageBack 后顺序 PUT 三张表。节点位置持久化到
 /// `<mod根>/.editor_flow.json`（游戏不读取该文件）。
 class StoryFlowWorkspace extends StatefulWidget {
@@ -21,12 +25,24 @@ class StoryFlowWorkspace extends StatefulWidget {
     super.key,
     required this.state,
     required this.onPreview,
+    this.aiOpen = false,
+    this.onToggleAi,
+    required this.onOpenPlugins,
+    required this.onOpenSettings,
   });
 
   final AppState state;
 
   /// 事件 id → 打开场景预览（宿主打开 OpenDoc.preview）。
   final ValueChanged<String> onPreview;
+
+  /// AI 侧栏开关状态与切换（透传外壳的 AiPanel 控制）。
+  final bool aiOpen;
+  final VoidCallback? onToggleAi;
+
+  /// 插件页 / 设置页入口（外壳切换内容栈视图）。
+  final VoidCallback onOpenPlugins;
+  final VoidCallback onOpenSettings;
 
   @override
   State<StoryFlowWorkspace> createState() => _StoryFlowWorkspaceState();
@@ -35,7 +51,7 @@ class StoryFlowWorkspace extends StatefulWidget {
 class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   static const _tables = [
     'EvtCfg', 'TalkCfg', 'OptionCfg',
-    'PersonCfg', 'BgCfg', 'AudioCfg', 'EvtTypeCfg',
+    'PersonCfg', 'BgCfg', 'AudioCfg', 'EvtTypeCfg', 'CGCfg',
   ];
 
   final _graphKey = GlobalKey<StoryFlowGraphState>();
@@ -64,19 +80,28 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   Map<String, dynamic> _flowFile = {};
   Timer? _layoutSaveTimer;
 
+  /// `.editor_flow.json` 是否已加载完成；就绪前禁止回写布局，
+  /// 避免用空壳数据覆盖其他事件已保存的节点坐标。
+  bool _flowLoaded = false;
+
   // 选中
   String? _selectedNode;
   FlowEdge? _selectedEdge;
 
-  // 事件列表
-  String _evtFilter = '';
-  bool _checkError = false;
+  // 内联编辑展开的节点
+  final Set<String> _expandedNodes = {};
+
+  /// 检定 check JSON 解析失败的节点（卡片内红字提示）。
+  final Set<String> _checkInvalid = {};
+
+  // 媒体资产
+  bool _assetsOpen = false;
+  String? _dragHoverNode;
 
   @override
   void initState() {
     super.initState();
-    _load();
-    _loadFlowFile();
+    _init();
   }
 
   @override
@@ -89,6 +114,14 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   // ---------- 数据层 ----------
+  /// 先加载布局文件再加载配置表：`_load` 完成后要按 `_flowFile` 恢复
+  /// 节点位置，且布局未就绪前禁止回写，两步必须串行不能并行。
+  Future<void> _init() async {
+    await _loadFlowFile();
+    if (!mounted) return;
+    await _load();
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -105,16 +138,18 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             ? {for (final e in raw.entries) e.key.toString(): e.value}
             : {};
       }
-      // 插件流程卡片声明（引擎无影响，命中 match 的节点按卡型渲染）
+      // 卡型声明：插件 flow_cards 在前、内置节点预设在后（first-match 即插件优先）
+      List<Map<String, dynamic>> pluginCards = [];
       try {
         final fc = await ApiClient.instance.get('/api/plugins/ui/flow_cards');
         final list = fc['flow_cards'];
-        _flowCards = list is List
+        pluginCards = list is List
             ? [for (final c in list) if (c is Map) Map<String, dynamic>.from(c)]
             : [];
       } catch (_) {
-        _flowCards = [];
+        pluginCards = [];
       }
+      _flowCards = [...pluginCards, ...builtinFlowCardSpecs()];
       if (mounted) {
         setState(() {
           _loading = false;
@@ -140,11 +175,13 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       if (text is String && text.trim().isNotEmpty) {
         final parsed = jsonDecode(text);
         if (parsed is Map) {
-          _flowFile = parsed.cast<String, dynamic>();
+          _flowFile = Map<String, dynamic>.from(parsed);
         }
       }
     } catch (_) {
       // 文件不存在或沙箱拒绝：使用空布局
+    } finally {
+      _flowLoaded = true;
     }
   }
 
@@ -172,11 +209,58 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       if (action == 'discard') {
         _discardStage();
       } else {
-        await _save();
-        if (!mounted) return;
+        final saved = await _save();
+        if (!mounted || !saved) return;
       }
     }
     if (mounted) _selectEventInner(evtId);
+  }
+
+  /// 全局切换 Mod：未保存修改先确认，POST /api/mods/select 成功后同步
+  /// AppState，并重载布局文件与配置表（事件列表/舞台数据/保存目标
+  /// 全部随新 mod 根切换，与模组页、AI 面板的切换语义一致）。
+  Future<void> _switchMod(String name) async {
+    if (name == widget.state.modName) return;
+    if (_dirty) {
+      final action = await _confirmDirtyDiscard();
+      if (!mounted) return;
+      if (action == null) return;
+      if (action == 'discard') {
+        _discardStage();
+      } else {
+        final saved = await _save();
+        if (!mounted || !saved) return;
+      }
+    }
+    // 取消防抖中的布局回写：该写入指向旧 mod 的沙箱，切换后不得串档
+    _layoutSaveTimer?.cancel();
+    _layoutSaveTimer = null;
+    try {
+      final r = await ApiClient.instance
+          .post('/api/mods/select', body: {'name': name});
+      final mod = r['mod'];
+      if (mod is! Map) throw '响应缺少 mod 字段';
+      if (!mounted) return;
+      widget.state.setMod(
+          mod['name'] as String? ?? name, mod['root'] as String? ?? '');
+      // 清掉旧 mod 的舞台残留：新 mod 若无事件，_load 不会自动选中
+      _evtId = null;
+      _prefixes = const [];
+      _stageTalks = {};
+      _stageOpts = {};
+      _talkBaseline = {};
+      _optBaseline = {};
+      _flowFile = {};
+      _flowLoaded = false;
+      await _loadFlowFile();
+      if (!mounted) return;
+      await _load();
+      if (!mounted) return;
+      _toast('已切换到 Mod：$name', fluent.InfoBarSeverity.success);
+    } catch (e) {
+      if (!mounted) return;
+      _toast('切换 Mod 失败: $e', fluent.InfoBarSeverity.error);
+    }
   }
 
   String? _eventTitle(String id) {
@@ -191,23 +275,28 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   void _discardStage() {
     _stageTalks = _deepCopy(_talkBaseline);
     _stageOpts = _deepCopy(_optBaseline);
+    _resetPanelCtls();
     if (mounted) setState(() => _dirty = false);
   }
 
   void _selectEventInner(String evtId) {
-    _evtId = evtId;
-    _prefixes = storyRelatedPrefixes(evtId, _tablesData['EvtCfg']!);
-    final allTalks = _tablesData['TalkCfg']!;
-    final allOpts = _tablesData['OptionCfg']!;
-    _stageTalks = stageOf(allTalks, _prefixes);
-    _stageOpts = stageOf(allOpts, _prefixes, isOption: true);
-    _talkBaseline = _deepCopy(_stageTalks);
-    _optBaseline = _deepCopy(_stageOpts);
-    _dirty = false;
-    _selectedNode = null;
-    _selectedEdge = null;
-    _loadPositionsForEvent();
-    _syncCheckField();
+    setState(() {
+      _evtId = evtId;
+      _prefixes = storyRelatedPrefixes(evtId, _tablesData['EvtCfg']!);
+      final allTalks = _tablesData['TalkCfg']!;
+      final allOpts = _tablesData['OptionCfg']!;
+      _stageTalks = stageOf(allTalks, _prefixes);
+      _stageOpts = stageOf(allOpts, _prefixes, isOption: true);
+      _talkBaseline = _deepCopy(_stageTalks);
+      _optBaseline = _deepCopy(_stageOpts);
+      _dirty = false;
+      _selectedNode = null;
+      _selectedEdge = null;
+      _expandedNodes.clear();
+      _checkInvalid.clear();
+      _dragHoverNode = null;
+      _loadPositionsForEvent();
+    });
   }
 
   Future<String?> _confirmDirtyDiscard() {
@@ -237,8 +326,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     );
   }
 
-  Future<void> _save() async {
-    if (_evtId == null) return;
+  Future<bool> _save() async {
+    if (_evtId == null) return false;
     final talks = _tablesData['TalkCfg']!;
     final opts = _tablesData['OptionCfg']!;
     mergeStageBack(talks, _talkBaseline, _stageTalks, _prefixes);
@@ -248,16 +337,18 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       await ApiClient.instance.put('/api/cfg/OptionCfg', body: {'data': opts});
       await ApiClient.instance.put('/api/cfg/EvtCfg',
           body: {'data': _tablesData['EvtCfg']!});
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _talkBaseline = _deepCopy(_stageTalks);
         _optBaseline = _deepCopy(_stageOpts);
         _dirty = false;
       });
       _toast('已保存', fluent.InfoBarSeverity.success);
+      return true;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       _toast('保存失败: $e', fluent.InfoBarSeverity.error);
+      return false;
     }
   }
 
@@ -317,6 +408,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   void _markLayoutDirty() {
+    // 布局文件未加载完成前不回写：此时 _flowFile 可能是空壳，
+    // 全量 PUT 会清空其他事件已保存的节点坐标。
+    if (!_flowLoaded) return;
     final evt = _evtId;
     if (evt == null) return;
     final saved = <String, dynamic>{};
@@ -399,6 +493,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       }
     }
     _positions.remove(id);
+    _expandedNodes.remove(id);
+    _checkInvalid.remove(id);
     setState(() {
       _selectedNode = null;
       _selectedEdge = null;
@@ -469,7 +565,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     });
   }
 
-  /// 插件流程卡片：以内置新节点预置卡型 match 字段，使其按插件定义渲染。
+  /// 卡型节点添加（插件卡与内置预设共用）：新建 talk/option 记录后，
+  /// 按 match 的 equals 播种字段（插件协议）、再整体合并 initial 预置字段
+  /// （内置预设），使其按卡型渲染。
   void _addPluginCard(String typeId, String appliesTo) {
     Map<String, dynamic>? style;
     for (final c in _flowCards) {
@@ -483,6 +581,14 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       final m = style!['match'];
       if (m is Map && m['field'] is String && m['equals'] != null) {
         rec[m['field'] as String] = m['equals'];
+      }
+    }
+
+    void applyInitial(Map<String, dynamic> rec) {
+      final init = style!['initial'];
+      if (init is Map && init.isNotEmpty) {
+        // JSON 往返深拷贝：避免多个新节点共享预设里的 const 列表
+        rec.addAll(jsonDecode(jsonEncode(init)) as Map<String, dynamic>);
       }
     }
 
@@ -502,6 +608,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         'option': <dynamic>[],
       };
       applyMatch(rec);
+      applyInitial(rec);
       _stageTalks[newId] = rec;
       _positions[newId] = selPos + const Offset(0, kFlowNodeH + 24);
       setState(() {
@@ -527,6 +634,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         'talkId2': <dynamic>[],
       };
       applyMatch(rec);
+      applyInitial(rec);
       _stageOpts[oid] = rec;
       pushEdgeTarget(_stageTalks[sel], 'option', oid);
       _positions[oid] = selPos + const Offset(kFlowNodeW + 60, 20);
@@ -639,6 +747,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         _evtId = null;
         _stageTalks = {};
         _stageOpts = {};
+        _expandedNodes.clear();
+        _checkInvalid.clear();
         setState(() => _dirty = false);
         _toast('事件已删除', fluent.InfoBarSeverity.success);
       } catch (e) {
@@ -649,70 +759,278 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   // ---------- 字段编辑 ----------
+  /// 控制器按 key（事件|节点|字段 或专用键）懒创建，仅在创建时设初值。
+  /// 重建时不重置文本：用户正在输入的中间态（逗号分隔、半截 JSON）一旦被
+  /// 回退成上一个合法值，字段就永远打不进去。需要刷新文本时用
+  /// [_resetPanelCtls] 清缓存，下次 build 以记录现值重建。
   TextEditingController _makeCtl(String key, String init) {
-    var c = _ctls[key];
-    if (c != null) {
-      if (c.text != init) {
-        c.text = init;
-      }
+    return _ctls.putIfAbsent(key, () {
+      final c = TextEditingController(text: init);
+      _allCtls.add(c);
       return c;
-    }
-    c = TextEditingController(text: init);
-    _ctls[key] = c;
-    _allCtls.add(c);
-    return c;
+    });
   }
 
-  /// 选中 fallback 时同步各字段输入框文案（不更新光标提示）。
-  String _selKey(String field) => '$_evtId|$_selectedNode|$field';
-
-  Map<String, dynamic>? get _selRecord =>
-      _selectedNode == null ? null : (_stageTalks[_selectedNode] ?? _stageOpts[_selectedNode]);
-
-  void _syncCheckField() {
-    _checkError = false;
+  /// 数据被外部回退（放弃修改等）时清除字段控制器缓存。
+  /// 控制器本体留在 _allCtls 里，仍由 dispose 统一释放。
+  void _resetPanelCtls() {
+    final prefix = '$_evtId|';
+    _ctls.removeWhere((k, _) => k.startsWith(prefix));
   }
 
-  void _setField(String key, dynamic value) {
-    final rec = _selRecord;
+  /// 内联展开卡片的字段输入控制器（key = evtId|n:nodeId|field）。
+  TextEditingController? _nodeCtlFor(String nodeId, String field) {
+    final rec = _stageTalks[nodeId] ?? _stageOpts[nodeId];
+    if (rec == null || _evtId == null) return null;
+    final key = '$_evtId|n:$nodeId|$field';
+    return _ctls.putIfAbsent(key, () {
+      final String init;
+      if (field == 'talkId' || field == 'talkId2') {
+        init = normalizeStoryIdList(rec[field]).join(', ');
+      } else if (field == 'check' || field == 'screenEffect') {
+        init = jsonEncode(rec[field] ?? []);
+      } else {
+        init = cln(rec[field]);
+      }
+      final c = TextEditingController(text: init);
+      _allCtls.add(c);
+      return c;
+    });
+  }
+
+  /// 外部写回字段后同步已存在的输入框文案（如资产拖放设置 bg/audio）。
+  void _syncNodeCtl(String nodeId, String field) {
+    final key = '$_evtId|n:$nodeId|$field';
+    final c = _ctls[key];
+    if (c == null) return;
+    final rec = _stageTalks[nodeId] ?? _stageOpts[nodeId];
     if (rec == null) return;
-    if (value == null) {
-      rec.remove(key);
-    } else {
-      rec[key] = value;
+    c.text = (field == 'check' || field == 'screenEffect')
+        ? jsonEncode(rec[field] ?? [])
+        : cln(rec[field]);
+  }
+
+  /// 内联编辑文本写回（按字段类型解析）。与旧右栏 _setCheckField /
+  /// _setIdListField / _setIntField 语义一致，只是目标改为任意节点。
+  void _applyFieldText(String nodeId, String field, String text) {
+    final rec = _stageTalks[nodeId] ?? _stageOpts[nodeId];
+    if (rec == null) return;
+    switch (field) {
+      case 'bg':
+      case 'audio':
+      case 'time':
+      case 'nextEvtId':
+        final v = int.tryParse(text.trim());
+        if (v == null) {
+          rec.remove(field);
+        } else {
+          rec[field] = v;
+        }
+      case 'talkId':
+      case 'talkId2':
+        rec[field] = text
+            .split(RegExp(r'[,，\s]+'))
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty && int.tryParse(s) != null)
+            .map(int.parse)
+            .toList();
+      case 'check':
+      case 'screenEffect':
+        dynamic parsed;
+        try {
+          parsed = jsonDecode(text.trim());
+        } catch (_) {
+          parsed = null;
+        }
+        if (parsed is List || text.trim().isEmpty) {
+          _checkInvalid.remove(nodeId);
+          rec[field] = parsed ?? <dynamic>[];
+        } else {
+          _checkInvalid.add(nodeId);
+        }
+      default:
+        // roleName / content 直接写文本
+        rec[field] = text;
     }
     setState(() => _dirty = true);
   }
 
-  void _setIntField(String key, String text) {
-    _setField(key, int.tryParse(text.trim()));
+  // ---------- 媒体资产拖放 ----------
+  /// 资产 key ↔ AudioCfg/BgCfg.url 匹配：basename（去目录/扩展名）相等。
+  List<(String, Map<String, dynamic>)> _matchCfgByUrl(
+      Map<String, dynamic> table, String key) {
+    final kb = _baseName(key);
+    final out = <(String, Map<String, dynamic>)>[];
+    table.forEach((id, v) {
+      if (v is! Map) return;
+      final url = cln(v['url']);
+      if (url.isEmpty) return;
+      if (_baseName(url) == kb) {
+        out.add((id.toString(), Map<String, dynamic>.from(v)));
+      }
+    });
+    return out;
   }
 
-  void _setCheckField(String text) {
-    dynamic parsed;
-    try {
-      parsed = jsonDecode(text.trim());
-    } catch (_) {
-      parsed = null;
-    }
-    if (parsed is List || text.trim().isEmpty) {
-      _checkError = false;
-    } else {
-      _checkError = true;
-      if (mounted) setState(() {});
+  String _baseName(String p) {
+    var s = p.replaceAll('\\', '/').toLowerCase();
+    final i = s.lastIndexOf('/');
+    if (i >= 0) s = s.substring(i + 1);
+    final d = s.lastIndexOf('.');
+    if (d > 0) s = s.substring(0, d);
+    return s.trim();
+  }
+
+  /// CGCfg.urls（贴图 key/路径数组）↔ 资产 key basename 匹配。
+  List<(String, Map<String, dynamic>)> _matchCgByUrl(
+      Map<String, dynamic> table, String key) {
+    final kb = _baseName(key);
+    final out = <(String, Map<String, dynamic>)>[];
+    table.forEach((id, v) {
+      if (v is! Map) return;
+      final urls = v['urls'];
+      if (urls is! List) return;
+      for (final u in urls) {
+        if (_baseName(cln(u)) == kb) {
+          out.add((id.toString(), Map<String, dynamic>.from(v)));
+          break;
+        }
+      }
+    });
+    return out;
+  }
+
+  /// 拖入相册 CG（未命中 BgCfg 时）：整句只有一个屏幕效果，直接写
+  /// screenEffect = [4015, CGid]（播放CG 指令，data_dicts SCREEN_EFFECT_DB）。
+  void _writePlayCg(String nodeId, (String, Map<String, dynamic>) hit) {
+    final rec = _stageTalks[nodeId];
+    if (rec == null) return;
+    final cgId = int.tryParse(hit.$1) ?? hit.$1;
+    rec['screenEffect'] = [4015, cgId];
+    _syncNodeCtl(nodeId, 'screenEffect');
+    setState(() => _dirty = true);
+    final name = cln(hit.$2['name']);
+    _toast(name.isEmpty ? '已插入播放CG（CG $cgId）' : '已插入播放CG：$name',
+        fluent.InfoBarSeverity.success);
+  }
+
+  Future<void> _applyAssetDrop(String nodeId, FlowAssetRef ref) async {
+    final rec = _stageTalks[nodeId];
+    if (rec == null) {
+      _toast('媒体资产只能拖到对白节点上', fluent.InfoBarSeverity.warning);
       return;
     }
-    _setField('check', parsed ?? <dynamic>[]);
+    final tableName = ref.kind == 'aud' ? 'AudioCfg' : 'BgCfg';
+    final field = ref.kind == 'aud' ? 'audio' : 'bg';
+    final table = _tablesData[tableName];
+    final List<(String, Map<String, dynamic>)> matches =
+        (table == null || table.isEmpty) ? const [] : _matchCfgByUrl(table, ref.key);
+    if (matches.isEmpty) {
+      // 贴图未命中背景表：再按 CG 相册表匹配 → 插入播放CG 指令
+      if (ref.kind != 'aud') {
+        final cgTable = _tablesData['CGCfg'];
+        final cgMatches = cgTable == null || cgTable.isEmpty
+            ? const <(String, Map<String, dynamic>)>[]
+            : _matchCgByUrl(cgTable, ref.key);
+        if (cgMatches.isNotEmpty) {
+          final hit = cgMatches.length > 1
+              ? await _pickCfgDialog('CGCfg', cgMatches)
+              : cgMatches.single;
+          if (hit == null || !mounted) return;
+          _writePlayCg(nodeId, hit);
+          return;
+        }
+      }
+      if (table == null || table.isEmpty) {
+        _toast('$tableName 为空，无法匹配资产', fluent.InfoBarSeverity.warning);
+        return;
+      }
+      _toast('$tableName 中 url 没有匹配「${ref.key}」的记录，'
+          '请先在资源页导出或登记该资产', fluent.InfoBarSeverity.warning);
+      return;
+    }
+    if (matches.length > 1) {
+      final picked = await _pickCfgDialog(tableName, matches);
+      if (picked == null || !mounted) return;
+      _writeAssetField(nodeId, field, picked);
+      return;
+    }
+    _writeAssetField(nodeId, field, matches.single);
   }
 
-  void _setIdListField(String key, String text) {
-    final ids = text
-        .split(RegExp(r'[,，\s]+'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty && int.tryParse(s) != null)
-        .map(int.parse)
-        .toList();
-    _setField(key, ids);
+  void _writeAssetField(
+      String nodeId, String field, (String, Map<String, dynamic>) hit) {
+    final rec = _stageTalks[nodeId];
+    if (rec == null) return;
+    final idVal = int.tryParse(hit.$1) ?? hit.$1;
+    rec[field] = idVal;
+    _syncNodeCtl(nodeId, field);
+    setState(() => _dirty = true);
+    final name = cln(hit.$2['name']);
+    _toast('已将对白 $nodeId 的${field == 'audio' ? '音频' : '背景'}设为 '
+        '#${hit.$1}${name.isEmpty ? '' : '（$name）'}', fluent.InfoBarSeverity.success);
+  }
+
+  /// 多个候选时弹选择框（id + name + url 列表）。
+  Future<(String, Map<String, dynamic>)?> _pickCfgDialog(
+    String tableName,
+    List<(String, Map<String, dynamic>)> matches,
+  ) {
+    return fluent.showDialog<(String, Map<String, dynamic>)>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: Text('$tableName 匹配到 ${matches.length} 条记录，请选择'),
+        content: SizedBox(
+          width: 420,
+          height: math.min(320, matches.length * 44 + 16),
+          child: ListView.builder(
+            itemCount: matches.length,
+            itemBuilder: (context, i) {
+              final hit = matches[i];
+              final name = cln(hit.$2['name']);
+              final url = cln(hit.$2['url']);
+              return InkWell(
+                onTap: () => Navigator.pop(ctx, hit),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(5),
+                    color: palette.panel,
+                  ),
+                  margin: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    children: [
+                      Text('#${hit.$1}',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF6C5CE7))),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          name.isEmpty ? url : '$name\n$url',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 11.5, color: palette.textPrimary),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ---------- UI ----------
@@ -733,431 +1051,253 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         ),
       );
     }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Stack(
       children: [
-        _buildEventList(),
-        VerticalDivider(width: 1, color: palette.border),
-        Expanded(child: _buildCanvasPane()),
-        VerticalDivider(width: 1, color: palette.border),
-        SizedBox(width: 340, child: _buildRightPane()),
+        Positioned.fill(
+          child: ColoredBox(color: palette.bgAlt, child: _buildCanvasPane()),
+        ),
+        // 右上：操作簇（适配视图 / 预览 / 保存）
+        Positioned(
+          right: 12,
+          top: 10,
+          child: _buildActionsPill(),
+        ),
+        // 左侧浮动工具栏
+        Positioned(
+          left: 12,
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: StoryFlowSideToolbar(
+              enabled: _evtId != null,
+              flowCards: _flowCards,
+              assetsOpen: _assetsOpen,
+              aiOpen: widget.aiOpen,
+              onToggleAssets: () => setState(() => _assetsOpen = !_assetsOpen),
+              onToggleAi: widget.onToggleAi ?? () {},
+              onAddTalk: _addTalkAfterSelected,
+              onAddOption: _addOptionForSelected,
+              onAddCard: _addPluginCard,
+              onOpenPlugins: widget.onOpenPlugins,
+              onOpenSettings: widget.onOpenSettings,
+            ),
+          ),
+        ),
+        // 媒体资产浮动面板
+        if (_assetsOpen)
+          Positioned(
+            left: 62,
+            top: 48,
+            bottom: 16,
+            width: 252,
+            child: FlowAssetPanel(state: widget.state),
+          ),
+        // 左上：事件切换器 + Mod 切换器
+        Positioned(
+          left: 12,
+          top: 10,
+          child: Row(
+            children: [
+              _EventChip(
+                evtId: _evtId,
+                title: _evtId == null ? null : _eventTitle(_evtId!),
+                events: _tablesData['EvtCfg']!.keys.toList()
+                  ..sort(compareEventIds),
+                titleOf: _eventTitle,
+                onSelect: _selectEvent,
+                onCreate: _promptCreateEvent,
+                onDelete: _evtId == null ? null : _promptDeleteEvent,
+              ),
+              const SizedBox(width: 8),
+              _ModChip(
+                modName: widget.state.modName,
+                onSelect: _switchMod,
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
 
-  // ----- 左：事件列表 -----
-  Widget _buildEventList() {
-    final evts = _tablesData['EvtCfg']!.keys.toList()..sort(compareEventIds);
-    final filter = _evtFilter.trim();
-    final shown = filter.isEmpty
-        ? evts
-        : [
-            for (final id in evts)
-              if (id.contains(filter) ||
-                  (_eventTitle(id) ?? '').contains(filter))
-                id,
-          ];
-    return SizedBox(
-      width: 280,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+  // ----- 画布 -----
+  Widget _buildCanvasPane() {
+    if (_evtId == null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.hub_outlined, size: 40, color: palette.iconDisabled),
+            const SizedBox(height: 10),
+            Text('从左上角选择或新建一个事件开始编排',
+                style: TextStyle(color: palette.textHint)),
+            const SizedBox(height: 4),
+            Text('提示：靠近屏幕顶部可呼出标签条，展开节点右下角箭头可编辑参数',
+                style: TextStyle(fontSize: 11, color: palette.textFaint)),
+          ],
+        ),
+      );
+    }
+    final graph = _graph;
+    // DragTarget 直接包裹画布：onMove 用画布命中高亮目标节点
+    return DragTarget<FlowAssetRef>(
+      onWillAcceptWithDetails: (_) => true,
+      onMove: (details) {
+        final id = _graphKey.currentState?.hitNodeAt(details.offset);
+        if (id != _dragHoverNode) setState(() => _dragHoverNode = id);
+      },
+      onLeave: (_) {
+        if (_dragHoverNode != null) {
+          setState(() => _dragHoverNode = null);
+        }
+      },
+      onAcceptWithDetails: (details) {
+        final node = _graphKey.currentState?.hitNodeAt(details.offset);
+        setState(() => _dragHoverNode = null);
+        if (node != null) _applyAssetDrop(node, details.data);
+      },
+      builder: (context, candidate, rejected) => StoryFlowGraph(
+        key: _graphKey,
+        graph: graph,
+        positions: _positions,
+        selectedNode: _selectedNode,
+        selectedEdge: _selectedEdge,
+        expandedNodes: _expandedNodes,
+        highlightNode: _dragHoverNode,
+        checkInvalidNodes: _checkInvalid,
+        onSelectNode: (id) => setState(() {
+          _selectedNode = id;
+          _selectedEdge = null;
+        }),
+        onSelectEdge: (e) => setState(() {
+          _selectedEdge = e;
+          _selectedNode = null;
+        }),
+        onSelectNone: () => setState(() {
+          _selectedNode = null;
+          _selectedEdge = null;
+        }),
+        onMoveNode: _onMoveNode,
+        onAddEdge: _onAddEdge,
+        onDeleteEdge: _onDeleteEdge,
+        onRequestDelete: _requestDelete,
+        onToggleExpand: (id) => setState(() {
+          if (!_expandedNodes.remove(id)) _expandedNodes.add(id);
+        }),
+        fieldController: _nodeCtlFor,
+        onFieldChanged: _applyFieldText,
+        onDeleteNode: _deleteNode,
+      ),
+    );
+  }
+
+  // ----- 右上操作簇 -----
+  Widget _buildActionsPill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: palette.border),
+        boxShadow: [
+          BoxShadow(
+            color: palette.bgDeep2.withValues(alpha: 0.55),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: fluent.TextBox(
-              controller: _makeCtl('_evtFilter', _evtFilter),
-              placeholder: '搜索事件 ID / 标题',
-              onChanged: (v) => setState(() => _evtFilter = v),
-              prefix: const Icon(Icons.search, size: 14),
-            ),
+          _pillAction(
+            icon: Icons.fit_screen_outlined,
+            label: '适配视图',
+            onTap: () => _graphKey.currentState?.fitView(),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(10, 2, 10, 6),
-            child: Text('事件', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-          ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: shown.length,
-              itemBuilder: (context, i) {
-                final id = shown[i];
-                final sel = id == _evtId;
-                final title = _eventTitle(id);
-                return InkWell(
-                  onTap: () => _selectEvent(id),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                    color: sel ? palette.panel : Colors.transparent,
-                    child: Row(
-                      children: [
-                        Icon(Icons.event_note,
-                            size: 14, color: sel ? const Color(0xFF6C5CE7) : palette.textHint),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            '$id${title == null ? '' : '  $title'}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: sel ? palette.textHigh : palette.textSecondary,
-                              fontWeight: sel ? FontWeight.w600 : FontWeight.normal,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
+          if (_dirty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE67E22).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('未保存',
+                  style:
+                      TextStyle(fontSize: 10.5, color: Color(0xFFE67E22))),
             ),
+          ],
+          _pillAction(
+            icon: Icons.play_circle_outline,
+            label: '运行预览',
+            onTap: _evtId == null ? null : () => widget.onPreview(_evtId!),
           ),
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: fluent.Button(
-                    onPressed: _promptCreateEvent,
-                    child: const Text('＋ 新建事件', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: fluent.Button(
-                    onPressed: _evtId == null ? null : _promptDeleteEvent,
-                    child: const Text('删除当前', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-              ],
-            ),
+          _pillAction(
+            icon: Icons.save_outlined,
+            label: _dirty ? '保存修改' : '已保存',
+            onTap: (_dirty && _evtId != null) ? _save : null,
+            primary: true,
           ),
         ],
       ),
     );
   }
 
-  // ----- 中：画布 -----
-  Widget _buildCanvasPane() {
-    final graph = _graph;
-    final evtTitle = _evtId == null ? null : _eventTitle(_evtId!);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          color: palette.bg,
-          child: Row(
-            children: [
-              if (_evtId != null) ...[
-                Icon(Icons.alt_route, size: 14, color: const Color(0xFF6C5CE7)),
-                const SizedBox(width: 6),
+  Widget _pillAction({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onTap,
+    bool primary = false,
+  }) {
+    final enabled = onTap != null;
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 400),
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: primary
+                  ? const Color(0xFF6C5CE7)
+                  : enabled
+                      ? palette.hover
+                      : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  size: 13,
+                  color: primary
+                      ? Colors.white
+                      : enabled
+                          ? palette.textSecondary
+                          : palette.iconDisabled,
+                ),
+                const SizedBox(width: 4),
                 Text(
-                  evtTitle == null || evtTitle.isEmpty
-                      ? _evtId!
-                      : '$_evtId  $evtTitle',
-                  style: TextStyle(fontSize: 12, color: palette.textHigh, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(width: 8),
-                if (_dirty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE67E22).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text('有未保存修改', style: TextStyle(fontSize: 11, color: Color(0xFFE67E22))),
+                  label,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: primary
+                        ? Colors.white
+                        : enabled
+                            ? palette.textPrimary
+                            : palette.iconDisabled,
                   ),
-              ] else
-                Text('选择一个事件开始编排',
-                    style: TextStyle(fontSize: 12, color: palette.textHint)),
-              const Spacer(),
-              PopupMenuButton<String>(
-                tooltip: '添加节点',
-                enabled: _evtId != null,
-                onSelected: (v) {
-                  if (v == 'talk') _addTalkAfterSelected();
-                  if (v == 'option') _addOptionForSelected();
-                  if (v.startsWith('card:')) {
-                    final parts = v.split(':');
-                    if (parts.length >= 3) _addPluginCard(parts[1], parts[2]);
-                  }
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                    value: 'talk',
-                    child: Row(children: [
-                      Icon(Icons.add_comment, size: 14),
-                      SizedBox(width: 8),
-                      Text('插入新对白（选中对白后）', style: TextStyle(fontSize: 12)),
-                    ]),
-                  ),
-                  const PopupMenuItem(
-                    value: 'option',
-                    child: Row(children: [
-                      Icon(Icons.alt_route, size: 14),
-                      SizedBox(width: 8),
-                      Text('为选中对白添加选项', style: TextStyle(fontSize: 12)),
-                    ]),
-                  ),
-                  if (_flowCards.isNotEmpty) const PopupMenuDivider(),
-                  // 插件流程卡片：创建节点时预置 match 字段，节点按卡型渲染
-                  for (final c in _flowCards)
-                    PopupMenuItem(
-                      value: 'card:${c['type_id']}:${c['applies_to']}',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.extension, size: 14),
-                          const SizedBox(width: 8),
-                          Text(
-                            '插件卡片 · ${c['name'] ?? c['type_id']}'
-                            '（${c['applies_to'] == 'talk' ? '对白' : '选项'}）',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-                child: fluent.Button(
-                  onPressed: _evtId == null ? null : () {},
-                  child: const Text('＋ 添加节点', style: TextStyle(fontSize: 12)),
-                ),
-              ),
-              const SizedBox(width: 8),
-              fluent.Button(
-                onPressed: () => _graphKey.currentState?.fitView(),
-                child: const Text('适配视图', style: TextStyle(fontSize: 12)),
-              ),
-              const SizedBox(width: 8),
-              fluent.FilledButton(
-                onPressed: _evtId == null
-                    ? null
-                    : () => widget.onPreview(_evtId!),
-                child: const Text('▶ 运行预览', style: TextStyle(fontSize: 12)),
-              ),
-              const SizedBox(width: 8),
-              fluent.FilledButton(
-                onPressed: (_dirty && _evtId != null) ? _save : null,
-                style: const fluent.ButtonStyle(
-                  backgroundColor: WidgetStatePropertyAll(Color(0xFF6C5CE7)),
-                ),
-                child: Text(_dirty ? '💾 保存修改' : '已保存', style: const TextStyle(fontSize: 12)),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: _evtId == null
-              ? Center(
-                  child: Text('← 从左侧选择一个事件',
-                      style: TextStyle(color: palette.textHint)),
-                )
-              : Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: ColoredBox(
-                      color: palette.panel,
-                      child: StoryFlowGraph(
-                        key: _graphKey,
-                        graph: graph,
-                        positions: _positions,
-                        selectedNode: _selectedNode,
-                        selectedEdge: _selectedEdge,
-                        onSelectNode: (id) => setState(() {
-                          _selectedNode = id;
-                          _selectedEdge = null;
-                        }),
-                        onSelectEdge: (e) => setState(() {
-                          _selectedEdge = e;
-                          _selectedNode = null;
-                        }),
-                        onSelectNone: () => setState(() {
-                          _selectedNode = null;
-                          _selectedEdge = null;
-                        }),
-                        onMoveNode: _onMoveNode,
-                        onAddEdge: _onAddEdge,
-                        onDeleteEdge: _onDeleteEdge,
-                        onRequestDelete: _requestDelete,
-                      ),
-                    ),
-                  ),
-                ),
-        ),
-      ],
-    );
-  }
-
-  // ----- 右：节点编辑 -----
-  Widget _buildRightPane() {
-    final rec = _selRecord;
-    if (rec == null) {
-      return Padding(
-        padding: const EdgeInsets.all(16),
-        child: Text('未选中节点\n\n点击画布中的节点卡片进行编辑；'
-            '从端口拖线到另一节点建立跳转。',
-            style: TextStyle(fontSize: 12, color: palette.textHint, height: 1.8)),
-      );
-    }
-    final id = _selectedNode!;
-    final isOpt = _stageOpts.containsKey(id);
-    final title = isOpt ? '选项 $id' : (rec['roleName'] == '旁白' ? '旁白 $id' : '对白 $id');
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          color: palette.bg,
-          child: Row(
-            children: [
-              Icon(isOpt ? Icons.alt_route : Icons.chat,
-                  size: 14, color: isOpt ? const Color(0xFF6C5CE7) : const Color(0xFF3498DB)),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: palette.textHigh, fontWeight: FontWeight.w600)),
-              ),
-              fluent.Button(
-                onPressed: () => _deleteNode(id),
-                child: const Text('删除节点', style: TextStyle(fontSize: 11)),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(12),
-            children: [
-              _label('ID'),
-              Text(cln(id), style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 10),
-              if (isOpt) ...[
-                _label('选项内容'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('content'), cln(rec['content'])),
-                  maxLines: 3,
-                  onChanged: (v) => _setField('content', v),
-                ),
-                const SizedBox(height: 10),
-                _label('主支对白 talkId（逗号分隔）'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('talkId'),
-                      normalizeStoryIdList(rec['talkId']).join(', ')),
-                  onChanged: (v) {
-                    _setIdListField('talkId', v);
-                    _syncListCtl('talkId', _stageOpts[id]);
-                  },
-                ),
-                const SizedBox(height: 10),
-                _label('支线对白 talkId2（逗号分隔）'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('talkId2'),
-                      normalizeStoryIdList(rec['talkId2']).join(', ')),
-                  onChanged: (v) => _setIdListField('talkId2', v),
-                ),
-                const SizedBox(height: 10),
-                _label('跳转事件 nextEvtId'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('nextEvtId'), cln(rec['nextEvtId'])),
-                  onChanged: (v) => _setIntField('nextEvtId', v),
-                ),
-              ] else ...[
-                _label('说话人 roleName'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('roleName'), cln(rec['roleName'])),
-                  onChanged: (v) => _setField('roleName', v),
-                ),
-                const SizedBox(height: 10),
-                _label('台词 content'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('content'), cln(rec['content'])),
-                  maxLines: 4,
-                  onChanged: (v) => _setField('content', v),
-                ),
-                const SizedBox(height: 10),
-                _label('检定 check（JSON 二维数组，如 [[80301,1]]）'),
-                fluent.TextBox(
-                  controller: _makeCtl(_selKey('check'), jsonEncode(rec['check'] ?? [])),
-                  maxLines: 3,
-                  onChanged: _setCheckField,
-                ),
-                if (_checkError)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text('JSON 解析失败，未生效',
-                        style: TextStyle(fontSize: 11, color: const Color(0xFFE74C3C))),
-                  ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _label('背景 bg'),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _label('音频 audio'),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _label('时间 time'),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: fluent.TextBox(
-                        controller: _makeCtl(_selKey('bg'), cln(rec['bg'])),
-                        onChanged: (v) => _setIntField('bg', v),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: fluent.TextBox(
-                        controller: _makeCtl(_selKey('audio'), cln(rec['audio'])),
-                        onChanged: (v) => _setIntField('audio', v),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: fluent.TextBox(
-                        controller: _makeCtl(_selKey('time'), cln(rec['time'])),
-                        onChanged: (v) => _setIntField('time', v),
-                      ),
-                    ),
-                  ],
                 ),
               ],
-              const SizedBox(height: 16),
-              Text(
-                '提示：在画布中拖动画布空白处平移，滚轮缩放；'
-                '拖节点底部端口连线，点选连线后按 Delete 删除。',
-                style: TextStyle(fontSize: 11, color: palette.textHint, height: 1.6),
-              ),
-            ],
+            ),
           ),
         ),
-      ],
+      ),
     );
-  }
-
-  Widget _label(String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 4),
-        child: Text(text, style: TextStyle(fontSize: 11, color: palette.textSecondary)),
-      );
-
-  /// 列表型字段输入框在节点切换时会残留旧文本，重新对齐（talkId 用）。
-  void _syncListCtl(String field, Map<String, dynamic> rec) {
-    final c = _ctls[_selKey(field)];
-    if (c != null && c.text.isNotEmpty) {
-      // 规范化显示（已在 onChanged 写入 record，此处仅校正显示文本）
-      final norm = normalizeStoryIdList(rec[field]).join(', ');
-      if (c.text != norm) c.text = norm;
-    }
   }
 
   Map<String, dynamic> _deepCopy(Map<String, dynamic> src) {
@@ -1174,5 +1314,431 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       return v.map(_deepCopyVal).toList();
     }
     return v;
+  }
+}
+
+/// 画布左上角事件切换 chip：点击弹出锚定面板（搜索 + 列表 + 新建/删除）。
+class _EventChip extends StatefulWidget {
+  const _EventChip({
+    required this.evtId,
+    required this.title,
+    required this.events,
+    required this.titleOf,
+    required this.onSelect,
+    required this.onCreate,
+    this.onDelete,
+  });
+
+  final String? evtId;
+  final String? title;
+  final List<String> events;
+
+  /// 事件 id → 标题（无标题返回 null/空串），列表行与搜索用它显示名称。
+  final String? Function(String id) titleOf;
+  final ValueChanged<String> onSelect;
+  final VoidCallback onCreate;
+  final VoidCallback? onDelete;
+
+  @override
+  State<_EventChip> createState() => _EventChipState();
+}
+
+class _EventChipState extends State<_EventChip> {
+  final _link = LayerLink();
+  OverlayEntry? _overlay;
+  String _filter = '';
+
+  @override
+  void dispose() {
+    _close();
+    super.dispose();
+  }
+
+  void _close() {
+    _overlay?.remove();
+    _overlay = null;
+  }
+
+  String _rowLabel(String id) {
+    final t = widget.titleOf(id);
+    if (t == null || t.isEmpty) return id;
+    return '$id  $t';
+  }
+
+  @override
+  void didUpdateWidget(covariant _EventChip old) {
+    super.didUpdateWidget(old);
+    if (old.evtId != widget.evtId && _overlay != null) _close();
+  }
+
+  void _toggle() {
+    if (_overlay != null) {
+      _close();
+    } else {
+      _open();
+    }
+  }
+
+  void _open() {
+    _overlay = OverlayEntry(
+      builder: (_) => Stack(
+        children: [
+          // 点击面板外关闭
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _close,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+          CompositedTransformFollower(
+            link: _link,
+            targetAnchor: Alignment.bottomLeft,
+            followerAnchor: Alignment.topLeft,
+            offset: const Offset(0, 6),
+            child: Material(
+              type: MaterialType.transparency,
+              child: _panel(),
+            ),
+          ),
+        ],
+      ),
+    );
+    Overlay.of(context, rootOverlay: true).insert(_overlay!);
+  }
+
+  Widget _panel() {
+    return StatefulBuilder(
+      builder: (context, setPanel) {
+        final filter = _filter.trim();
+        final shown = widget.events
+            .where((id) =>
+                filter.isEmpty ||
+                id.contains(filter) ||
+                (widget.titleOf(id)?.contains(filter) ?? false))
+            .toList();
+        return Container(
+          width: 300,
+          constraints: const BoxConstraints(maxHeight: 380),
+          decoration: BoxDecoration(
+            color: palette.card,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: palette.border),
+            boxShadow: [
+              BoxShadow(
+                color: palette.bgDeep2.withValues(alpha: 0.6),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: fluent.TextBox(
+                  autofocus: true,
+                  placeholder: '搜索事件 ID',
+                  prefix: const Icon(Icons.search, size: 13),
+                  style: const TextStyle(fontSize: 12),
+                  onChanged: (v) => setPanel(() => _filter = v),
+                ),
+              ),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  itemCount: shown.length,
+                  itemBuilder: (context, i) {
+                    final id = shown[i];
+                    final sel = id == widget.evtId;
+                    return InkWell(
+                      onTap: () {
+                        setPanel(() => _filter = '');
+                        _close();
+                        widget.onSelect(id);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: sel ? palette.hover : Colors.transparent,
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(
+                            color: sel
+                                ? const Color(0xFF6C5CE7)
+                                : Colors.transparent,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.event_note,
+                                size: 13,
+                                color: sel
+                                    ? const Color(0xFF6C5CE7)
+                                    : palette.textHint),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                _rowLabel(id),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: sel
+                                      ? palette.textHigh
+                                      : palette.textSecondary,
+                                  fontWeight:
+                                      sel ? FontWeight.w600 : FontWeight.normal,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Divider(height: 1, color: palette.border),
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: fluent.Button(
+                        onPressed: () {
+                          _close();
+                          widget.onCreate();
+                        },
+                        child: const Text('＋ 新建事件',
+                            style: TextStyle(fontSize: 12)),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: fluent.Button(
+                        onPressed: widget.onDelete == null
+                            ? null
+                            : () {
+                                _close();
+                                widget.onDelete!();
+                              },
+                        child: const Text('删除当前',
+                            style: TextStyle(fontSize: 12)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final empty = widget.evtId == null;
+    return CompositedTransformTarget(
+      link: _link,
+      child: Material(
+        type: MaterialType.transparency,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: _toggle,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 320),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: palette.card,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: palette.border),
+                boxShadow: [
+                  BoxShadow(
+                    color: palette.bgDeep2.withValues(alpha: 0.55),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.alt_route,
+                      size: 14, color: Color(0xFF6C5CE7)),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      empty
+                          ? '选择事件'
+                          : (widget.title == null ||
+                                  widget.title!.isEmpty
+                              ? widget.evtId!
+                              : '${widget.evtId}  ${widget.title}'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: empty
+                            ? palette.textHint
+                            : palette.textHigh,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.arrow_drop_down,
+                      size: 16, color: palette.textSecondary),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 画布左上角、事件切换器右侧的 Mod 切换 chip。
+/// 点击时先经 GET /api/mods 拉最新列表再弹菜单（本版本 Flutter 的
+/// PopupMenuItemBuilder 不支持异步）；选中项触发全局切换
+/// （POST /api/mods/select，配置表/布局/保存目标随之换 mod 根）。
+class _ModChip extends StatelessWidget {
+  const _ModChip({required this.modName, required this.onSelect});
+
+  final String modName;
+  final ValueChanged<String> onSelect;
+
+  Future<void> _openMenu(BuildContext context) async {
+    // 菜单位置锚点须在 await 前取好，避免跨异步间隙使用 BuildContext
+    final button = context.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    List<ModInfo> mods = [];
+    try {
+      final r = await ApiClient.instance.get('/api/mods');
+      final list = r['mods'];
+      if (list is List) {
+        mods = [
+          for (final m in list)
+            if (m is Map) ModInfo.fromJson(Map<String, dynamic>.from(m))
+        ];
+      }
+    } catch (_) {
+      // 拉取失败按空列表处理，菜单内给出提示
+    }
+    if (!context.mounted) return;
+    final items = mods.isEmpty
+        ? [
+            const PopupMenuItem<String>(
+              enabled: false,
+              child: Text('没有可用的 Mod', style: TextStyle(fontSize: 12)),
+            ),
+          ]
+        : [
+            for (final m in mods)
+              PopupMenuItem<String>(
+                value: m.name,
+                child: Row(
+                  children: [
+                    Icon(
+                      m.name == modName
+                          ? Icons.check
+                          : Icons.inventory_2_outlined,
+                      size: 14,
+                      color: m.name == modName
+                          ? const Color(0xFF6C5CE7)
+                          : palette.textHint,
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 220,
+                      child: Text(
+                        m.manifestTitle.isEmpty
+                            ? m.name
+                            : '${m.name}（${m.manifestTitle}）',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ];
+    if (button == null) return;
+    final selected = await showMenu<String>(
+      context: context,
+      // 悬浮在画布上：指定不透明底板，避免透出节点/连线
+      color: palette.card,
+      position: RelativeRect.fromRect(
+        Rect.fromPoints(
+          button.localToGlobal(
+              button.size.bottomLeft(Offset.zero), ancestor: overlay),
+          button.localToGlobal(
+              button.size.bottomRight(Offset.zero), ancestor: overlay),
+        ),
+        Offset.zero & overlay.size,
+      ),
+      items: items,
+    );
+    if (selected != null) onSelect(selected);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () => _openMenu(context),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 220),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: palette.card,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: palette.border),
+            boxShadow: [
+              BoxShadow(
+                color: palette.bgDeep2.withValues(alpha: 0.55),
+                blurRadius: 14,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.inventory_2_outlined,
+                  size: 14, color: Color(0xFF6C5CE7)),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  modName.isEmpty ? '选择 Mod' : modName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: modName.isEmpty
+                        ? palette.textHint
+                        : palette.textHigh,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(Icons.arrow_drop_down,
+                  size: 16, color: palette.textSecondary),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

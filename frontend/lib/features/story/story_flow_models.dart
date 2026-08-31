@@ -8,6 +8,7 @@ library;
 
 import 'dart:ui' show Offset;
 
+import 'story_flow_node_presets.dart';
 import 'story_logic.dart';
 
 /// 节点类型。
@@ -56,6 +57,24 @@ String? fieldForEdge(FlowEdgeKind kind) {
   }
 }
 
+/// 节点底部输出端口类型（交互命中与连线绘制共用，顺序即从左到右）。
+///
+/// 对白节点恒含「选项」端口（尚无选项节点时拖线会被校验拦截并提示）；
+/// 有检定数据（check 非空）即成对给出 成功/失败 端口，失败支可暂空待连线。
+List<FlowEdgeKind> flowPortKinds(FlowNode n) {
+  if (n.isMissing) return const [];
+  if (n.isOption) {
+    return const [FlowEdgeKind.optionMain, FlowEdgeKind.optionSide];
+  }
+  return [
+    if (n.hasCheck)
+      ...[FlowEdgeKind.checkPass, FlowEdgeKind.checkFail]
+    else
+      FlowEdgeKind.next,
+    FlowEdgeKind.option,
+  ];
+}
+
 class FlowNode {
   const FlowNode({
     required this.kind,
@@ -67,6 +86,13 @@ class FlowNode {
     this.cardKey = '',
     this.cardLabel = '',
     this.cardColor = '',
+    this.bgId = '',
+    this.audioId = '',
+    this.timeStr = '',
+    this.mainCount = '',
+    this.sideCount = '',
+    this.nextEvtId = '',
+    this.fxSummary = '',
   });
 
   final FlowNodeKind kind;
@@ -74,7 +100,7 @@ class FlowNode {
   final String roleName;
   final String content;
 
-  /// 检定双支（check 非空且 nextTalk2 非空）。
+  /// 检定节点（check 非空）：输出恒为 成功/失败 双端口，失败支可暂空待连线。
   final bool hasCheck;
   final bool isNarrator;
 
@@ -83,9 +109,59 @@ class FlowNode {
   final String cardLabel;
   final String cardColor; // #RRGGBB
 
+  /// 卡片参数摘要（空=未设置）：对白 bg/audio/time，选项 主支/支线数与跳转事件。
+  final String bgId;
+  final String audioId;
+  final String timeStr;
+  final String mainCount;
+  final String sideCount;
+  final String nextEvtId;
+
+  /// 屏幕效果摘要（对白）：如「播CG·12」「黑屏」「模糊+黑屏」，取自 screenEffect。
+  final String fxSummary;
+
   /// 缺失/跨事件引用目标（终端徽标，不可编辑）。
   bool get isMissing => kind == FlowNodeKind.missing;
   bool get isOption => kind == FlowNodeKind.option;
+
+  /// 卡片是否有可展示的参数徽章。
+  bool get hasParamBadges {
+    if (isMissing) return false;
+    if (isOption) {
+      return mainCount.isNotEmpty ||
+          sideCount.isNotEmpty ||
+          nextEvtId.isNotEmpty;
+    }
+    return bgId.isNotEmpty ||
+        audioId.isNotEmpty ||
+        timeStr.isNotEmpty ||
+        fxSummary.isNotEmpty;
+  }
+
+  FlowNode copyWith({
+    String? cardKey,
+    String? cardLabel,
+    String? cardColor,
+  }) {
+    return FlowNode(
+      kind: kind,
+      id: id,
+      roleName: roleName,
+      content: content,
+      hasCheck: hasCheck,
+      isNarrator: isNarrator,
+      cardKey: cardKey ?? this.cardKey,
+      cardLabel: cardLabel ?? this.cardLabel,
+      cardColor: cardColor ?? this.cardColor,
+      bgId: bgId,
+      audioId: audioId,
+      timeStr: timeStr,
+      mainCount: mainCount,
+      sideCount: sideCount,
+      nextEvtId: nextEvtId,
+      fxSummary: fxSummary,
+    );
+  }
 
   /// 卡片标题：对白=说话人，选项=选项 N，缺失=引用目标描述。
   String get title {
@@ -167,14 +243,8 @@ FlowGraph buildFlowGraph({
       if (m is! Map) continue;
       final field = cln(m['field']);
       if (field.isEmpty) continue;
-      if (!_cardMatch(rec, field, m['equals'])) continue;
-      return FlowNode(
-        kind: n.kind,
-        id: n.id,
-        roleName: n.roleName,
-        content: n.content,
-        hasCheck: n.hasCheck,
-        isNarrator: n.isNarrator,
+      if (!_cardMatch(rec, m)) continue;
+      return n.copyWith(
         cardKey: cln(s['type_id']),
         cardLabel: cln(s['name']),
         cardColor: cln(s['color']),
@@ -219,6 +289,10 @@ FlowGraph buildFlowGraph({
       content: cln(talk['content']),
       hasCheck: check is List && check.isNotEmpty,
       isNarrator: role == '旁白',
+      bgId: _numText(talk['bg']),
+      audioId: _numText(talk['audio']),
+      timeStr: _numText(talk['time']),
+      fxSummary: _fxSummaryOf(talk['screenEffect']),
     ), talk, 'talk');
   });
   options.forEach((key, value) {
@@ -229,6 +303,9 @@ FlowGraph buildFlowGraph({
       id: key,
       roleName: '',
       content: cln(value['content']),
+      mainCount: _numText(normalizeStoryIdList(value['talkId']).length),
+      sideCount: _numText(normalizeStoryIdList(value['talkId2']).length),
+      nextEvtId: _numText(value['nextEvtId']),
     ), value, 'option');
   });
 
@@ -237,9 +314,9 @@ FlowGraph buildFlowGraph({
   talks.forEach((key, value) {
     if (!nodes.containsKey(key) || value is! Map) return;
     final talk = value as Map<String, dynamic>;
-    final hasCheck = nodes[key]!.hasCheck;
     final next2 = normalizeStoryIdList(talk['nextTalk2']);
-    final dual = hasCheck && next2.isNotEmpty;
+    // 有检定数据即双支：nextTalk=成功支（checkPass），nextTalk2（可暂空）=失败支
+    final dual = nodes[key]!.hasCheck;
     for (final t in normalizeStoryIdList(talk['nextTalk'])) {
       final to = cln(t);
     if (to.isEmpty) continue;
@@ -300,12 +377,47 @@ String _eventOf(String id) {
   return s;
 }
 
-/// 卡型 match 判定：字段值（含嵌套 List，如 screenEffect [[4007]]）与
-/// equals 做 cln 归一比较（List → toString）。
-bool _cardMatch(dynamic rec, String field, dynamic eq) {
-  if (rec is! Map) return false;
+/// 参数摘要数值文本：0/空视为未设置返回空串，浮点归一去掉 `.0`。
+String _numText(dynamic v) {
+  if (v == null) return '';
+  if (v is num) return v == 0 ? '' : cln(v);
+  final s = cln(v);
+  if (s.isEmpty || s == '0' || s == '0.0') return '';
+  return s;
+}
+
+/// 卡型 match 谓词（match map 三种形态）：
+/// - {field, equals}：字段值（或其数组元素）与 equals 做 cln 归一比较——
+///   插件卡协议（register_flow_card），保持不变；
+/// - {field, code|codes}：指令码字段任一命中（screenEffect 行首值等），
+///   供内置预设匹配「播放CG/转场」这类带参数的数组指令；
+/// - {field, nonEmpty:true}：字段有实义值（非 0/非空/数组含实义元素）。
+bool _cardMatch(dynamic rec, Map m) {
+  final field = cln(m['field']);
+  if (field.isEmpty || rec is! Map) return false;
   final val = rec[field];
+  if (m['nonEmpty'] == true) return _hasValue(val);
   if (val == null) return false;
+  if (m.containsKey('code') || m.containsKey('codes')) {
+    final codes = <int>{};
+    for (final c in <dynamic>[
+      m['code'],
+      ...((m['codes'] as List?) ?? const []),
+    ]) {
+      final iv = c is num ? c.toInt() : int.tryParse(cln(c));
+      if (iv != null) codes.add(iv);
+    }
+    for (final row in _fxRows(val)) {
+      if (row.isEmpty) continue;
+      final head = row.first is num
+          ? (row.first as num).toInt()
+          : int.tryParse(cln(row.first));
+      if (head != null && codes.contains(head)) return true;
+    }
+    return false;
+  }
+  if (!m.containsKey('equals')) return false;
+  final eq = m['equals'];
   if (cln(val) == cln(eq)) return true;
   if (val is List) {
     for (final x in val) {
@@ -313,6 +425,49 @@ bool _cardMatch(dynamic rec, String field, dynamic eq) {
     }
   }
   return false;
+}
+
+/// 值是否有实义：null/0/空串/仅含空元素的数组视为无。
+bool _hasValue(dynamic v) {
+  if (v == null) return false;
+  if (v is num) return v != 0;
+  if (v is bool) return v;
+  if (v is String) return cln(v).isNotEmpty;
+  if (v is List) return v.any(_hasValue);
+  return true;
+}
+
+/// 指令数组归一成行列表：2D（[[4015,id]]）逐行；纯标量数组（[4015,id]）
+/// 视作单行；混合形态下标量元素各自成行。
+List<List<dynamic>> _fxRows(dynamic val) {
+  if (val is! List || val.isEmpty) return const [];
+  final hasRow = val.any((x) => x is List);
+  if (!hasRow) return [val];
+  return [
+    for (final x in val)
+      if (x is List) x,
+  ];
+}
+
+/// screenEffect → 节点参数摘要：如「CG·12」「黑屏」「闪白+抖动」；
+/// 播 CG 未选目标（id=0）显示「CG·未选」。未知码跳过。
+String _fxSummaryOf(dynamic screenEffect) {
+  final parts = <String>[];
+  for (final row in _fxRows(screenEffect)) {
+    if (row.isEmpty) continue;
+    final code = row.first is num
+        ? (row.first as num).toInt()
+        : int.tryParse(cln(row.first));
+    if (code == null) continue;
+    if (code == kFxPlayCg) {
+      final id = row.length > 1 ? cln(row[1]) : '';
+      parts.add(id.isEmpty || id == '0' ? 'CG·未选' : 'CG·$id');
+    } else {
+      final name = kScreenEffectNames[code];
+      if (name != null) parts.add(name);
+    }
+  }
+  return parts.join('+');
 }
 
 /// 分层 DAG 自动布局：从事件起点 BFS 定深度（列），同列按到达顺序定行。

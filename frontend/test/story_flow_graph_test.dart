@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:student_age_editor/features/story/story_flow_models.dart';
+import 'package:student_age_editor/features/story/story_flow_node_presets.dart';
 
 void main() {
   group('buildFlowGraph 线性链', () {
@@ -67,7 +68,7 @@ void main() {
       expect(kinds, {FlowEdgeKind.checkPass, FlowEdgeKind.checkFail});
     });
 
-    test('无 nextTalk2 时 check 不产生失败支', () {
+    test('有检定但失败支暂空 → nextTalk 记为 checkPass，无失败支边', () {
       final talks = <String, dynamic>{
         '1000001001': {
           'content': 'x', 'check': [[80301, 1]], 'nextTalk': [1000001002],
@@ -78,8 +79,46 @@ void main() {
           talks: talks, options: {}, prefixes: ['1000001'],
           starts: ['1000001001']);
       expect(g.nodeById('1000001001')!.hasCheck, isTrue);
-      expect(
-          g.edges.any((e) => e.kind == FlowEdgeKind.checkFail), isFalse);
+      // 双支节点：成功支连线恒为 checkPass（画布「检定成功」端口命中）
+      expect(g.edges.map((e) => e.kind).toSet(), {FlowEdgeKind.checkPass});
+      expect(g.edges.any((e) => e.kind == FlowEdgeKind.checkFail), isFalse);
+    });
+  });
+
+  group('flowPortKinds 端口规则', () {
+    test('无检定对白：下一句 + 选项', () {
+      final n = const FlowNode(kind: FlowNodeKind.talk, id: 'a');
+      expect(flowPortKinds(n),
+          [FlowEdgeKind.next, FlowEdgeKind.option]);
+    });
+
+    test('有检定对白：成功/失败双端口 + 选项（失败支可暂空）', () {
+      final n = const FlowNode(
+          kind: FlowNodeKind.talk, id: 'a', hasCheck: true);
+      expect(flowPortKinds(n), [
+        FlowEdgeKind.checkPass,
+        FlowEdgeKind.checkFail,
+        FlowEdgeKind.option,
+      ]);
+    });
+
+    test('选项节点：主支/支线，缺失节点：无输出端口', () {
+      expect(flowPortKinds(const FlowNode(kind: FlowNodeKind.option, id: 'o')),
+          [FlowEdgeKind.optionMain, FlowEdgeKind.optionSide]);
+      expect(flowPortKinds(const FlowNode(kind: FlowNodeKind.missing, id: 'm')),
+          isEmpty);
+    });
+
+    test('端口类型经 fieldForEdge 均可写回（nextEvt 除外，其不进端口）', () {
+      for (final n in [
+        const FlowNode(kind: FlowNodeKind.talk, id: 'a'),
+        const FlowNode(kind: FlowNodeKind.talk, id: 'b', hasCheck: true),
+        const FlowNode(kind: FlowNodeKind.option, id: 'o'),
+      ]) {
+        for (final k in flowPortKinds(n)) {
+          expect(fieldForEdge(k), isNotNull);
+        }
+      }
     });
   });
 
@@ -246,6 +285,117 @@ void main() {
           starts: ['1000001001'], cardStyles: cards);
       expect(g.nodeById('100000101')!.cardKey, 'confess');
       expect(g.nodeById('100000101')!.cardColor, '#E91E63');
+    });
+  });
+
+  group('内置节点预设', () {
+    final builtin = builtinFlowCardSpecs();
+
+    test('cg_play：screenEffect [4015,id] 与 [[4015,id]] 均命中', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': 'a', 'screenEffect': [4015, 2]},
+        '1000001002': {'content': 'b', 'screenEffect': [[4015, 3]]},
+      };
+      final g = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: builtin);
+      expect(g.nodeById('1000001001')!.cardKey, 'cg_play');
+      expect(g.nodeById('1000001002')!.cardKey, 'cg_play');
+      expect(g.nodeById('1000001001')!.cardLabel, '播放CG');
+    });
+
+    test('cg_end / transition 按码区分（4017 vs 4006）', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': 'a', 'screenEffect': [4017]},
+        '1000001002': {'content': 'b', 'screenEffect': [4006]},
+        '1000001003': {'content': 'c', 'screenEffect': [4010]},
+      };
+      final g = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: builtin);
+      expect(g.nodeById('1000001001')!.cardKey, 'cg_end');
+      expect(g.nodeById('1000001002')!.cardKey, 'transition');
+      expect(g.nodeById('1000001003')!.cardKey, 'transition');
+    });
+
+    test('未识别码（4007 电话）不命中任何内置预设', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': 'a', 'screenEffect': [4007, 1, 2]},
+      };
+      final g = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: builtin);
+      expect(g.nodeById('1000001001')!.cardKey, isEmpty);
+    });
+
+    test('evt_goto：选项 nextEvtId 非空命中', () {
+      final opts = <String, dynamic>{
+        '100000101': {'content': 'x', 'nextEvtId': 1000002},
+        '100000102': {'content': 'y', 'nextEvtId': 0},
+      };
+      final g = buildFlowGraph(
+          talks: {}, options: opts, prefixes: ['1000001'],
+          starts: const [], cardStyles: builtin);
+      expect(g.nodeById('100000101')!.cardKey, 'evt_goto');
+      expect(g.nodeById('100000102')!.cardKey, isEmpty);
+    });
+
+    test('插件卡优先于内置预设（first-match）', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': '表白', 'screenEffect': [4017]},
+      };
+      final plugin = <Map<String, dynamic>>[
+        {
+          'type_id': 'confess_end',
+          'name': '告白结局',
+          'applies_to': 'talk',
+          'color': '#111111',
+          'match': {'field': 'content', 'equals': '表白'},
+        },
+      ];
+      // 插件在前 → 命中插件卡；否则命中内置 cg_end
+      final a = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: [...plugin, ...builtin]);
+      expect(a.nodeById('1000001001')!.cardKey, 'confess_end');
+      final b = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001'], cardStyles: builtin);
+      expect(b.nodeById('1000001001')!.cardKey, 'cg_end');
+    });
+
+    test('fxSummary 摘要：CG 带 id/未选、转场名、多效果拼接', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': 'a', 'screenEffect': [4015, 12]},
+        '1000001002': {'content': 'b', 'screenEffect': [4015, 0]},
+        '1000001003': {'content': 'c', 'screenEffect': [4006]},
+        '1000001004': {
+          'content': 'd',
+          'screenEffect': [
+            [4012],
+            [4001],
+          ],
+        },
+        '1000001005': {'content': 'e'},
+      };
+      final g = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001']);
+      expect(g.nodeById('1000001001')!.fxSummary, 'CG·12');
+      expect(g.nodeById('1000001002')!.fxSummary, 'CG·未选');
+      expect(g.nodeById('1000001003')!.fxSummary, '黑屏');
+      expect(g.nodeById('1000001004')!.fxSummary, '闪白+抖动');
+      expect(g.nodeById('1000001005')!.fxSummary, isEmpty);
+    });
+
+    test('hasParamBadges 计入 fxSummary', () {
+      final talks = <String, dynamic>{
+        '1000001001': {'content': 'a', 'screenEffect': [4002]},
+      };
+      final g = buildFlowGraph(
+          talks: talks, options: {}, prefixes: ['1000001'],
+          starts: ['1000001001']);
+      expect(g.nodeById('1000001001')!.hasParamBadges, isTrue);
     });
   });
 

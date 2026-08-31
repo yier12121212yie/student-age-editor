@@ -20,8 +20,6 @@ class CloudPage extends StatefulWidget {
 class _CloudPageState extends State<CloudPage> {
   List<dynamic> _providers = [];
   List<String> _drivers = ['local','webdav','openlist','alist','baidu_netdisk','123','google_drive','onedrive'];
-  // driver schemas loaded for future dynamic form generation
-  Map<String, dynamic> _driverSchemas = {};
   String? _selectedProvider;
   bool _loading = false;
   String? _selectedMod;
@@ -47,7 +45,6 @@ class _CloudPageState extends State<CloudPage> {
   void initState() {
     super.initState();
     _loadProviders();
-    _loadSchemas();
     _loadRealtimeStatus();
     _startRealtimePolling();
     // auto select first mod if available
@@ -78,13 +75,6 @@ class _CloudPageState extends State<CloudPage> {
       });
       if (_selectedProvider != null && _selectedMod != null) _loadRemote();
     } catch(e){ _showErr(e.toString()); } finally { setState(()=>_loading=false); }
-  }
-
-  Future<void> _loadSchemas() async {
-    try {
-      final r = await ApiClient.instance.get('/api/cloud/drivers');
-      setState(()=> _driverSchemas = (r['drivers'] as Map<String,dynamic>?) ?? {});
-    } catch (_) {}
   }
 
   // ---------- realtime ----------
