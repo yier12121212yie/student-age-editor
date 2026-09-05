@@ -16,12 +16,12 @@ provider 下都能续聊。
 """
 
 import json
-import os
 import secrets
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+
+from editor.core import atomic_io
 
 from ..core.paths import app_data_dir
 
@@ -54,18 +54,8 @@ def new_session(provider="", model="", mod="", source="") -> dict:
 
 
 def _write_atomic(path: Path, data: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_hist_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_io.write_text_atomic(
+        str(path), json.dumps(data, ensure_ascii=False))
 
 
 def _derive_title(history: list) -> str:
@@ -88,7 +78,11 @@ def _derive_title(history: list) -> str:
 def _prune(root: Path, keep_id: str = ""):
     """超过 _MAX_SESSIONS 时按 updated_at 淘汰最旧会话文件。"""
     try:
-        entries = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        # 次级键用文件名（id 含创建时刻，字典序=时间序）：同一时间片内
+        # 批量落盘时 st_mtime 相同，只按 mtime 排序在 Windows 上不稳定，
+        # 会随机淘汰错文件（时间戳粒度问题）。
+        entries = sorted(root.glob("*.json"),
+                         key=lambda p: (p.stat().st_mtime, p.name))
     except OSError:
         return
     overflow = len(entries) - _MAX_SESSIONS
@@ -114,6 +108,8 @@ def save_session(session: dict, root=None) -> dict:
     if not session.get("id"):
         session.update(new_session())
         session["history"] = hist
+    if not _safe_session_id(session.get("id")):
+        raise ValueError("非法会话 id: %r" % (session.get("id"),))
     if not session.get("title"):
         session["title"] = _derive_title(hist)
     session["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -147,8 +143,17 @@ def list_sessions(root=None, limit=None) -> list:
     return out[:limit] if limit else out
 
 
+def _safe_session_id(session_id) -> bool:
+    """会话 id 仅允许字母数字与 . _ -：id 直接拼进文件路径，
+    未净化的 `../x` 之类可越出会话目录读/删任意 json。"""
+    import re
+    return bool(session_id) and re.fullmatch(r"[A-Za-z0-9._-]+", str(session_id)) is not None
+
+
 def load_session(session_id: str, root=None):
     """按 id 读取完整会话；不存在或损坏返回 None。"""
+    if not _safe_session_id(session_id):
+        return None
     p = sessions_dir(root) / ("%s.json" % session_id)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -174,6 +179,8 @@ def resolve_session_ref(ref: str, root=None):
 
 
 def delete_session(session_id: str, root=None) -> bool:
+    if not _safe_session_id(session_id):
+        return False
     try:
         (sessions_dir(root) / ("%s.json" % session_id)).unlink()
         return True

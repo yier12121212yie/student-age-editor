@@ -4,16 +4,20 @@
 （源码重建版：恢复被误删的初始功能，并包含已验证的加固——
   USERPROFILE 回退、创意工坊订阅目录支持、BOM 兼容、删除保护。）
 """
+import copy
 import json
 import os
 import re
 import sys
 import threading
+import time
+from types import MappingProxyType
 
 from editor.server import ai_files
 from editor.server import fs_tools
 from editor.server.fs_tools import SandboxError
 from editor.server import cfg_store
+from editor.server import perf
 from editor.server.httpd import ApiRouter
 from editor.server import ai_domain_service
 from editor.server import ai_image_service
@@ -149,6 +153,8 @@ class EditorState(object):
         self.workspace_root = ""
         self.mod_root = ""          # 当前模组根目录（绝对路径）
         self.mod_name = ""
+        self._mods_cache = None     # A15: list_mods 的 2s TTL 缓存
+        self._mods_ts = 0.0
         self.aa_index = None
         self.aa_dirs = []
         self.aa_status = "idle"
@@ -168,7 +174,12 @@ class EditorState(object):
 
         扫描范围：本地工作区（LocalLow/.../Mods）+ 编辑器根 + Steam 创意工坊
         订阅目录（<库>/steamapps/workshop/content/<appid>/）。
+        A15：/api/state、cloud_sync._get_mod_dir 高频调用多根全量 walk → 2s TTL 缓存，
+        select_mod/set_workspace 时主动失效。
         """
+        now = time.time()
+        if self._mods_cache is not None and now - self._mods_ts < 2.0:
+            return self._mods_cache
         roots = [self.workspace_root] if self.workspace_root else []
         editor_root = _editor_root()
         if editor_root and os.path.isdir(os.path.join(editor_root, "Cfgs", "zh-cn")):
@@ -197,7 +208,14 @@ class EditorState(object):
                     continue
                 info = self._mod_info(name, mod_dir)
                 mods.append(info)
+        self._mods_cache = mods
+        self._mods_ts = now
         return mods
+
+    def invalidate_mods_cache(self):
+        """A15：目录结构可能变化的操作（建/选/改 Mod）后调用，强制重扫。"""
+        self._mods_cache = None
+        self._mods_ts = 0.0
 
     def _mod_info(self, name, mod_dir):
         cfg_dir = os.path.join(mod_dir, "Cfgs", "zh-cn")
@@ -233,6 +251,7 @@ class EditorState(object):
             self.mod_root = root
             self.aa_index = None
             self.aa_status = "idle"
+        self.invalidate_mods_cache()
         try:
             _invalidate_mod_cfgs_cache()
         except NameError:
@@ -305,65 +324,136 @@ def _cfg_path(cfg_name):
     return os.path.join(cfg_dir, rel)
 
 
+def _truthy(v):
+    """只认真布尔（或字符串 "true"）：避免 "false"/"0" 被当成 True
+    （同 /api/tts/save 的 ogg 标志处理——该形态输入真实存在）。"""
+    return v is True or str(v).strip().lower() == "true"
+
+
 _MOD_CFGS_LOCK = threading.RLock()
 _MOD_CFGS_CACHE = {}          # {cfg_name: data}
-_MOD_CFGS_FP = None           # 指纹：[(fname, mtime_ns, size), ...] 或 None
+_MOD_CFGS_FP = None           # A10 逐表指纹：{fname: (mtime_ns, size)}；None=未建
 _MOD_CFGS_DIR = ""            # 对应 cfg_dir
+_MOD_CFGS_BROKEN = {}         # B16：{cfg_name: 错误说明}——坏表不再伪装空表
 
 
-def _mod_cfgs_fingerprint(cfg_dir):
-    """cfg 目录指纹：文件名+mtime+size，任意一项变化即失效。"""
-    if not cfg_dir or not os.path.isdir(cfg_dir):
-        return None
-    try:
-        out = []
-        for f in sorted(os.listdir(cfg_dir)):
-            if not f.endswith(".json") or f == "CustomKeyMap.json":
-                continue
-            p = os.path.join(cfg_dir, f)
-            try:
-                st = os.stat(p)
-                out.append((f, st.st_mtime_ns, st.st_size))
-            except OSError:
-                out.append((f, 0, 0))
-        return tuple(out)
-    except OSError:
-        return None
+def _broken_mod_cfgs():
+    """B16：当前解析失败的表（{cfg_name: 错误说明}）。调用方据此如实上报。"""
+    with _MOD_CFGS_LOCK:
+        return dict(_MOD_CFGS_BROKEN)
+
+
+def _note_mod_cfgs_write(cfg_name, data, path=None):
+    """写入后更新单表缓存与该表指纹（A10：只作废写过的表，不整目录重解析）。
+
+    mtime/size 取写后 stat：外部若有后续改动，指纹自然失配走重解析。
+    """
+    with _MOD_CFGS_LOCK:
+        _MOD_CFGS_CACHE[cfg_name] = data if isinstance(data, dict) else {}
+        _MOD_CFGS_BROKEN.pop(cfg_name, None)  # 重写成功即不再是坏表（B16）
+        try:
+            st = os.stat(path or _cfg_path(cfg_name))
+            if isinstance(_MOD_CFGS_FP, dict):
+                _MOD_CFGS_FP[cfg_name + ".json"] = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            pass
 
 
 def _load_mod_cfgs():
-    """加载当前 Mod 的全部配置表（磁盘 → {表名: {id: record}}），带指纹缓存。
+    """加载当前 Mod 的全部配置表（磁盘 → {表名: 只读记录集}），带逐表指纹缓存。
 
-    缓存命中时零读盘；指纹失配或换 Mod 时全量重扫并刷新缓存。
+    A10：每请求只 stat 各 json 文件（无解析），指纹一致的表直接复用缓存，
+    只有真正变化的表才重解析——旧实现任一表写入都整目录重解析。
+    G3/B1：返回值为 {表名: MappingProxyType 只读视图}，调用方**不得**就地修改；
+    需要落笔的表先经 _fork_mod_table() 从磁盘 fork 私有副本。
+    B16：解析失败的表记入 _MOD_CFGS_BROKEN 并跳过（旧实现伪装成空表，
+    被引用校验误判成「数据被删光」）。
     """
     cfg_dir = STATE._cfg_dir()
     if not cfg_dir or not os.path.isdir(cfg_dir):
         with _MOD_CFGS_LOCK:
             _MOD_CFGS_CACHE.clear()
+            _MOD_CFGS_BROKEN.clear()
+            global _MOD_CFGS_FP
+            _MOD_CFGS_FP = None
         return {}
-    fp = _mod_cfgs_fingerprint(cfg_dir)
+    stats = {}
+    try:
+        for f in sorted(os.listdir(cfg_dir)):
+            if not f.endswith(".json") or f == "CustomKeyMap.json":
+                continue
+            try:
+                st = os.stat(os.path.join(cfg_dir, f))
+                stats[f] = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                stats[f] = (0, 0)
+    except OSError:
+        stats = None
     with _MOD_CFGS_LOCK:
-        global _MOD_CFGS_FP, _MOD_CFGS_DIR
-        if fp is not None and fp == _MOD_CFGS_FP and _MOD_CFGS_DIR == cfg_dir and _MOD_CFGS_CACHE:
-            # 浅拷贝返回，避免调用方篡改缓存对象
-            return dict(_MOD_CFGS_CACHE)
+        global _MOD_CFGS_DIR
+        if (stats is not None and isinstance(_MOD_CFGS_FP, dict)
+                and _MOD_CFGS_DIR == cfg_dir and stats == _MOD_CFGS_FP
+                and _MOD_CFGS_CACHE):
+            # G3/B1：只读视图边界——mappingproxy 不可 JSON 序列化，
+            # 响应边界必须 dict(...) 后再交序列化器
+            return {name: MappingProxyType(tbl)
+                    for name, tbl in _MOD_CFGS_CACHE.items()}
+        fp_now = stats
     out = {}
-    for f in sorted(os.listdir(cfg_dir)):
-        if not f.endswith(".json") or f == "CustomKeyMap.json":
-            continue
-        name = f[:-5]
-        try:
-            with open(os.path.join(cfg_dir, f), "r", encoding="utf-8-sig") as fp2:
-                data = json.load(fp2)
-            out[name] = data if isinstance(data, dict) else {}
-        except Exception:
-            out[name] = {}
+    broken = {}
+    if stats is not None:
+        for f, fp_item in stats.items():
+            name = f[:-5]
+            with _MOD_CFGS_LOCK:
+                cached_fp = _MOD_CFGS_FP.get(f) if isinstance(_MOD_CFGS_FP, dict) else None
+                cached_data = _MOD_CFGS_CACHE.get(name)
+                cached_err = _MOD_CFGS_BROKEN.get(name)
+            if _MOD_CFGS_DIR == cfg_dir and cached_fp == fp_item:
+                if cached_err:
+                    broken[name] = cached_err  # 指纹未变的坏表保持 broken
+                elif cached_data is not None:
+                    out[name] = cached_data
+                continue
+            try:
+                with open(os.path.join(cfg_dir, f), "r", encoding="utf-8-sig") as fp2:
+                    data = json.load(fp2)
+                out[name] = data if isinstance(data, dict) else {}
+            except Exception as e:
+                broken[name] = "%s: %s" % (type(e).__name__, e)
     with _MOD_CFGS_LOCK:
         _MOD_CFGS_CACHE.clear()
         _MOD_CFGS_CACHE.update(out)
-        _MOD_CFGS_FP = fp
+        _MOD_CFGS_BROKEN.clear()
+        _MOD_CFGS_BROKEN.update(broken)
+        _MOD_CFGS_FP = fp_now
         _MOD_CFGS_DIR = cfg_dir
-    return dict(out)
+    return {name: MappingProxyType(tbl) for name, tbl in out.items()}
+
+
+def _fork_mod_table(cfg_name):
+    """落笔前按表从磁盘 fork 私有副本（G3：写方绝不改只读缓存对象）。
+
+    重新从磁盘解析得到全新对象图（共享缓存记录的原地改动正是 B1 的
+    「写失败后缓存残留半修状态」根源）；文件缺失/坏表时退回缓存深拷贝。
+    """
+    try:
+        path = _cfg_path(cfg_name)
+    except SandboxError:
+        path = None
+    if path:
+        _raw, text, _lossy = cfg_store.read_lossy(path)
+        if text is not None:
+            try:
+                data = json.loads(text.strip() or "{}")
+                if isinstance(data, dict):
+                    return data
+            except (ValueError, TypeError):
+                pass
+    mod_cfgs = _load_mod_cfgs()
+    tbl = mod_cfgs.get(cfg_name)
+    if not tbl:
+        return {}
+    return copy.deepcopy(dict(tbl))
 
 
 def _invalidate_mod_cfgs_cache():
@@ -373,30 +463,167 @@ def _invalidate_mod_cfgs_cache():
         _MOD_CFGS_FP = None
 
 
+# ---------- 大表解析缓存（40MB 表读路径：命中 = 零读盘 + 零解析 + 零编码）----------
+_TABLE_CACHE = {}
+_TABLE_CACHE_LOCK = threading.RLock()
+_TABLE_CACHE_MAX = 3  # 只留最热的大表（剧情图同时消费 Talk/Option 两张）
+_TABLE_CACHE_MIN_BODY = 256 * 1024  # 小表解析 <1ms 无缓存价值
+
+def _stat_fp(path):
+    """文件的 (mtime_ns, size) 指纹；文件缺失返回 None。"""
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+def _invalidate_table_cache(abs_path=None):
+    """使解析缓存失效（写入/undo/redo/forget 后调用）。"""
+    with _TABLE_CACHE_LOCK:
+        if abs_path is None:
+            _TABLE_CACHE.clear()
+        else:
+            _TABLE_CACHE.pop(os.path.abspath(abs_path), None)
+
+def _seed_table_cache(path, cfg_name, data, mtime_ns, lossy=False):
+    """写成功后用已知内容直接建缓存项（写路径顺手的读路径优化）。
+
+    省掉下一次 GET 的 40MB 读盘 + 解析 + 序列化；指纹按写后 stat 记录，
+    若写后文件又被外部改动，指纹失配自然走重解析，不会返回陈旧内容。
+    """
+    try:
+        st = os.stat(path)
+        payload = {"cfg": cfg_name, "data": data, "exists": True,
+                   "mtime_ns": mtime_ns}
+        if lossy:
+            payload["lossy"] = True
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        perf.bump(perf.LC.CFG_DUMPS)
+        if len(body) >= _TABLE_CACHE_MIN_BODY:
+            with _TABLE_CACHE_LOCK:
+                _TABLE_CACHE[path] = (mtime_ns, st.st_size, data, body, lossy)
+    except (OSError, TypeError, ValueError):
+        pass
+
+def _parse_prefix_query(raw):
+    """?prefix=a,b,c → {a, b, c}."""
+    if not raw:
+        return None
+    prefixes = {p.strip() for p in str(raw).split(",") if p.strip()}
+    return prefixes or None
+
+def _prefix_match(key, prefixes, suffix):
+    """服务端前缀过滤，与前端 PrefixMatcher.match 严格同式。"""
+    s = str(key)
+    p = s[:-suffix] if len(s) > suffix else s
+    return p in prefixes
+
+def _load_table_cached(path, cfg_name):
+    """解析缓存统一入口。返回 dict:
+    {"state": "ok"|"missing"|"error", "data": {...}|None, "mtime_ns": int|None,
+     "error": str, "lossy": bool}
+    lossy=True 表示源字节不是合法 UTF-8，经 errors="replace" 容错解码
+    （非 ASCII 内容值已是 U+FFFD）。调用方写回前必须检查 lossy（见 cfg_write），
+    否则把占位符永久写盘会毁掉原文。
+    """
+    if not os.path.isfile(path):
+        return {"state": "missing", "data": None, "mtime_ns": None, "error": "",
+                "lossy": False}
+
+    fp = _stat_fp(path)
+    if fp is None:
+        return {"state": "missing", "data": None, "mtime_ns": None, "error": "",
+                "lossy": False}
+
+    # Check cache hit
+    with _TABLE_CACHE_LOCK:
+        entry = _TABLE_CACHE.get(path)
+    if entry is not None and entry[0] == fp[0] and entry[1] == fp[1]:
+        return {"state": "ok", "data": entry[2], "mtime_ns": fp[0], "error": "",
+                "lossy": entry[4]}
+
+    # Read bytes once；先严格解码，失败才容错降级并打 lossy 标（B2）
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return {"state": "missing", "data": None, "mtime_ns": None, "error": "",
+                "lossy": False}
+    perf.bump(perf.LC.CFG_READ_BYTES, len(raw))  # 真实读盘字节（命中缓存时不走这里）
+    try:
+        content = raw.decode("utf-8-sig")
+        lossy = False
+    except UnicodeDecodeError:
+        content = raw.decode("utf-8-sig", errors="replace")
+        lossy = True
+
+    content = content.strip()
+    if not content:
+        data = {}
+    else:
+        try:
+            data = json.loads(content)
+            perf.bump(perf.LC.CFG_PARSES)  # 每次真实解析计 1（准出：热 GET == 0）
+        except (ValueError, TypeError):
+            return {"state": "error", "data": None, "mtime_ns": fp[0],
+                    "error": "JSON parse failed: 文件内容不是合法 JSON",
+                    "lossy": lossy}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    # Build cache entry if large enough
+    payload = {"cfg": cfg_name, "data": data, "exists": True, "mtime_ns": fp[0]}
+    if lossy:
+        payload["lossy"] = True
+    try:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        perf.bump(perf.LC.CFG_DUMPS)  # 每次真实序列化计 1（免序列化路径不计）
+        if len(body) >= _TABLE_CACHE_MIN_BODY:
+            with _TABLE_CACHE_LOCK:
+                _TABLE_CACHE[path] = (fp[0], fp[1], data, body, lossy)
+                while len(_TABLE_CACHE) > _TABLE_CACHE_MAX:
+                    _TABLE_CACHE.pop(next(iter(_TABLE_CACHE)))
+    except Exception:
+        pass
+
+    return {"state": "ok", "data": data, "mtime_ns": fp[0], "error": "",
+            "lossy": lossy}
+
+
 def _save_mod_cfg(cfg_name, data):
     """原子写回单个配置表（统一走 cfg_store，覆盖前留 .editor_history 快照），并刷新缓存。"""
     path = _cfg_path(cfg_name)
     result = cfg_store.write_cfg(path, data, snapshot=True)
     if not result.get("ok"):
         raise OSError(result.get("error") or "配置表写入失败")
-    # 写回后刷新单表缓存并失效指纹，下次读取会重新比对
-    with _MOD_CFGS_LOCK:
-        _MOD_CFGS_CACHE[cfg_name] = data if isinstance(data, dict) else {}
-        global _MOD_CFGS_FP
-        _MOD_CFGS_FP = None
+    # 写回后刷新单表缓存与该表指纹（A10：不整目录作废）
+    _invalidate_table_cache(path)
+    _seed_table_cache(path, cfg_name, data, result.get("mtime_ns"))
+    _note_mod_cfgs_write(cfg_name, data, path)
+
+
+_BASE_IDS_CACHE = {}  # A13: {cfg: (base对象, frozenset)}——base 是重载后换新对象，按身份失效
 
 
 def _base_table_ids(cfg_name):
-    """原版表 ID 集合（int 化）；原版数据（STATE.base）不可用时返回空集合。"""
+    """原版表 ID 集合（int 化）；原版数据（STATE.base）不可用时返回空集合。
+
+    A13：每次 /api/validate 都对 9.8 万键逐个 int() 太贵，按 base 对象身份缓存。
+    返回 frozenset 防止调用方原地修改污染缓存。
+    """
     base = STATE.base
     if base is None or not cfg_name:
-        return set()
+        return frozenset()
     try:
         data = base.data
     except Exception:
-        return set()
+        return frozenset()
     if not isinstance(data, dict):
-        return set()
+        return frozenset()
+    cached = _BASE_IDS_CACHE.get(cfg_name)
+    if cached is not None and cached[0] is base:
+        return cached[1]
     tbl = data.get(cfg_name)
     ids = set()
     if isinstance(tbl, dict):
@@ -405,7 +632,9 @@ def _base_table_ids(cfg_name):
                 ids.add(int(k))
             except (TypeError, ValueError):
                 continue
-    return ids
+    frozen = frozenset(ids)
+    _BASE_IDS_CACHE[cfg_name] = (base, frozen)
+    return frozen
 
 
 def _read_mod_table(cfg_name):
@@ -512,7 +741,9 @@ def build_router():
     # ---------- 系统 ----------
     @r.route("GET", r"/api/ping")
     def ping(_query=None, _body=None):
-        return 200, {"ok": True, "app": "student-age-editor", "state": {
+        return 200, {"ok": True, "app": "student-age-editor",
+                     "cfg_patch": True,  # S2 能力门：旧后端无此字段 → 前端退回 GET+PUT 全表
+                     "state": {
             "workspace_root": STATE.workspace_root,
             "mod_root": STATE.mod_root,
             "mod_name": STATE.mod_name,
@@ -540,6 +771,7 @@ def build_router():
         if root and not os.path.isdir(root):
             return 400, {"error": "directory not found: %s" % root}
         STATE.workspace_root = root or _user_mods_dir()
+        STATE.invalidate_mods_cache()  # A15：根目录换了，缓存必须作废
         return 200, {"workspace_root": STATE.workspace_root, "mods": STATE.list_mods()}
 
     @r.route("POST", r"/api/shutdown")
@@ -647,10 +879,14 @@ def build_router():
         root = (_body or {}).get("root") or ""
         if root:
             # root 必须位于工作区或创意工坊订阅目录内（防止把任意目录当沙箱根）
+            # Windows 路径大小写不敏感（盘符 C:/c、用户输入大小写随意），
+            # 比较前必须 normcase 归一，否则合法 root 被误判越界。
             allowed_bases = [os.path.abspath(STATE.workspace_root or _user_mods_dir())]
             allowed_bases.extend(os.path.abspath(r) for r in _workshop_mods_roots())
             abs_root = os.path.abspath(root)
-            if not any(abs_root == b or abs_root.startswith(b + os.sep)
+            norm_root = os.path.normcase(abs_root)
+            if not any(norm_root == os.path.normcase(b)
+                       or norm_root.startswith(os.path.normcase(b) + os.sep)
                        for b in allowed_bases):
                 return 400, {"error": "mod root must be inside workspace or workshop dir"}
             if os.path.isdir(abs_root):
@@ -720,72 +956,207 @@ def build_router():
 
     @r.route("GET", r"/api/cfg/(?P<name>[^/]+)")
     def cfg_read(name, _query=None, _body=None):
+        q = _query or {}
         cfg_name = _cfg_name(name)
-        path = _cfg_path(cfg_name)
-        # mtime_ns：前端保存时回传做乐观锁（冲突检测用）；文件缺失为 None
-        mtime_ns = None
-        if os.path.isfile(path):
-            try:
-                mtime_ns = os.stat(path).st_mtime_ns
-            except OSError:
-                mtime_ns = None
-        if not os.path.isfile(path):
-            # 配置表尚不存在：返回空表（exists=false），前端可新建，保存时自动创建
-            return 200, {"cfg": cfg_name, "data": {}, "keys": [], "exists": False,
-                         "mtime_ns": None}
         try:
-            # utf-8-sig：兼容外部工具写出的带 BOM 文件
-            with open(path, "r", encoding="utf-8-sig") as f:
-                content = f.read().strip()
-        except OSError as e:
-            return 500, {"error": "读取配置表失败: %s" % e, "cfg": cfg_name}
-        if not content:
-            return 200, {"cfg": cfg_name, "data": {}, "keys": [], "exists": True,
-                         "mtime_ns": mtime_ns}
+            path = _cfg_path(cfg_name)
+        except SandboxError as e:
+            return 400, {"error": str(e), "cfg": cfg_name}
+            
+        meta_only = str(q.get("meta") or "") == "1"
+        want_keys = str(q.get("keys") or "") == "1"
+        prefixes = _parse_prefix_query(q.get("prefix"))
+            
         try:
-            data = json.loads(content)
-        except (ValueError, TypeError) as e:
-            # 非法 JSON 明确报错，避免 500 崩溃/前端空白
-            return 400, {"error": "配置表 JSON 解析失败: %s" % e, "cfg": cfg_name}
-        return 200, {"cfg": cfg_name, "data": data if isinstance(data, dict) else {},
-                     "keys": sorted(data.keys()) if isinstance(data, dict) else [],
-                     "exists": True, "mtime_ns": mtime_ns}
+            suffix = max(1, min(int(q.get("suffix") or 3), 8))
+        except (TypeError, ValueError):
+            suffix = 3
+            
+        # Use cached loader
+        res = _load_table_cached(path, cfg_name)
+        if res["state"] == "missing":
+            perf.bump(perf.LC.CFG_READS)
+            return 200, {"cfg": cfg_name, "data": {}, "exists": False, "mtime_ns": None}
+            
+        if res["state"] == "error":
+            return 400, {"error": res["error"], "cfg": cfg_name}
+            
+        data = res["data"]
+        mtime_ns = res["mtime_ns"]
+        lossy = res.get("lossy", False)
+        perf.bump(perf.LC.CFG_READS)
 
-    @r.route("PUT", r"/api/cfg/(?P<name>[^/]+)")
-    def cfg_write(name, _query=None, _body=None):
-        body = _body or {}
-        data = body.get("data")
-        if not isinstance(data, dict):
-            return 400, {"error": "data must be a dict"}
-        cfg_name = _cfg_name(name)
-        path = _cfg_path(cfg_name)
-        # 可选乐观锁：expect_mtime_ns 与磁盘不一致且未 force 时拒绝写入（409）
+        if meta_only:
+            resp = {"cfg": cfg_name, "exists": True, "mtime_ns": mtime_ns,
+                    "count": len(data)}
+            if lossy:
+                resp["lossy"] = True
+            return 200, resp
+
+        if prefixes:
+            data = {k: v for k, v in data.items() if _prefix_match(k, prefixes, suffix)}
+            resp = {"cfg": cfg_name, "data": data, "exists": True, "mtime_ns": mtime_ns}
+            if lossy:
+                resp["lossy"] = True
+            return 200, resp
+
+        if not want_keys:
+            with _TABLE_CACHE_LOCK:
+                entry = _TABLE_CACHE.get(path)
+            if entry is not None and entry[0] == mtime_ns and entry[3]:
+                # 免序列化命中：不 bump cfg.dumps（它只统计真实 json.dumps），
+                # 准出断言是「热 GET cfg.dumps == 0」
+                return 200, entry[3]  # Raw bytes - zero serialization
+            resp = {"cfg": cfg_name, "data": data, "exists": True, "mtime_ns": mtime_ns}
+            if lossy:
+                resp["lossy"] = True
+            return 200, resp
+
+        resp = {"cfg": cfg_name, "data": data, "keys": sorted(data.keys()),
+                "exists": True, "mtime_ns": mtime_ns}
+        if lossy:
+            resp["lossy"] = True
+        return 200, resp
+
+    def _cfgstore_parse_provider(abs_path):
+        """cfg_store.apply_patch 的解析缓存视图：命中返回 (data, lossy, mtime_ns)。
+
+        注册给 cfg_store（避免 cfg_store 反向 import api）；未命中/指纹失配
+        返回 None，由 apply_patch 自行读盘兜底。
+        """
+        fp = _stat_fp(abs_path)
+        if fp is None:
+            return None
+        for key in (abs_path, os.path.abspath(abs_path)):
+            with _TABLE_CACHE_LOCK:
+                entry = _TABLE_CACHE.get(key)
+            if entry is not None and entry[0] == fp[0] and entry[1] == fp[1]:
+                return entry[2], entry[4], fp[0]
+        return None
+
+    cfg_store.set_parse_provider(_cfgstore_parse_provider)
+
+    def _do_cfg_patch(cfg_name, path, body, patch):
+        """PUT /api/cfg/<name> body 含 patch 字段时的增量补丁分支（S2/S3 契约）。
+
+        不新增路由（httpd 无 do_PATCH，MockClient 兼容）；行级 if_match 冲突
+        回 conflicting_keys 不回全表，表级 mtime 冲突回磁盘 data 供 409 三选 UI。
+        """
+        if not isinstance(patch, dict):
+            return 400, {"error": "patch must be an object {set, remove}",
+                         "cfg": cfg_name}
+        # B2：lossy 源覆盖保护，语义同全量写
+        probe = _load_table_cached(path, cfg_name)
+        if probe.get("state") == "ok" and probe.get("lossy") and not _truthy(body.get("force")):
+            return 409, {"error": "non-utf8-source", "cfg": cfg_name,
+                         "detail": "源文件不是合法 UTF-8，覆盖写入会毁掉非 ASCII 内容；"
+                                   "确认放弃原文请带 force=true"}
         expect = body.get("expect_mtime_ns")
         try:
             expect = int(expect) if expect is not None else None
         except (TypeError, ValueError):
             expect = None
-        result = cfg_store.write_cfg(
-            path, data, expect_mtime_ns=expect, force=bool(body.get("force")),
-            snapshot=True)
+        if_match = body.get("if_match")
+        if if_match is not None and not isinstance(if_match, dict):
+            return 400, {"error": "if_match must be an object {key: 期望值}",
+                         "cfg": cfg_name}
+        patch_set = patch.get("set")
+        patch_remove = patch.get("remove")
+        result = cfg_store.apply_patch(
+            path,
+            set=patch_set if isinstance(patch_set, dict) else {},
+            remove=patch_remove if isinstance(patch_remove, list) else [],
+            if_match=if_match,
+            expect_mtime_ns=expect,
+            force=_truthy(body.get("force")))
         if not result.get("ok"):
             if result.get("conflict"):
+                if result.get("reason") == "rows":
+                    return 409, {"error": "conflict", "cfg": cfg_name,
+                                 "reason": "rows",
+                                 "conflicting_keys": result.get("conflicting_keys", []),
+                                 "mtime_ns": result.get("mtime_ns")}
                 return 409, {"error": "conflict", "cfg": cfg_name,
                              "mtime_ns": result.get("mtime_ns"),
                              "data": result.get("data")}
             return 500, {"error": result.get("error") or "写入失败", "cfg": cfg_name}
-        with _MOD_CFGS_LOCK:
-            _MOD_CFGS_CACHE[cfg_name] = data if isinstance(data, dict) else {}
-            global _MOD_CFGS_FP
-            _MOD_CFGS_FP = None
+        _invalidate_table_cache(path)
+        _seed_table_cache(path, cfg_name, result.get("data"),
+                          result.get("mtime_ns"))
+        _note_mod_cfgs_write(cfg_name, result.get("data"), path)
         try:
             from editor.server import preview_service as _ps
             _ps.invalidate_cache()
         except Exception:
             pass
-        return 200, {"ok": True, "cfg": cfg_name, "keys": sorted(data.keys()),
+        applied = result.get("applied") or {}
+        return 200, {"ok": True, "cfg": cfg_name,
+                     "applied_set": applied.get("set", 0),
+                     "applied_remove": applied.get("remove", 0),
                      "mtime_ns": result.get("mtime_ns"),
                      "snapshot": result.get("snapshot")}
+
+    @r.route("PUT", r"/api/cfg/(?P<name>[^/]+)")
+    def cfg_write(name, _query=None, _body=None):
+        body = _body or {}
+        cfg_name = _cfg_name(name)
+        try:
+            path = _cfg_path(cfg_name)
+        except SandboxError as e:
+            return 400, {"error": str(e), "cfg": cfg_name}
+
+        # S2：body 以 patch 字段判别增量补丁（不走 /patch 新路由，MockClient 兼容）
+        if body.get("patch") is not None:
+            return _do_cfg_patch(cfg_name, path, body, body["patch"])
+
+        data = body.get("data")
+        if not isinstance(data, dict):
+            return 400, {"error": "data must be a dict"}
+
+        # B2：源文件不是合法 UTF-8 时内容已按 U+FFFD 载入；直接覆盖写会把
+        # 占位符永久写盘毁掉原文。除非 force 明确要求，否则拒绝并让用户
+        # 先修正解码（外部恢复源文件）或 force 确认放弃。
+        probe = _load_table_cached(path, cfg_name)
+        if probe.get("state") == "ok" and probe.get("lossy") and not _truthy(body.get("force")):
+            return 409, {"error": "non-utf8-source", "cfg": cfg_name,
+                         "detail": "源文件不是合法 UTF-8，覆盖写入会毁掉非 ASCII 内容；"
+                                   "确认放弃原文请带 force=true"}
+
+        # Check conflict with optimistic locking
+        expect = body.get("expect_mtime_ns")
+        try:
+            expect = int(expect) if expect is not None else None
+        except (TypeError, ValueError):
+            expect = None
+
+        result = cfg_store.write_cfg(
+            path, data, expect_mtime_ns=expect, force=_truthy(body.get("force")),
+            snapshot=True)
+        
+        if not result.get("ok"):
+            if result.get("conflict"):
+                return 409, {"error": "conflict", "cfg": cfg_name,
+                            "mtime_ns": result.get("mtime_ns"),
+                            "data": result.get("data")}
+            return 500, {"error": result.get("error") or "写入失败", "cfg": cfg_name}
+        
+        # Invalidate ONLY this table's cache (not all mods)
+        _invalidate_table_cache(path)
+        _seed_table_cache(path, cfg_name, data, result.get("mtime_ns"))
+        _note_mod_cfgs_write(cfg_name, data, path)
+
+        # cfg.writes / cfg.write_bytes 由 cfg_store._commit 在真实写盘时统一计数
+        # （内容未变的「零写盘」不计），api 层不再重复 bump。
+
+        try:
+            from editor.server import preview_service as _ps
+            _ps.invalidate_cache()
+        except Exception:
+            pass
+
+        return 200, {"ok": True, "cfg": cfg_name,
+                    "mtime_ns": result.get("mtime_ns"),
+                    "snapshot": result.get("snapshot")}
 
     # ---------- 误操作保护：历史快照 / 撤销 / 重做 ----------
     @r.route("GET", r"/api/history")
@@ -877,14 +1248,18 @@ def build_router():
                     issues.append({"level": str(level), "msg": str(msg),
                                    "rid": str(rid), "cfg": cfg})
         # 2) 跨表：读当前 mod 的 EvtCfg/TalkCfg/OptionCfg，请求中的 data 覆盖同名表
+        # A13：走解析缓存（_read_mod_table 会绕过缓存全量重解析 40MB 大表）
         tables = {}
         for tname in ("EvtCfg", "TalkCfg", "OptionCfg"):
             if cfg == tname and isinstance(data, dict):
                 tables[tname] = data
                 continue
-            tdata = _read_mod_table(tname)
-            if isinstance(tdata, dict):
-                tables[tname] = tdata
+            try:
+                res = _load_table_cached(_cfg_path(tname), tname)
+            except SandboxError:
+                continue  # 未选 Mod：与旧 _read_mod_table 的 None 语义一致
+            if res["state"] == "ok" and isinstance(res["data"], dict):
+                tables[tname] = res["data"]
         base_ids = {t: _base_table_ids(t) for t in ("EvtCfg", "TalkCfg", "OptionCfg")}
         try:
             cross_issues = _gr.validate_cross(tables, base_ids)
@@ -1522,10 +1897,19 @@ def build_router():
         # 配音打通：bindTalkId 非空时把 TalkCfg.audio 指向新登记的 AudioCfg id
         # （引擎的逐句配音通道为 TalkCfg.audio，vocals 不被引擎消费）；
         # 走 tts_store.bind_talk_audio 统一写入口并失效配置/预览缓存。
+        # 绑定没发生（未登记 AudioCfg / 绑定失败）时 boundTalkId 如实回 None
+        # 并给 warning——不能回填请求里的 bindTalkId 骗过前端。
         bind_talk = str(body.get("bindTalkId") or "").strip()
-        if audio_cfg_id is not None and bind_talk:
+        bound_talk = None
+        if bind_talk:
+            if audio_cfg_id is None:
+                return 200, {"ok": True, **saved, "audioCfgId": None,
+                             "boundTalkId": None,
+                             "warning": "未绑定对白 %s：本次未登记 AudioCfg"
+                                        % bind_talk}
             try:
                 tts_store.bind_talk_audio(STATE.mod_root, bind_talk, audio_cfg_id)
+                bound_talk = bind_talk
                 _invalidate_mod_cfgs_cache()
                 try:
                     from editor.server import preview_service as _ps
@@ -1534,9 +1918,10 @@ def build_router():
                     pass
             except tts_store.TtsStoreError as e:
                 return 200, {"ok": True, **saved, "audioCfgId": audio_cfg_id,
+                             "boundTalkId": None,
                              "warning": "音频已保存并登记，绑定对白失败: %s" % e}
         return 200, {"ok": True, **saved, "audioCfgId": audio_cfg_id,
-                     "boundTalkId": bind_talk or None}
+                     "boundTalkId": bound_talk}
 
     @r.route("GET", r"/api/tts/audio")
     def tts_audio(_query=None, _body=None):
@@ -1743,7 +2128,11 @@ def build_router():
         store = _ensure_pack_store()
         query = _query or {}
         q = (query.get("q") or "").strip().lower()
-        limit = int(query.get("limit") or 500)
+        # B14：外部输入 int() 直接包 try（safe_int 语义同 :1785 的示范写法）
+        try:
+            limit = int(query.get("limit") or 500)
+        except (TypeError, ValueError):
+            limit = 500
         scope = (query.get("scope") or "").strip().lower()
 
         # 游戏索引与内置包键集合取并集（去重），统一按数量截断
@@ -1828,13 +2217,19 @@ def build_router():
                 lambda k, b, s: (not music_filterable) or flow_assets.is_music(k, b, music_urls))
             meta = {}
             if tex_filterable:
+                # A14：预建 {key: size_fn} 索引——旧实现 `k in (keys or [])`
+                # 对 list 线性查找嵌在遍历内，O(tex数×键总数)
+                size_fns = {}
+                for keys, _bundle, size_fn in tex_groups:
+                    if size_fn:
+                        for k in (keys or []):
+                            size_fns.setdefault(k, size_fn)
                 for k in tex:
-                    for keys, _, size_fn in tex_groups:
-                        if k in (keys or []) and size_fn:
-                            s = size_fn(k)
-                            if s:
-                                meta[k] = s
-                            break
+                    fn = size_fns.get(k)
+                    if fn:
+                        s = fn(k)
+                        if s:
+                            meta[k] = s
             status = "ready" if (idx is not None or (store is not None and store.active)) else STATE.aa_status
             return 200, {"status": status, "tex": tex, "aud": aud,
                          "txt": pick(idx.txt_keys() if idx else [],
@@ -2028,7 +2423,8 @@ def build_router():
         mod_cfgs = _load_mod_cfgs()
         counts = {}
         for cfg_name, records in delta.items():
-            bucket = mod_cfgs.setdefault(cfg_name, {})
+            # G3：缓存是只读视图，落笔前 fork 私有副本
+            bucket = dict(mod_cfgs.get(cfg_name) or {})
             for rid, record in records.items():
                 bucket[rid] = record  # 覆盖式合并：原版事件整体复制进 Mod
             counts[cfg_name] = len(records)
@@ -2038,7 +2434,10 @@ def build_router():
     @r.route("GET", r"/api/search/talk")
     def search_talk(_query=None, _body=None):
         q = (_query or {}).get("q", "")
-        limit = int((_query or {}).get("limit") or 150)
+        try:
+            limit = max(1, int((_query or {}).get("limit") or 150))
+        except (TypeError, ValueError):
+            limit = 150
         mod_cfgs = _load_mod_cfgs() if STATE.mod_root else {}
         return 200, {
             "results": STATE.base.search_talks(
@@ -2105,7 +2504,8 @@ def build_router():
         except Exception as e:
             return 500, {"error": "%s: %s" % (type(e).__name__, e)}
         if write:
-            bucket = mod_cfgs.setdefault("TalkCfg", {})
+            # G3：缓存是只读视图，落笔前 fork 私有副本（记录也不再共享）
+            bucket = dict(mod_cfgs.get("TalkCfg") or {})
             if not append:
                 # 清空导入：删除该事件原有的全部对白（与友商行为一致）
                 target = start_id
@@ -2118,12 +2518,21 @@ def build_router():
                 bucket[tid] = record
             _save_mod_cfg("TalkCfg", bucket)
             # 绑定事件起始对白（与友商一致：非追加或 talkId 为空时设置）
-            evt_bucket = mod_cfgs.get("EvtCfg", {})
+            evt_bucket = dict(mod_cfgs.get("EvtCfg") or {})
             evt = evt_bucket.get(start_id)
             if isinstance(evt, dict) and (not append or not evt.get("talkId")):
+                evt = dict(evt)  # 记录级也别名：脱离缓存对象再改
                 evt["talkId"] = [int(start_id) * 1000 + 1]
+                evt_bucket[start_id] = evt
                 _save_mod_cfg("EvtCfg", evt_bucket)
-        preview = sorted(parsed.items(), key=lambda kv: int(kv[0]))[:200]
+        # B14：行键不保证是数字（外部输入直接 500 不可接受），非数字键排最后
+        def _preview_sort_key(kv):
+            try:
+                return (0, int(kv[0]), "")
+            except (TypeError, ValueError):
+                return (1, 0, str(kv[0]))
+
+        preview = sorted(parsed.items(), key=_preview_sort_key)[:200]
         return 200, {
             "ok": True, "write": write, "count": len(parsed),
             "preview": preview,
@@ -2146,6 +2555,15 @@ def build_router():
         return 200, data
 
     # ---------- 数据诊断与一键修复 ----------
+    def _report_broken_tables(bugs):
+        """B16：坏表如实上报 ERROR 条目（旧实现伪装空表 → 用户看到「无问题」）。"""
+        for cfg_name, err in sorted(_broken_mod_cfgs().items()):
+            bugs.append({"cfg": cfg_name, "id": "", "key": "", "val": None,
+                         "healed": None,
+                         "desc": "配置表 %s 解析失败，未参与扫描（非无问题）: %s"
+                                 % (cfg_name, err),
+                         "flag": "ERROR"})
+
     @r.route("POST", r"/api/bugfix/scan")
     def bugfix_scan(_query=None, _body=None):
         if not STATE.mod_root:
@@ -2153,6 +2571,7 @@ def build_router():
         mod_cfgs = _load_mod_cfgs()
         base_data = STATE.base.data if STATE.base.status == "ready" else {}
         bugs = bugfix_service.scan_bugs(mod_cfgs, base_data)
+        _report_broken_tables(bugs)
         return 200, {"bugs": bugs, "count": len(bugs)}
 
     @r.route("POST", r"/api/bugfix/fix")
@@ -2163,31 +2582,50 @@ def build_router():
         mod_cfgs = _load_mod_cfgs()
         base_data = STATE.base.data if STATE.base.status == "ready" else {}
         bugs = bugfix_service.scan_bugs(mod_cfgs, base_data)
+        _report_broken_tables(bugs)
 
         targets = body.get("bugs")
         if targets is None:
             targets = bugs
-        fixed = 0
-        touched = set()
+        # A11：预建 (cfg, id, key) 索引——旧实现循环内线性 next() 是 O(修复数×bug 数)
+        bugs_by_key = {(b.get("cfg"), str(b.get("id")), b.get("key")): b
+                       for b in bugs if isinstance(b, dict)}
+        matched = []
         for bug in targets:
             if not isinstance(bug, dict):
                 continue
             # 重新定位：按 (cfg, id, key) 匹配当前扫描结果，防止使用过期数据
-            matched = next((b for b in bugs if b.get("cfg") == bug.get("cfg")
-                            and str(b.get("id")) == str(bug.get("id"))
-                            and b.get("key") == bug.get("key")), None)
-            if matched is None:
-                continue
-            if bugfix_service.apply_fix(mod_cfgs, matched):
+            m = bugs_by_key.get((bug.get("cfg"), str(bug.get("id")),
+                                 bug.get("key")))
+            if m is not None:
+                matched.append(m)
+
+        # G3：apply_fix 就地改记录——先按匹配到的表 fork 私有副本再落笔
+        fix_cfgs = {m["cfg"] for m in matched if m.get("cfg")}
+        if any(m.get("flag") in ("FIX_OPTION_1", "FIX_TALK_1") for m in matched):
+            fix_cfgs.update(("TalkCfg", "OptionCfg"))
+        private = {cfg: _fork_mod_table(cfg) for cfg in fix_cfgs}
+        fixed = 0
+        touched = set()
+        for m in matched:
+            if bugfix_service.apply_fix(private, m):
                 fixed += 1
-                touched.add(matched["cfg"])
-                if matched["flag"] in ("FIX_OPTION_1", "FIX_TALK_1"):
+                touched.add(m["cfg"])
+                if m["flag"] in ("FIX_OPTION_1", "FIX_TALK_1"):
                     touched.update(("TalkCfg", "OptionCfg"))
 
         for cfg_name in touched:
-            _save_mod_cfg(cfg_name, mod_cfgs.get(cfg_name, {}))
+            _save_mod_cfg(cfg_name, private.get(cfg_name, {}))
 
-        remaining = bugfix_service.scan_bugs(mod_cfgs, base_data)
+        # A11：remaining 只重扫 touched 表（未触及的表沿用首次扫描结果），
+        # 避免 40MB 大表场景下一键修复固定付出两次全量扫描
+        remaining_untouched = [b for b in bugs
+                               if isinstance(b, dict) and b.get("cfg") not in touched]
+        remaining_touched = (bugfix_service.scan_bugs(private, base_data,
+                                                      only_tables=touched)
+                             if touched else [])
+        remaining = remaining_untouched + remaining_touched
+        _report_broken_tables(remaining)
         return 200, {"fixed": fixed, "remaining": remaining,
                      "remaining_count": len(remaining)}
 

@@ -183,13 +183,18 @@ class UndoRedoTest(CfgStoreTestBase):
         self._write_direct({"0": {"id": 0}})
         for i in range(1, s.HISTORY_LIMIT + 6):  # 写 55 次
             s.write_cfg(self.path, {"i": i})
-        # undo 上限 50：第 51 次 undo 应失败（最早的写入已丢弃）
-        for _ in range(s.HISTORY_LIMIT):
+        # A9：磁盘快照每表只保留最近 HISTORY_KEEP 份 → 磁盘层面可撤销深度为 10
+        # （内存栈仍是 50，计划第 347 行明确接受该取舍）
+        for _ in range(s.HISTORY_KEEP):
             r = s.undo(self.path)
-            self.assertTrue(r["ok"])
+            self.assertTrue(r["ok"], r)
+        # 第 11 次：条目引用的快照已被修剪、无文本兜底 → 安全失败，绝不误删文件
+        cur = self._read_direct()
         r = s.undo(self.path)
         self.assertFalse(r["ok"])
-        self.assertEqual(r["error"], "nothing to undo")
+        self.assertEqual(r["error"], "history snapshot missing")
+        self.assertEqual(self._read_direct(), cur)
+        self.assertEqual(cur, {"i": s.HISTORY_LIMIT + 6 - 1 - s.HISTORY_KEEP})
 
 
 class ListHistoryTest(CfgStoreTestBase):
@@ -213,6 +218,59 @@ class ListHistoryTest(CfgStoreTestBase):
 
     def test_list_history_empty_when_no_dir(self):
         self.assertEqual(s.list_history(self.path), [])
+
+
+class RobustDecodeTest(CfgStoreTestBase):
+    """非法 UTF-8 / BOM / forget 的回归：解码失败不得炸成 500，
+    更不能被误判成「文件不存在」而让 undo 删表。"""
+
+    def test_write_cfg_survives_non_utf8_file(self):
+        with open(self.path, "wb") as f:
+            f.write('{"1": {"name": "旧数据"}}'.encode("gbk"))
+        r = s.write_cfg(self.path, {"1": {"name": "新"}})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self._read_direct(), {"1": {"name": "新"}})
+
+    def test_undo_survives_non_utf8_current(self):
+        self._write_direct({"1": {"name": "a"}})
+        s.write_cfg(self.path, {"1": {"name": "b"}})
+        # 写入后文件又被外部工具转存成 GBK：undo 读当前内容不得抛
+        # UnicodeDecodeError，也不得因解码失败被当成「不存在」而删除文件
+        with open(self.path, "wb") as f:
+            f.write('{"1": {"name": "外部"}}'.encode("gbk"))
+        r = s.undo(self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertEqual(self._read_direct(), {"1": {"name": "a"}})
+
+    def test_undo_restores_bom_bytes_from_snapshot(self):
+        original = '﻿{"1": {"name": "旧"}}'.encode("utf-8")
+        with open(self.path, "wb") as f:
+            f.write(original)
+        r = s.write_cfg(self.path, {"1": {"name": "新"}})
+        self.assertTrue(r["ok"])
+        s.undo(self.path)
+        # 快照按原始字节恢复：BOM 不被「utf-8-sig 读 + utf-8 写」链路吃掉
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), original)
+
+    def test_forget_drops_undo_stack(self):
+        self._write_direct({"1": {"name": "a"}})
+        s.write_cfg(self.path, {"1": {"name": "b"}})
+        s.forget(self.path)
+        r = s.undo(self.path)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "nothing to undo")
+        # 磁盘内容不受 forget 影响
+        self.assertEqual(self._read_direct(), {"1": {"name": "b"}})
+
+    def test_undo_without_snapshot_falls_back_to_text(self):
+        # snapshot=False：无磁盘快照可字节恢复，退回内存文本路径
+        r = s.write_cfg(self.path, {"1": {"name": "b"}})  # 新建文件，无快照
+        self.assertTrue(r["ok"])
+        r2 = s.undo(self.path)
+        self.assertTrue(r2["ok"])
+        self.assertFalse(os.path.isfile(self.path))
 
 
 if __name__ == "__main__":

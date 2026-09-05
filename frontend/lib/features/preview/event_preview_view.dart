@@ -47,6 +47,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
 
   // AI 侧栏
   final GlobalKey<AiPanelState> _aiKey = GlobalKey<AiPanelState>();
+  Timer? _aiInjectTimer;
   AiSettings _aiSettings = AiSettings();
   bool _aiSettingsLoaded = false;
   bool _aiOpen = false;
@@ -346,8 +347,10 @@ class _EventPreviewViewState extends State<EventPreviewView> {
       setState(() => _aiOpen = true);
     }
     // AI 面板挂载 + 异步初始化需要时间，轮询重试直到注入成功（最多 5s）。
+    // timer 存字段并随 State 释放：页面在 5s 内开关时定时器不至于短暂存活
+    _aiInjectTimer?.cancel();
     var attempts = 0;
-    Timer.periodic(const Duration(milliseconds: 250), (timer) async {
+    _aiInjectTimer = Timer.periodic(const Duration(milliseconds: 250), (timer) async {
       attempts++;
       final ok = await _aiKey.currentState?.sendText(ctx) ?? false;
       if (ok || attempts >= 20 || !mounted) {
@@ -546,6 +549,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
 
   @override
   void dispose() {
+    _aiInjectTimer?.cancel();
     super.dispose();
   }
 }

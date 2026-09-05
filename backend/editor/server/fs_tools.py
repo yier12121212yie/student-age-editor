@@ -4,6 +4,8 @@ import base64
 import json
 import os
 
+from editor.core import atomic_io
+
 TEXT_EXTS = {
     ".json", ".txt", ".md", ".csv", ".xml", ".html", ".css", ".js", ".ts",
     ".lua", ".py", ".cfg", ".ini", ".yaml", ".yml", ".log", ".manifest",
@@ -105,7 +107,10 @@ def read_file(root, rel_path, as_binary=False):
 
 
 def _tmp_path_for(abs_path):
-    """为写入生成唯一临时文件路径，避免并发写竞争。"""
+    """为写入生成唯一临时文件路径，避免并发写竞争。
+
+    .. deprecated:: 实际落盘请用 editor.core.atomic_io（带瞬时占用重试）。
+    """
     import threading
     import time
     return "%s.tmp_%d_%d" % (abs_path, int(time.time() * 1000) % 1000000,
@@ -115,16 +120,11 @@ def _tmp_path_for(abs_path):
 def write_file(root, rel_path, content, base64_mode=False):
     """写入文件。content 为文本字符串或 base64。自动创建父目录。"""
     abs_path = resolve(root, rel_path)
-    parent = os.path.dirname(abs_path)
-    os.makedirs(parent, exist_ok=True)
     if base64_mode:
         raw = base64.b64decode(content)
     else:
         raw = str(content).encode("utf-8")
-    tmp_path = _tmp_path_for(abs_path)
-    with open(tmp_path, "wb") as f:
-        f.write(raw)
-    os.replace(tmp_path, abs_path)
+    atomic_io.write_bytes_atomic(abs_path, raw)
     return {"path": rel_path, "size": len(raw)}
 
 
@@ -136,12 +136,7 @@ def read_json_file(root, rel_path):
 
 def write_json_file(root, rel_path, data):
     abs_path = resolve(root, rel_path)
-    parent = os.path.dirname(abs_path)
-    os.makedirs(parent, exist_ok=True)
-    tmp_path = _tmp_path_for(abs_path)
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, abs_path)
+    atomic_io.write_text_atomic(abs_path, json.dumps(data, ensure_ascii=False, indent=2))
     return {"path": rel_path}
 
 

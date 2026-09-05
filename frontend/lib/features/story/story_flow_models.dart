@@ -8,8 +8,15 @@ library;
 
 import 'dart:ui' show Offset;
 
+import 'package:flutter/foundation.dart';
+
 import 'story_flow_node_presets.dart';
 import 'story_logic.dart';
+
+/// 基准探针（test/story_flow_bench_test.dart）：宿主每次 build 取图都会调
+/// [buildFlowGraph]，拖拽一帧即重建整张图。缓存化落地后此计数应归 0。
+@visibleForTesting
+int debugBuildFlowGraphCalls = 0;
 
 /// 节点类型。
 enum FlowNodeKind { talk, option, missing }
@@ -67,9 +74,10 @@ List<FlowEdgeKind> flowPortKinds(FlowNode n) {
     return const [FlowEdgeKind.optionMain, FlowEdgeKind.optionSide];
   }
   return [
-    if (n.hasCheck)
-      ...[FlowEdgeKind.checkPass, FlowEdgeKind.checkFail]
-    else
+    if (n.hasCheck) ...[
+      FlowEdgeKind.checkPass,
+      FlowEdgeKind.checkFail,
+    ] else
       FlowEdgeKind.next,
     FlowEdgeKind.option,
   ];
@@ -138,11 +146,7 @@ class FlowNode {
         fxSummary.isNotEmpty;
   }
 
-  FlowNode copyWith({
-    String? cardKey,
-    String? cardLabel,
-    String? cardColor,
-  }) {
+  FlowNode copyWith({String? cardKey, String? cardLabel, String? cardColor}) {
     return FlowNode(
       kind: kind,
       id: id,
@@ -202,22 +206,111 @@ class FlowEdge {
 }
 
 class FlowGraph {
-  const FlowGraph({required this.nodes, required this.edges, required this.starts});
+  FlowGraph({required this.nodes, required this.edges, required this.starts}) {
+    for (final n in nodes) {
+      _byId[n.id] = n;
+    }
+    for (final e in edges) {
+      // 与 edgesFrom 原语义一致：跨事件边不参与本事件内的出边遍历。
+      if (e.kind == FlowEdgeKind.nextEvt) continue;
+      (_outEdges[e.from] ??= <FlowEdge>[]).add(e);
+    }
+  }
+
   final List<FlowNode> nodes;
   final List<FlowEdge> edges;
 
   /// 事件首句对白 id（跨事件截断/布局起点）。
   final List<String> starts;
 
-  FlowNode? nodeById(String id) {
-    for (final n in nodes) {
-      if (n.id == id) return n;
-    }
-    return null;
+  final Map<String, FlowNode> _byId = {};
+  final Map<String, List<FlowEdge>> _outEdges = {};
+
+  /// 按 id 取节点。连线绘制与命中测试对每条边各调用两次，线性扫描在
+  /// 419 节点下是每帧 O(E×N)；索引后 O(1)。
+  FlowNode? nodeById(String id) => _byId[id];
+
+  /// 该节点的出边（不含跨事件边）。**返回内部列表，调用方只读**。
+  List<FlowEdge> edgesFrom(String id) => _outEdges[id] ?? const [];
+}
+
+/// 画布选中集（节点 + 边）。状态由宿主持有，画布只负责算出「下一次选什么」。
+///
+/// [FlowEdge] 有值相等，所以图重建后集合仍能对上；节点用 id（FlowNode 每次
+/// buildFlowGraph 都是新对象，按对象存会整批失效）。
+@immutable
+class FlowSelection {
+  const FlowSelection({
+    this.nodes = const <String>{},
+    this.edges = const <FlowEdge>{},
+  });
+
+  static const FlowSelection none = FlowSelection();
+
+  factory FlowSelection.ofNode(String id) => FlowSelection(nodes: {id});
+  factory FlowSelection.ofEdge(FlowEdge e) => FlowSelection(edges: {e});
+
+  final Set<String> nodes;
+  final Set<FlowEdge> edges;
+
+  bool get isEmpty => nodes.isEmpty && edges.isEmpty;
+  bool get isNotEmpty => !isEmpty;
+  int get count => nodes.length + edges.length;
+
+  /// 恰好单选一个节点：详情面板、内联编辑、加节点锚点只在单选时可用。
+  String? get onlyNode =>
+      nodes.length == 1 && edges.isEmpty ? nodes.first : null;
+
+  /// Shift 点选：在集合里加入/移出该节点。
+  FlowSelection toggledNode(String id) =>
+      FlowSelection(nodes: _toggled(nodes, id), edges: edges);
+
+  FlowSelection toggledEdge(FlowEdge e) =>
+      FlowSelection(nodes: nodes, edges: _toggled(edges, e));
+
+  static Set<T> _toggled<T>(Set<T> src, T v) {
+    final out = {...src};
+    if (!out.remove(v)) out.add(v);
+    return out;
   }
 
-  List<FlowEdge> edgesFrom(String id) =>
-      edges.where((e) => e.from == id && e.kind != FlowEdgeKind.nextEvt).toList();
+  /// 只保留节点选中：被删/被改的边无法再作为选中目标，但节点选中不该连带丢。
+  FlowSelection get withoutEdges => FlowSelection(nodes: nodes);
+
+  FlowSelection union(FlowSelection other) => FlowSelection(
+    nodes: {...nodes, ...other.nodes},
+    edges: {...edges, ...other.edges},
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is FlowSelection &&
+      setEquals(other.nodes, nodes) &&
+      setEquals(other.edges, edges);
+
+  @override
+  int get hashCode => Object.hash(
+    Object.hashAllUnordered(nodes),
+    Object.hashAllUnordered(edges),
+  );
+
+  @override
+  String toString() => 'FlowSelection(节点 ${nodes.length} / 边 ${edges.length})';
+}
+
+/// 右键命中上报：[nodeId]/[edge] 都为 null 即点在空白处。
+///
+/// [screen] 是画布本地的屏幕坐标，宿主据此定位 `showMenu`。菜单本体属于 GUI 层
+/// 所以不放画布，画布只做命中换算与锚点上报。
+@immutable
+class FlowContextTap {
+  const FlowContextTap({this.nodeId, this.edge, required this.screen});
+
+  final String? nodeId;
+  final FlowEdge? edge;
+  final Offset screen;
+
+  bool get isEmptyArea => nodeId == null && edge == null;
 }
 
 /// 由当前事件的舞台副本构建流程图。
@@ -233,6 +326,7 @@ FlowGraph buildFlowGraph({
   List<String>? starts,
   List<Map<String, dynamic>> cardStyles = const [],
 }) {
+  if (kDebugMode) debugBuildFlowGraphCalls++;
   final nodes = <String, FlowNode>{};
 
   /// 卡型 match 命中即返回带卡片标注的节点副本。
@@ -276,37 +370,47 @@ FlowGraph buildFlowGraph({
     );
   }
 
+  final matcher = PrefixMatcher(prefixes);
+
   talks.forEach((key, value) {
     if (value is! Map) return;
-    if (!storyIsInPrefixes(prefixes, key)) return;
+    if (!matcher.match(key)) return;
     final talk = value;
     final role = cln(talk['roleName']);
     final check = talk['check'];
-    nodes[key] = applyCardStyle(FlowNode(
-      kind: FlowNodeKind.talk,
-      id: key,
-      roleName: role,
-      content: cln(talk['content']),
-      hasCheck: check is List && check.isNotEmpty,
-      isNarrator: role == '旁白',
-      bgId: _numText(talk['bg']),
-      audioId: _numText(talk['audio']),
-      timeStr: _numText(talk['time']),
-      fxSummary: _fxSummaryOf(talk['screenEffect']),
-    ), talk, 'talk');
+    nodes[key] = applyCardStyle(
+      FlowNode(
+        kind: FlowNodeKind.talk,
+        id: key,
+        roleName: role,
+        content: cln(talk['content']),
+        hasCheck: check is List && check.isNotEmpty,
+        isNarrator: role == '旁白',
+        bgId: _numText(talk['bg']),
+        audioId: _numText(talk['audio']),
+        timeStr: _numText(talk['time']),
+        fxSummary: _fxSummaryOf(talk['screenEffect']),
+      ),
+      talk,
+      'talk',
+    );
   });
   options.forEach((key, value) {
     if (value is! Map) return;
-    if (!storyIsInPrefixes(prefixes, key, isOption: true)) return;
-    nodes[key] = applyCardStyle(FlowNode(
-      kind: FlowNodeKind.option,
-      id: key,
-      roleName: '',
-      content: cln(value['content']),
-      mainCount: _numText(normalizeStoryIdList(value['talkId']).length),
-      sideCount: _numText(normalizeStoryIdList(value['talkId2']).length),
-      nextEvtId: _numText(value['nextEvtId']),
-    ), value, 'option');
+    if (!matcher.match(key, isOption: true)) return;
+    nodes[key] = applyCardStyle(
+      FlowNode(
+        kind: FlowNodeKind.option,
+        id: key,
+        roleName: '',
+        content: cln(value['content']),
+        mainCount: _numText(normalizeStoryIdList(value['talkId']).length),
+        sideCount: _numText(normalizeStoryIdList(value['talkId2']).length),
+        nextEvtId: _numText(value['nextEvtId']),
+      ),
+      value,
+      'option',
+    );
   });
 
   final edges = <FlowEdge>[];
@@ -319,13 +423,15 @@ FlowGraph buildFlowGraph({
     final dual = nodes[key]!.hasCheck;
     for (final t in normalizeStoryIdList(talk['nextTalk'])) {
       final to = cln(t);
-    if (to.isEmpty) continue;
+      if (to.isEmpty) continue;
       if (!nodes.containsKey(to)) ensureTalkTarget(to);
-      edges.add(FlowEdge(
-        from: key,
-        to: to,
-        kind: dual ? FlowEdgeKind.checkPass : FlowEdgeKind.next,
-      ));
+      edges.add(
+        FlowEdge(
+          from: key,
+          to: to,
+          kind: dual ? FlowEdgeKind.checkPass : FlowEdgeKind.next,
+        ),
+      );
     }
     for (final t in next2) {
       final to = cln(t);
@@ -337,7 +443,9 @@ FlowGraph buildFlowGraph({
       final oid = cln(o);
       if (oid.isEmpty) continue;
       if (!nodes.containsKey(oid)) ensureOption(oid);
-      edges.add(FlowEdge(from: key, to: oid, kind: FlowEdgeKind.option, optionId: oid));
+      edges.add(
+        FlowEdge(from: key, to: oid, kind: FlowEdgeKind.option, optionId: oid),
+      );
     }
   });
 
@@ -487,8 +595,12 @@ Map<String, Offset> layoutFlow({
     for (final s in (starts ?? graph.starts))
       if (ids.contains(s)) s,
   ];
+  // maxLayer 与 layer 表的最大层号同步(不变式:layer 为空 ⟺ maxLayer == -1,
+  // 否则 == max(layer.values));不可达节点兜底放层直接取用,免去全表重扫。
+  var maxLayer = -1;
   for (final s in queue) {
     layer[s] = 0;
+    maxLayer = 0;
     order.add(s);
   }
   var qi = 0;
@@ -499,13 +611,20 @@ Map<String, Offset> layoutFlow({
       if (e.kind == FlowEdgeKind.nextEvt) continue;
       if (layer.containsKey(e.to)) continue;
       layer[e.to] = l + 1;
+      if (l + 1 > maxLayer) maxLayer = l + 1;
       order.add(e.to);
       queue.add(e.to);
     }
   }
+  // 不可达节点兜底层:旧实现每放一个节点就对 layer.values.reduce 全表重扫一遍
+  // 求最大层号,整体 O(N²);EvtCfg 3,154 行、不可达节点一多时每次切事件的全图
+  // 布局退化明显。改为同步维护的 maxLayer+1 后再自增——按 graph.nodes 顺序第
+  // k 个不可达节点仍得 maxBFS+k(layer 为空时 maxLayer == -1,+1 得 0,与旧
+  // isEmpty 分支一致),逐值等价,层号分配与 order 顺序不变。
   for (final n in graph.nodes) {
     if (!layer.containsKey(n.id)) {
-      layer[n.id] = (layer.isEmpty ? 0 : (layer.values.reduce((a, b) => a > b ? a : b) + 1));
+      layer[n.id] = maxLayer + 1;
+      maxLayer++;
       order.add(n.id);
     }
   }
@@ -521,7 +640,11 @@ Map<String, Offset> layoutFlow({
 }
 
 /// 连边：把目标 id 追加进源节点字段数组（去重、数字归一）。
-void pushEdgeTarget(Map<String, dynamic> record, String field, dynamic targetId) {
+void pushEdgeTarget(
+  Map<String, dynamic> record,
+  String field,
+  dynamic targetId,
+) {
   final list = normalizeStoryIdList(record[field]);
   final t = int.tryParse(cln(targetId)) ?? cln(targetId);
   if (list.any((e) => cln(e) == cln(t))) return;
@@ -529,8 +652,13 @@ void pushEdgeTarget(Map<String, dynamic> record, String field, dynamic targetId)
 }
 
 /// 断边：从源节点字段数组移除目标 id。
-void removeEdgeTarget(Map<String, dynamic> record, String field, dynamic targetId) {
+void removeEdgeTarget(
+  Map<String, dynamic> record,
+  String field,
+  dynamic targetId,
+) {
   final t = cln(targetId);
-  record[field] =
-      normalizeStoryIdList(record[field]).where((e) => cln(e) != t).toList();
+  record[field] = normalizeStoryIdList(record[field])
+      .where((e) => cln(e) != t)
+      .toList();
 }

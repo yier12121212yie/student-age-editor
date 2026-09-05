@@ -249,7 +249,11 @@ class _TtsPanelState extends State<TtsPanel> {
       final boundNote = r['boundTalkId'] != null
           ? '，已绑定对白 ${r['boundTalkId']}'
           : '';
-      _toast('已保存：$_savedPath$cfgNote$boundNote');
+      // 后端如实上报：绑定未发生（未登记 AudioCfg）或失败时 boundTalkId
+      // 为 null 并带 warning——提示必须透传，不能只报「已保存」
+      final warnNote = r['warning'] != null ? '\n⚠ ${r['warning']}' : '';
+      _toast('已保存：$_savedPath$cfgNote$boundNote$warnNote',
+          severe: r['warning'] != null);
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);

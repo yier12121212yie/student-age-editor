@@ -12,6 +12,7 @@ import time
 
 from editor.server import fs_tools
 from editor.server import cfg_store
+from editor.core import atomic_io
 from editor.server.fs_tools import SandboxError
 
 AUDIO_DIR = "audio/tts"
@@ -91,11 +92,7 @@ def save_audio(mod_root, audio, ext, key=None, ogg=False):
     except SandboxError as e:
         raise TtsStoreError(str(e))
     try:
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        tmp = fs_tools._tmp_path_for(abs_path)
-        with open(tmp, "wb") as f:
-            f.write(audio)
-        os.replace(tmp, abs_path)
+        atomic_io.write_bytes_atomic(abs_path, audio)
     except OSError as e:
         raise TtsStoreError("保存音频失败: %s" % e)
     return {"key": key, "path": rel, "ext": ext,
@@ -173,6 +170,12 @@ def bind_talk_audio(mod_root, talk_id, audio_cfg_id):
     path = next((p for p in candidates if os.path.isfile(p)), None)
     if path is None:
         raise TtsStoreError("TalkCfg.json 不存在，无法绑定对白")
+    # 表级乐观锁：期望 mtime 必须在读取前取得——若读完再 stat，读取→stat
+    # 之间落盘的外部修改会被当成期望值，冲突检测出现漏检窗口
+    try:
+        expect_mtime_ns = os.stat(path).st_mtime_ns
+    except OSError:
+        expect_mtime_ns = None
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -184,7 +187,11 @@ def bind_talk_audio(mod_root, talk_id, audio_cfg_id):
     if not isinstance(rec, dict):
         raise TtsStoreError("对白 %s 不存在于 TalkCfg" % talk_id)
     rec["audio"] = int(audio_cfg_id)
-    result = cfg_store.write_cfg(path, data, snapshot=True)
+    result = cfg_store.write_cfg(path, data, snapshot=True,
+                                 expect_mtime_ns=expect_mtime_ns)
+    if result.get("conflict"):
+        raise TtsStoreError("写回 TalkCfg 冲突：文件在读取后已被其他窗口修改（%s），请重试绑定"
+                            % (result.get("reason") or "未知原因"))
     if not result.get("ok"):
         raise TtsStoreError("写回 TalkCfg 失败: %s" % (result.get("error") or "未知错误"))
     return {"talkId": talk_id, "audioCfgId": int(audio_cfg_id)}

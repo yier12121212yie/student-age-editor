@@ -1,12 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
 import 'field_utils.dart';
 import '../../core/app_theme.dart';
+import 'suggestion_text_field.dart';
 
 /// 全角标点 → 半角映射（官方指南仅允许英文符号；顿号按逗号处理）。
 const _fullWidthToHalf = <String, String>{
@@ -47,6 +46,10 @@ int _clampCursor(int v, int max) => v < 0 ? 0 : (v > max ? max : v);
 /// 对标友商 SmartTemplateEditor 的效果/条件/消耗提示输入框
 /// - 输入关键字或代码片段时弹出候选（desc -> code）
 /// - 底部状态栏实时翻译/校验，中文可读
+///
+/// 输入框本体、候选浮层与 Tab/↑↓/Enter/Esc 键盘接管都由 [SuggestionTextField]
+/// 提供（与剧情图共用同一套补全机器）；这里只保留本字段特有的三件事：
+/// 全角标点归一、/api/effect_validate 状态栏、以及 fieldKey → mode 的推断。
 class EffectHintField extends StatefulWidget {
   const EffectHintField({
     super.key,
@@ -71,18 +74,18 @@ class EffectHintField extends StatefulWidget {
 }
 
 class _EffectHintFieldState extends State<EffectHintField> {
+  /// 控制器与焦点由本 State 持有后注入补全框：撤销回滚、外部改值都要能回写文本。
   late final TextEditingController _ctrl;
   late final FocusNode _focusNode;
-  final LayerLink _layerLink = LayerLink();
-  final GlobalKey _targetKey = GlobalKey();
-  final ScrollController _listCtrl = ScrollController();
-  OverlayEntry? _overlayEntry;
-  List<Map<String, String>> _suggestions = [];
-  int _selectedIndex = 0;
-  String _currentKeyword = '';
-  Timer? _debounceSuggest;
+  final GlobalKey<SuggestionTextFieldState> _fieldKey =
+      GlobalKey<SuggestionTextFieldState>();
+
+  /// 候选源要跨帧同标识：补全框按 identical 比较 source，换对象就当作换了数据源。
+  late final SuggestionSource _source = _suggest;
   Timer? _debounceValidate;
-  bool _overlayVisible = false;
+
+  /// 候选条数：候选列表归 [SuggestionTextField] 持有，这里只留提示行要用的计数。
+  int _candidateCount = 0;
 
   // 校验状态
   String _statusText = '准备就绪';
@@ -109,62 +112,15 @@ class _EffectHintFieldState extends State<EffectHintField> {
     return 'effect';
   }
 
-  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    // 兼容长按产生的 KeyRepeatEvent
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
-    if (event.logicalKey == LogicalKeyboardKey.tab) {
-      if (_suggestions.isNotEmpty) {
-        _tryAcceptTab();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      if (_suggestions.isNotEmpty) {
-        if (!_overlayVisible) {
-          _showOverlay();
-        } else {
-          _moveSelection(1);
-        }
-        return KeyEventResult.handled;
-      }
-    }
-    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-      if (_suggestions.isNotEmpty) {
-        if (!_overlayVisible) {
-          _showOverlay();
-        } else {
-          _moveSelection(-1);
-        }
-        return KeyEventResult.handled;
-      }
-    }
-    if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.numpadEnter) {
-      if (_suggestions.isNotEmpty && _overlayVisible) {
-        _tryAcceptTab();
-        return KeyEventResult.handled;
-      }
-    }
-    if (event.logicalKey == LogicalKeyboardKey.escape) {
-      if (_overlayVisible || _suggestions.isNotEmpty) {
-        _clearSuggestions();
-        return KeyEventResult.handled;
-      }
-    }
-    return KeyEventResult.ignored;
-  }
-
   @override
   void initState() {
     super.initState();
     _ctrl = TextEditingController(text: ValueCodec.encode(widget.value));
     _illegalHint = _illegalCharHint(_ctrl.text);
-    _focusNode = FocusNode(onKeyEvent: _handleKeyEvent);
-    _focusNode.addListener(() {
-      if (!_focusNode.hasFocus) {
-        _hideOverlay();
-      }
-    });
+    _focusNode = FocusNode();
+    // 文本一变就收起候选提示：外部改值（撤销回滚、资产拖放）后旧候选已失效，
+    // 浮层由补全框自己清，这里同步的是它下面那行提示。
+    _ctrl.addListener(_onControllerChanged);
     // 初始校验
     _triggerValidate();
   }
@@ -184,199 +140,50 @@ class _EffectHintFieldState extends State<EffectHintField> {
 
   @override
   void dispose() {
-    _debounceSuggest?.cancel();
     _debounceValidate?.cancel();
-    _hideOverlay();
-    _listCtrl.dispose();
+    _ctrl.removeListener(_onControllerChanged);
     _ctrl.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  void _hideOverlay() {
-    if (_overlayEntry != null) {
-      _overlayEntry!.remove();
-      _overlayEntry = null;
-      _overlayVisible = false;
-    }
+  void _onControllerChanged() {
+    if (_candidateCount == 0) return;
+    setState(() => _candidateCount = 0);
   }
 
-  void _clearSuggestions() {
-    if (_suggestions.isEmpty && !_overlayVisible) return;
-    setState(() {
-      _suggestions = [];
-      _selectedIndex = 0;
-    });
-    _hideOverlay();
-  }
-
-  bool _tryAcceptTab() {
-    if (_suggestions.isEmpty) return false;
-    final idx = _selectedIndex.clamp(0, _suggestions.length - 1);
-    _onItemClicked(_suggestions[idx]);
-    return true;
-  }
-
-  void _moveSelection(int delta) {
-    if (_suggestions.isEmpty) return;
-    final next = (_selectedIndex + delta).clamp(0, _suggestions.length - 1);
-    if (next == _selectedIndex) return;
-    setState(() => _selectedIndex = next);
-    _overlayEntry?.markNeedsBuild();
-    // 滚动到可视区，延后一帧等待 overlay 重建
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_listCtrl.hasClients) return;
-      const itemExtent = 42.0;
-      final offset = next * itemExtent;
-      final viewport = _listCtrl.position.viewportDimension;
-      final cur = _listCtrl.offset;
-      if (offset < cur) {
-        _listCtrl.jumpTo(offset.clamp(0.0, _listCtrl.position.maxScrollExtent));
-      } else if (offset + itemExtent > cur + viewport) {
-        _listCtrl.jumpTo((offset + itemExtent - viewport).clamp(0.0, _listCtrl.position.maxScrollExtent));
-      }
-    });
-  }
-
-  void _showOverlay() {
-    if (_overlayVisible) {
-      _overlayEntry?.markNeedsBuild();
-      return;
-    }
-    if (_suggestions.isEmpty) return;
-    // 紧凑弹窗：更小尺寸、更少遮挡，紧贴输入框底部
-    const double gap = 4;
-    const double overlayMaxH = 168;
-    const double itemExtent = 42;
-    double targetHeight = 32;
-    double targetWidth = 360;
-    final targetCtx = _targetKey.currentContext;
-    if (targetCtx != null) {
-      final box = targetCtx.findRenderObject() as RenderBox?;
-      if (box != null && box.hasSize) {
-        targetHeight = box.size.height;
-        targetWidth = box.size.width;
-      }
-    }
-    final media = MediaQuery.of(context);
-    final viewH = media.size.height;
-    double offsetY = targetHeight + gap;
-    bool showAbove = false;
-    if (targetCtx != null) {
-      final box = targetCtx.findRenderObject() as RenderBox?;
-      if (box != null && box.hasSize) {
-        final global = box.localToGlobal(Offset.zero);
-        final spaceBelow = viewH - (global.dy + targetHeight + gap);
-        if (spaceBelow < 96 && global.dy > spaceBelow) {
-          showAbove = true;
-          offsetY = -overlayMaxH - gap;
-        }
-      }
-    }
-    final overlay = Overlay.of(context);
-    // 宽度跟随输入框但上限收紧，避免霸占整行
-    final width = targetWidth.clamp(260.0, 380.0);
-    _overlayEntry = OverlayEntry(builder: (ctx) {
-      return CompositedTransformFollower(
-        link: _layerLink,
-        showWhenUnlinked: false,
-        offset: Offset(0, offsetY),
-        child: Material(
-          color: Colors.transparent,
-          child: Container(
-            width: width,
-            constraints: const BoxConstraints(maxHeight: overlayMaxH),
-            decoration: BoxDecoration(
-              color: palette.card,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: palette.borderHover),
-              boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 10, offset: Offset(0, 3))],
-            ),
-            child: ListView.separated(
-              controller: _listCtrl,
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              shrinkWrap: true,
-              itemCount: _suggestions.length,
-              separatorBuilder: (_, __) => Divider(height: 1, color: palette.surface),
-              itemBuilder: (c, i) {
-                final it = _suggestions[i];
-                final isSelected = i == _selectedIndex;
-                return InkWell(
-                  onTap: () {
-                    _selectedIndex = i;
-                    _onItemClicked(it);
-                  },
-                  child: Container(
-                    color: isSelected ? palette.tintInfo : Colors.transparent,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(it['desc'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, color: palette.textBody, height: 1.3)),
-                        const SizedBox(height: 1),
-                        Text(it['code'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, color: palette.textSecondary, fontFamily: 'Consolas')),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
+  /// 候选源：/api/effect_suggest，把后端 items 映射成 [Suggestion]。
+  /// 失败按空候选处理（补全框此时退化成普通输入框）。
+  Future<List<Suggestion>> _suggest(SuggestionQuery query) async {
+    List<Suggestion> found;
+    try {
+      final resp = await ApiClient.instance.get(
+        '/api/effect_suggest',
+        query: {'q': query.token, 'mode': _mode},
       );
-    });
-    overlay.insert(_overlayEntry!);
-    _overlayVisible = true;
-    if (showAbove) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_listCtrl.hasClients) {
-          final o = (_selectedIndex * itemExtent).clamp(0.0, _listCtrl.position.maxScrollExtent);
-          _listCtrl.jumpTo(o);
-        }
-      });
+      final items = (resp['items'] as List? ?? []).cast<Map<String, dynamic>>();
+      found = [
+        for (final e in items)
+          Suggestion(
+            e['code']?.toString() ?? '',
+            e['desc']?.toString() ?? '',
+          ),
+      ];
+    } catch (_) {
+      found = const [];
     }
+    if (mounted && found.length != _candidateCount) {
+      setState(() => _candidateCount = found.length);
+    }
+    // 补全框可能判定这批候选已过期而丢弃，一帧后按它的真实状态校准提示行。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncCandidateCount());
+    return found;
   }
 
-  void _onItemClicked(Map<String, String> item) {
-    final code = item['code'] ?? '';
-    if (code.isEmpty) return;
-    final text = _ctrl.text;
-    final cursorPos = _ctrl.selection.baseOffset < 0 ? text.length : _ctrl.selection.baseOffset;
-    int startIdx = -1;
-    if (_currentKeyword.isNotEmpty) {
-      startIdx = text.lastIndexOf(_currentKeyword, cursorPos - 1);
-      // 若未找到，尝试在光标前的搜索区里定位
-      if (startIdx < 0) {
-        // 回退：按关键词在光标前的最后出现
-        final before = text.substring(0, cursorPos);
-        startIdx = before.lastIndexOf(_currentKeyword);
-      }
-    }
-    String newText;
-    int newPos;
-    if (startIdx >= 0) {
-      final prefix = text.substring(0, startIdx);
-      final suffix = text.substring(cursorPos);
-      String sep = '';
-      if (prefix.isNotEmpty && !prefix.endsWith(',') && !prefix.endsWith(', ') && !prefix.endsWith(' ') && !prefix.endsWith(';') && !prefix.endsWith('; ')) {
-        sep = ', ';
-      }
-      newText = prefix + sep + code + suffix;
-      newPos = prefix.length + sep.length + code.length;
-    } else {
-      // 未定位到关键词，直接追加
-      final suffix = text.substring(cursorPos);
-      final prefix = text.substring(0, cursorPos);
-      final needsSep = prefix.trim().isNotEmpty && !prefix.trim().endsWith(',') && !prefix.trim().endsWith(';');
-      newText = prefix + (needsSep ? ', ' : '') + code + suffix;
-      newPos = prefix.length + (needsSep ? 2 : 0) + code.length;
-    }
-    _ctrl.text = newText;
-    _ctrl.selection = TextSelection.collapsed(offset: newPos.clamp(0, newText.length));
-    _hideOverlay();
-    _onTextChanged(newText);
-    // 保持焦点
-    FocusScope.of(context).requestFocus(_focusNode);
+  void _syncCandidateCount() {
+    if (!mounted) return;
+    final n = _fieldKey.currentState?.candidateCount ?? 0;
+    if (n != _candidateCount) setState(() => _candidateCount = n);
   }
 
   void _onTextChanged(String v) {
@@ -397,70 +204,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
     try {
       widget.onChanged(ValueCodec.decode(v, widget.type));
     } catch (_) {}
-    _triggerSuggest(v);
     _triggerValidate();
-  }
-
-  void _triggerSuggest(String text) {
-    _debounceSuggest?.cancel();
-    _debounceSuggest = Timer(const Duration(milliseconds: 220), () async {
-      final sel = _ctrl.selection.baseOffset;
-      final cursorPos = sel < 0 ? text.length : sel;
-      final textBefore = cursorPos <= text.length ? text.substring(0, cursorPos) : text;
-      final lastOpen = textBefore.lastIndexOf('[');
-      final lastClose = textBefore.lastIndexOf(']');
-      if (lastOpen > lastClose) {
-        // 光标在方括号内，不提示（与友商一致）
-        if (mounted) {
-          setState(() {
-            _suggestions = [];
-            _selectedIndex = 0;
-          });
-          _hideOverlay();
-        }
-        return;
-      }
-      final searchArea = lastClose != -1 ? textBefore.substring(lastClose + 1) : textBefore;
-      final keyword = searchArea.trim().replaceAll(RegExp(r'^[,\s，；;]+'), '').replaceAll(RegExp(r'[,\s，；;]+$'), '').trim();
-      // 进一步清理首尾逗号分号空格
-      final kw = keyword.trim().replaceAll(RegExp(r'^[,\s;，、]+'), '').replaceAll(RegExp(r'[,\s;，、]+$'), '');
-      if (kw.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _suggestions = [];
-            _selectedIndex = 0;
-          });
-          _hideOverlay();
-        }
-        return;
-      }
-      _currentKeyword = kw;
-      try {
-        final resp = await ApiClient.instance.get('/api/effect_suggest', query: {'q': kw, 'mode': _mode});
-        final items = (resp['items'] as List? ?? []).cast<Map<String, dynamic>>();
-        if (!mounted) return;
-        final mapped = items.map((e) => {'desc': e['desc']?.toString() ?? '', 'code': e['code']?.toString() ?? ''}).toList();
-        setState(() {
-          _suggestions = mapped;
-          _selectedIndex = 0;
-        });
-        if (mapped.isEmpty) {
-          _hideOverlay();
-        } else {
-          _showOverlay();
-          // 触发重建
-          _overlayEntry?.markNeedsBuild();
-        }
-      } catch (_) {
-        if (mounted) {
-          setState(() {
-            _suggestions = [];
-            _selectedIndex = 0;
-          });
-          _hideOverlay();
-        }
-      }
-    });
   }
 
   void _triggerValidate() {
@@ -484,7 +228,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
         final errors = (resp['errors'] as List? ?? []).cast<dynamic>();
         if (errors.isNotEmpty) {
           setState(() {
-            _statusText = '❌ ' + errors.join('\n');
+            _statusText = '❌ ${errors.join('\n')}';
             _statusColor = palette.statusDanger;
             _statusIsError = true;
           });
@@ -515,21 +259,22 @@ class _EffectHintFieldState extends State<EffectHintField> {
 
   @override
   Widget build(BuildContext context) {
+    // 浮层是否展开由补全框自己决定，父级重建时按它的实时状态出提示文案。
+    final overlayOpen = _fieldKey.currentState?.overlayOpen ?? false;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        CompositedTransformTarget(
-          key: _targetKey,
-          link: _layerLink,
-          child: fluent.TextBox(
-            controller: _ctrl,
-            focusNode: _focusNode,
-            maxLines: _is1D ? 1 : 4,
-            placeholder: _is1D
-                ? '输入屏幕效果代码（如 4001,0.5），支持关键字检索候选…'
-                : '输入关键字或指令代码进行检索（支持拼音、大小写、数学符号如 > >= ≤ 等）…',
-            onChanged: _onTextChanged,
-          ),
+        SuggestionTextField(
+          key: _fieldKey,
+          controller: _ctrl,
+          focusNode: _focusNode,
+          maxLines: _is1D ? 1 : 4,
+          placeholder: _is1D
+              ? '输入屏幕效果代码（如 4001,0.5），支持关键字检索候选…'
+              : '输入关键字或指令代码进行检索（支持拼音、大小写、数学符号如 > >= ≤ 等）…',
+          source: _source,
+          multivalued: true,
+          onChanged: _onTextChanged,
         ),
         const SizedBox(height: 6),
         Container(
@@ -557,13 +302,13 @@ class _EffectHintFieldState extends State<EffectHintField> {
               ),
             ),
           ),
-        if (_suggestions.isNotEmpty)
+        if (_candidateCount > 0)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(
-              _overlayVisible
-                  ? '候选 ${_suggestions.length} 项 · Tab/Enter 补全 · ↑↓ 切换 · 点击插入'
-                  : '候选 ${_suggestions.length} 项 · Tab 补全 · 点击插入',
+              overlayOpen
+                  ? '候选 $_candidateCount 项 · Tab/Enter 补全 · ↑↓ 切换 · 点击插入'
+                  : '候选 $_candidateCount 项 · Tab 补全 · 点击插入',
               style: TextStyle(fontSize: 10.5, color: palette.textHint),
             ),
           ),

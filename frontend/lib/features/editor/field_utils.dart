@@ -101,6 +101,45 @@ class ValueCodec {
     return t;
   }
 
+  /// 现文本与值是否已语义等价（等价则不必回写，保护半截输入与光标）。
+  /// decode 失败按"需要回写"处理。
+  ///
+  /// 用途：didUpdateWidget 回写文本前先判断。数组输入的中间态如 "1,"
+  /// 已被 onChanged 解析成 [1]，语义上与现文本等价，回写会把文本
+  /// 规范化成 "1" 并把光标弹到末尾，破坏连续输入。
+  /// 注意空文本语义：decode('') 按 fieldType 得 ''/0/[]，
+  /// 所以 "" vs [5] 不等价（返回 true，需要回写），而 "1," vs [1] 等价（返回 false）。
+  static bool needsResync(String text, dynamic value, String fieldType) {
+    dynamic decoded;
+    try {
+      decoded = decode(text, fieldType);
+    } catch (_) {
+      return true; // 解析异常：按需要回写处理
+    }
+    return !_deepEq(decoded, value);
+  }
+
+  /// 深比较：List/Map 逐元素；数值允许 int/double 相等（1 == 1.0）。
+  static bool _deepEq(dynamic a, dynamic b) {
+    if (identical(a, b)) return true;
+    if (a is num && b is num) return a == b;
+    if (a is List && b is List) {
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        if (!_deepEq(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    if (a is Map && b is Map) {
+      if (a.length != b.length) return false;
+      for (final k in a.keys) {
+        if (!b.containsKey(k) || !_deepEq(a[k], b[k])) return false;
+      }
+      return true;
+    }
+    return a == b;
+  }
+
   static List<String> _splitRows(String s) => s
       .split(RegExp(r'[;\n]'))
       .map((e) => e.trim())
@@ -124,3 +163,7 @@ class ValueCodec {
     return n ?? s;
   }
 }
+
+/// 顶层便捷入口：与 [ValueCodec.needsResync] 完全等价（语义见该方法文档）。
+bool valueCodecNeedsResync(String text, dynamic value, String type) =>
+    ValueCodec.needsResync(text, value, type);

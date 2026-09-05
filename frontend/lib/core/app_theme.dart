@@ -273,6 +273,59 @@ class AppPalette {
 /// 当前生效调色板（应用启动与主题切换时由 [AppTheme] 整体替换）。
 AppPalette palette = AppPalette.dark;
 
+/// 圆角阶梯：卡片/浮层/芯片共用，避免同一层级在不同文件里取不同值。
+class AppRadius {
+  AppRadius._();
+
+  static const double xs = 3;
+  static const double s = 5;
+  static const double m = 6;
+  static const double l = 8;
+  static const double xl = 10;
+}
+
+/// 间距阶梯（4 的倍数，画布卡片与浮层内边距用）。
+class AppSpace {
+  AppSpace._();
+
+  static const double xxs = 2;
+  static const double xs = 4;
+  static const double s = 8;
+  static const double m = 12;
+  static const double l = 16;
+  static const double xl = 24;
+}
+
+/// 字号阶梯：画布信息密度高，正文比全局默认小一档。
+class AppType {
+  AppType._();
+
+  /// 角标/徽章。
+  static const double badge = 8.5;
+
+  /// 卡片正文。
+  static const double body = 10.5;
+
+  /// 卡片标题条。
+  static const double title = 11;
+
+  /// 芯片/按钮。
+  static const double chip = 12;
+}
+
+/// 浮层阴影：[float] 给常驻浮层（工具条/小地图），[selected] 给选中态。
+class AppShadow {
+  AppShadow._();
+
+  static const List<BoxShadow> float = [
+    BoxShadow(color: Color(0x66000000), blurRadius: 10, offset: Offset(0, 3)),
+  ];
+
+  static const List<BoxShadow> selected = [
+    BoxShadow(color: Color(0x806C5CE7), blurRadius: 8, offset: Offset(0, 0)),
+  ];
+}
+
 /// 主题控制器：读写持久化模式，同步当前调色板，并通知监听者重建。
 class AppTheme {
   AppTheme._();

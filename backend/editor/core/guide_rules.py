@@ -353,7 +353,10 @@ def validate_cross(tables, base_ids=None):
     - 对话/选项/跳转引用缺失 → warn
     - 事件ID与原版事件冲突 → info（实机加载将覆盖原版）
     """
-    base_ids = base_ids or {}
+    # 同 ref_rules.check_refs：不能用真值判定，防止把常空的懒加载 id 映射
+    # （如 bugfix_service._LazyIdSets）整体替换成 {}
+    if base_ids is None:
+        base_ids = {}
     evt_ids = _id_set(tables, "EvtCfg", base_ids)
     talk_ids = _id_set(tables, "TalkCfg", base_ids)
     opt_ids = _id_set(tables, "OptionCfg", base_ids)

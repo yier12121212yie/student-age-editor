@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
-import '../../core/api_client.dart';
+import '../../core/history_client.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
 import '../editor/editor_controller.dart';
@@ -35,86 +33,28 @@ class EditorArea extends StatefulWidget {
 class _EditorAreaState extends State<EditorArea> {
   /// 撤销/重做成功后的刷新信号：传给 SchemaEditorView 触发重新加载磁盘内容。
   int _cfgReloadToken = 0;
-  bool _historyBusy = false;
 
   /// 撤销/重做当前 cfg 文档（POST /api/history/undo|redo）。
   Future<void> _historyOp(String op) async {
     final doc = widget.controller.current;
-    if (doc == null || doc.kind != 'cfg' || _historyBusy) return;
-    _historyBusy = true;
-    try {
-      await ApiClient.instance.post(
-        '/api/history/$op',
-        body: {'cfg': doc.cfgName},
-      );
+    if (doc == null || doc.kind != 'cfg') return;
+    final r = await historyOp(op, cfg: doc.cfgName, context: context);
+    if (r == HistoryOpResult.applied) {
       if (!mounted) return;
       setState(() => _cfgReloadToken++);
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      final nothing = e.message.contains('nothing to undo') ||
-          e.message.contains('nothing to redo');
-      fluent.displayInfoBar(
-        context,
-        builder: (ctx, close) => fluent.InfoBar(
-          title: Text(op == 'undo'
-              ? (nothing ? '没有可撤销的操作' : '撤销失败')
-              : (nothing ? '没有可重做的操作' : '重做失败')),
-          content: nothing
-              ? null
-              : Text(e.toString(), style: const TextStyle(fontSize: 12)),
-          severity: fluent.InfoBarSeverity.warning,
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      fluent.displayInfoBar(
-        context,
-        builder: (ctx, close) => fluent.InfoBar(
-          title: Text(op == 'undo' ? '撤销失败' : '重做失败'),
-          content: Text(e.toString(), style: const TextStyle(fontSize: 12)),
-          severity: fluent.InfoBarSeverity.error,
-        ),
-      );
-    } finally {
-      _historyBusy = false;
     }
-  }
-
-  /// 主焦点是否位于文本输入控件内：是则让位给输入框自身的 Ctrl+Z / Ctrl+Y。
-  bool _focusInEditableText() {
-    final ctx = FocusManager.instance.primaryFocus?.context;
-    if (ctx == null) return false;
-    final self = ctx.widget;
-    if (self is EditableText || self is TextField) return true;
-    bool found = false;
-    ctx.visitAncestorElements((e) {
-      final w = e.widget;
-      if (w is EditableText || w is TextField) {
-        found = true;
-        return false;
-      }
-      return true;
-    });
-    return found;
+    // busy：瞬态让路，不刷新也不提示；empty/failed 的提示由 historyOp 负责
   }
 
   /// Ctrl+Z / Ctrl+Y（及 Ctrl+Shift+Z）→ 撤销 / 重做。
   /// 仅在 cfg 文档激活且焦点不在文本输入内时响应，其余按键事件放行。
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final ctrl = HardwareKeyboard.instance.isControlPressed;
-    if (!ctrl) return KeyEventResult.ignored;
-    final key = event.logicalKey;
-    final isUndo = key == LogicalKeyboardKey.keyZ &&
-        !HardwareKeyboard.instance.isShiftPressed;
-    final isRedo = key == LogicalKeyboardKey.keyY ||
-        (key == LogicalKeyboardKey.keyZ &&
-            HardwareKeyboard.instance.isShiftPressed);
-    if (!isUndo && !isRedo) return KeyEventResult.ignored;
+    final op = historyKeyOp(event);
+    if (op == null) return KeyEventResult.ignored;
     final doc = widget.controller.current;
     if (doc == null || doc.kind != 'cfg') return KeyEventResult.ignored;
-    if (_focusInEditableText()) return KeyEventResult.ignored;
-    _historyOp(isUndo ? 'undo' : 'redo');
+    if (focusInEditableText()) return KeyEventResult.ignored;
+    _historyOp(op);
     return KeyEventResult.handled;
   }
 

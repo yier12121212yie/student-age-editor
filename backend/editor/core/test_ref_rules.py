@@ -43,6 +43,19 @@ def test_array_field_heals_dangling():
     assert dangling[0]["healed"] == [1000001001]
 
 
+def test_healed_keeps_exempt_sentinels():
+    # 一键修复只剔除悬挂引用：合法豁免值 0/-1/-2（无/无限制语义）必须保留，
+    # 否则 roleIds=[0,99999,6] 会被修成只剩 [6]，悄悄删掉「无说话人」哨兵。
+    tables = {
+        "PersonCfg": {"6": {"id": 6}},
+        "TalkCfg": {"1": {"id": 1, "roleIds": [0, 99999, 6]}},
+    }
+    issues = ref_rules.check_refs(tables)
+    dangling = [i for i in issues if i["cfg"] == "TalkCfg" and i["field"] == "roleIds"]
+    assert len(dangling) == 1
+    assert dangling[0]["healed"] == [0, 6]
+
+
 def test_exempt_values_pass():
     tables = {
         "ActionCfg": {"1": {"id": 1, "evtId": 0, "next": -1, "map": -2}},
@@ -60,6 +73,79 @@ def test_extra_base_ids_satisfy():
     # 背景 55 只存在于原版数据（extra_ids），不应报悬挂
     extra = {"BgCfg": {55, 5}}
     assert ref_rules.check_refs(tables, extra) == []
+
+
+class _LazyIds(dict):
+    """模拟 bugfix_service._LazyIdSets：下标访问时惰性构建（显式 __getitem__），
+    dict.get() 对缺键返回 None（这正是曾让原版 id 全集失效的坑）。"""
+
+    def __init__(self, src):
+        super().__init__()
+        self._src = src
+
+    def __getitem__(self, cfg):
+        s = self.get(cfg)
+        if s is None:
+            s = set((self._src.get(cfg) or {}).keys())
+            self[cfg] = s
+        return s
+
+
+def test_lazy_extra_ids_satisfy():
+    tables = {
+        "TalkCfg": {"1000001001": {"id": 1000001001}},
+        "NpcActivityCfg": {"5": {"id": 5, "talkId": [2000000001]}},
+    }
+    # talkId 2000000001 只存在于原版：懒加载 extra 必须经下标访问取得
+    extra = _LazyIds({"TalkCfg": {"2000000001": {"id": 2000000001}}})
+    assert ref_rules.check_refs(tables, extra) == []
+
+
+def test_lazy_extra_ids_enable_dangling_detection():
+    # Mod 无目标表数据时，原版 id 全集也要支撑悬挂判定（不得整条规则静默跳过）
+    tables = {"ActionCfg": {"1": {"id": 1, "evtId": 9999999}}}
+    extra = _LazyIds({"EvtCfg": {"1000001": {"id": 1000001}}})
+    issues = ref_rules.check_refs(tables, extra)
+    assert len(issues) == 1
+    assert issues[0]["cfg"] == "ActionCfg" and issues[0]["field"] == "evtId"
+
+
+def test_bugfix_scan_base_ids_no_false_positive():
+    # 端到端：scan_bugs 的 _LazyIdSets 传入原版数据，引用本体 TalkCfg id
+    # 不应被误报（曾因 dict.get() 取不到 extra 而一律误报、可被一键修复误删）
+    mod = {
+        "TalkCfg": {"1000001001": {"id": 1000001001}},
+        "NpcActivityCfg": {"5": {"id": 5, "talkId": [2000000001]}},
+    }
+    base = {"TalkCfg": {"2000000001": {"id": 2000000001}}}
+    bugs = scan_bugs(mod, base)
+    assert not [b for b in bugs if b["flag"] == "REF"]
+
+
+def test_bg_cfg_pool_is_bg_dict():
+    # 曾把 BgCfg 误映射到 MAP_DICT：地图 id 会被当成合法背景 id
+    assert ref_rules._dict_keys("BgCfg") is ref_rules.BG_DICT
+
+
+def _int_keys(d):
+    out = set()
+    for k in d:
+        try:
+            out.add(int(k))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def test_bg_field_rejects_map_only_ids():
+    bg_only = _int_keys(ref_rules.BG_DICT) - _int_keys(ref_rules.MAP_DICT)
+    map_only = _int_keys(ref_rules.MAP_DICT) - _int_keys(ref_rules.BG_DICT)
+    assert bg_only and map_only, "BG_DICT 与 MAP_DICT 键集应有差异"
+    tables = {"ActionCfg": {"1": {"id": 1, "bg": min(bg_only)}}}
+    assert ref_rules.check_refs(tables) == []  # 字典池内的背景 id 合法
+    tables_bad = {"ActionCfg": {"1": {"id": 1, "bg": min(map_only)}}}
+    issues = ref_rules.check_refs(tables_bad)
+    assert len(issues) == 1 and issues[0]["target"] == "BgCfg"
 
 
 def test_2d_array_flatten():

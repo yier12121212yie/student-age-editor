@@ -22,6 +22,8 @@ import time
 import threading
 import hashlib
 
+from editor.core import atomic_io
+
 # ---------- paths ----------
 
 def _editor_root():
@@ -85,12 +87,9 @@ def _rt_load_config():
 
 def _rt_save_config(cfg):
     p = _rt_config_path()
-    tmp = p + ".tmp"
     try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, p)
+        atomic_io.write_text_atomic(
+            p, json.dumps(cfg, ensure_ascii=False, indent=2))
     except Exception as e:
         print("[realtime] save config failed: %s" % e)
 
@@ -247,7 +246,37 @@ def _snapshot_mod(mod_name):
         _rt_log("snapshot %s failed: %s" % (mod_name, e), "error", mod_name)
         return {}
 
-def _detect_changes(prev, cur):
+# 歧义内容基线：{(mod, rel): 上次歧义检查时的 sha1}（仅同尺寸同秒场景按需计算）
+_RT_AMBIG_SHA = {}
+_RT_AMBIG_SHA_LOCK = threading.Lock()
+
+def _ambig_content_changed(mod_name, rel):
+    """同尺寸、同秒级 mtime 的歧义场景：sha1 判定内容是否真变。
+
+    mtime 是秒级（_list_local_files），同秒内、等长的内容改动（如同字数
+    替换一字）在快照比对上无差。首次遇到某文件没有基线，记录后按未变处理
+    （与旧行为一致）；之后即可检出。>20MB 跳过（同 _lazy_sha 的权衡）。
+    """
+    try:
+        import hashlib
+        from editor.server.cloud_sync import _get_mod_dir
+        path = os.path.join(_get_mod_dir(mod_name), *rel.split("/"))
+        if not os.path.isfile(path) or os.path.getsize(path) > 20 * 1024 * 1024:
+            return False
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        sha = h.hexdigest()
+    except Exception:
+        return True  # 读不到就保守按有变化处理
+    key = (mod_name, rel)
+    with _RT_AMBIG_SHA_LOCK:
+        prev_sha = _RT_AMBIG_SHA.get(key)
+        _RT_AMBIG_SHA[key] = sha
+    return prev_sha is not None and prev_sha != sha
+
+def _detect_changes(prev, cur, mod_name=None):
     # returns dict with added, modified, deleted, changed_list
     prev_keys = set(prev.keys())
     cur_keys = set(cur.keys())
@@ -258,6 +287,8 @@ def _detect_changes(prev, cur):
         ps, pm = prev[k]
         cs, cm = cur[k]
         if ps != cs or abs(int(pm) - int(cm)) > 1:
+            modified.add(k)
+        elif mod_name and _ambig_content_changed(mod_name, k):
             modified.add(k)
     # ignore temp files
     def _valid(rel):
@@ -501,7 +532,7 @@ def _watcher_loop():
             for mod in list(current_mods):
                 cur = _snapshot_mod(mod)
                 prev = _rt_prev_snapshots.get(mod, {})
-                diff = _detect_changes(prev, cur)
+                diff = _detect_changes(prev, cur, mod)
                 changed = diff["changed"]
                 deleted = diff["deleted"]
                 if changed or deleted:
@@ -621,10 +652,21 @@ def rt_start():
     if not mods:
         raise ValueError("no mods to watch (select mod or enable watch_all)")
     with _rt_state_lock:
-        if _rt_state.get("running") and _rt_thread and _rt_thread.is_alive():
-            # already running, just update enabled
+        alive = bool(_rt_state.get("running") and _rt_thread and _rt_thread.is_alive())
+        draining = _rt_stop.is_set()
+    if alive and not draining:
+        # already running, just update enabled
+        with _rt_state_lock:
             _rt_state["enabled"] = True
-            return rt_get_status()
+        return rt_get_status()
+    if alive and draining:
+        # rt_stop 的 join(timeout=2) 超时后旧线程仍卡在一次网络同步上：
+        # 必须等它真正退出再重启，否则旧线程按 stop 标志退出后没有任何
+        # 机制再拉起线程——配置 enabled=True、UI 显示已启用，同步静默停摆
+        _rt_thread.join(timeout=5.0)
+        if _rt_thread.is_alive():
+            raise RuntimeError("上一次实时同步停止尚未完成，请稍后重试")
+    with _rt_state_lock:
         _rt_state["running"] = True
         _rt_state["enabled"] = True
         _rt_state["error"] = ""

@@ -188,8 +188,13 @@ def _safe_array_value(mod_data, bugs, cfg_name, item_id, key, value, array_shape
     return [value]
 
 
-def scan_bugs(mod_data, base_data):
-    """深度扫描 Mod 数据结构异常。返回 bug 列表（与友商 BugFixerDialog.scan_bugs 等价）。"""
+def scan_bugs(mod_data, base_data, only_tables=None):
+    """深度扫描 Mod 数据结构异常。返回 bug 列表（与友商 BugFixerDialog.scan_bugs 等价）。
+
+    only_tables：可选表名集合。A11 一键修复的 remaining 重扫只需要被 touched
+    的表——传入时跳过其他表的逐表扫描（跨表合法 id 全集仍按完整数据构建，
+    避免只传子集时产生虚假「致命断层」）。
+    """
     bugs = []
     if not GAME_SCHEMA:
         return [{"cfg": "", "id": "", "key": "", "val": None, "healed": None,
@@ -197,6 +202,9 @@ def scan_bugs(mod_data, base_data):
     m_data = mod_data
     b_data = base_data or {}
     array_shape_bug_keys = set()
+
+    def _skip(cfg_name):
+        return only_tables is not None and cfg_name not in only_tables
 
     def add_bug(*args):
         if len(args) == 4:
@@ -231,6 +239,9 @@ def scan_bugs(mod_data, base_data):
 
     for cfg_name_target, target_set in [
         ("PersonCfg", valid_roles),
+        # 职业允许 mod 在 JobCfg 里自定义扩展：只拿内置 JOB_DICT 判定会把
+        # 自定义职业 id 误报「严重越界」，甚至被一键修复改掉
+        ("JobCfg", valid_jobs),
         ("RelationCfg", valid_relations),
         ("ItemCfg", valid_items),
         ("MapCfg", valid_maps),
@@ -262,7 +273,7 @@ def scan_bugs(mod_data, base_data):
     array_keys = ["cond", "effect", "effect2", "precondition", "condition", "stateCond"]
 
     for cfg_name, cfg_dict in m_data.items():
-        if not isinstance(cfg_dict, dict):
+        if not isinstance(cfg_dict, dict) or _skip(cfg_name):
             continue
         for item_id, item_data in cfg_dict.items():
             if not isinstance(item_data, dict):
@@ -300,6 +311,8 @@ def scan_bugs(mod_data, base_data):
 
     # ================== 3. 特殊对话校验 ==================
     for talk_id, talk in (m_data.get("TalkCfg", {}) or {}).items():
+        if _skip("TalkCfg"):
+            break
         if not isinstance(talk, dict):
             continue
         for opt in _safe_array_value(m_data, bugs, "TalkCfg", talk_id, "option", talk.get("option", []), array_shape_bug_keys):
@@ -317,11 +330,13 @@ def scan_bugs(mod_data, base_data):
 
     # ================== 4. 格式与规范扫描 ==================
     opt_cfg = m_data.get("OptionCfg", {}) or {}
-    if "1" in opt_cfg or 1 in opt_cfg:
+    if not _skip("OptionCfg") and ("1" in opt_cfg or 1 in opt_cfg):
         add_bug("OptionCfg", "1", "id", 1, None,
                 "💥恶性异常：发现由官方编辑器引发的选项ID为1报错，会使游戏引擎字典冲突卡死！", "FIX_OPTION_1")
 
     for tid, t_data in (m_data.get("TalkCfg", {}) or {}).items():
+        if _skip("TalkCfg"):
+            break
         if not isinstance(t_data, dict):
             continue
         opts = _safe_array_value(m_data, bugs, "TalkCfg", tid, "option", t_data.get("option", []), array_shape_bug_keys)
@@ -330,6 +345,8 @@ def scan_bugs(mod_data, base_data):
                     "💥恶性异常：引用的对话选项ID为1，将导致游戏读取字典冲突卡死！", "FIX_TALK_1")
 
     for gid, gdata in (m_data.get("GiftEvtCfg", {}) or {}).items():
+        if _skip("GiftEvtCfg"):
+            break
         if not isinstance(gdata, dict):
             continue
         if "npcId" in gdata:
@@ -340,7 +357,7 @@ def scan_bugs(mod_data, base_data):
                     "旧版数据 'condition' 需要升级为 'cond'", "RENAME_COND")
 
     for cfg_name, cfg_data in m_data.items():
-        if cfg_name not in GAME_SCHEMA or not isinstance(cfg_data, dict):
+        if cfg_name not in GAME_SCHEMA or not isinstance(cfg_data, dict) or _skip(cfg_name):
             continue
         schema_rules = GAME_SCHEMA[cfg_name]
         for item_id, item_data in cfg_data.items():
@@ -377,10 +394,30 @@ def scan_bugs(mod_data, base_data):
     # ================== 5. 跨表引用完整性（声明式规则，ref_rules.py） ==================
     # 覆盖 guide_rules.validate_cross 之表的字段级引用（npc/mapId/audio/bg/evtId…）。
     # 数组字段给出 healed（剔除悬挂引用后可一键修复）；单值字段仅报告。
+    # A16：base id 全集惰性构建——只为实际被引用到的目标表建 set，不预建全部表。
     try:
         from editor.core import ref_rules as _ref
-        base_ids = {cfg: set((b_data.get(cfg) or {}).keys()) for cfg in b_data}
+
+        class _LazyIdSets(dict):
+            def __init__(self, src):
+                super().__init__()
+                self._src = src
+
+            def __getitem__(self, cfg):
+                # 显式 Python 级 __getitem__：dict.get 不会触发惰性构建，
+                # ref_rules.check_refs 以 `extra_ids[target]` 下标访问取原版
+                # id 全集（见 check_refs 内 `is None` 判空注释——本实例恒为
+                # 空 dict，靠真值判定会把它整体替换掉）
+                s = self.get(cfg)
+                if s is None:
+                    s = set((self._src.get(cfg) or {}).keys())
+                    self[cfg] = s
+                return s
+
+        base_ids = _LazyIdSets(b_data)
         for it in _ref.check_refs(m_data, base_ids):
+            if _skip(it["cfg"]):
+                continue
             desc = it["desc"]
             if it["healed"] is not None:
                 add_bug(it["cfg"], it["rid"], it["field"], it["value"], it["healed"],
@@ -388,8 +425,12 @@ def scan_bugs(mod_data, base_data):
             else:
                 add_bug(it["cfg"], it["rid"], it["field"], it["value"], None,
                         desc, "REF")
-    except Exception:
-        pass
+    except Exception as e:
+        # B8：扫描器自身异常不得伪装成「无问题」——显式报 ERROR 条目
+        bugs.append({"cfg": "", "id": "", "key": "", "val": None, "healed": None,
+                     "desc": "引用完整性校验未完成（扫描器异常，非无问题）: %s: %s"
+                             % (type(e).__name__, e),
+                     "flag": "ERROR"})
 
     return bugs
 
@@ -407,6 +448,52 @@ def _option_values(talk_data):
     return [value]
 
 
+def _row_key(bucket, _id):
+    """在 bucket 里定位 _id 对应的真实键。
+
+    内存表可能来自 json.load（键恒为 str）也可能来自其他链路（键为 int），
+    依次试 `_id` / `int(_id)` / `str(int(_id))` 三种形态，让 int 键表也能修。
+    找不到返回 None。
+    """
+    if not isinstance(bucket, dict):
+        return None
+    for cand in (_id, _try_int(_id), _int_key_str(_id)):
+        if cand is not None and cand in bucket:
+            return cand
+    return None
+
+
+def _try_int(_id):
+    try:
+        return int(str(_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_key_str(_id):
+    n = _try_int(_id)
+    return None if n is None else str(n)
+
+
+def _next_option_suffix(opt_cfg, evt_id):
+    """扫描 evt_id 事件段内已用的选项 id 后缀，返回 max+1。
+
+    B9：旧实现 `int(str(k)[-2:])` 只看末两位——后缀 ≥100 的历史键会被
+    截错位、进而撞进其他事件的 id 段（事件×100+2 位是引擎硬约定）。
+    这里按「去掉事件前缀后的剩余数字」完整解析，任何位数都不截断。
+    后缀耗尽（>99）由调用方放弃自动修复，交回 remaining 让用户手工分配。
+    """
+    used = []
+    for k in opt_cfg.keys():
+        ks = str(k)
+        if not ks.startswith(evt_id):
+            continue
+        tail = ks[len(evt_id):]
+        if tail.isdigit():
+            used.append(int(tail))
+    return (max(used) + 1) if used else 1
+
+
 def apply_fix(mod_data, bug):
     """应用单个修复（对应友商 apply_single_fix）。返回是否发生了修改。
 
@@ -422,7 +509,8 @@ def apply_fix(mod_data, bug):
         return False
 
     cfg_bucket = mod_data.get(cfg, {})
-    if _id not in cfg_bucket and flag not in ("FIX_OPTION_1", "FIX_TALK_1"):
+    row_key = _row_key(cfg_bucket, _id)
+    if row_key is None and flag not in ("FIX_OPTION_1", "FIX_TALK_1"):
         return False
 
     changed = False
@@ -439,18 +527,16 @@ def apply_fix(mod_data, bug):
                 break
 
         if evt_id:
-            existing_suffix = [int(str(k)[-2:]) for k in opt_cfg.keys()
-                               if str(k).startswith(evt_id) and str(k)[-2:].isdigit()]
-            new_suffix = max(existing_suffix) + 1 if existing_suffix else 1
+            # B9：事件段内完整解析已用后缀取 max+1；后缀 >99 会跨进他事件
+            # id 段（引擎硬约定），此时放弃自动修复返回 False 交回 remaining
+            new_suffix = _next_option_suffix(opt_cfg, evt_id)
+            if new_suffix > 99:
+                return False
             new_opt_id = int("%s%02d" % (evt_id, new_suffix))
 
-            if "1" in opt_cfg:
-                opt_data = opt_cfg.pop("1")
-                opt_data["id"] = new_opt_id
-                opt_cfg[str(new_opt_id)] = opt_data
-                changed = True
-            elif 1 in opt_cfg:
-                opt_data = opt_cfg.pop(1)
+            one_key = _row_key(opt_cfg, "1")
+            if one_key is not None:
+                opt_data = opt_cfg.pop(one_key)
                 opt_data["id"] = new_opt_id
                 opt_cfg[str(new_opt_id)] = opt_data
                 changed = True
@@ -463,17 +549,17 @@ def apply_fix(mod_data, bug):
         return changed
 
     if flag == "RENAME_NPC":
-        old_val = cfg_bucket[_id].pop(key, [])
+        old_val = cfg_bucket[row_key].pop(key, [])
         text_format = format_to_display(old_val, "npc", cfg_name=cfg)
-        cfg_bucket[_id]["npc"] = parse_from_display(text_format, "npc", old_val, cfg_name=cfg)
+        cfg_bucket[row_key]["npc"] = parse_from_display(text_format, "npc", old_val, cfg_name=cfg)
         return True
     if flag == "RENAME_COND":
-        old_val = cfg_bucket[_id].pop(key, [])
+        old_val = cfg_bucket[row_key].pop(key, [])
         text_format = format_to_display(old_val, "cond", cfg_name=cfg)
-        cfg_bucket[_id]["cond"] = parse_from_display(text_format, "cond", old_val, cfg_name=cfg)
+        cfg_bucket[row_key]["cond"] = parse_from_display(text_format, "cond", old_val, cfg_name=cfg)
         return True
 
     if "healed" in bug and bug["healed"] is not None:
-        cfg_bucket[_id][key] = bug["healed"]
+        cfg_bucket[row_key][key] = bug["healed"]
         return True
     return changed

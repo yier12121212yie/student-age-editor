@@ -16,6 +16,8 @@ try:
 except Exception:
     resource_pack = None
 
+from editor.core import atomic_io
+
 # ---------------- 配置表识别常量（复制自 app.py） ----------------
 
 _CFG_PREFIXES = [
@@ -227,6 +229,12 @@ class BaseDataService(object):
                         self.status = "ready"
                     return self.loaded_keys, self.missing_keys, []
 
+            # 未命中磁盘缓存的全量加载：先清空旧数据再逐表填充。
+            # 各 _load_from_* 用 setdefault().update() 合并，不重置的话
+            # 切换环境（studio→aa、游戏更新、换库）后上一环境的行会
+            # 永久残留在内存里参与全部查询与引用校验。
+            with self._lock:
+                self.data = {}
             errors = []
             if mode == "aa":
                 loaded, errors = self._load_from_aa(bundle_dirs, aa_index_factory)
@@ -316,10 +324,10 @@ class BaseDataService(object):
 
     def _save_cache(self, fp, data_map):
         try:
-            tmp = self._cache_path() + ".tmp"
-            with open(tmp, "wb") as f:
-                pickle.dump({"fp": fp, "data": data_map}, f, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp, self._cache_path())
+            atomic_io.write_bytes_atomic(
+                self._cache_path(),
+                pickle.dumps({"fp": fp, "data": data_map},
+                             protocol=pickle.HIGHEST_PROTOCOL))
         except Exception:
             pass
 
@@ -579,12 +587,19 @@ class BaseDataService(object):
         if evt_id not in b_evt:
             return delta
         delta["EvtCfg"] = {evt_id: copy.deepcopy(b_evt[evt_id])}
+
+        def _belongs(key, suffix_len):
+            # 按 ID 编码精确匹配：事件ID + 固定位数后缀（对白 3 位 / 选项 2 位）。
+            # 裸 startswith 在事件 "12" 上会连带提取 "120"/"1200" 等其他事件的行。
+            s = str(key)
+            return len(s) == len(evt_id) + suffix_len and s.startswith(evt_id)
+
         b_talk = self.data.get("TalkCfg", {}) or {}
-        talks = {str(k): v for k, v in b_talk.items() if str(k).startswith(evt_id)}
+        talks = {str(k): v for k, v in b_talk.items() if _belongs(k, 3)}
         if talks:
             delta["TalkCfg"] = copy.deepcopy(talks)
         b_opt = self.data.get("OptionCfg", {}) or {}
-        opts = {str(k): v for k, v in b_opt.items() if str(k).startswith(evt_id)}
+        opts = {str(k): v for k, v in b_opt.items() if _belongs(k, 2)}
         if opts:
             delta["OptionCfg"] = copy.deepcopy(opts)
         return delta

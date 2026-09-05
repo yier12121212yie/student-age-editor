@@ -27,6 +27,8 @@ import urllib.parse
 import urllib.error
 import re
 
+from editor.core import atomic_io
+
 def _editor_root():
     from editor.core.paths import app_data_dir
     return app_data_dir()
@@ -465,7 +467,20 @@ class OpenListDriver(BaseDriver):
             name = data.get("name") or os.path.basename(rp)
             is_dir = bool(data.get("is_dir"))
             size = int(data.get("size") or 0)
-            return Obj(name, _norm_remote(remote_path), is_dir, size, 0, "")
+            # mtime 必须解析：恒 0 会让"远端较新则跳过上传"守卫失效，
+            # 双向同步退化为无条件本地覆盖远端
+            mtime = 0
+            try:
+                if isinstance(data.get("modified"), str):
+                    import datetime
+                    dt = datetime.datetime.fromisoformat(
+                        data["modified"].replace("Z", "+00:00"))
+                    mtime = int(dt.timestamp())
+                else:
+                    mtime = int(data.get("modified") or 0)
+            except (ValueError, TypeError, OSError):
+                mtime = 0
+            return Obj(name, _norm_remote(remote_path), is_dir, size, mtime, "")
         except Exception:
             return None
     def get(self, remote_path, local_path):
@@ -1736,12 +1751,9 @@ def _load_config():
 
 def _save_config(data):
     p = _cloud_config_path()
-    tmp = p + ".tmp"
     try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, p)
+        atomic_io.write_text_atomic(
+            p, json.dumps(data, ensure_ascii=False, indent=2))
     except Exception:
         pass
 
@@ -2022,6 +2034,43 @@ def _list_remote_recursive(driver, remote_base):
         raise ValueError("remote list failed: " + "; ".join(errors))
     return out
 
+def _drv_get(driver, remote, local_path):
+    """driver.get 的统一入口：下载覆盖配置表文件后清掉 cfg_store 的 undo 栈。
+
+    下载用 shutil.copy2/流写直接覆盖磁盘，绕过了 write_cfg 统一写入口；
+    内存 undo 栈里滞留的「写入前内容」与磁盘新数据已脱节，此后再撤销会把
+    刚同步下来的整表一起回滚掉。覆盖 Cfgs/*.json 后丢弃该表栈即可。
+    """
+    driver.get(remote, local_path)
+    try:
+        rp = os.path.normpath(local_path).replace("\\", "/")
+        if rp.endswith(".json") and "/Cfgs/" in rp:
+            from editor.server import cfg_store
+            cfg_store.forget(local_path)
+    except Exception:
+        pass
+
+
+def _safe_rel_join(mod_dir, rel):
+    """远端 rel → 本地路径的安全拼接（sync_mod_folder 用）。
+
+    远端列表（WebDAV/Alist 自建等）可能返回任意对象名：rel 含 ``..`` 段、
+    盘符或绝对路径时返回 None，由调用方跳过该条目，防止下载/删除越出 Mod 目录
+    （对照 sync_single_file 的 startswith 边界校验）。
+    """
+    rel = (rel or "").replace("\\", "/").strip("/")
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        return None
+    if os.path.isabs(rel) or (len(parts[0]) >= 2 and parts[0][1] == ":"):
+        return None
+    base = os.path.abspath(mod_dir)
+    full = os.path.abspath(os.path.join(base, *parts))
+    if full != base and not full.startswith(base + os.sep):
+        return None
+    return full
+
+
 def sync_mod_folder(provider_id, direction, mod_name, dry_run=False, delete_extra=False):
     """整 Mod 文件夹同步：direction = upload|download|sync(mirror)
     upload: 本地 -> 远端（增量，本地新增/更新的文件上传，远端多余的可选删除）
@@ -2085,7 +2134,12 @@ def sync_mod_folder(provider_id, direction, mod_name, dry_run=False, delete_extr
             _set_state(progress=idx+1, last=rel)
             local_info = local_map.get(rel)
             remote_obj = remote_map.get(rel)
-            local_path_full = os.path.join(mod_dir, *rel.split("/")) if rel else mod_dir
+            local_path_full = _safe_rel_join(mod_dir, rel) if rel else mod_dir
+            if local_path_full is None:
+                # 远端对象名含路径穿越段（../、盘符等）：跳过且绝不落盘/删除
+                results.append({"rel": rel, "ok": False, "action": "skip_unsafe_path",
+                                "error": "远端路径不安全（含 .. 或盘符），已跳过"})
+                continue
             try:
                 if direction == "upload":
                     if local_info is None:
@@ -2120,7 +2174,7 @@ def sync_mod_folder(provider_id, direction, mod_name, dry_run=False, delete_extr
                     elif local_info is None:
                         if not dry_run:
                             os.makedirs(os.path.dirname(local_path_full), exist_ok=True)
-                            driver.get(remote_base + "/" + rel, local_path_full)
+                            _drv_get(driver, remote_base + "/" + rel, local_path_full)
                         results.append({"rel": rel, "ok": True, "action": "download_new"})
                     else:
                         ls, lm, lh = local_info
@@ -2132,7 +2186,7 @@ def sync_mod_folder(provider_id, direction, mod_name, dry_run=False, delete_extr
                         if need:
                             if not dry_run:
                                 os.makedirs(os.path.dirname(local_path_full), exist_ok=True)
-                                driver.get(remote_base + "/" + rel, local_path_full)
+                                _drv_get(driver, remote_base + "/" + rel, local_path_full)
                             results.append({"rel": rel, "ok": True, "action": "download_update"})
                         else:
                             results.append({"rel": rel, "ok": True, "action": "skip_unchanged"})
@@ -2140,7 +2194,7 @@ def sync_mod_folder(provider_id, direction, mod_name, dry_run=False, delete_extr
                     if local_info is None and remote_obj is not None:
                         if not dry_run:
                             os.makedirs(os.path.dirname(local_path_full), exist_ok=True)
-                            driver.get(remote_base + "/" + rel, local_path_full)
+                            _drv_get(driver, remote_base + "/" + rel, local_path_full)
                         results.append({"rel": rel, "ok": True, "action": "sync_download"})
                     elif remote_obj is None and local_info is not None:
                         if not dry_run:
@@ -2158,7 +2212,7 @@ def sync_mod_folder(provider_id, direction, mod_name, dry_run=False, delete_extr
                             if rm and lm and int(rm) > int(lm):
                                 if not dry_run:
                                     os.makedirs(os.path.dirname(local_path_full), exist_ok=True)
-                                    driver.get(remote_base + "/" + rel, local_path_full)
+                                    _drv_get(driver, remote_base + "/" + rel, local_path_full)
                                 results.append({"rel": rel, "ok": True, "action": "sync_download_update"})
                             else:
                                 if not dry_run:
@@ -2212,7 +2266,7 @@ def sync_single_file(provider_id, direction, mod_name, rel_path, dry_run=False):
         return {"ok": True, "remote": remote}
     elif direction == "download":
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        driver.get(remote, local_path)
+        _drv_get(driver, remote, local_path)
         _set_state(last="download %s" % rel)
         return {"ok": True, "local": local_path}
     elif direction == "delete_remote":
@@ -2238,7 +2292,7 @@ def sync_single_file(provider_id, direction, mod_name, rel_path, dry_run=False):
             return {"ok": True, "action": "sync_upload", "remote": remote}
         if not local_exists and remote_obj is not None:
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            driver.get(remote, local_path)
+            _drv_get(driver, remote, local_path)
             _set_state(last="sync download %s" % rel)
             return {"ok": True, "action": "sync_download", "local": local_path}
         ls = os.path.getsize(local_path)
@@ -2247,7 +2301,7 @@ def sync_single_file(provider_id, direction, mod_name, rel_path, dry_run=False):
             return {"ok": True, "action": "skip"}
         # rm==0 视为远端时间未知，本地优先上传
         if remote_obj.mtime and lm and int(remote_obj.mtime) > lm:
-            driver.get(remote, local_path)
+            _drv_get(driver, remote, local_path)
             _set_state(last="sync download %s" % rel)
             return {"ok": True, "action": "sync_download_update", "local": local_path}
         driver.put(local_path, remote)

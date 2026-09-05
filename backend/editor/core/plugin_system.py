@@ -70,15 +70,24 @@ def _load_meta():
 
 
 def _save_meta(meta):
-    """原子写 plugins.json（临时文件 + os.replace）。"""
-    tmp = _meta_path() + ".tmp"
+    """原子写 plugins.json（唯一临时文件名 + os.replace）。
+
+    固定 .tmp 名会在 GUI 后端与 CLI 同时安装/启停插件时互踩——两进程写同
+    一个临时文件再 os.replace，可能落一份混合/截断的注册表。
+    """
+    from editor.core.atomic_io import _unique_tmp_path
+    target = _meta_path()
+    tmp = _unique_tmp_path(target)
     try:
         os.makedirs(plugins_root(), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, _meta_path())
+        os.replace(tmp, target)
     except Exception:
-        pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _safe_pid(pid):
@@ -632,6 +641,9 @@ def has_plugin_tool(name):
 def agent_exec(name, args, confirm=None):
     """按全名执行插件工具；未知/未加载 → ValueError；
     confirm=True 的工具无回调 → 返回「该工具需要用户确认」错误串。
+
+    锁内只查找工具引用，插件代码在锁外执行：fn 可能阻塞在网络/子进程
+    调用上，持全局锁会把 flow_cards/ui_panels 聚合与全部插件路由一起卡死。
     """
     with _lock:
         tool = None
@@ -646,7 +658,8 @@ def agent_exec(name, args, confirm=None):
             raise ValueError("plugin tool not loaded: %s" % name)
         if tool["confirm"] and confirm is None:
             return "该工具需要用户确认"
-        return tool["fn"](args if isinstance(args, dict) else {}, confirm)
+        fn = tool["fn"]
+    return fn(args if isinstance(args, dict) else {}, confirm)
 
 
 def ui_panels():
@@ -687,6 +700,10 @@ def dispatch_plugin_route(pid, method, rest, query, body):
     """判断 rest 是否命中某已加载插件的注册路由（fullmatch）。
 
     命中返回 (status, payload)，否则 None。
+
+    锁内只做路由匹配、取出处理函数引用，插件代码在锁外执行（与
+    agent_exec 同策略）：fn 可能在网络/子进程上阻塞，持全局锁会把
+    flow_cards/ui_panels 聚合与全部插件路由一起卡死。
     """
     with _lock:
         ctx = _loaded.get(pid)
@@ -694,11 +711,15 @@ def dispatch_plugin_route(pid, method, rest, query, body):
             return None
         method = str(method).upper()
         full = "/api/plugins/%s/%s" % (pid, rest)
-        q = query if isinstance(query, dict) else {}
-        b = body if isinstance(body, dict) else {}
+        fn = None
         for r in ctx.routes:
             if r["method"] != method:
                 continue
             if r["rx"].fullmatch(full):
-                return r["fn"](q, b)
+                fn = r["fn"]
+                break
+    if fn is None:
         return None
+    q = query if isinstance(query, dict) else {}
+    b = body if isinstance(body, dict) else {}
+    return fn(q, b)

@@ -6,9 +6,13 @@
 library;
 
 /// 值清理：去空白、去掉数字末尾的 `.0`。
+/// 全表扫描时逐行调用：模式复用 + 只在确有可能时才扫描（见 bench A1）。
+final RegExp _tailZero = RegExp(r'\.0$');
+
 String cln(dynamic v) {
   if (v == null) return '';
-  return v.toString().trim().replaceAll(RegExp(r'\.0$'), '');
+  final s = v.toString().trim();
+  return s.endsWith('.0') ? s.replaceAll(_tailZero, '') : s;
 }
 
 /// 值 → 字符串列表（单值包一层，列表拍平一层）。
@@ -18,19 +22,46 @@ List<String> ensureList(dynamic v) {
   return [v.toString()];
 }
 
+/// 一组对白/选项前缀的匹配器。
+///
+/// [storyIsInPrefixes] 每次调用都要把前缀列表规范化成一个 Set，而
+/// [stageOf] / [mergeStageBack] 对整张 TalkCfg（真实约 9.8 万行）逐行调用它
+/// —— 等于每行一次 Set 分配。循环侧改用本类，Set 只建一次。
+class PrefixMatcher {
+  PrefixMatcher(Iterable<String> prefixes) {
+    for (final p in prefixes) {
+      final c = cln(p);
+      if (c.isNotEmpty) clean.add(c);
+    }
+  }
+
+  final Set<String> clean = {};
+
+  bool get isEmpty => clean.isEmpty;
+
+  /// [isOption] 为 true 按选项规则（ID 去后 2 位），否则对白规则（去后 3 位）。
+  bool match(dynamic id, {bool isOption = false}) {
+    if (clean.isEmpty) return false;
+    final tid = cln(id);
+    if (tid.isEmpty) return false;
+    final suffixLen = isOption ? 2 : 3;
+    if (tid.length > suffixLen) {
+      return clean.contains(tid.substring(0, tid.length - suffixLen));
+    }
+    return clean.contains(tid);
+  }
+}
+
 /// 判断对白/选项 ID 是否属于某组前缀。
 /// [isOption] 为 true 时按选项规则（ID 去掉后 2 位比对），否则按对白规则（去后 3 位）。
-bool storyIsInPrefixes(List<String> prefixes, dynamic id, {bool isOption = false}) {
-  final tid = cln(id);
-  if (tid.isEmpty) return false;
-  final clean = prefixes.map(cln).where((p) => p.isNotEmpty).toSet();
-  if (clean.isEmpty) return false;
-  final suffixLen = isOption ? 2 : 3;
-  if (tid.length > suffixLen) {
-    return clean.contains(tid.substring(0, tid.length - suffixLen));
-  }
-  return clean.contains(tid);
-}
+///
+/// 单次判定用这个即可；**逐行扫描整张表请改用 [PrefixMatcher.match]**，
+/// 否则每行都会重建前缀 Set。
+bool storyIsInPrefixes(
+  List<String> prefixes,
+  dynamic id, {
+  bool isOption = false,
+}) => PrefixMatcher(prefixes).match(id, isOption: isOption);
 
 /// 从 EvtCfg 推导某事件相关的全部前缀：事件 ID 本身 + 首句对白 ID 去掉后 3 位。
 /// 长前缀排前面（匹配时优先命中更长前缀，与官方 reverse=True 一致）。
@@ -71,22 +102,25 @@ List<dynamic> normalizeStoryIdList(dynamic value) {
 }
 
 /// 当前事件的起始对白 ID 列表（EvtCfg.talkId），为空时回退 `{evtId}001`。
-List<String> storyStartIds(String evtId, Map<String, dynamic> evtCfg, Map<String, dynamic> talks) {
+List<String> storyStartIds(
+  String evtId,
+  Map<String, dynamic> evtCfg,
+  Map<String, dynamic> talks,
+) {
   final info = evtCfg[cln(evtId)];
   var starts = <String>[];
   if (info is Map) {
-    starts = [for (final s in ensureList(info['talkId'])) cln(s)].where((s) => s.isNotEmpty).toList();
+    starts = [for (final s in ensureList(info['talkId'])) cln(s)]
+        .where((s) => s.isNotEmpty)
+        .toList();
   }
   if (starts.isEmpty) starts = ['${cln(evtId)}001'];
   if (talks.isNotEmpty) {
     starts = starts.where((s) => talks.containsKey(s)).toList();
   }
   if (talks.isNotEmpty && starts.isEmpty) {
-    final prefixes = storyRelatedPrefixes(evtId, evtCfg);
-    final eventTalks = talks.keys
-        .map(cln)
-        .where((k) => storyIsInPrefixes(prefixes, k))
-        .toList()
+    final matcher = PrefixMatcher(storyRelatedPrefixes(evtId, evtCfg));
+    final eventTalks = talks.keys.map(cln).where(matcher.match).toList()
       ..sort((a, b) {
         final an = int.tryParse(a);
         final bn = int.tryParse(b);
@@ -107,6 +141,28 @@ String getTalkPrefix(String talkId) {
   final s = cln(talkId);
   if (s.length > 3) return s.substring(0, s.length - 3);
   return s;
+}
+
+/// 删除 nextTalk 为空的对白时的回退：返回同对白前缀下 ID 大于 [deletedId]
+/// 的最小对白 ID（"后续最近的同事件对白"，兑现 [remapDeletedTarget]
+/// 注释承诺）；无候选返回 null。
+String? nextTalkInEvent(Iterable<String> talkKeys, String deletedId) {
+  final del = int.tryParse(cln(deletedId));
+  if (del == null) return null;
+  final prefix = getTalkPrefix(deletedId);
+  String? best;
+  int? bestId;
+  for (final k in talkKeys) {
+    final ks = cln(k);
+    final n = int.tryParse(ks);
+    if (n == null || n <= del) continue;
+    if (getTalkPrefix(ks) != prefix) continue;
+    if (bestId == null || n < bestId) {
+      bestId = n;
+      best = ks;
+    }
+  }
+  return best;
 }
 
 /// 分配一个未占用的选项 ID：`{前缀}{01..99}`。
@@ -137,7 +193,10 @@ String insertTalkId(String currentId, Map<String, dynamic> talks) {
 /// 后续任一方原地修改（编辑器增删角色）互相污染；元素类型保持原样
 /// （数字仍是数字，避免 ensureList 的 toString 造成类型漂移）。
 Map<String, dynamic> buildInsertedTalkRecord(
-    Map<String, dynamic>? curTalk, String newId, List<dynamic> next) {
+  Map<String, dynamic>? curTalk,
+  String newId,
+  List<dynamic> next,
+) {
   dynamic rawIds = curTalk?['roleIds'];
   List<dynamic> roleIds;
   if (rawIds is List) {
@@ -158,7 +217,11 @@ Map<String, dynamic> buildInsertedTalkRecord(
 }
 
 /// 新建对话：取当前 ID + 1 的下一个可用数字；无当前节点时用 `{前缀}001`。
-String appendTalkId(String? currentId, String evtId, Map<String, dynamic> talks) {
+String appendTalkId(
+  String? currentId,
+  String evtId,
+  Map<String, dynamic> talks,
+) {
   if (currentId != null) {
     final base = int.tryParse(cln(currentId));
     if (base == null) return '';
@@ -178,8 +241,13 @@ String appendTalkId(String? currentId, String evtId, Map<String, dynamic> talks)
 /// 删除对白后的引用重映射：
 /// 所有指向被删节点的跳转（talk 的 nextTalk/nextTalk2、option 的 talkId/talkId2）
 /// 替换为 [replacementTargets]（被删节点自己的 nextTalk；没有则取后续最近的同事件对白）。
-void remapDeletedTarget(Map<String, dynamic> talks, Map<String, dynamic> options,
-    List<String> prefixes, String deletedId, List<dynamic> replacementTargets) {
+void remapDeletedTarget(
+  Map<String, dynamic> talks,
+  Map<String, dynamic> options,
+  List<String> prefixes,
+  String deletedId,
+  List<dynamic> replacementTargets,
+) {
   final delStr = cln(deletedId);
   final delInt = int.tryParse(delStr);
 
@@ -218,8 +286,10 @@ void remapDeletedTarget(Map<String, dynamic> talks, Map<String, dynamic> options
     container[key] = normalizeStoryIdList(remapped);
   }
 
+  final matcher = PrefixMatcher(prefixes);
+
   for (final entry in talks.entries) {
-    if (!storyIsInPrefixes(prefixes, entry.key)) continue;
+    if (!matcher.match(entry.key)) continue;
     if (entry.value is! Map) continue;
     final v = entry.value as Map<String, dynamic>;
     for (final key in ['nextTalk', 'nextTalk2']) {
@@ -227,7 +297,7 @@ void remapDeletedTarget(Map<String, dynamic> talks, Map<String, dynamic> options
     }
   }
   for (final entry in options.entries) {
-    if (!storyIsInPrefixes(prefixes, entry.key, isOption: true)) continue;
+    if (!matcher.match(entry.key, isOption: true)) continue;
     if (entry.value is! Map) continue;
     final v = entry.value as Map<String, dynamic>;
     for (final key in ['talkId', 'talkId2']) {
@@ -239,41 +309,137 @@ void remapDeletedTarget(Map<String, dynamic> talks, Map<String, dynamic> options
 /// 把"舞台"（当前事件的编辑结果）合并回全量表：
 /// 1) 删除 baseline 中属于该事件、但舞台里已不存在的 key；
 /// 2) 舞台里的 key 覆盖全量表。
-void mergeStageBack(Map<String, dynamic> target, Map<String, dynamic> baseline,
-    Map<String, dynamic> stage, List<String> prefixes, {bool isOption = false}) {
+void mergeStageBack(
+  Map<String, dynamic> target,
+  Map<String, dynamic> baseline,
+  Map<String, dynamic> stage,
+  List<String> prefixes, {
+  bool isOption = false,
+}) {
+  final matcher = PrefixMatcher(prefixes);
   for (final key in baseline.keys.toList()) {
     final ks = key.toString();
-    if (storyIsInPrefixes(prefixes, ks, isOption: isOption) &&
+    if (matcher.match(ks, isOption: isOption) &&
         !stage.containsKey(key) &&
         !stage.containsKey(ks)) {
       target.remove(key);
     }
   }
   for (final entry in stage.entries) {
-    target[entry.key] = entry.value;
+    // 合并必须深拷贝：舞台记录仍是 UI 持有并正在编辑的活对象，直接塞引用
+    // 会让全量表别名持有它——用户"放弃修改"后舞台被 baseline 重建为新对象，
+    // 被丢弃的旧对象仍被全量表引用，切走再切回时以"干净"状态复活并落盘。
+    target[entry.key] = copyRecordValue(entry.value);
   }
 }
 
+/// 公开深比较（sameStage / diffStage 共用）：判断两份 JSON 值是否逐字段相等。
+bool valueEquals(dynamic a, dynamic b) {
+  if (a is Map && b is Map) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (!b.containsKey(entry.key.toString())) return false;
+      if (!valueEquals(entry.value, b[entry.key.toString()])) return false;
+    }
+    return true;
+  }
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!valueEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  return a == b;
+}
+
+/// 增量补丁（S3）：舞台相对基线的「变化集」，随 `PUT /api/cfg/<t>` 的
+/// `patch` 字段发往后端（cfg_store.apply_patch），替代 GET 全表 merge 全表。
+class StagePatch {
+  StagePatch({required this.set, required this.remove, required this.ifMatch});
+
+  /// 变更/新增的行：{key: 深拷贝后的舞台值}
+  final Map<String, dynamic> set;
+
+  /// 被删除的行（基线∩前缀且舞台已不存在）
+  final List<String> remove;
+
+  /// 行级乐观锁：被变更行在基线中的原值——后端逐行深比对，
+  /// 外部改动过这些行时返回 409 + conflicting_keys（不回全表）。
+  final Map<String, dynamic> ifMatch;
+
+  bool get isEmpty => set.isEmpty && remove.isEmpty;
+}
+
+/// 从舞台与基线推导增量补丁。与 [mergeStageBack] **逐 key 等价**：
+/// 对同一张全量表，apply(patch) 的结果 == mergeStageBack(table, baseline, stage)。
+/// （等价性由 test/cfg_patch_equivalence_test.dart 随机用例硬校验。）
+StagePatch diffStage(
+  Map<String, dynamic> baseline,
+  Map<String, dynamic> stage,
+  List<String> prefixes, {
+  bool isOption = false,
+}) {
+  final matcher = PrefixMatcher(prefixes);
+  final set = <String, dynamic>{};
+  final remove = <String>[];
+  final ifMatch = <String, dynamic>{};
+
+  baseline.forEach((key, value) {
+    final ks = key.toString();
+    if (!matcher.match(ks, isOption: isOption)) return;
+    if (!stage.containsKey(key) && !stage.containsKey(ks)) {
+      // 基线有、舞台无 = 用户删除
+      remove.add(ks);
+      return;
+    }
+    final stageVal = stage.containsKey(key) ? stage[key] : stage[ks];
+    if (!valueEquals(value, stageVal)) {
+      set[ks] = copyRecordValue(stageVal);
+      ifMatch[ks] = copyRecordValue(value);
+    }
+  });
+  stage.forEach((key, value) {
+    final ks = key.toString();
+    if (baseline.containsKey(key) || baseline.containsKey(ks)) return;
+    // 基线缺失 = 用户新增（mergeStageBack 会写入全部舞台行，
+    // 这里同样不做前缀过滤，保持逐 key 等价）
+    set[ks] = copyRecordValue(value);
+  });
+  return StagePatch(set: set, remove: remove, ifMatch: ifMatch);
+}
+
 /// 把记录复制为舞台数据（仅保留属于该事件的 key，值深拷贝）。
-Map<String, dynamic> stageOf(Map<String, dynamic> full, List<String> prefixes,
-    {bool isOption = false}) {
+Map<String, dynamic> stageOf(
+  Map<String, dynamic> full,
+  List<String> prefixes, {
+  bool isOption = false,
+}) {
   final out = <String, dynamic>{};
+  final matcher = PrefixMatcher(prefixes);
   for (final entry in full.entries) {
-    if (storyIsInPrefixes(prefixes, entry.key, isOption: isOption)) {
-      out[entry.key.toString()] = _deepCopy(entry.value);
+    if (matcher.match(entry.key, isOption: isOption)) {
+      out[entry.key.toString()] = copyRecordValue(entry.value);
     }
   }
   return out;
 }
 
-dynamic _deepCopy(dynamic v) {
+/// 整表深拷贝（舞台基线、撤销快照都要与当前内容彻底脱钩）。
+Map<String, dynamic> copyRecords(Map<String, dynamic> src) {
+  final out = <String, dynamic>{};
+  src.forEach((k, v) => out[k] = copyRecordValue(v));
+  return out;
+}
+
+dynamic copyRecordValue(dynamic v) {
   if (v is Map) {
     // 键统一转 String：避免 v 为无泛型 Map 时 map() 产生
     // _Map<dynamic, dynamic>，后续被 `as Map<String, dynamic>` 强转崩溃。
-    return v.map((k, val) => MapEntry(k.toString(), _deepCopy(val)));
+    return v.map((k, val) => MapEntry(k.toString(), copyRecordValue(val)));
   }
   if (v is List) {
-    return v.map(_deepCopy).toList();
+    return v.map(copyRecordValue).toList();
   }
   return v;
 }

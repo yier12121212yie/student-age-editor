@@ -17,11 +17,11 @@
 """
 
 import json
-import os
 import sys
-import tempfile
 import threading
 from pathlib import Path
+
+from editor.core import atomic_io
 
 # 合法的 Agent 服务协议（与 Flutter 设置页下拉一致）
 AI_PROVIDERS = ("openai_compatible", "openai_responses", "anthropic")
@@ -109,18 +109,8 @@ def _merge_write_unlocked(path: Path, extra: dict) -> dict:
     """锁已持有的写盘实现；调用方必须已持有 _WRITE_LOCK。"""
     data = read_json(path)
     merged = {**data, **(extra or {})}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_name, str(path))
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_io.write_text_atomic(
+        str(path), json.dumps(merged, ensure_ascii=False, indent=2))
     return merged
 
 

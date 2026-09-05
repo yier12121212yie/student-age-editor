@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
@@ -57,11 +58,11 @@ class _StoryFlowSideToolbarState extends State<StoryFlowSideToolbar> {
   Widget build(BuildContext context) {
     final accent = const Color(0xFF6C5CE7);
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: AppSpace.xs),
       decoration: BoxDecoration(
         // 悬浮在画布上必须用不透明底板，半透明会让节点/连线透出
         color: palette.card,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppRadius.xl),
         border: Border.all(color: palette.border),
         boxShadow: [
           BoxShadow(
@@ -95,19 +96,29 @@ class _StoryFlowSideToolbarState extends State<StoryFlowSideToolbar> {
                 final items = <PopupMenuEntry<String>>[
                   const PopupMenuItem(
                     value: 'talk',
-                    child: Row(children: [
-                      Icon(Icons.add_comment, size: 14),
-                      SizedBox(width: 8),
-                      Text('插入新对白（选中对白后）', style: TextStyle(fontSize: 12)),
-                    ]),
+                    child: Row(
+                      children: [
+                        Icon(Icons.add_comment, size: 14),
+                        SizedBox(width: AppSpace.s),
+                        Text(
+                          '插入新对白（选中对白后）',
+                          style: TextStyle(fontSize: AppType.chip),
+                        ),
+                      ],
+                    ),
                   ),
                   const PopupMenuItem(
                     value: 'option',
-                    child: Row(children: [
-                      Icon(Icons.alt_route, size: 14),
-                      SizedBox(width: 8),
-                      Text('为选中对白添加选项', style: TextStyle(fontSize: 12)),
-                    ]),
+                    child: Row(
+                      children: [
+                        Icon(Icons.alt_route, size: 14),
+                        SizedBox(width: AppSpace.s),
+                        Text(
+                          '为选中对白添加选项',
+                          style: TextStyle(fontSize: AppType.chip),
+                        ),
+                      ],
+                    ),
                   ),
                 ];
                 // 卡型项分组：内置预设按 category（演出/分支/玩法），插件卡独立一组
@@ -123,17 +134,19 @@ class _StoryFlowSideToolbarState extends State<StoryFlowSideToolbar> {
                   if (entry.value.isEmpty) continue;
                   // 该 SDK 无 PopupMenuSection：分隔线 + 禁用项当分组标题
                   items.add(const PopupMenuDivider());
-                  items.add(PopupMenuItem<String>(
-                    enabled: false,
-                    child: Text(
-                      entry.key,
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w600,
-                        color: palette.textMuted,
+                  items.add(
+                    PopupMenuItem<String>(
+                      enabled: false,
+                      child: Text(
+                        entry.key,
+                        style: TextStyle(
+                          fontSize: AppType.body,
+                          fontWeight: FontWeight.w600,
+                          color: palette.textMuted,
+                        ),
                       ),
                     ),
-                  ));
+                  );
                   items.addAll([for (final c in entry.value) _cardItem(c)]);
                 }
                 return items;
@@ -177,11 +190,11 @@ class _StoryFlowSideToolbarState extends State<StoryFlowSideToolbar> {
   }
 
   Widget _divider() => Container(
-        width: 22,
-        height: 1,
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        color: palette.border,
-      );
+    width: 22,
+    height: 1,
+    margin: const EdgeInsets.symmetric(vertical: 3),
+    color: palette.border,
+  );
 
   /// 卡型菜单项：色点 + 名称 +（对白/选项）后缀；内置预设与插件卡共用。
   PopupMenuItem<String> _cardItem(Map<String, dynamic> c) {
@@ -194,20 +207,23 @@ class _StoryFlowSideToolbarState extends State<StoryFlowSideToolbar> {
           height: 9,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: _parseHexColor(c['color']?.toString() ?? '') ??
+            color:
+                _parseHexColor(c['color']?.toString() ?? '') ??
                 (builtin ? palette.textMuted : const Color(0xFF6C5CE7)),
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: AppSpace.s),
         Expanded(
           child: Text(
             '${c['name'] ?? c['type_id']}',
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12),
+            style: const TextStyle(fontSize: AppType.chip),
           ),
         ),
-        Text(c['applies_to'] == 'talk' ? '对白' : '选项',
-            style: TextStyle(fontSize: 10.5, color: palette.textHint)),
+        Text(
+          c['applies_to'] == 'talk' ? '对白' : '选项',
+          style: TextStyle(fontSize: AppType.body, color: palette.textHint),
+        ),
       ],
     );
     final value = 'card:${c['type_id']}:${c['applies_to']}';
@@ -258,10 +274,10 @@ class _ToolButtonState extends State<_ToolButton> {
     final color = !widget.enabled
         ? palette.iconDisabled
         : widget.active
-            ? widget.activeColor
-            : _hover
-                ? palette.textHigh
-                : palette.textSecondary;
+        ? widget.activeColor
+        : _hover
+        ? palette.textHigh
+        : palette.textSecondary;
     return Tooltip(
       message: widget.label,
       waitDuration: const Duration(milliseconds: 400),
@@ -277,12 +293,15 @@ class _ToolButtonState extends State<_ToolButton> {
             child: Container(
               width: 36,
               height: 36,
-              margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              margin: const EdgeInsets.symmetric(
+                horizontal: AppSpace.xs,
+                vertical: AppSpace.xxs,
+              ),
               decoration: BoxDecoration(
                 color: widget.active
                     ? widget.activeColor.withValues(alpha: 0.14)
                     : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(AppRadius.l),
               ),
               child: Icon(widget.icon, size: 17, color: color),
             ),
@@ -329,8 +348,10 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
   Future<void> _loadKeys() async {
     setState(() => _loading = true);
     try {
-      final r = await ApiClient.instance.get('/api/aa/keys',
-          query: {'limit': '800', 'scope': 'flow'});
+      final r = await ApiClient.instance.get(
+        '/api/aa/keys',
+        query: {'limit': '800', 'scope': 'flow'},
+      );
       if (!mounted) return;
       final meta = <String, List<int>>{};
       final rawMeta = r['meta'];
@@ -391,8 +412,10 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
     if (_thumbs.containsKey(key)) return;
     _thumbs[key] = null;
     try {
-      final r = await ApiClient.instance
-          .post('/api/aa/preview', body: {'kind': 'tex', 'key': key});
+      final r = await ApiClient.instance.post(
+        '/api/aa/preview',
+        body: {'kind': 'tex', 'key': key},
+      );
       final b64 = r['data'] as String?;
       if (!mounted) return;
       setState(() => _thumbs[key] = b64 != null ? base64Decode(b64) : null);
@@ -410,7 +433,7 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
       width: 252,
       decoration: BoxDecoration(
         color: palette.card,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppRadius.xl),
         border: Border.all(color: palette.border),
         boxShadow: [
           BoxShadow(
@@ -424,14 +447,17 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 6, 0),
+            padding: const EdgeInsets.fromLTRB(10, AppSpace.s, 6, 0),
             child: Row(
               children: [
-                Text('媒体资产',
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: palette.textHigh)),
+                Text(
+                  '媒体资产',
+                  style: TextStyle(
+                    fontSize: AppType.chip,
+                    fontWeight: FontWeight.w600,
+                    color: palette.textHigh,
+                  ),
+                ),
                 const Spacer(),
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
@@ -441,10 +467,13 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
                         ? const SizedBox(
                             width: 12,
                             height: 12,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2))
-                        : Icon(Icons.refresh,
-                            size: 15, color: palette.textMuted),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            Icons.refresh,
+                            size: 15,
+                            color: palette.textMuted,
+                          ),
                   ),
                 ),
               ],
@@ -455,7 +484,7 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
             child: Row(
               children: [
                 _tabBtn('tex', 'CG图片'),
-                const SizedBox(width: 4),
+                const SizedBox(width: AppSpace.xs),
                 _tabBtn('aud', '音乐'),
               ],
             ),
@@ -474,7 +503,7 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
             child: fluent.TextBox(
               placeholder: '搜索资源 key',
               prefix: const Icon(Icons.search, size: 13),
-              style: const TextStyle(fontSize: 12),
+              style: const TextStyle(fontSize: AppType.chip),
               onChanged: (v) => setState(() => _filter = v),
             ),
           ),
@@ -482,10 +511,10 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
           Expanded(child: _buildList(list)),
           Divider(height: 1, color: palette.border),
           Padding(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.all(AppSpace.s),
             child: Text(
               '拖拽到对白节点：CG图片 → 背景 bg（相册 CG 自动插播放CG），音乐 → audio',
-              style: TextStyle(fontSize: 10.5, color: palette.textHint),
+              style: TextStyle(fontSize: AppType.body, color: palette.textHint),
             ),
           ),
         ],
@@ -496,31 +525,42 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
   Widget _buildList(List<String> list) {
     if (_loading) {
       return const Center(
-          child: SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2)));
+        child: SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
     }
     if (_error.isNotEmpty) {
       return Center(
-          child: Text(_error,
-              style: TextStyle(fontSize: 11, color: palette.textHint)));
+        child: Text(
+          _error,
+          style: TextStyle(fontSize: AppType.title, color: palette.textHint),
+        ),
+      );
     }
     if (list.isEmpty) {
       final idle = widget.state.aaStatus == 'idle';
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(AppSpace.m),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.image_not_supported_outlined,
-                  size: 26, color: palette.iconDisabled),
-              const SizedBox(height: 8),
+              Icon(
+                Icons.image_not_supported_outlined,
+                size: 26,
+                color: palette.iconDisabled,
+              ),
+              const SizedBox(height: AppSpace.s),
               Text(
                 idle ? '尚未扫描游戏资源\n点击右上角刷新按钮建立索引' : '没有匹配的资源',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: palette.textHint),
+                style: TextStyle(
+                  fontSize: AppType.title,
+                  color: palette.textHint,
+                ),
               ),
             ],
           ),
@@ -528,7 +568,7 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
       );
     }
     return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: AppSpace.xs),
       itemCount: list.length,
       itemBuilder: (context, i) => _item(list[i]),
     );
@@ -546,7 +586,10 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
       child: Draggable<FlowAssetRef>(
         data: FlowAssetRef(kind: _tab, key: key),
         feedback: _dragFeedback(key, isTex),
-        childWhenDragging: Opacity(opacity: 0.4, child: _itemBody(key, isTex, thumb)),
+        childWhenDragging: Opacity(
+          opacity: 0.4,
+          child: _itemBody(key, isTex, thumb),
+        ),
         child: MouseRegion(
           cursor: SystemMouseCursors.grab,
           child: _itemBody(key, isTex, thumb),
@@ -557,10 +600,10 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
 
   Widget _itemBody(String key, bool isTex, Uint8List? thumb) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: AppSpace.xs),
       decoration: BoxDecoration(
         color: palette.panel,
-        borderRadius: BorderRadius.circular(5),
+        borderRadius: BorderRadius.circular(AppRadius.s),
         border: Border.all(color: palette.border),
       ),
       child: Row(
@@ -570,16 +613,24 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
             height: 30,
             child: isTex
                 ? (thumb != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(3),
-                        child: Image.memory(thumb,
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(AppRadius.xs),
+                          child: Image.memory(
+                            thumb,
                             fit: BoxFit.cover,
-                            gaplessPlayback: true),
-                      )
-                    : Icon(Icons.image_outlined,
-                        size: 15, color: palette.iconDisabled))
-                : Icon(Icons.music_note,
-                    size: 15, color: const Color(0xFF27AE60)),
+                            gaplessPlayback: true,
+                          ),
+                        )
+                      : Icon(
+                          Icons.image_outlined,
+                          size: 15,
+                          color: palette.iconDisabled,
+                        ))
+                : Icon(
+                    Icons.music_note,
+                    size: 15,
+                    color: const Color(0xFF27AE60),
+                  ),
           ),
           const SizedBox(width: 6),
           Expanded(
@@ -587,12 +638,15 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
               key,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11, color: palette.textPrimary),
+              style: TextStyle(
+                fontSize: AppType.title,
+                color: palette.textPrimary,
+              ),
             ),
           ),
           if (isTex && _meta[key] != null)
             Padding(
-              padding: const EdgeInsets.only(right: 4),
+              padding: const EdgeInsets.only(right: AppSpace.xs),
               child: Text(
                 '${_meta[key]![0]}×${_meta[key]![1]}',
                 style: TextStyle(fontSize: 9, color: palette.textHint),
@@ -609,33 +663,40 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
       color: Colors.transparent,
       child: Container(
         width: 190,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 10,
+          vertical: AppSpace.s,
+        ),
         decoration: BoxDecoration(
           color: palette.card,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(AppRadius.l),
           border: Border.all(color: const Color(0xFF6C5CE7)),
           boxShadow: [
             BoxShadow(
-                color: palette.bgDeep2.withValues(alpha: 0.6),
-                blurRadius: 12),
+              color: palette.bgDeep2.withValues(alpha: 0.6),
+              blurRadius: 12,
+            ),
           ],
         ),
         child: Row(
           children: [
-            Icon(isTex ? Icons.image_outlined : Icons.music_note,
-                size: 15,
-                color: isTex
-                    ? const Color(0xFF3498DB)
-                    : const Color(0xFF27AE60)),
-            const SizedBox(width: 8),
+            Icon(
+              isTex ? Icons.image_outlined : Icons.music_note,
+              size: 15,
+              color: isTex ? const Color(0xFF3498DB) : const Color(0xFF27AE60),
+            ),
+            const SizedBox(width: AppSpace.s),
             Expanded(
-              child: Text(key,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      color: palette.textHigh)),
+              child: Text(
+                key,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: palette.textHigh,
+                ),
+              ),
             ),
           ],
         ),
@@ -655,11 +716,13 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
             color: selected ? palette.hover : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
           ),
-          child: Text(label,
-              style: TextStyle(
-                  fontSize: 12,
-                  color:
-                      selected ? palette.textHigh : palette.textSecondary)),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: AppType.chip,
+              color: selected ? palette.textHigh : palette.textSecondary,
+            ),
+          ),
         ),
       ),
     );

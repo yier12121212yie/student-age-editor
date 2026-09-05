@@ -10,7 +10,11 @@ import '../../core/models.dart';
 import '../../core/app_theme.dart';
 
 /// 弹窗内容安全尺寸：宽度不超屏，高度留出标题/操作按钮的空间。
-BoxConstraints _dialogBodyConstraints(BuildContext context, double w, double h) {
+BoxConstraints _dialogBodyConstraints(
+  BuildContext context,
+  double w,
+  double h,
+) {
   final size = MediaQuery.sizeOf(context);
   return BoxConstraints(
     maxWidth: math.min(w, size.width - 48),
@@ -427,10 +431,7 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
                 child: SingleChildScrollView(
                   child: Text(
                     _result!,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: palette.textBody,
-                    ),
+                    style: TextStyle(fontSize: 12, color: palette.textBody),
                   ),
                 ),
               ),
@@ -469,18 +470,14 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
             color: checked ? palette.tintAccent : palette.card,
             borderRadius: BorderRadius.circular(4),
             border: Border.all(
-              color: checked
-                  ? const Color(0xFF6C5CE7)
-                  : palette.borderHover,
+              color: checked ? const Color(0xFF6C5CE7) : palette.borderHover,
             ),
           ),
           child: Text(
             label,
             style: TextStyle(
               fontSize: 11,
-              color: checked
-                  ? palette.accentPale
-                  : palette.textSecondary,
+              color: checked ? palette.accentPale : palette.textSecondary,
             ),
           ),
         ),

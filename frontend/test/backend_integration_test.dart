@@ -1,16 +1,42 @@
 // 端到端集成测试：连接真实 Python 后端（需先在 127.0.0.1:8765 启动 editor.server）。
 // 覆盖前端 bootstrap 流程与核心只读工作流。
+//
+// 后端未启动时整套用例逐条 markTestSkipped（S7）：不再让 12+ 条
+// Connection refused 刷成红屏噪音。探测在 setUpAll 一次性做
+//（Socket.connect 300ms）；不用 group(skip:)（声明期求值，异步拿不到结果），
+// 也不让 setUpAll 抛异常（会把整个 suite 判 failed）。后端在跑时一行都不跳。
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:student_age_editor/core/api_client.dart';
 
+bool _backendUp = false;
+
 void main() {
-  setUpAll(() {
+  setUpAll(() async {
     ApiClient.instance.baseUrl = 'http://127.0.0.1:8765';
+    try {
+      final socket = await Socket.connect('127.0.0.1', 8765,
+          timeout: const Duration(milliseconds: 300));
+      socket.destroy();
+      _backendUp = true;
+    } catch (_) {
+      _backendUp = false;
+    }
   });
 
+  /// markTestSkipped 只打跳过标记不中断执行，调用方必须按返回值立即 return。
+  bool requireBackend() {
+    if (!_backendUp) {
+      markTestSkipped('后端未启动（127.0.0.1:8765），跳过集成用例');
+      return false;
+    }
+    return true;
+  }
+
   test('bootstrap: ping/state/schema/dicts', () async {
+    if (!requireBackend()) return;
     final ping = await ApiClient.instance.get('/api/ping');
     expect(ping['ok'], true);
 
@@ -28,6 +54,7 @@ void main() {
   });
 
   test('mod select + cfg read（只读，不写真实模组）', () async {
+    if (!requireBackend()) return;
     final state = await ApiClient.instance.get('/api/state');
     final mods = (state['mods'] as List).cast<Map<String, dynamic>>();
     if (mods.isEmpty) {
@@ -52,6 +79,7 @@ void main() {
   });
 
   test('AI 工具只读：list_files / read_file（mod 沙箱）', () async {
+    if (!requireBackend()) return;
     final state = await ApiClient.instance.get('/api/state');
     if ((state['mod_root'] as String? ?? '').isEmpty) {
       markTestSkipped('未选择模组');
@@ -72,6 +100,7 @@ void main() {
   });
 
   test('沙箱逃逸被拒绝', () async {
+    if (!requireBackend()) return;
     expect(
       () => ApiClient.instance
           .get('/api/tools/read', query: {'path': '../../Windows/win.ini'}),
@@ -81,6 +110,7 @@ void main() {
 
   test('媒体预览链路：/api/tools/read 返回可解码的 base64（图片/音频）', () async {
     // 对应 FileViewer 的纯前端预览方案：不依赖 /api/tools/raw，仅用 read 的 base64。
+    if (!requireBackend()) return;
     final state = await ApiClient.instance.get('/api/state');
     if ((state['mod_root'] as String? ?? '').isEmpty) {
       markTestSkipped('未选择模组');
@@ -111,6 +141,7 @@ void main() {
   });
 
   test('AI 附件上传：txt/md 文本解析 + png 图片 base64', () async {
+    if (!requireBackend()) return;
     // txt
     final txt = await ApiClient.instance.post('/api/ai/upload', body: {
       'name': '说明.txt',

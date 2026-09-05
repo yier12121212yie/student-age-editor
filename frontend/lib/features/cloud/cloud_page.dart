@@ -65,6 +65,7 @@ class _CloudPageState extends State<CloudPage> {
     setState(()=>_loading=true);
     try {
       final r = await ApiClient.instance.get('/api/cloud/providers');
+      if (!mounted) return;
       setState((){
         _providers = (r['providers'] as List?) ?? [];
         final dr = (r['drivers'] as List?)?.cast<String>();
@@ -74,7 +75,7 @@ class _CloudPageState extends State<CloudPage> {
         }
       });
       if (_selectedProvider != null && _selectedMod != null) _loadRemote();
-    } catch(e){ _showErr(e.toString()); } finally { setState(()=>_loading=false); }
+    } catch(e){ _showErr(e.toString()); } finally { if (mounted) setState(()=>_loading=false); }
   }
 
   // ---------- realtime ----------
@@ -490,31 +491,36 @@ class _CloudPageState extends State<CloudPage> {
   Future<void> _test(String id) async { try{ await ApiClient.instance.post('/api/cloud/test', body:{'provider_id':id}); _showInfo('连接成功'); }catch(e){ _showErr(e.toString()); } }
   Future<void> _del(String id) async {
     final ok=await fluent.showDialog<bool>(context:context, builder:(ctx)=>fluent.ContentDialog(title:const Text('删除'), content:const Text('确认删除？此操作不可恢复。'), actions:[fluent.Button(onPressed:()=>Navigator.pop(ctx,false), child:const Text('取消')), fluent.FilledButton(onPressed:()=>Navigator.pop(ctx,true), child:const Text('删除'))]));
-    if(ok!=true) return; try{ await ApiClient.instance.delete('/api/cloud/providers/$id'); if(_selectedProvider==id) setState(()=>_selectedProvider=null); await _loadProviders(); }catch(e){ _showErr(e.toString()); }
+    if(ok!=true) return; try{ await ApiClient.instance.delete('/api/cloud/providers/$id'); if(!mounted) return; if(_selectedProvider==id) setState(()=>_selectedProvider=null); await _loadProviders(); }catch(e){ _showErr(e.toString()); }
   }
 
   Future<void> _loadFiles() async {
+    if (!mounted) return;
     if(_selectedMod==null) { setState(()=>_localFiles=[]); return; }
     try{
       final r=await ApiClient.instance.get('/api/cloud/local_files', query:{'mod_name':_selectedMod!});
+      if (!mounted) return;
       final entries = (r['entries'] as List?) ?? [];
       setState(()=>_localFiles = entries);
       // 同时刷新远端
       _loadRemote();
-    }catch(e){ _showErr(e.toString()); setState(()=>_localFiles=[]); }
+    }catch(e){ _showErr(e.toString()); if (mounted) setState(()=>_localFiles=[]); }
   }
 
   Future<void> _loadRemote() async {
+    if (!mounted) return;
     if(_selectedProvider==null || _selectedMod==null) { setState(()=>_remoteFiles=[]); return; }
     setState(()=>_loadingRemote=true);
     try{
       final r=await ApiClient.instance.get('/api/cloud/list', query:{'provider_id':_selectedProvider!, 'mod_name':_selectedMod!});
+      if (!mounted) return;
       setState(()=>_remoteFiles = (r['objects'] as List?) ?? []);
     }catch(e){
+      if (!mounted) return;
       setState(()=>_remoteFiles=[]);
       // 非阻塞提示
       // _showErr('远端列举失败: $e');
-    } finally { setState(()=>_loadingRemote=false); }
+    } finally { if (mounted) setState(()=>_loadingRemote=false); }
   }
 
   void _startPolling(){
@@ -537,6 +543,7 @@ class _CloudPageState extends State<CloudPage> {
     try{
       final r=await ApiClient.instance.post('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'folder':true,'dry_run':_dryRun, 'delete_extra':_deleteExtra});
       _pollTimer?.cancel();
+      if (!mounted) return;
       setState(()=>_syncResult=r);
       final total = r['total'] as int? ?? (r['results'] as List?)?.length ?? 0;
       final results = (r['results'] as List?) ?? [];
@@ -551,10 +558,11 @@ class _CloudPageState extends State<CloudPage> {
       _loadFiles();
     }catch(e){
       _pollTimer?.cancel();
+      if (!mounted) return;
       setState(()=>_syncResult={'error': e.toString()});
       _showErr(e.toString());
     } finally{
-      setState(()=>_busy=false);
+      if (mounted) setState(()=>_busy=false);
       _syncStatus=null;
       try{ final s=await ApiClient.instance.get('/api/cloud/status'); if(mounted) setState(()=>_syncStatus=s); }catch(_){}
     }
@@ -568,14 +576,16 @@ class _CloudPageState extends State<CloudPage> {
     try{
       final r=await ApiClient.instance.post('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'files':_checked.toList(),'dry_run':_dryRun});
       _pollTimer?.cancel();
+      if (!mounted) return;
       setState(()=>_syncResult=r);
       _showInfo('单文件同步完成');
       _loadFiles();
     }catch(e){
       _pollTimer?.cancel();
+      if (!mounted) return;
       setState(()=>_syncResult={'error': e.toString()});
       _showErr(e.toString());
-    } finally{ setState(()=>_busy=false); }
+    } finally{ if (mounted) setState(()=>_busy=false); }
   }
 
   void _showErr(String m){ if(!mounted) return; fluent.displayInfoBar(context, builder:(c,close)=>fluent.InfoBar(title:const Text('失败'), content:Text(m, maxLines:5), severity:fluent.InfoBarSeverity.error)); }

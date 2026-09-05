@@ -172,10 +172,14 @@ class LifecycleTest(_TmpRoot):
         self.assertEqual(hs.list_sessions(root=self.root), [])
 
     def test_prune_keeps_max_sessions(self):
+        import os
+        base = 1_700_000_000  # 固定基准，逐个拉开 mtime：不依赖文件系统时钟粒度
+        d = hs.sessions_dir(self.root)
         for i in range(hs._MAX_SESSIONS + 3):
             s = hs.new_session(source="tui")
             s["history"] = [{"role": "user", "content": "msg %d" % i}]
             hs.save_session(s, root=self.root)
+            os.utime(d / ("%s.json" % s["id"]), (base + i, base + i))
         metas = hs.list_sessions(root=self.root)
         self.assertEqual(len(metas), hs._MAX_SESSIONS)
         # 最旧的被淘汰：剩余标题里不含最早的 msg 0/1/2

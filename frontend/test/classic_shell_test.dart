@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -40,42 +41,50 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(tester.takeException(), isNull, reason: '经典布局渲染不应异常');
-    // 标题行（顶栏 + 编辑区欢迎页各一处）
-    expect(find.text('学生时代模组编辑器'), findsNWidgets(2));
-    expect(find.text('当前模组: 测试模组'), findsOneWidget);
-    // 工具栏按钮
-    expect(find.text('切换模组'), findsOneWidget);
-    expect(find.text('全局搜索'), findsOneWidget);
+    // 顶栏：标题 + 工作区信息（编辑区默认打开「人物综合配置」页，欢迎页已移除）
+    expect(find.text('学生时代模组编辑器'), findsOneWidget);
+    expect(find.textContaining('当前工作区: 测试模组'), findsOneWidget);
+    // 状态栏模组名
+    expect(find.text('模组: 测试模组'), findsOneWidget);
+    // 工具栏按钮（_ToolbarButton 将 emoji 与文字分成两个 Text）
+    expect(find.text('加载 / 切换模组'), findsOneWidget);
+    expect(find.text('全局搜索 (Ctrl+F)'), findsOneWidget);
     expect(find.text('扫描修复'), findsOneWidget);
-    // 分组导航
-    expect(find.text('常用'), findsOneWidget);
-    expect(find.text('工具'), findsOneWidget);
-    expect(find.text('模组'), findsWidgets); // 导航项 + 模组面板标题
+    // 分组导航（基础配置 / 内容创作 / 官方生态）
+    expect(find.text('基础配置'), findsOneWidget);
+    expect(find.text('内容创作'), findsOneWidget);
+    expect(find.text('官方生态'), findsOneWidget);
+    expect(find.text('人物综合配置'), findsWidgets);
+    expect(find.text('系统设置'), findsOneWidget); // 导航底部入口
 
-    // 导航切换面板（导航项在左侧，工具栏的"设置"按钮在前）
-    await tester.tap(find.text('设置').last);
+    // 工具栏「设置」按钮：当前实现为弹窗（不再切 SidePane）
+    await tester.tap(find.text('设置'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(shell.pane, SidePane.settings);
-    expect(tester.takeException(), isNull, reason: '切换到设置面板不应异常');
-    // 设置页包含界面风格选择
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull, reason: '打开设置弹窗不应异常');
+    // 设置弹窗包含界面风格选择
     expect(find.text('界面风格'), findsOneWidget);
     expect(find.text('创作'), findsOneWidget);
     expect(find.text('经典'), findsOneWidget);
+    expect(find.text('剧情图'), findsOneWidget);
 
-    // 顶栏切换布局按钮
-    await tester.tap(find.text('创作布局'));
-    expect(changed, UiMode.creation);
-
-    // 工具栏按钮切换面板
-    await tester.tap(find.text('全局搜索'));
+    // 关闭弹窗（弹窗独有的 dismiss 图标）
+    await tester.tap(find.byIcon(FluentIcons.dismiss_24_regular));
     await tester.pump();
-    expect(shell.pane, SidePane.base);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('界面风格'), findsNothing);
 
+    // 顶栏布局切换按钮：classic 的下一模式是剧情图
+    await tester.tap(find.text('剧情图布局'));
+    await tester.pump();
+    expect(changed, UiMode.storyFlow);
+
+    // 「扫描修复」工具栏按钮同样打开弹窗（BugfixPanel）
     await tester.tap(find.text('扫描修复'));
     await tester.pump();
-    expect(shell.pane, SidePane.bugfix);
-    expect(tester.takeException(), isNull, reason: '切换到诊断修复面板不应异常');
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('开始扫描'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '打开扫描修复弹窗不应异常');
   });
 
   testWidgets('经典布局 AI 面板开关', (tester) async {

@@ -15,8 +15,9 @@ EvtCfg/OptionCfg/ActionCfg/ItemCfg 等目标表的字段引用。
 """
 from editor.core.data_dicts import (
     ROLE_DICT, RELATION_DICT, ATTR_DICT, MAP_DICT, JOB_DICT, ITEM_DICT,
-    STATE_DICT, TEXT_DICT, NEGOTIATION_SKILL_DICT, NEGOTIATION_BUFF_DICT,
-    GAME_DICT, KZONE_POST_DICT, KZONE_MESSAGE_DICT, PHONE_MSG_DICT,
+    BG_DICT, STATE_DICT, TEXT_DICT, NEGOTIATION_SKILL_DICT,
+    NEGOTIATION_BUFF_DICT, GAME_DICT, KZONE_POST_DICT, KZONE_MESSAGE_DICT,
+    PHONE_MSG_DICT,
 )
 
 # 默认豁免值：0 / -1 / -2 在游戏语义中通常表示"无/无限制"，不算悬挂引用。
@@ -128,17 +129,21 @@ def _table_id_strs(table_data, extra):
 
 def _dict_keys(dict_name):
     """字典池映射（与 bugfix_service 的字典定义保持一致）。"""
-    return {
-        "PersonCfg": ROLE_DICT, "RelationCfg": RELATION_DICT,
-        "ItemCfg": ITEM_DICT, "MapCfg": MAP_DICT, "BgCfg": MAP_DICT,
-        "PersonStateCfg": STATE_DICT, "TextCfg": TEXT_DICT,
-        "NegotiationSkillCfg": NEGOTIATION_SKILL_DICT,
-        "NegotiationBuffCfg": NEGOTIATION_BUFF_DICT,
-        "GameCfg": GAME_DICT, "KZoneContentCfg": KZONE_POST_DICT,
-        "AnimeKzoneContentCfg": KZONE_POST_DICT,
-        "KZoneMessageBoardCfg": KZONE_MESSAGE_DICT,
-        "PhoneMsgCfg": PHONE_MSG_DICT,
-    }.get(dict_name)
+    return _DICT_POOL_MAP.get(dict_name)
+
+
+# A12：映射表提为模块常量——旧实现每条规则调用都重建一次 14 项 dict
+_DICT_POOL_MAP = {
+    "PersonCfg": ROLE_DICT, "RelationCfg": RELATION_DICT,
+    "ItemCfg": ITEM_DICT, "MapCfg": MAP_DICT, "BgCfg": BG_DICT,
+    "PersonStateCfg": STATE_DICT, "TextCfg": TEXT_DICT,
+    "NegotiationSkillCfg": NEGOTIATION_SKILL_DICT,
+    "NegotiationBuffCfg": NEGOTIATION_BUFF_DICT,
+    "GameCfg": GAME_DICT, "KZoneContentCfg": KZONE_POST_DICT,
+    "AnimeKzoneContentCfg": KZONE_POST_DICT,
+    "KZoneMessageBoardCfg": KZONE_MESSAGE_DICT,
+    "PhoneMsgCfg": PHONE_MSG_DICT,
+}
 
 
 def check_refs(tables, extra_ids=None):
@@ -150,8 +155,14 @@ def check_refs(tables, extra_ids=None):
     - healed：array 字段给出剔除悬挂引用后的 int 列表（可自动修复）；
       单值字段为 None（仅报告，不自动修）。
     """
-    extra_ids = extra_ids or {}
+    # 不能用 `or {}`：bugfix_service 的 _LazyIdSets 是常空 dict（数据存
+    # self._src，下标访问时才构建），真值判定会把整个懒加载映射替换成 {}
+    if extra_ids is None:
+        extra_ids = {}
     issues = []
+    # A12：目标表 id 集合按 target 缓存——TalkCfg 被约 9 条规则当目标，
+    # 旧实现每条规则都重建一次大表 id 全集
+    table_ids_cache = {}
     for rule in REF_RULES:
         data = tables.get(rule["cfg"]) or {}
         if not isinstance(data, dict):
@@ -160,8 +171,16 @@ def check_refs(tables, extra_ids=None):
         # 合法值集合 = 豁免值 ∪ 字典池（若该表有内置字典，如 ROLE_DICT/MAP_DICT）
         #           ∪ 目标表数据（Mod）∪ 原版数据（extra_ids）
         pool = _dict_keys(target)
-        extra = extra_ids.get(target)
-        table_ids = _table_id_strs(tables.get(target), extra)
+        # extra_ids 可能是 bugfix_service 的 _LazyIdSets（下标访问时惰性构建）：
+        # 必须走下标访问取原版 id 全集（dict.get 不触发惰性构建）；
+        # 普通 dict 缺键时回退 None，语义不变
+        try:
+            extra = extra_ids[target]
+        except KeyError:
+            extra = None
+        if target not in table_ids_cache:
+            table_ids_cache[target] = _table_id_strs(tables.get(target), extra)
+        table_ids = table_ids_cache[target]
         valid = set(str(e) for e in DEFAULT_EXEMPT)
         if pool:
             valid |= set(str(k) for k in pool)
@@ -185,7 +204,9 @@ def check_refs(tables, extra_ids=None):
                 continue
             healed = None
             if rule.get("array"):
-                healed = [v for v in vals if str(v) in valid and v not in DEFAULT_EXEMPT]
+                # healed 的契约（见 docstring）是"剔除悬挂引用后的 int 列表"：
+                # 豁免值 0/-1/-2 是合法语义（无/无限制），必须原样保留。
+                healed = [v for v in vals if str(v) in valid]
             issues.append({
                 "cfg": rule["cfg"], "rid": str(rid), "field": rule["field"],
                 "value": raw, "target": target, "array": bool(rule.get("array")),

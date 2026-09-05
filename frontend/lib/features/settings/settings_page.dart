@@ -763,10 +763,11 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
     setState(()=>_loading=true);
     try {
       final r = await ApiClient.instance.get('/api/resource_packs');
+      if (!mounted) return;
       setState((){ _packs = (r['packs'] as List?) ?? []; _active = r['active'] as String? ?? ""; });
     } catch (e) {
       if (mounted) fluent.displayInfoBar(context, builder: (c,close)=>fluent.InfoBar(title: const Text('加载扩展失败'), content: Text(e.toString()), severity: fluent.InfoBarSeverity.error));
-    } finally { setState(()=>_loading=false); }
+    } finally { if (mounted) setState(()=>_loading=false); }
   }
   Future<void> _pickZip() async {
     try {

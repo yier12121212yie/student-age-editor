@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../../core/app_theme.dart';
 import '../../core/motion.dart';
 import '../editor/editor_controller.dart';
@@ -159,7 +160,7 @@ class _StoryFlowTopTabsState extends State<StoryFlowTopTabs> {
                       final doc = docs[i];
                       final active =
                           widget.view == StoryFlowView.doc &&
-                              i == widget.controller.currentIndex;
+                          i == widget.controller.currentIndex;
                       return _TabButton(
                         label: doc.title,
                         icon: _docIcon(doc),
@@ -184,25 +185,32 @@ class _StoryFlowTopTabsState extends State<StoryFlowTopTabs> {
                 itemBuilder: (_) => const [
                   PopupMenuItem(
                     value: StoryFlowView.mods,
-                    child: Row(children: [
-                      Icon(Icons.inventory_2_outlined, size: 15),
-                      SizedBox(width: 8),
-                      Text('模组', style: TextStyle(fontSize: 12)),
-                    ]),
+                    child: Row(
+                      children: [
+                        Icon(Icons.inventory_2_outlined, size: 15),
+                        SizedBox(width: 8),
+                        Text('模组', style: TextStyle(fontSize: 12)),
+                      ],
+                    ),
                   ),
                   PopupMenuItem(
                     value: StoryFlowView.bugfix,
-                    child: Row(children: [
-                      Icon(Icons.build_outlined, size: 15),
-                      SizedBox(width: 8),
-                      Text('错误修复', style: TextStyle(fontSize: 12)),
-                    ]),
+                    child: Row(
+                      children: [
+                        Icon(Icons.build_outlined, size: 15),
+                        SizedBox(width: 8),
+                        Text('错误修复', style: TextStyle(fontSize: 12)),
+                      ],
+                    ),
                   ),
                 ],
                 child: const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Icon(Icons.more_horiz,
-                      size: 16, color: Color(0xFF9B9BA3)),
+                  child: Icon(
+                    Icons.more_horiz,
+                    size: 16,
+                    color: Color(0xFF9B9BA3),
+                  ),
                 ),
               ),
             ),
@@ -220,11 +228,11 @@ class _StoryFlowTopTabsState extends State<StoryFlowTopTabs> {
   }
 
   Widget _divider() => Container(
-        width: 1,
-        height: 18,
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        color: palette.border,
-      );
+    width: 1,
+    height: 18,
+    margin: const EdgeInsets.symmetric(horizontal: 4),
+    color: palette.border,
+  );
 }
 
 /// 标签条按钮：固定入口 / 动态文档标签共用。
@@ -271,8 +279,8 @@ class _TabButtonState extends State<_TabButton> {
             color: widget.active
                 ? accent.withValues(alpha: 0.15)
                 : _hover
-                    ? palette.hover
-                    : Colors.transparent,
+                ? palette.hover
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: widget.active
@@ -299,13 +307,14 @@ class _TabButtonState extends State<_TabButton> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11.5,
-                    fontWeight:
-                        widget.active ? FontWeight.w600 : FontWeight.normal,
+                    fontWeight: widget.active
+                        ? FontWeight.w600
+                        : FontWeight.normal,
                     color: widget.active
                         ? palette.textHigh
                         : _hover
-                            ? palette.textPrimary
-                            : palette.textSecondary,
+                        ? palette.textPrimary
+                        : palette.textSecondary,
                   ),
                 ),
               ),

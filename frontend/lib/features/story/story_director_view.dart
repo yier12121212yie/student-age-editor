@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -126,12 +127,37 @@ const _evtTypeDict = <int, String>{
   917: '双子峰',
 };
 
+/// C1 准出探针（kDebugMode）：`_rederiveTalkPrefixCounts` 的全表扫描次数。
+///
+/// TalkCfg 整表换新（`_replaceTalkCfg`）或保存合并（`_save`）时 +1 恰一次；
+/// 事件列表滚动 / 宿主重建期间必须保持不变 —— `_eventTalkCount` 现在只查
+/// `_talkDerivedPrefixCounts` 桶表，任何路径都不允许再全表扫描。
+@visibleForTesting
+int debugTalkDerivedScans = 0;
+
 class _StoryDirectorViewState extends State<StoryDirectorView> {
   bool _loaded = false;
   String? _error;
 
   Map<String, dynamic> _evtCfg = {};
   Map<String, dynamic> _talkCfg = {};
+
+  /// 「派生前缀 → 对白数」桶表（性能修复：事件列表每行的对白数不再全表扫描）。
+  ///
+  /// 事件列表每一行 build 都要显示该事件的对白数；旧实现 `_eventTalkCount`
+  /// 逐行新建 PrefixMatcher 并扫描整张 TalkCfg（真实数据约 9.9 万行），
+  /// 一屏 20 行 ≈ 每帧数百万次 match，滚动/重建严重卡顿。改为在 TalkCfg
+  /// 内容变化时一次性派生本表（每张新表恰好 1 次全表扫描），行 build 只查表。
+  ///
+  /// 桶口径与 PrefixMatcher.match 的对白规则严格一致：`cln(key)` 后，
+  /// 长度 > 3 去掉末尾 3 位得前缀，否则取自身（复用 getTalkPrefix 同式）；
+  /// 空键跳过（match 对空 id 恒为 false）。每条对白按派生前缀恰好落入一个
+  /// 互斥桶，因此对一组**不重复前缀**求和即该组前缀的精确对白数，无重复计数。
+  ///
+  /// 不变量：`_talkCfg` 的任何赋值/原地变更点都必须触发重派生（整表赋值走
+  /// `_replaceTalkCfg`，原地合并后调 `_rederiveTalkPrefixCounts`），
+  /// 否则行 build 会读到过期计数。
+  Map<String, int> _talkDerivedPrefixCounts = {};
   Map<String, dynamic> _optCfg = {};
   Map<String, dynamic> _personCfg = {};
   Map<String, dynamic> _bgCfg = {};
@@ -188,7 +214,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       if (!mounted) return;
       setState(() {
         _evtCfg = _asMap(results[0]['data']);
-        _talkCfg = _asMap(results[1]['data']);
+        _replaceTalkCfg(_asMap(results[1]['data'])); // 整表换新 + 重派生前缀计数
         _optCfg = _asMap(results[2]['data']);
         _personCfg = _asMap(results[3]['data']);
         _bgCfg = _asMap(results[4]['data']);
@@ -217,6 +243,36 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       v is Map ? v.cast<String, dynamic>() : <String, dynamic>{};
 
   int? _asInt(dynamic v) => v is int ? v : null;
+
+  /// 整表替换 TalkCfg 并重派生前缀计数（性能修复 C1 的收拢入口）。
+  ///
+  /// TalkCfg 的所有整表赋值点（初次/重新加载、保存冲突后从磁盘重载）
+  /// 都必须走这里，保证 `_talkDerivedPrefixCounts` 与表内容始终同步；
+  /// 派生扫描每张新表恰好 1 次，之后列表滚动/宿主重建期间 0 次全表扫描。
+  void _replaceTalkCfg(Map<String, dynamic> table) {
+    _talkCfg = table;
+    _rederiveTalkPrefixCounts();
+  }
+
+  /// 一次性扫描整张 TalkCfg，重建 `_talkDerivedPrefixCounts`（1 × N）。
+  ///
+  /// 两条触发路径：① 整表替换（经 [_replaceTalkCfg]）；② 表内容被原地
+  /// 修改（`_save` 里 mergeStageBack 把舞台合并回 `_talkCfg`，会增删该
+  /// 事件前缀下的键）。桶派生与 PrefixMatcher.match 的对白规则同式：
+  /// getTalkPrefix(k) = cln(k) 长于 3 位时去掉末尾 3 位，否则取自身。
+  void _rederiveTalkPrefixCounts() {
+    // 准出探针（test/story_flow_canvas_test.dart C1 组）：表换新时 +1 恰一次，
+    // 滚动/宿主重建期间必须保持不变 —— 若行 build 路径误触发了重派生，
+    // 这里会随帧增长，等价于退回「每行全表扫描」。
+    if (kDebugMode) debugTalkDerivedScans++;
+    final counts = <String, int>{};
+    for (final k in _talkCfg.keys) {
+      final prefix = getTalkPrefix(k);
+      if (prefix.isEmpty) continue; // 与 match 一致：空 id 永不命中
+      counts[prefix] = (counts[prefix] ?? 0) + 1;
+    }
+    _talkDerivedPrefixCounts = counts;
+  }
 
   // ---------- 事件维度 ----------
 
@@ -627,6 +683,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Future<bool> _save() async {
     try {
       mergeStageBack(_talkCfg, _talkBaseline, _stageTalks, _prefixes);
+      // mergeStageBack 原地增删了 _talkCfg 中该事件前缀下的键，
+      // 计数桶必须同步重派生（1 × N，仅发生在保存动作里，不在 build 中）。
+      _rederiveTalkPrefixCounts();
       mergeStageBack(
         _optCfg,
         _optBaseline,
@@ -728,7 +787,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         setState(() {
           switch (cfg) {
             case 'TalkCfg':
-              _talkCfg = disk;
+              _replaceTalkCfg(disk); // 整表换新 + 重派生前缀计数
               _talkMtimeNs = mtime;
               _stageTalks = stageOf(_talkCfg, _prefixes);
               _talkBaseline = stageOf(_talkCfg, _prefixes);
@@ -759,7 +818,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         content: Text(
           '$cfg 文件已被外部修改（可能被游戏或其他端改写）。\n'
           '重新加载将放弃该表本地未保存的改动；强制覆盖将用当前内容覆盖磁盘文件。',
-          style: TextStyle(fontSize: 12.5, color: palette.textPrimary, height: 1.5),
+          style: TextStyle(
+            fontSize: 12.5,
+            color: palette.textPrimary,
+            height: 1.5,
+          ),
         ),
         actions: [
           fluent.Button(
@@ -909,19 +972,32 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                Text('切换事件:', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
+                Text(
+                  '切换事件:',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: palette.textSecondary,
+                  ),
+                ),
                 const SizedBox(width: 6),
                 SizedBox(
                   width: 140,
                   height: 34,
                   child: fluent.ComboBox<String>(
-                    value: _evtCfg.containsKey(_evtId) ? _evtId : (_evtCfg.keys.isNotEmpty ? _evtCfg.keys.first : null),
+                    value: _evtCfg.containsKey(_evtId)
+                        ? _evtId
+                        : (_evtCfg.keys.isNotEmpty ? _evtCfg.keys.first : null),
                     isExpanded: true,
                     items: _evtCfg.keys.map((k) {
                       final t = _evtTitle(k);
                       return fluent.ComboBoxItem(
                         value: k,
-                        child: Text('[$k] ${t.isEmpty ? '事件' : t}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
+                        child: Text(
+                          '[$k] ${t.isEmpty ? '事件' : t}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
                       );
                     }).toList(),
                     onChanged: (v) {
@@ -932,13 +1008,17 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 const SizedBox(width: 16),
                 _smallButton(
                   '当前阶段：${_stages[_stageIndex]}',
-                  () => setState(() => _stageIndex = (_stageIndex + 1) % _stages.length),
+                  () => setState(
+                    () => _stageIndex = (_stageIndex + 1) % _stages.length,
+                  ),
                   icon: FluentIcons.arrow_sync_24_regular,
                 ),
                 const SizedBox(width: 8),
                 _smallButton(
                   '▶ 运行态预览',
-                  _evtId == null || widget.onPreview == null ? () {} : () => widget.onPreview!(_evtId!),
+                  _evtId == null || widget.onPreview == null
+                      ? () {}
+                      : () => widget.onPreview!(_evtId!),
                   icon: FluentIcons.play_24_regular,
                 ),
                 const SizedBox(width: 8),
@@ -958,22 +1038,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // 1. 左栏：事件对话线
-              SizedBox(
-                width: 270,
-                child: _buildClassicDialogueLine(),
-              ),
+              SizedBox(width: 270, child: _buildClassicDialogueLine()),
               VerticalDivider(width: 1, color: palette.border),
               // 2. 中栏：配置 + 可视化舞台与角色编辑 + 底部对话
-              Expanded(
-                flex: 7,
-                child: _buildClassicCenterStage(curTalk),
-              ),
+              Expanded(flex: 7, child: _buildClassicCenterStage(curTalk)),
               VerticalDivider(width: 1, color: palette.border),
               // 3. 右栏：流程操作 + 场景人物控制 + 玩家选项配置
-              SizedBox(
-                width: 320,
-                child: _buildClassicRightPanel(curTalk),
-              ),
+              SizedBox(width: 320, child: _buildClassicRightPanel(curTalk)),
             ],
           ),
         ),
@@ -1000,7 +1071,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Expanded(
                 child: Text(
                   '事件 ${_evtId ?? ''} 的对话线 (${talkIds.length})',
-                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.textHigh),
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.bold,
+                    color: palette.textHigh,
+                  ),
                 ),
               ),
             ],
@@ -1012,9 +1087,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(FluentIcons.chat_empty_24_regular, size: 32, color: palette.iconDisabled),
+                      Icon(
+                        FluentIcons.chat_empty_24_regular,
+                        size: 32,
+                        color: palette.iconDisabled,
+                      ),
                       const SizedBox(height: 8),
-                      Text('该事件暂无对话', style: TextStyle(color: palette.textHint, fontSize: 12)),
+                      Text(
+                        '该事件暂无对话',
+                        style: TextStyle(color: palette.textHint, fontSize: 12),
+                      ),
                       const SizedBox(height: 10),
                       fluent.FilledButton(
                         onPressed: _appendTalk,
@@ -1041,7 +1123,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Expanded(
                 child: Text(
                   '按住 Shift 可多选，右侧可批量删除。\n当前阶段：${_stages[_stageIndex]}',
-                  style: TextStyle(fontSize: 10.5, color: palette.textMuted, height: 1.3),
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: palette.textMuted,
+                    height: 1.3,
+                  ),
                 ),
               ),
             ],
@@ -1056,10 +1142,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     final isCurrent = id == _talkId;
     final selected = _selectedTalkIds.contains(id);
     final opts = ensureList(talk is Map ? talk['option'] : null);
-    final hasBranch = opts.isNotEmpty ||
+    final hasBranch =
+        opts.isNotEmpty ||
         (talk is Map &&
             (talk['check'] != null ||
-                (talk['nextTalk2'] is List && (talk['nextTalk2'] as List).isNotEmpty)));
+                (talk['nextTalk2'] is List &&
+                    (talk['nextTalk2'] as List).isNotEmpty)));
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -1070,7 +1158,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
-            color: selected ? palette.tintAccent : (isCurrent ? palette.card : palette.panel),
+            color: selected
+                ? palette.tintAccent
+                : (isCurrent ? palette.card : palette.panel),
             borderRadius: BorderRadius.circular(5),
             border: Border.all(
               color: isCurrent
@@ -1082,9 +1172,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           child: Row(
             children: [
               Icon(
-                hasBranch ? FluentIcons.branch_fork_24_regular : FluentIcons.chat_24_regular,
+                hasBranch
+                    ? FluentIcons.branch_fork_24_regular
+                    : FluentIcons.chat_24_regular,
                 size: 14,
-                color: hasBranch ? palette.warning : (isCurrent ? const Color(0xFF6C5CE7) : palette.textHint),
+                color: hasBranch
+                    ? palette.warning
+                    : (isCurrent ? const Color(0xFF6C5CE7) : palette.textHint),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -1098,7 +1192,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: isCurrent ? palette.textHigh : palette.textPrimary,
+                        color: isCurrent
+                            ? palette.textHigh
+                            : palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -1113,7 +1209,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               ),
               if (opts.isNotEmpty)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
                   decoration: BoxDecoration(
                     color: palette.tintWarn,
                     borderRadius: BorderRadius.circular(4),
@@ -1134,7 +1233,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Widget _buildClassicCenterStage(Map<String, dynamic>? talk) {
     if (talk == null) {
       return Center(
-        child: Text('请在左侧选择一句对话以开启舞台编辑', style: TextStyle(color: palette.textHint, fontSize: 13)),
+        child: Text(
+          '请在左侧选择一句对话以开启舞台编辑',
+          style: TextStyle(color: palette.textHint, fontSize: 13),
+        ),
       );
     }
 
@@ -1144,7 +1246,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     final highlights = ensureList(talk['highlights']);
     final roleName = cln(talk['roleName']);
     final nextTalk = ensureList(talk['nextTalk']).join(',');
-    final hasCheck = talk['check'] != null && talk['check'].toString().isNotEmpty && talk['check'].toString() != '[]';
+    final hasCheck =
+        talk['check'] != null &&
+        talk['check'].toString().isNotEmpty &&
+        talk['check'].toString() != '[]';
 
     return Container(
       color: palette.bgDeep2,
@@ -1167,10 +1272,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 Row(
                   children: [
                     Flexible(
-                      child: Text('背景:',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                      child: Text(
+                        '背景:',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textSecondary,
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -1179,20 +1289,34 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         height: 34,
                         child: fluent.ComboBox<String>(
                           value: _allBgs().containsKey(bgVal) ? bgVal : null,
-                          placeholder: const Text('客厅 (100) / 选择背景', style: TextStyle(fontSize: 11.5)),
+                          placeholder: const Text(
+                            '客厅 (100) / 选择背景',
+                            style: TextStyle(fontSize: 11.5),
+                          ),
                           isExpanded: true,
                           items: [
-                            const fluent.ComboBoxItem(value: '', child: Text('延续上文 / 默认背景', style: TextStyle(fontSize: 11.5))),
+                            const fluent.ComboBoxItem(
+                              value: '',
+                              child: Text(
+                                '延续上文 / 默认背景',
+                                style: TextStyle(fontSize: 11.5),
+                              ),
+                            ),
                             ..._allBgs().entries.map((e) {
                               return fluent.ComboBoxItem(
                                 value: e.key,
-                                child: Text('${e.value} (${e.key})', style: const TextStyle(fontSize: 11.5)),
+                                child: Text(
+                                  '${e.value} (${e.key})',
+                                  style: const TextStyle(fontSize: 11.5),
+                                ),
                               );
                             }),
                           ],
                           onChanged: (v) {
                             setState(() {
-                              talk['bg'] = (v == null || v.isEmpty) ? null : (int.tryParse(v) ?? v);
+                              talk['bg'] = (v == null || v.isEmpty)
+                                  ? null
+                                  : (int.tryParse(v) ?? v);
                               _dirty = true;
                             });
                           },
@@ -1201,10 +1325,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     ),
                     const SizedBox(width: 12),
                     Flexible(
-                      child: Text('背景音乐(audio):',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                      child: Text(
+                        '背景音乐(audio):',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textSecondary,
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -1212,21 +1341,37 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       child: SizedBox(
                         height: 34,
                         child: fluent.ComboBox<String>(
-                          value: _allAudios().containsKey(audioVal) ? audioVal : null,
-                          placeholder: const Text('[延续上文/无更改]', style: TextStyle(fontSize: 11.5)),
+                          value: _allAudios().containsKey(audioVal)
+                              ? audioVal
+                              : null,
+                          placeholder: const Text(
+                            '[延续上文/无更改]',
+                            style: TextStyle(fontSize: 11.5),
+                          ),
                           isExpanded: true,
                           items: [
-                            const fluent.ComboBoxItem(value: '', child: Text('[延续上文/无更改]', style: TextStyle(fontSize: 11.5))),
+                            const fluent.ComboBoxItem(
+                              value: '',
+                              child: Text(
+                                '[延续上文/无更改]',
+                                style: TextStyle(fontSize: 11.5),
+                              ),
+                            ),
                             ..._allAudios().entries.map((e) {
                               return fluent.ComboBoxItem(
                                 value: e.key,
-                                child: Text('${e.value} (${e.key})', style: const TextStyle(fontSize: 11.5)),
+                                child: Text(
+                                  '${e.value} (${e.key})',
+                                  style: const TextStyle(fontSize: 11.5),
+                                ),
                               );
                             }),
                           ],
                           onChanged: (v) {
                             setState(() {
-                              talk['audio'] = (v == null || v.isEmpty) ? null : (int.tryParse(v) ?? v);
+                              talk['audio'] = (v == null || v.isEmpty)
+                                  ? null
+                                  : (int.tryParse(v) ?? v);
                               _dirty = true;
                             });
                           },
@@ -1238,7 +1383,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       fluent.displayInfoBar(
                         context,
                         builder: (ctx, close) => fluent.InfoBar(
-                          title: Text('试听背景音乐: ${audioVal.isEmpty ? '延续上文' : audioVal}'),
+                          title: Text(
+                            '试听背景音乐: ${audioVal.isEmpty ? '延续上文' : audioVal}',
+                          ),
                           severity: fluent.InfoBarSeverity.info,
                         ),
                       );
@@ -1250,10 +1397,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 Row(
                   children: [
                     Flexible(
-                      child: Text('说话人(逗号隔开):',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                      child: Text(
+                        '说话人(逗号隔开):',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textSecondary,
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -1262,9 +1414,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         height: 32,
                         child: fluent.TextBox(
                           placeholder: '输入名字检索...',
-                          controller: TextEditingController(text: roleIds.join(',')),
+                          controller: TextEditingController(
+                            text: roleIds.join(','),
+                          ),
                           onChanged: (v) {
-                            final list = v.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).map((s) => int.tryParse(s) ?? s).toList();
+                            final list = v
+                                .split(',')
+                                .map((s) => s.trim())
+                                .where((s) => s.isNotEmpty)
+                                .map((s) => int.tryParse(s) ?? s)
+                                .toList();
                             talk['roleIds'] = list;
                             _dirty = true;
                           },
@@ -1273,10 +1432,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     ),
                     const SizedBox(width: 8),
                     Flexible(
-                      child: Text('高亮人物(逗号隔开):',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                      child: Text(
+                        '高亮人物(逗号隔开):',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textSecondary,
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -1285,9 +1449,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         height: 32,
                         child: fluent.TextBox(
                           placeholder: '输入名字检索...',
-                          controller: TextEditingController(text: highlights.join(',')),
+                          controller: TextEditingController(
+                            text: highlights.join(','),
+                          ),
                           onChanged: (v) {
-                            final list = v.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).map((s) => int.tryParse(s) ?? s).toList();
+                            final list = v
+                                .split(',')
+                                .map((s) => s.trim())
+                                .where((s) => s.isNotEmpty)
+                                .map((s) => int.tryParse(s) ?? s)
+                                .toList();
                             talk['highlights'] = list;
                             _dirty = true;
                           },
@@ -1296,10 +1467,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     ),
                     const SizedBox(width: 8),
                     Flexible(
-                      child: Text('实际显示名称:',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                      child: Text(
+                        '实际显示名称:',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textSecondary,
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 6),
                     Expanded(
@@ -1321,7 +1497,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 const SizedBox(height: 8),
                 // 分支与跳转
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: palette.card,
                     borderRadius: BorderRadius.circular(6),
@@ -1330,10 +1509,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   child: Row(
                     children: [
                       Flexible(
-                        child: Text('🔀 分支与跳转',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12, color: palette.warning, fontWeight: FontWeight.bold)),
+                        child: Text(
+                          '🔀 分支与跳转',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: palette.warning,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                       const SizedBox(width: 14),
                       Flexible(
@@ -1341,19 +1526,32 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                           checked: hasCheck,
                           onChanged: (v) {
                             setState(() {
-                              talk['check'] = (v ?? false) ? ['has_score>=60'] : null;
+                              talk['check'] = (v ?? false)
+                                  ? ['has_score>=60']
+                                  : null;
                               _dirty = true;
                             });
                           },
-                          content: Text('开启前提分支判定', style: TextStyle(fontSize: 11.5, color: palette.textMid)),
+                          content: Text(
+                            '开启前提分支判定',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: palette.textMid,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(width: 16),
                       Flexible(
-                        child: Text('下一句对话ID:',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                        child: Text(
+                          '下一句对话ID:',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: palette.textSecondary,
+                          ),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
@@ -1363,7 +1561,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                             controller: TextEditingController(text: nextTalk),
                             placeholder: '如: 8002 (空则顺延)',
                             onChanged: (v) {
-                              final list = v.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).map((s) => int.tryParse(s) ?? s).toList();
+                              final list = v
+                                  .split(',')
+                                  .map((s) => s.trim())
+                                  .where((s) => s.isNotEmpty)
+                                  .map((s) => int.tryParse(s) ?? s)
+                                  .toList();
                               talk['nextTalk'] = list;
                               _dirty = true;
                             },
@@ -1417,7 +1620,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       ),
                     ),
                     const Spacer(),
-                    Text('对话内容 (content):', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
+                    Text(
+                      '对话内容 (content):',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: palette.textSecondary,
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -1425,7 +1634,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   height: 90,
                   child: fluent.TextBox(
                     key: ValueKey('content_box_$_talkId'),
-                    controller: TextEditingController(text: cln(talk['content'])),
+                    controller: TextEditingController(
+                      text: cln(talk['content']),
+                    ),
                     expands: true,
                     maxLines: null,
                     textAlignVertical: TextAlignVertical.top,
@@ -1490,13 +1701,27 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
             color: palette.card,
-            borderRadius: BorderRadius.only(topLeft: Radius.circular(8), topRight: Radius.circular(8)),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(8),
+              topRight: Radius.circular(8),
+            ),
           ),
           child: Row(
             children: [
-              const Icon(FluentIcons.video_24_regular, size: 14, color: Color(0xFF6C5CE7)),
+              const Icon(
+                FluentIcons.video_24_regular,
+                size: 14,
+                color: Color(0xFF6C5CE7),
+              ),
               const SizedBox(width: 6),
-              Text('🎭 舞台站位与表情动作预览区', style: TextStyle(fontSize: 12, color: palette.textHigh, fontWeight: FontWeight.w600)),
+              Text(
+                '🎭 舞台站位与表情动作预览区',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: palette.textHigh,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const Spacer(),
               _smallButton('➕ 放置角色', () => _showAddStageRoleDialog(talk)),
               const SizedBox(width: 6),
@@ -1517,11 +1742,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [
-                  palette.bgDeep,
-                  palette.bgDeep,
-                  palette.bgDeep2,
-                ],
+                colors: [palette.bgDeep, palette.bgDeep, palette.bgDeep2],
               ),
             ),
             child: Row(
@@ -1542,8 +1763,18 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     );
   }
 
-  Widget _buildStageSlot(int slotIdx, _StageRoleInfo? role, Map<String, dynamic> talk) {
-    const slotNames = ['站位 0 (左)', '站位 1 (中左)', '站位 2 (居中)', '站位 3 (中右)', '站位 4 (右)'];
+  Widget _buildStageSlot(
+    int slotIdx,
+    _StageRoleInfo? role,
+    Map<String, dynamic> talk,
+  ) {
+    const slotNames = [
+      '站位 0 (左)',
+      '站位 1 (中左)',
+      '站位 2 (居中)',
+      '站位 3 (中右)',
+      '站位 4 (右)',
+    ];
 
     if (role == null) {
       return MouseRegion(
@@ -1555,13 +1786,20 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             decoration: BoxDecoration(
               color: palette.bgDeep2.withValues(alpha: 0.6),
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: palette.surface, style: BorderStyle.solid),
+              border: Border.all(
+                color: palette.surface,
+                style: BorderStyle.solid,
+              ),
             ),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(FluentIcons.add_circle_24_regular, size: 24, color: palette.iconDisabled),
+                  Icon(
+                    FluentIcons.add_circle_24_regular,
+                    size: 24,
+                    color: palette.iconDisabled,
+                  ),
                   const SizedBox(height: 6),
                   Text(
                     slotNames[slotIdx],
@@ -1569,7 +1807,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     style: TextStyle(fontSize: 10.5, color: palette.textHint),
                   ),
                   const SizedBox(height: 2),
-                  Text('点击放置', style: TextStyle(fontSize: 9.5, color: palette.iconDisabled)),
+                  Text(
+                    '点击放置',
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      color: palette.iconDisabled,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1586,7 +1830,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         color: role.isHighlight ? palette.tintAccent : palette.card,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: role.isHighlight ? const Color(0xFF6C5CE7) : palette.borderHover,
+          color: role.isHighlight
+              ? const Color(0xFF6C5CE7)
+              : palette.borderHover,
           width: role.isHighlight ? 2 : 1,
         ),
       ),
@@ -1604,7 +1850,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: role.isHighlight ? palette.textHigh : palette.textPrimary,
+                    color: role.isHighlight
+                        ? palette.textHigh
+                        : palette.textPrimary,
                   ),
                 ),
               ),
@@ -1614,12 +1862,18 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   behavior: HitTestBehavior.opaque,
                   onTap: () {
                     setState(() {
-                      final roles = ensureList(talk['roles']).where((r) => !r.startsWith('$slotIdx,')).toList();
+                      final roles = ensureList(talk['roles'])
+                          .where((r) => !r.startsWith('$slotIdx,'))
+                          .toList();
                       talk['roles'] = roles;
                       _dirty = true;
                     });
                   },
-                  child: Icon(FluentIcons.dismiss_16_regular, size: 12, color: palette.textMuted),
+                  child: Icon(
+                    FluentIcons.dismiss_16_regular,
+                    size: 12,
+                    color: palette.textMuted,
+                  ),
                 ),
               ),
             ],
@@ -1640,7 +1894,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     Icon(
                       FluentIcons.person_24_filled,
                       size: 36,
-                      color: role.isHighlight ? palette.accentLight : palette.textHint,
+                      color: role.isHighlight
+                          ? palette.accentLight
+                          : palette.textHint,
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -1672,7 +1928,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 10, color: palette.accentPale, fontWeight: FontWeight.w500),
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: palette.accentPale,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
             ),
@@ -1684,32 +1944,35 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Expanded(
                 child: _miniShiftButton(
                   '◀',
-                  slotIdx > 0 ? () => _shiftRoleSlot(slotIdx, slotIdx - 1, role, talk) : null,
+                  slotIdx > 0
+                      ? () => _shiftRoleSlot(slotIdx, slotIdx - 1, role, talk)
+                      : null,
                 ),
               ),
               const SizedBox(width: 4),
               Expanded(
-                child: _miniShiftButton(
-                  '高亮',
-                  () {
-                    setState(() {
-                      final h = ensureList(talk['highlights']);
-                      if (h.contains(role.roleId)) {
-                        h.remove(role.roleId);
-                      } else {
-                        h.add(role.roleId);
-                      }
-                      talk['highlights'] = h.map((e) => int.tryParse(e) ?? e).toList();
-                      _dirty = true;
-                    });
-                  },
-                ),
+                child: _miniShiftButton('高亮', () {
+                  setState(() {
+                    final h = ensureList(talk['highlights']);
+                    if (h.contains(role.roleId)) {
+                      h.remove(role.roleId);
+                    } else {
+                      h.add(role.roleId);
+                    }
+                    talk['highlights'] = h
+                        .map((e) => int.tryParse(e) ?? e)
+                        .toList();
+                    _dirty = true;
+                  });
+                }),
               ),
               const SizedBox(width: 4),
               Expanded(
                 child: _miniShiftButton(
                   '▶',
-                  slotIdx < 4 ? () => _shiftRoleSlot(slotIdx, slotIdx + 1, role, talk) : null,
+                  slotIdx < 4
+                      ? () => _shiftRoleSlot(slotIdx, slotIdx + 1, role, talk)
+                      : null,
                 ),
               ),
             ],
@@ -1736,7 +1999,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           child: Text(
             text,
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 9.5, color: enabled ? palette.textPrimary : palette.iconDisabled),
+            style: TextStyle(
+              fontSize: 9.5,
+              color: enabled ? palette.textPrimary : palette.iconDisabled,
+            ),
           ),
         ),
       ),
@@ -1766,25 +2032,38 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     }
   }
 
-  void _shiftRoleSlot(int oldSlot, int newSlot, _StageRoleInfo role, Map<String, dynamic> talk) {
+  void _shiftRoleSlot(
+    int oldSlot,
+    int newSlot,
+    _StageRoleInfo role,
+    Map<String, dynamic> talk,
+  ) {
     setState(() {
-      final currentRoles = ensureList(talk['roles']).where((r) => !r.startsWith('$oldSlot,') && !r.startsWith('$newSlot,')).toList();
+      final currentRoles = ensureList(talk['roles'])
+          .where(
+            (r) => !r.startsWith('$oldSlot,') && !r.startsWith('$newSlot,'),
+          )
+          .toList();
       currentRoles.add('$newSlot,${role.roleId},${role.actionCode}');
       talk['roles'] = currentRoles;
       _dirty = true;
     });
   }
 
-  Future<void> _showPlaceRoleToSlotDialog(int slotIdx, Map<String, dynamic> talk) async {
+  Future<void> _showPlaceRoleToSlotDialog(
+    int slotIdx,
+    Map<String, dynamic> talk,
+  ) async {
     final allRoles = _allRoles();
-    final personKeys = allRoles.keys.toList()..sort((a, b) {
-      final na = int.tryParse(a);
-      final nb = int.tryParse(b);
-      if (na != null && nb != null) return na.compareTo(nb);
-      if (na != null) return -1;
-      if (nb != null) return 1;
-      return a.compareTo(b);
-    });
+    final personKeys = allRoles.keys.toList()
+      ..sort((a, b) {
+        final na = int.tryParse(a);
+        final nb = int.tryParse(b);
+        if (na != null && nb != null) return na.compareTo(nb);
+        if (na != null) return -1;
+        if (nb != null) return 1;
+        return a.compareTo(b);
+      });
 
     final currentTalkRoles = ensureList(talk['roleIds'])
         .map((e) => e.toString().trim())
@@ -1792,7 +2071,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         .toList();
 
     String selectedPerson;
-    if (currentTalkRoles.isNotEmpty && personKeys.contains(currentTalkRoles.first)) {
+    if (currentTalkRoles.isNotEmpty &&
+        personKeys.contains(currentTalkRoles.first)) {
       selectedPerson = currentTalkRoles.first;
     } else if (personKeys.contains('10')) {
       selectedPerson = '10';
@@ -1816,14 +2096,22 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               const Text('选择角色:', style: TextStyle(fontSize: 12)),
               const SizedBox(height: 6),
               fluent.ComboBox<String>(
-                value: personKeys.contains(selectedPerson) ? selectedPerson : (personKeys.isNotEmpty ? personKeys.first : null),
-                placeholder: const Text('请选择角色', style: TextStyle(fontSize: 12)),
+                value: personKeys.contains(selectedPerson)
+                    ? selectedPerson
+                    : (personKeys.isNotEmpty ? personKeys.first : null),
+                placeholder: const Text(
+                  '请选择角色',
+                  style: TextStyle(fontSize: 12),
+                ),
                 isExpanded: true,
                 items: personKeys.map((k) {
                   final name = allRoles[k] ?? _roleName(k);
                   return fluent.ComboBoxItem(
                     value: k,
-                    child: Text('[$k] ${name.isNotEmpty ? name : '角色'}', style: const TextStyle(fontSize: 12)),
+                    child: Text(
+                      '[$k] ${name.isNotEmpty ? name : '角色'}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
                   );
                 }).toList(),
                 onChanged: (v) {
@@ -1842,24 +2130,25 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
-                children: [
-                  ('3000', '普通'),
-                  ('3001', '开心'),
-                  ('3002', '生气'),
-                  ('3003', '悲伤'),
-                  ('3004', '害羞'),
-                  ('3005', '惊讶'),
-                  ('3006', '得意'),
-                  ('3007', '叹气'),
-                ].map((pair) {
-                  return _ActionPill(
-                    label: '${pair.$2} (${pair.$1})',
-                    primary: actionCode == pair.$1,
-                    onPressed: () {
-                      setDialogState(() => actionCode = pair.$1);
-                    },
-                  );
-                }).toList(),
+                children:
+                    [
+                      ('3000', '普通'),
+                      ('3001', '开心'),
+                      ('3002', '生气'),
+                      ('3003', '悲伤'),
+                      ('3004', '害羞'),
+                      ('3005', '惊讶'),
+                      ('3006', '得意'),
+                      ('3007', '叹气'),
+                    ].map((pair) {
+                      return _ActionPill(
+                        label: '${pair.$2} (${pair.$1})',
+                        primary: actionCode == pair.$1,
+                        onPressed: () {
+                          setDialogState(() => actionCode = pair.$1);
+                        },
+                      );
+                    }).toList(),
               ),
             ],
           ),
@@ -1871,7 +2160,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             fluent.FilledButton(
               onPressed: () {
                 setState(() {
-                  final roles = ensureList(talk['roles']).where((r) => !r.startsWith('$slotIdx,')).toList();
+                  final roles = ensureList(talk['roles'])
+                      .where((r) => !r.startsWith('$slotIdx,'))
+                      .toList();
                   roles.add('$slotIdx,$selectedPerson,$actionCode');
                   talk['roles'] = roles;
                   _dirty = true;
@@ -1890,7 +2181,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     await _showPlaceRoleToSlotDialog(2, talk);
   }
 
-  Future<void> _showEditRoleActionDialog(int slotIdx, _StageRoleInfo role, Map<String, dynamic> talk) async {
+  Future<void> _showEditRoleActionDialog(
+    int slotIdx,
+    _StageRoleInfo role,
+    Map<String, dynamic> talk,
+  ) async {
     var actionCode = role.actionCode;
     await showDialog(
       context: context,
@@ -1900,35 +2195,41 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('常用表情代码预设:', style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+            Text(
+              '常用表情代码预设:',
+              style: TextStyle(fontSize: 12, color: palette.textSecondary),
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
               runSpacing: 6,
-              children: [
-                ('3000', '普通'),
-                ('3001', '开心'),
-                ('3002', '生气'),
-                ('3003', '悲伤'),
-                ('3004', '害羞'),
-                ('3005', '惊讶'),
-                ('3006', '得意'),
-                ('3007', '叹气'),
-              ].map((pair) {
-                return _ActionPill(
-                  label: '${pair.$2} (${pair.$1})',
-                  primary: actionCode == pair.$1,
-                  onPressed: () {
-                    setState(() {
-                      final roles = ensureList(talk['roles']).where((r) => !r.startsWith('$slotIdx,')).toList();
-                      roles.add('$slotIdx,${role.roleId},${pair.$1}');
-                      talk['roles'] = roles;
-                      _dirty = true;
-                    });
-                    Navigator.of(ctx).pop();
-                  },
-                );
-              }).toList(),
+              children:
+                  [
+                    ('3000', '普通'),
+                    ('3001', '开心'),
+                    ('3002', '生气'),
+                    ('3003', '悲伤'),
+                    ('3004', '害羞'),
+                    ('3005', '惊讶'),
+                    ('3006', '得意'),
+                    ('3007', '叹气'),
+                  ].map((pair) {
+                    return _ActionPill(
+                      label: '${pair.$2} (${pair.$1})',
+                      primary: actionCode == pair.$1,
+                      onPressed: () {
+                        setState(() {
+                          final roles = ensureList(talk['roles'])
+                              .where((r) => !r.startsWith('$slotIdx,'))
+                              .toList();
+                          roles.add('$slotIdx,${role.roleId},${pair.$1}');
+                          talk['roles'] = roles;
+                          _dirty = true;
+                        });
+                        Navigator.of(ctx).pop();
+                      },
+                    );
+                  }).toList(),
             ),
           ],
         ),
@@ -1944,7 +2245,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
 
   /// 打开配音面板：带入当前对白行的内容与键名前缀（默认 `talk_{id}`）。
   Future<void> _openTtsPanel(Map<String, dynamic> talk) async {
-    final content = ((talk['content'] ?? talk['showTxt'])?.toString() ?? '').trim();
+    final content = ((talk['content'] ?? talk['showTxt'])?.toString() ?? '')
+        .trim();
     final role = cln(talk['roleName']).trim();
     final title = content.isNotEmpty
         ? (role.isNotEmpty ? '$role：$content' : content)
@@ -1974,15 +2276,19 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       child: ListView(
         children: [
           // 流程操作
-          Text('流程操作', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.textHigh)),
+          Text(
+            '流程操作',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.bold,
+              color: palette.textHigh,
+            ),
+          ),
           const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
-                child: _ActionPill(
-                  label: '⬇ 插入对话',
-                  onPressed: _insertTalk,
-                ),
+                child: _ActionPill(label: '⬇ 插入对话', onPressed: _insertTalk),
               ),
               const SizedBox(width: 6),
               Expanded(
@@ -2001,7 +2307,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 child: _ActionPill(
                   label: '🗑️ 删除选中',
                   danger: true,
-                  onPressed: _selectedTalkIds.isEmpty ? null : _deleteSelectedTalks,
+                  onPressed: _selectedTalkIds.isEmpty
+                      ? null
+                      : _deleteSelectedTalks,
                 ),
               ),
               const SizedBox(width: 6),
@@ -2020,22 +2328,39 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           Divider(height: 24, color: palette.border),
 
           // 场景人物控制
-          Text('✨ 场景人物控制', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.warning)),
+          Text(
+            '✨ 场景人物控制',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.bold,
+              color: palette.warning,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text('人物动作/表情(30xx):', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
+          Text(
+            '人物动作/表情(30xx):',
+            style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
+          ),
           const SizedBox(height: 4),
           fluent.TextBox(
             controller: TextEditingController(text: rolesStr),
             placeholder: '支持模糊连打 (例: 0,3000 或 白雨移动-250)',
             onChanged: (v) {
               if (talk != null) {
-                talk['roles'] = v.split(';').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+                talk['roles'] = v
+                    .split(';')
+                    .map((s) => s.trim())
+                    .where((s) => s.isNotEmpty)
+                    .toList();
                 _dirty = true;
               }
             },
           ),
           const SizedBox(height: 10),
-          Text('屏幕效果(40xx):', style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
+          Text(
+            '屏幕效果(40xx):',
+            style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
+          ),
           const SizedBox(height: 4),
           fluent.TextBox(
             controller: TextEditingController(text: screenEffect),
@@ -2064,13 +2389,22 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     }
                   },
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: palette.card,
                       borderRadius: BorderRadius.circular(3),
                       border: Border.all(color: palette.borderHover),
                     ),
-                    child: Text(tag, style: TextStyle(fontSize: 10, color: palette.textPrimary)),
+                    child: Text(
+                      tag,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: palette.textPrimary,
+                      ),
+                    ),
                   ),
                 ),
               );
@@ -2080,12 +2414,24 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           Divider(height: 24, color: palette.border),
 
           // 台词配音
-          Text('🎙️ 台词配音',
-              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.warning)),
+          Text(
+            '🎙️ 台词配音',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.bold,
+              color: palette.warning,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text('用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
-              '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
-              style: TextStyle(fontSize: 11, color: palette.textSecondary, height: 1.5)),
+          Text(
+            '用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
+            '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
+            style: TextStyle(
+              fontSize: 11,
+              color: palette.textSecondary,
+              height: 1.5,
+            ),
+          ),
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
@@ -2094,13 +2440,23 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               style: fluent.ButtonStyle(
                 backgroundColor: WidgetStatePropertyAll(palette.warning),
               ),
-              child: const Text('🎙️ 给本行内容配音', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text(
+                '🎙️ 给本行内容配音',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
           Divider(height: 24, color: palette.border),
 
           // 玩家选项配置
-          Text('🎯 玩家选项配置', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: palette.warning)),
+          Text(
+            '🎯 玩家选项配置',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.bold,
+              color: palette.warning,
+            ),
+          ),
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
@@ -2109,7 +2465,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               style: fluent.ButtonStyle(
                 backgroundColor: WidgetStatePropertyAll(palette.warning),
               ),
-              child: const Text('➕ 添加选项按钮', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text(
+                '➕ 添加选项按钮',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
           const SizedBox(height: 8),
@@ -2124,13 +2483,42 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             child: Column(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
                   color: palette.card,
                   child: Row(
                     children: [
-                      SizedBox(width: 50, child: Text('选项ID', style: TextStyle(fontSize: 11, color: palette.textSecondary))),
-                      Expanded(child: Text('选项文本', style: TextStyle(fontSize: 11, color: palette.textSecondary))),
-                      SizedBox(width: 60, child: Text('跳转至(ID)', style: TextStyle(fontSize: 11, color: palette.textSecondary))),
+                      SizedBox(
+                        width: 50,
+                        child: Text(
+                          '选项ID',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: palette.textSecondary,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          '选项文本',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: palette.textSecondary,
+                          ),
+                        ),
+                      ),
+                      SizedBox(
+                        width: 60,
+                        child: Text(
+                          '跳转至(ID)',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: palette.textSecondary,
+                          ),
+                        ),
+                      ),
                       SizedBox(width: 24),
                     ],
                   ),
@@ -2138,7 +2526,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 if (opts.isEmpty)
                   Padding(
                     padding: EdgeInsets.symmetric(vertical: 14),
-                    child: Text('当前对白无选项按钮', style: TextStyle(fontSize: 11, color: palette.textHint)),
+                    child: Text(
+                      '当前对白无选项按钮',
+                      style: TextStyle(fontSize: 11, color: palette.textHint),
+                    ),
                   )
                 else
                   for (final optId in opts) _buildClassicOptionRow(optId),
@@ -2155,7 +2546,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               style: const fluent.ButtonStyle(
                 backgroundColor: WidgetStatePropertyAll(Color(0xFF6C5CE7)),
               ),
-              child: const Text('💾 保存修改至 Mod', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text(
+                '💾 保存修改至 Mod',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
         ],
@@ -2177,7 +2571,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         children: [
           SizedBox(
             width: 50,
-            child: Text(optId, style: TextStyle(fontSize: 10.5, color: palette.accentLighter)),
+            child: Text(
+              optId,
+              style: TextStyle(fontSize: 10.5, color: palette.accentLighter),
+            ),
           ),
           Expanded(
             child: SizedBox(
@@ -2206,7 +2603,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 placeholder: '跳转ID',
                 onChanged: (v) {
                   if (opt is Map) {
-                    opt['talkId'] = v.split(',').map((s) => int.tryParse(s.trim()) ?? s.trim()).toList();
+                    opt['talkId'] = v
+                        .split(',')
+                        .map((s) => int.tryParse(s.trim()) ?? s.trim())
+                        .toList();
                     _dirty = true;
                   }
                 },
@@ -2220,7 +2620,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               onTap: () => _removeOption(optId),
               child: Padding(
                 padding: EdgeInsets.all(4),
-                child: Icon(FluentIcons.delete_16_regular, size: 13, color: palette.danger),
+                child: Icon(
+                  FluentIcons.delete_16_regular,
+                  size: 13,
+                  color: palette.danger,
+                ),
               ),
             ),
           ),
@@ -2229,7 +2633,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     );
   }
 
-  Widget _smallButton(String label, VoidCallback? onPressed, {IconData? icon, bool primary = false, bool danger = false}) {
+  Widget _smallButton(
+    String label,
+    VoidCallback? onPressed, {
+    IconData? icon,
+    bool primary = false,
+    bool danger = false,
+  }) {
     Color bg = palette.card;
     Color fg = palette.textPrimary;
     if (primary) {
@@ -2240,7 +2650,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       fg = palette.statusDanger;
     }
     return MouseRegion(
-      cursor: onPressed != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      cursor: onPressed != null
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onPressed,
@@ -2260,7 +2672,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               ],
               Text(
                 label,
-                style: TextStyle(fontSize: 11.5, color: fg, fontWeight: primary ? FontWeight.bold : FontWeight.normal),
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: fg,
+                  fontWeight: primary ? FontWeight.bold : FontWeight.normal,
+                ),
               ),
             ],
           ),
@@ -2342,9 +2758,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   child: GestureDetector(
                     onTap: () => _selectEvent(id),
                     child: Container(
-                      color: selected
-                          ? palette.hover
-                          : Colors.transparent,
+                      color: selected ? palette.hover : Colors.transparent,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
                         vertical: 8,
@@ -2460,11 +2874,19 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     return '';
   }
 
+  /// 事件对白数：按该事件的前缀集合对派生好的计数桶逐桶求和（性能修复 C1）。
+  ///
+  /// storyRelatedPrefixes 返回的前缀已 cln 规范化、且经 Set 去重，与
+  /// `_talkDerivedPrefixCounts` 的桶口径严格一致；每条对白只落一个互斥桶，
+  /// 不重复前缀求和即精确计数。TalkCfg 尚未加载（表为空）时返回 0。
+  /// 任何路径都不会在这里做全表扫描 —— 派生只发生在表内容变化时
+  /// （见 `_rederiveTalkPrefixCounts`），列表滚动/宿主重建期间仅查表。
   int _eventTalkCount(String evtId) {
-    final prefixes = storyRelatedPrefixes(evtId, _evtCfg);
+    if (_talkCfg.isEmpty) return 0;
+    final counts = _talkDerivedPrefixCounts;
     var n = 0;
-    for (final k in _talkCfg.keys) {
-      if (storyIsInPrefixes(prefixes, k)) n++;
+    for (final p in storyRelatedPrefixes(evtId, _evtCfg)) {
+      n += counts[p] ?? 0;
     }
     return n;
   }
@@ -2542,10 +2964,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   const SizedBox(width: 4),
                   Text(
                     '按住 Shift 点击可多选，支持批量删除',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      color: palette.textHint,
-                    ),
+                    style: TextStyle(fontSize: 10.5, color: palette.textHint),
                   ),
                 ],
               ),
@@ -2611,7 +3030,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               const SizedBox(width: 10),
               Flexible(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: palette.tintWarn,
                     borderRadius: BorderRadius.circular(3),
@@ -2620,16 +3042,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                     speaker,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: palette.goldText,
-                    ),
+                    style: TextStyle(fontSize: 11, color: palette.goldText),
                   ),
                 ),
               ),
               const Spacer(),
               for (final p in persons)
-                Flexible(child: _personCard(p.id, p.cfg as Map<String, dynamic>)),
+                Flexible(
+                  child: _personCard(p.id, p.cfg as Map<String, dynamic>),
+                ),
             ],
           ),
           const SizedBox(height: 8),
@@ -2694,7 +3115,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   faceKey.isEmpty ? 'ID $id' : '立绘 $faceKey',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 9.5, color: Color(0xFF8B7B5E)),
+                  style: const TextStyle(
+                    fontSize: 9.5,
+                    color: Color(0xFF8B7B5E),
+                  ),
                 ),
               ],
             ),
@@ -2725,9 +3149,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               decoration: BoxDecoration(
                 color: selected
                     ? palette.hover
-                    : (isCurrent
-                          ? palette.panel
-                          : Colors.transparent),
+                    : (isCurrent ? palette.panel : Colors.transparent),
                 border: Border(
                   left: BorderSide(
                     width: 3,
@@ -2747,9 +3169,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                         ? FluentIcons.branch_fork_24_regular
                         : FluentIcons.chat_24_regular,
                     size: 13,
-                    color: hasBranch
-                        ? palette.warning
-                        : palette.textHint,
+                    color: hasBranch ? palette.warning : palette.textHint,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -2793,10 +3213,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       ),
                       child: Text(
                         '${opts.length} 选项',
-                        style: TextStyle(
-                          fontSize: 9.5,
-                          color: palette.warning,
-                        ),
+                        style: TextStyle(fontSize: 9.5, color: palette.warning),
                       ),
                     ),
                 ],
@@ -2837,10 +3254,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   text.isEmpty ? '（空选项文本）' : text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: palette.goldText,
-                  ),
+                  style: TextStyle(fontSize: 12, color: palette.goldText),
                 ),
               ),
             ],
@@ -3005,7 +3419,10 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
   /// 打开配音面板：带入当前编辑中的对白内容与键名前缀（默认 `talk_{id}`）。
   Future<void> _openTtsPanel() async {
     final content =
-        (_contentCtrl.text.trim().isNotEmpty ? _contentCtrl.text.trim() : cln(widget.talk['showTxt'])).trim();
+        (_contentCtrl.text.trim().isNotEmpty
+                ? _contentCtrl.text.trim()
+                : cln(widget.talk['showTxt']))
+            .trim();
     final role = cln(widget.talk['roleName']).trim();
     final title = content.isNotEmpty
         ? (role.isNotEmpty ? '$role：$content' : content)
@@ -3100,10 +3517,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     (v) => _setField('roleIds', _splitIds(v)),
                     trailing: Text(
                       _roleNamesPreview(),
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: palette.textHint,
-                      ),
+                      style: TextStyle(fontSize: 11, color: palette.textHint),
                     ),
                   ),
                   _labelField(
@@ -3171,7 +3585,11 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   Text(
                     '用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
                     '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
-                    style: TextStyle(fontSize: 11, color: palette.textMuted, height: 1.5),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: palette.textMuted,
+                      height: 1.5,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   SizedBox(
@@ -3179,11 +3597,14 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     child: fluent.FilledButton(
                       onPressed: () => _openTtsPanel(),
                       style: fluent.ButtonStyle(
-                        backgroundColor:
-                            WidgetStatePropertyAll(palette.warning),
+                        backgroundColor: WidgetStatePropertyAll(
+                          palette.warning,
+                        ),
                       ),
-                      child: const Text('🎙️ 给本行内容配音',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      child: const Text(
+                        '🎙️ 给本行内容配音',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ),
                 ]),
@@ -3268,9 +3689,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   widget.dirty ? '有未保存的修改' : '已保存（切换事件前请保存）',
                   style: TextStyle(
                     fontSize: 11,
-                    color: widget.dirty
-                        ? palette.warning
-                        : palette.textHint,
+                    color: widget.dirty ? palette.warning : palette.textHint,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -3401,10 +3820,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     final p = widget.bgCfg[v];
     final n = p is Map ? p['name'] : null;
     if (n is String && n.isNotEmpty) {
-      return Text(
-        n,
-        style: TextStyle(fontSize: 11, color: palette.textMuted),
-      );
+      return Text(n, style: TextStyle(fontSize: 11, color: palette.textMuted));
     }
     return const SizedBox.shrink();
   }
@@ -3415,10 +3831,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     final p = widget.audioCfg[v];
     final n = p is Map ? p['name'] : null;
     if (n is String && n.isNotEmpty) {
-      return Text(
-        n,
-        style: TextStyle(fontSize: 11, color: palette.textMuted),
-      );
+      return Text(n, style: TextStyle(fontSize: 11, color: palette.textMuted));
     }
     return const SizedBox.shrink();
   }
@@ -3468,8 +3881,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               child: Column(
                 children: [
                   for (var i = 0; i < keys.length; i++) ...[
-                    if (i > 0)
-                      Divider(height: 1, color: palette.border),
+                    if (i > 0) Divider(height: 1, color: palette.border),
                     _attrRow(keys[i]),
                   ],
                 ],
@@ -3505,10 +3917,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                 ),
                 Text(
                   key,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: palette.textFaint,
-                  ),
+                  style: TextStyle(fontSize: 10, color: palette.textFaint),
                 ),
               ],
             ),
@@ -3520,10 +3929,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               children: [
                 Text(
                   '「${_fieldLabel(key)}」字段值，按类型输入',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: palette.textMuted,
-                  ),
+                  style: TextStyle(fontSize: 11, color: palette.textMuted),
                 ),
                 const SizedBox(height: 2),
                 fluent.TextBox(
@@ -3748,7 +4154,9 @@ class _ActionPill extends StatelessWidget {
     }
 
     return MouseRegion(
-      cursor: onPressed != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      cursor: onPressed != null
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onPressed,
@@ -3775,4 +4183,3 @@ class _ActionPill extends StatelessWidget {
     );
   }
 }
-

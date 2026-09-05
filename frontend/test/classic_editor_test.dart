@@ -56,9 +56,11 @@ void main() {
     // 卡片标题
     expect(find.text('📚 EvtCfg 条目列表'), findsOneWidget);
     expect(find.text('📝 字段编辑'), findsOneWidget);
-    // 列表上方工具按钮
-    expect(find.text('➕ 新建条目'), findsOneWidget);
-    expect(find.text('🗑️ 删除选中'), findsOneWidget);
+    // 列表上方工具按钮（_ClassicToolButton 将 emoji 与 label 分成两个 Text）
+    expect(find.text('➕'), findsWidgets);
+    expect(find.text('新建条目'), findsOneWidget);
+    expect(find.text('🗑️'), findsWidgets);
+    expect(find.text('删除选中'), findsOneWidget);
     // 底部保存大按钮
     expect(find.text('💾 保存修改至 EvtCfg'), findsOneWidget);
     // 两列表格表头

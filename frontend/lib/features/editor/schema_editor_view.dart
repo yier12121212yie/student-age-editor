@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../settings/settings_page.dart';
 import 'effect_hint_field.dart';
+import 'field_meta.dart';
 import 'field_utils.dart';
 import 'section_card.dart';
 import '../../core/app_theme.dart';
@@ -93,10 +95,39 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     _fieldTypeCache.clear();
   }
 
+  // C8：筛选输入防抖 —— 过滤是全表扫（ID + 每条记录的字符串值），大表
+  // （近 10 万条）每键一次根本扛不住，所以文本变化只记词，停顿 220ms 后
+  // 才真正过滤；dispose 时取消未到期的回调。
+  Timer? _filterDebounce;
+
+  /// 最近一次真正应用到 [_filteredIds] 的查询词（trim + lower 后），
+  /// 防抖到期时若查询没变就直接跳过，避免重复全表扫。
+  String _appliedFilter = '';
+
+  /// 筛选框输入回调：只记录查询并重置防抖，不立即扫表。
+  void _onFilterChanged(String v) {
+    _filter = v;
+    _filterDebounce?.cancel();
+    _filterDebounce = Timer(const Duration(milliseconds: 220), () {
+      if (!mounted) return;
+      if (_filter.trim().toLowerCase() == _appliedFilter) return;
+      setState(_applyFilter);
+    });
+  }
+
+  @override
+  void dispose() {
+    _filterDebounce?.cancel();
+    super.dispose();
+  }
+
   void _applyFilter() {
     final q = _filter.trim().toLowerCase();
+    _appliedFilter = q;
     if (q.isEmpty) {
-      _filteredIds = List<String>.from(_sortedIds);
+      // 空查询直接复用排序结果引用：两个列表此后都只被 ListView 只读消费
+      // （唯一写入点就是这里），为 98,963 项再复制一份纯属每键一次的浪费。
+      _filteredIds = _sortedIds;
       return;
     }
     _filteredIds = _sortedIds.where((id) {
@@ -185,7 +216,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       _error = null;
     });
     try {
-      final r = await ApiClient.instance.get('/api/cfg/${widget.cfgName}');
+      // S3：经典编辑器确实需要全表 → getBig 把 40MB 解码搬进后台 isolate
+      final r = await ApiClient.instance.getBig('/api/cfg/${widget.cfgName}');
       if (!mounted) return;
     setState(() {
       _idCandidatesCache.clear(); // 配置表重载后候选缓存失效
@@ -743,10 +775,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 child: fluent.TextBox(
                   placeholder: '筛选 ID/标题…',
-                  onChanged: (v) => setState(() {
-                    _filter = v;
-                    _applyFilter();
-                  }),
+                  onChanged: _onFilterChanged,
                   suffix: const Icon(FluentIcons.search_24_regular, size: 12),
                 ),
               ),
@@ -1296,102 +1325,6 @@ class _ClassicToolButton extends StatelessWidget {
   }
 }
 
-/// [dictName] 指向 /api/dicts 返回的 game_dicts 字典名；[fixed] 为固定选项（id → 名称）；
-/// [singleArray] 为 true 时 1D Array 字段按单选处理（显示下拉），否则多值文本框 + 名称预览。
-class _FieldRule {
-  const _FieldRule({
-    this.dictName,
-    this.fixed,
-    this.singleArray = false,
-    this.idRefCfg,
-  });
-  final String? dictName;
-  final Map<String, String>? fixed;
-  final bool singleArray;
-
-  /// ID 引用字段：指向的配置表名（如 TalkCfg），候选为「ID · 预览」。
-  final String? idRefCfg;
-}
-
-/// 按 `cfgName:key` 精确匹配的下拉框规则（优先于全局 key 匹配，按配置表逐项处理）。
-const _ruleByCfgField = <String, _FieldRule>{
-  // EvtCfg 事件编辑：事件类型 / 事件表现形式
-  'EvtCfg:type': _FieldRule(dictName: 'evt_types'),
-  'EvtCfg:displayType': _FieldRule(fixed: {'0': '默认形式', '1': '弹窗形式'}),
-  // ActionCfg 行动类型
-  'ActionCfg:type': _FieldRule(
-    fixed: {'0': '普通', '1': '场景(禁用)', '2': '功能(禁用)', '3': '恋爱', '4': '兼职'},
-  ),
-  // ShopCfg 商店物品类型
-  'ShopCfg:type': _FieldRule(
-    fixed: {'1': '消耗品', '2': '珍视物品', '3': '书籍', '4': '工具'},
-  ),
-  // PaperCfg 纸条类型
-  'PaperCfg:type': _FieldRule(fixed: {'0': '收到纸条', '1': '玩家写的'}),
-  // GiftEvtCfg 送礼：收下/拒收（1D Array）
-  'GiftEvtCfg:type': _FieldRule(fixed: {'0': '收下', '1': '拒收'}),
-  // EndingDatingCfg 约会对象性别要求
-  'EndingDatingCfg:gender': _FieldRule(fixed: {'1': '要求男生', '2': '要求女生'}),
-  // ExploreCfg 探索等级
-  'ExploreCfg:lv': _FieldRule(fixed: {'1': '一级探索', '2': '二级探索', '3': '三级探索'}),
-  // PersonStateCfg 状态可见性
-  'PersonStateCfg:hide': _FieldRule(fixed: {'0': '状态', '1': '不可见', '2': '性格'}),
-  // PersonAttrCfg 属性
-  'PersonAttrCfg:tag': _FieldRule(fixed: {'10': '普通属性', '13': '性格关联属性'}),
-  'PersonAttrCfg:consume': _FieldRule(
-    fixed: {'0': '不能', '1': '能', '2': '能且在最终结算展示'},
-  ),
-  'PersonAttrCfg:valueInUI': _FieldRule(
-    fixed: {'null': '保留一位小数', 'int': '整数', '{0:0.#%}': '百分比'},
-  ),
-  // MinigameActionCfg 小游戏动作：需要的关系
-  'MinigameActionCfg:needRelation': _FieldRule(dictName: 'relations'),
-  // MinigameCfg 小游戏：背景音乐
-  'MinigameCfg:bgm': _FieldRule(dictName: 'audios'),
-  // BadmintonModelCfg 羽毛球模型：url 为模型名数组，单选
-  'BadmintonModelCfg:url': _FieldRule(
-    dictName: 'badminton_models',
-    singleArray: true,
-  ),
-  // ID 引用字段：候选来自对应配置表（「ID · 预览」，懒加载 /api/cfg_ids）
-  'EvtCfg:talkId': _FieldRule(idRefCfg: 'TalkCfg'),
-  'TalkCfg:nextTalk': _FieldRule(idRefCfg: 'TalkCfg'),
-  'TalkCfg:nextTalk2': _FieldRule(idRefCfg: 'TalkCfg'),
-  'TalkCfg:option': _FieldRule(idRefCfg: 'OptionCfg'),
-  'OptionCfg:talkId': _FieldRule(idRefCfg: 'TalkCfg'),
-  'OptionCfg:talkId2': _FieldRule(idRefCfg: 'TalkCfg'),
-  'OptionCfg:nextEvtId': _FieldRule(idRefCfg: 'EvtCfg'), // Number 字段，下拉单选
-};
-
-/// 全局字段 key → 下拉框规则（兜底）。
-const _ruleByField = <String, _FieldRule>{
-  'role': _FieldRule(dictName: 'roles'), // 发布者ID / 发送者ID
-  'roleIds': _FieldRule(dictName: 'roles'), // 说话人（群组，可多值）
-  'npc': _FieldRule(dictName: 'roles'), // 指定对象
-  'roleId': _FieldRule(dictName: 'roles'),
-  'npcId': _FieldRule(dictName: 'roles'),
-  'item': _FieldRule(dictName: 'items'),
-  'itemId': _FieldRule(dictName: 'items'),
-  'reward': _FieldRule(dictName: 'items'),
-  'bgm': _FieldRule(dictName: 'audios'),
-  'sound': _FieldRule(dictName: 'sound'),
-  'bg': _FieldRule(dictName: 'bgs'), // 背景图
-  'icon': _FieldRule(dictName: 'icons'),
-  'face': _FieldRule(dictName: 'icons'),
-  'map': _FieldRule(dictName: 'maps'),
-  'mapId': _FieldRule(dictName: 'maps'),
-  'job': _FieldRule(dictName: 'jobs'),
-  'jobId': _FieldRule(dictName: 'jobs'),
-  'attr': _FieldRule(dictName: 'attrs'),
-  'attrId': _FieldRule(dictName: 'attrs'),
-  'disappearTime': _FieldRule(dictName: 'turns'), // 消失回合
-  'action': _FieldRule(dictName: 'actions'),
-};
-
-/// 取字段对应的下拉框规则：cfg 限定优先，其次全局 key。
-_FieldRule? _ruleFor(String cfgName, String key) =>
-    _ruleByCfgField['$cfgName:$key'] ?? _ruleByField[key];
-
 class _FieldForm extends StatefulWidget {
   const _FieldForm({
     required this.cfgName,
@@ -1528,10 +1461,11 @@ class _FieldFormState extends State<_FieldForm> {
                 ),
                 const SizedBox(height: 4),
                 _FieldInput(
+                  cfgName: widget.cfgName,
                   fieldKey: key,
                   value: record[key],
                   type: type,
-                  rule: _ruleFor(widget.cfgName, key),
+                  rule: fieldRuleFor(widget.cfgName, key),
                   gameDicts: gameDicts,
                   idCandidates: widget.loadIdCandidates,
                   onChanged: (v) {
@@ -1656,10 +1590,11 @@ class _FieldFormState extends State<_FieldForm> {
                   Expanded(
                     flex: 7,
                     child: _FieldInput(
+                      cfgName: widget.cfgName,
                       fieldKey: key,
                       value: record[key],
                       type: widget.fieldType(key) ?? 'String',
-                      rule: _ruleFor(widget.cfgName, key),
+                      rule: fieldRuleFor(widget.cfgName, key),
                       gameDicts: gameDicts,
                       idCandidates: widget.loadIdCandidates,
                       onChanged: (v) {
@@ -1680,6 +1615,7 @@ class _FieldFormState extends State<_FieldForm> {
 
 class _FieldInput extends StatefulWidget {
   const _FieldInput({
+    required this.cfgName,
     required this.value,
     required this.type,
     required this.onChanged,
@@ -1688,10 +1624,12 @@ class _FieldInput extends StatefulWidget {
     this.fieldKey,
     this.idCandidates,
   });
+  /// 所属配置表名：效果/条件类字段判定要用（与剧情图共用规则表）。
+  final String cfgName;
   final dynamic value;
   final String type;
   final ValueChanged<dynamic> onChanged;
-  final _FieldRule? rule;
+  final FieldRule? rule;
   final Map<String, dynamic> gameDicts;
   /// 原始字段 key，用于决定走 effect/condition/cost 哪套提示
   final String? fieldKey;
@@ -1717,9 +1655,15 @@ class _FieldInputState extends State<_FieldInput> {
   @override
   void didUpdateWidget(covariant _FieldInput oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final enc = ValueCodec.encode(widget.value);
-    if (_ctrl.text != enc) {
-      _ctrl.text = enc;
+    // 文本与值已语义等价时不回写（如数组输入的中间态 "1," 对应值 [1]）：
+    // 回写会把半截输入规范化（"1," → "1"）并把光标弹到末尾，破坏连续输入。
+    // 仅包裹文本同步；下方的 idRefCfg 重载不能跳过——ListView.builder 复用
+    // 本 State 渲染不同字段时 rule 可能变化，必须无条件检查。
+    if (ValueCodec.needsResync(_ctrl.text, widget.value, widget.type)) {
+      final enc = ValueCodec.encode(widget.value);
+      if (_ctrl.text != enc) {
+        _ctrl.text = enc;
+      }
     }
     // 切换到不同 ID 引用来源的字段时重新加载候选
     if (widget.rule?.idRefCfg != oldWidget.rule?.idRefCfg) {
@@ -1746,44 +1690,71 @@ class _FieldInputState extends State<_FieldInput> {
     super.dispose();
   }
 
+  // C9：_options() 结果缓存 —— build 里它会被调两次（hasDictOptions + opts），
+  // 每次都物化并排序整个字典（近千项），随 build 次数线性浪费。key 捕捉全部
+  // 输入的身份：rule（fieldRuleFor 返回规则表中的稳定实例）、异步候选列表、
+  // gameDicts 对象。字典内容被原地修改时不会自动失效（与 _cachedFieldKeys
+  // 等既有缓存同一边界）；宿主整体替换 gameDicts 实例即失效。
+  (FieldRule?, List<(String, String)>, Map<String, dynamic>)? _optCacheKey;
+  List<(String, String)> _optCache = const [];
+
+  /// 选项 id → 名称索引：_namePreview 按 token 查名由 O(选项数·token 数)
+  /// 线性扫降为 O(1)，且不随 build 次数增长。与 [_optCache] 同步更新。
+  Map<String, String> _optIndex = const {};
+
   /// 下拉选项：(id, 名称)。来自固定选项或 game_dicts 字典。
+  /// 结果已缓存：同一 (rule, 候选, 字典) 身份返回同一列表实例，调用方只读。
   List<(String, String)> _options() {
-    final rule = widget.rule;
-    if (rule == null) return [];
+    final key = (widget.rule, _idOpts, widget.gameDicts);
+    if (key == _optCacheKey) return _optCache;
     final out = <(String, String)>[];
-    final fixed = rule.fixed;
-    if (fixed != null) {
-      for (final e in fixed.entries) {
-        out.add((e.key, e.value));
+    final rule = widget.rule;
+    if (rule != null) {
+      final fixed = rule.fixed;
+      if (fixed != null) {
+        for (final e in fixed.entries) {
+          out.add((e.key, e.value));
+        }
+      } else {
+        if (rule.idRefCfg != null) {
+          // ID 引用字段：候选由上层异步加载（本表数据或 /api/cfg_ids）
+          out.addAll(_idOpts);
+        }
+        // 退回字典：既服务纯 dictName 字段，也兜住 idRefCfg 指向的表还没数据
+        // 的场景（如 TalkCfg:audio 同时声明 audios 字典与 AudioCfg 表）。
+        if (out.isEmpty) _addDictOptions(rule.dictName, out);
       }
-    } else if (rule.idRefCfg != null) {
-      // ID 引用字段：候选由上层异步加载（本表数据或 /api/cfg_ids）
-      out.addAll(_idOpts);
-    } else {
-      final name = rule.dictName;
-      if (name == null || name == 'actions') return [];
-      final dict = widget.gameDicts[name];
-      if (dict is! Map) return [];
-      for (final e in dict.entries) {
-        final v = e.value;
-        var label = v.toString();
-        if (v is List && v.isNotEmpty) label = v.first.toString();
-        out.add((e.key.toString(), label));
-      }
+      out.sort((a, b) {
+        final an = int.tryParse(a.$1);
+        final bn = int.tryParse(b.$1);
+        if (an != null && bn != null) return an.compareTo(bn);
+        return a.$1.compareTo(b.$1);
+      });
     }
-    out.sort((a, b) {
-      final an = int.tryParse(a.$1);
-      final bn = int.tryParse(b.$1);
-      if (an != null && bn != null) return an.compareTo(bn);
-      return a.$1.compareTo(b.$1);
-    });
+    _optCacheKey = key;
+    _optCache = out;
+    _optIndex = {for (final o in out) o.$1: o.$2};
     return out;
   }
 
+  /// game_dicts 字典候选（'actions' 由行动表另行供给，这里不掺和）。
+  void _addDictOptions(String? name, List<(String, String)> out) {
+    if (name == null || name == 'actions') return;
+    final dict = widget.gameDicts[name];
+    if (dict is! Map) return;
+    for (final e in dict.entries) {
+      final v = e.value;
+      var label = v.toString();
+      if (v is List && v.isNotEmpty) label = v.first.toString();
+      out.add((e.key.toString(), label));
+    }
+  }
+
   /// 名称预览：把输入中的 ID 解析成「ID → 名称」（支持逗号/分号/顿号多值）。
-  String? _namePreview(String text, List<(String, String)> opts) {
+  /// 查名走 [_optIndex]（与最近一次 [_options()] 同步），不逐 token 线性扫。
+  String? _namePreview(String text) {
     if ((widget.rule?.dictName == null && widget.rule?.idRefCfg == null) ||
-        opts.isEmpty) {
+        _optIndex.isEmpty) {
       return null;
     }
     final tokens = text
@@ -1794,11 +1765,11 @@ class _FieldInputState extends State<_FieldInput> {
     if (tokens.isEmpty) return null;
     final parts = <String>[];
     for (final t in tokens) {
-      final match = opts.where((o) => o.$1 == t).firstOrNull;
-      if (match == null) {
+      final name = _optIndex[t];
+      if (name == null) {
         parts.add('$t → 未找到');
       } else {
-        parts.add(match.$2.isEmpty ? t : '$t → ${match.$2}');
+        parts.add(name.isEmpty ? t : '$t → $name');
       }
     }
     return parts.join('，');
@@ -1835,17 +1806,16 @@ class _FieldInputState extends State<_FieldInput> {
   Widget build(BuildContext context) {
     // 2D Array 优先走友商同款效果提示（候选+校验），与友商 SmartTemplateEditor 对齐
     final hasDictOptions = _options().isNotEmpty;
-    final k = (widget.fieldKey ?? '').toLowerCase();
-    final isEffectLikeKey = k.contains('effect') ||
-        k == 'condition' || k == 'cond' || k == 'precondition' || k == 'check' ||
-        k == 'cost' || k == 'effect2' || k == 'hideeffect' || k == 'usingeffect' ||
-        k == 'pressure' || k == 'grow';
-    // roles（TalkCfg.roles 指令行）/ screenEffect（1D 扁平代码）同样走效果提示
+    final rawKey = widget.fieldKey ?? '';
+    final k = rawKey.toLowerCase();
+    // 「效果/条件/指令」类判定统一用 field_meta，与剧情图共用同一份规则表
+    final effectLike = isEffectLikeField(widget.cfgName, rawKey, widget.type);
+    // roles（TalkCfg.roles 指令行）/ screenEffect（1D 扁平代码）同样走效果提示；
+    // 其余 1D Array 沿用原编辑区的裸文本框，本次去重不顺手改已有渲染。
     final isActionOrScreen = k == 'roles' || k == 'screeneffect';
     final useEffectHint = !hasDictOptions &&
-        ((widget.type == '2D Array' && (isEffectLikeKey || k.isEmpty)) ||
-            (isActionOrScreen &&
-                (widget.type == '2D Array' || widget.type == '1D Array')));
+        ((effectLike && (widget.type == '2D Array' || isActionOrScreen)) ||
+            (k.isEmpty && widget.type == '2D Array'));
 
     if (useEffectHint) {
       final fieldKey = widget.fieldKey ?? 'effect';
@@ -1854,8 +1824,9 @@ class _FieldInputState extends State<_FieldInput> {
         value: widget.value,
         type: widget.type,
         fieldKey: fieldKey,
-        // 显式指定模式，避免脆弱的 key 推断：roles→action、screenEffect→screen
-        mode: k == 'roles' ? 'action' : (k == 'screeneffect' ? 'screen' : null),
+        // 模式也交给 field_meta 推断（roles→action、screenEffect→screen…），
+        // 与 EffectHintField 内部的兜底推断同解
+        mode: effectSuggestMode(fieldKey),
         onChanged: widget.onChanged,
       );
     }
@@ -1934,7 +1905,7 @@ class _FieldInputState extends State<_FieldInput> {
                     setState(() {});
                   },
                 ),
-                if (_namePreview(_ctrl.text, opts) case final preview?)
+                if (_namePreview(_ctrl.text) case final preview?)
                   Padding(
                     padding: const EdgeInsets.only(top: 3),
                     child: Text(
@@ -1953,7 +1924,7 @@ class _FieldInputState extends State<_FieldInput> {
     }
     final isArray = widget.type == '1D Array' || widget.type == '2D Array';
     final multiline = widget.type == 'String' || isArray;
-    final preview = _namePreview(_ctrl.text, opts);
+    final preview = _namePreview(_ctrl.text);
     // ID 引用的多值字段：文本框旁提供「从列表选择」入口
     final canPickIds = widget.type == '1D Array' &&
         widget.rule?.idRefCfg != null &&

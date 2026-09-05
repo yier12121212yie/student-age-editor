@@ -192,6 +192,87 @@ void main() {
       expect(full.containsKey('100001'), isFalse);
       expect(full['100002'], {'content': '新选项'});
     });
+
+    test('合并后舞台与全量表脱钩：改舞台嵌套字段不影响全量表', () {
+      final target = <String, dynamic>{
+        '1000001': <String, dynamic>{
+          'content': '旧台词',
+          'nextTalk': <dynamic>[1000002],
+          'cond': <String, dynamic>{'lv': 2, 'items': <dynamic>[1]},
+        },
+        '2000001': <String, dynamic>{'content': '其他事件'},
+      };
+      final baseline = stageOf(target, const ['1000']);
+      final stage = stageOf(target, const ['1000']); // 舞台 = 深拷贝（与工作区一致）
+      mergeStageBack(target, baseline, stage, const ['1000']);
+
+      // D3 核心断言：合并进全量表的必须是深拷贝，而非舞台活记录的引用。
+      expect(target['1000001'], isNot(same(stage['1000001'])));
+      expect(
+        target['1000001']['nextTalk'],
+        isNot(same(stage['1000001']['nextTalk'])),
+      );
+      expect(
+        target['1000001']['cond'],
+        isNot(same(stage['1000001']['cond'])),
+      );
+
+      // 舞台记录仍被 UI 持有并继续编辑：改嵌套字段（含嵌套 List 与嵌套 Map，
+      // 以及 Map 里再嵌 List）全量表里对应的记录必须纹丝不动。
+      stage['1000001']['content'] = '舞台上的新改动';
+      (stage['1000001']['nextTalk'] as List).add(9999999);
+      (stage['1000001']['cond'] as Map)['lv'] = 9;
+      ((stage['1000001']['cond'] as Map)['items'] as List).add(99);
+      expect(target['1000001']['content'], '旧台词');
+      expect(target['1000001']['nextTalk'], [1000002]);
+      expect(target['1000001']['cond'], {
+        'lv': 2,
+        'items': [1],
+      });
+      expect(target['2000001'], {'content': '其他事件'});
+    });
+
+    test('放弃修改不复活：全量表不再别名舞台活记录（端到端）', () {
+      // 复现 D3 事故链：保存时 mergeStageBack 把舞台活记录放进全量表
+      // （工作区 _save → _tablesData['TalkCfg'] = talks）→ 用户继续编辑舞台
+      // → 放弃修改（_discardStage 用 baseline 重建舞台，产生新对象，被丢弃的
+      // 旧对象仍被全量表别名持有）→ 切走再切回时 stageOf(全量表) 把它们深拷
+      // 回舞台且 _dirty=false，已放弃的修改以"干净"状态复活并在下次保存落盘。
+      final full = <String, dynamic>{
+        '1000001': <String, dynamic>{'content': '旧台词'},
+        '2000001': <String, dynamic>{'content': '其他事件'},
+      };
+      const prefixes = ['1000'];
+      final fullBefore = copyRecords(full); // 修改前的全表快照
+      final baseline = stageOf(full, prefixes);
+      final stage = stageOf(full, prefixes); // 工作区舞台：深拷贝
+
+      // 保存：舞台合并回全量表（此时全量表不得别名舞台活记录）。
+      mergeStageBack(full, baseline, stage, prefixes);
+      expect(full['1000001'], isNot(same(stage['1000001'])));
+
+      // 保存后继续编辑舞台，随后这笔修改将被放弃：
+      // 修复前 full['1000001'] 与 stage['1000001'] 是同一对象，改动直接漏进全量表。
+      stage['1000001']['content'] = '被放弃的修改';
+      expect(full['1000001']['content'], '旧台词');
+
+      // 放弃修改：用修改前快照重建"干净舞台"（等价 _discardStage 的
+      // copyRecords(baseline)），内容回到旧值。
+      final rebuilt = stageOf(fullBefore, prefixes);
+      expect(rebuilt['1000001']['content'], '旧台词');
+
+      // 切走再切回：stageOf(全量表) 重建舞台 —— 被放弃的修改不得以干净状态出现。
+      final reopened = stageOf(full, prefixes);
+      expect(reopened['1000001']['content'], '旧台词');
+
+      // 下次保存落盘：干净舞台合并回一个新 full 副本，落盘的是旧值，
+      // 而不是舞台里被改的值；且同样不引入新的别名。
+      final nextFull = copyRecords(full);
+      mergeStageBack(nextFull, baseline, rebuilt, prefixes);
+      expect(nextFull['1000001']['content'], '旧台词');
+      expect(nextFull['1000001'], isNot(same(rebuilt['1000001'])));
+      expect(nextFull['2000001'], {'content': '其他事件'});
+    });
   });
 
   group('stageOf', () {
@@ -204,6 +285,47 @@ void main() {
       expect(stage.keys, ['1000001']);
       stage['1000001']['content'] = '改';
       expect(full['1000001']['content'], 'a');
+    });
+  });
+
+  group('nextTalkInEvent 删除回退', () {
+    test('取同前缀后续最近对白，跳过越出前缀的 ID', () {
+      final keys = ['1000001', '1000002', '1000004', '1001000'];
+      expect(nextTalkInEvent(keys, '1000001'), '1000002');
+      expect(nextTalkInEvent(keys, '1000002'), '1000004');
+      // 1001000 前缀是 1001，不属于被删对白所在事件 → 无候选
+      expect(nextTalkInEvent(keys, '1000004'), isNull);
+    });
+
+    test('非数字 ID 返回 null', () {
+      expect(nextTalkInEvent(['1000002'], 'abc'), isNull);
+    });
+
+    test('删除 nextTalk 为空的中间节点：上游重连后续而非清空（端到端）', () {
+      // 内层记录必须显式动态类型：真实数据来自 stageOf 深拷贝
+      // （Map<String, dynamic> + List<dynamic>），字面量推断成
+      // Map<String, List<int>> 会被 remap 写回 List<dynamic> 时炸掉
+      final talks = <String, dynamic>{
+        '1000001': <String, dynamic>{'nextTalk': <dynamic>[1000002]},
+        '1000002': <String, dynamic>{'nextTalk': <dynamic>[]},
+        '1000003': <String, dynamic>{'nextTalk': <dynamic>[1000004]},
+        '1000004': <String, dynamic>{},
+      };
+      final replacement = normalizeStoryIdList(talks['1000002']['nextTalk']);
+      final nxt = nextTalkInEvent(talks.keys, '1000002');
+      remapDeletedTarget(talks, {}, const ['1000'], '1000002',
+          nxt == null ? replacement : [int.parse(nxt)]);
+      expect(talks['1000001']['nextTalk'], [1000003]);
+    });
+  });
+
+  group('新分配 ID 的前缀越界校验', () {
+    test('编号逼近上限时 +1 越出事件前缀，storyIsInPrefixes 拒绝', () {
+      // 工作区 _talkIdUsable 的判据：insertTalkId 产出 1001000 前缀变 1001
+      const prefixes = ['1000'];
+      final id = insertTalkId('1000999', <String, dynamic>{});
+      expect(id, '1001000');
+      expect(storyIsInPrefixes(prefixes, id), isFalse);
     });
   });
 }

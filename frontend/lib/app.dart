@@ -87,6 +87,13 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
 
   Future<void> _setUiMode(UiMode mode) async {
     if (mode == _uiMode) return;
+    // 壳按 ValueKey(_uiMode) 整体重建：内容区注册的守卫（剧情图画布的
+    // 未保存确认）必须先通过，否则舞台编辑会被无声丢弃
+    final guard = state.leaveGuard;
+    if (guard != null) {
+      final ok = await guard();
+      if (!ok || !mounted) return;
+    }
     await mode.save();
     if (!mounted) return;
     setState(() {

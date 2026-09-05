@@ -47,6 +47,12 @@ class AppState extends ChangeNotifier {
   bool backendOnline = false;
   String backendError = '';
 
+  /// 离开当前内容前的守卫钩子（剧情图画布注册）：切 UI 模式会按
+  /// ValueKey(uiMode) 重建整壳、销毁画布状态，注册方负责弹「未保存」
+  /// 确认并返回 false 中止切换。注册/注销不经 notifyListeners
+  /// （AA 状态等轮询通知频繁，避免守卫赋值触发全量重建）。
+  Future<bool> Function()? leaveGuard;
+
   void setAaStatus(String value) {
     if (aaStatus == value) return; // 值未变化不通知，避免轮询期间触发全量重建
     aaStatus = value;

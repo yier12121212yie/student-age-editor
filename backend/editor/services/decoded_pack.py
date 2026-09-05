@@ -39,15 +39,17 @@ class DecodedPackStore(object):
         return bool(self._dir)
 
     def refresh(self, pack_dir):
-        """重建索引。pack_dir 变化时才真正扫描（列表项可能上千，避免高频 IO）。"""
+        """重建索引。pack_dir 变化时才真正扫描（列表项可能上千，避免高频 IO）。
+
+        先构建到局部变量、末尾整体交换引用：服务端是 ThreadingHTTPServer，
+        扫描期间并发读者仍拿到完整旧索引，不会看到被清空的 dict 或半写状态。
+        """
         pack_dir = pack_dir or ""
         if pack_dir == self._dir:
             return
-        self._dir = pack_dir
-        self._tex = {}
-        self._aud = {}
-        self._txt = []
-        self._texsizes = {}
+        tex = {}
+        aud = {}
+        txt = []
         tex_dir = os.path.join(pack_dir, "tex")
         aud_dir = os.path.join(pack_dir, "aud")
         try:
@@ -55,7 +57,7 @@ class DecodedPackStore(object):
                 for fn in os.listdir(tex_dir):
                     ext = os.path.splitext(fn)[1].lower()
                     if ext in _TEX_EXTS:
-                        self._tex[os.path.splitext(fn)[0].lower()] = os.path.join(tex_dir, fn)
+                        tex[os.path.splitext(fn)[0].lower()] = os.path.join(tex_dir, fn)
         except Exception:
             pass
         try:
@@ -63,7 +65,7 @@ class DecodedPackStore(object):
                 for fn in os.listdir(aud_dir):
                     ext = os.path.splitext(fn)[1].lower()
                     if ext in _AUD_EXTS:
-                        self._aud[os.path.splitext(fn)[0].lower()] = os.path.join(aud_dir, fn)
+                        aud[os.path.splitext(fn)[0].lower()] = os.path.join(aud_dir, fn)
         except Exception:
             pass
         # 文本键：优先 v3 aa_index.json 的 txt 列表，缺失时回退扫描 Cfgs/zh-cn
@@ -73,20 +75,26 @@ class DecodedPackStore(object):
             if isinstance(j, dict) and j.get("v") == 3:
                 t = j.get("txt")
                 if isinstance(t, list):
-                    self._txt = [str(k) for k in t]
+                    txt = [str(k) for k in t]
         except Exception:
             pass
-        if not self._txt:
+        if not txt:
             zh = os.path.join(pack_dir, "Cfgs", "zh-cn")
             try:
                 if os.path.isdir(zh):
-                    self._txt = sorted(
+                    txt = sorted(
                         os.path.splitext(f)[0]
                         for f in os.listdir(zh)
                         if f.lower().endswith(".json")
                     )
             except Exception:
                 pass
+        # 原子交换：读者要么拿到旧的完整索引，要么新的完整索引
+        self._tex = tex
+        self._aud = aud
+        self._txt = txt
+        self._texsizes = {}
+        self._dir = pack_dir
 
     def tex_count(self):
         return len(self._tex)

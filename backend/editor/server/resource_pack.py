@@ -8,6 +8,8 @@ import zipfile
 import hashlib
 import shutil
 
+from editor.core import atomic_io
+
 def _editor_root():
     from editor.core.paths import app_data_dir
     return app_data_dir()
@@ -81,12 +83,9 @@ def _load_meta():
     return {"active": "", "packs": []}
 
 def _save_meta(meta):
-    tmp = meta_path() + ".tmp"
     try:
-        os.makedirs(os.path.dirname(meta_path()), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, meta_path())
+        atomic_io.write_text_atomic(
+            meta_path(), json.dumps(meta, ensure_ascii=False, indent=2))
     except Exception:
         pass
 
@@ -225,8 +224,8 @@ def _install_zip(z, filename=""):
     manifest.setdefault("description", "")
     manifest.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
     try:
-        with open(mp, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        atomic_io.write_text_atomic(
+            mp, json.dumps(manifest, ensure_ascii=False, indent=2))
     except Exception:
         pass
     has_content = False

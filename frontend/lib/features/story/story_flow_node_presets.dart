@@ -59,16 +59,16 @@ class FlowNodePreset {
 
   /// 转成与 flow_cards 响应一致的 Map 形状（buildFlowGraph/菜单共用）。
   Map<String, dynamic> toCardSpec() => {
-        'type_id': typeId,
-        'name': name,
-        'applies_to': appliesTo,
-        'color': color,
-        'builtin': true,
-        'category': category,
-        if (match != null) 'match': match,
-        if (initial.isNotEmpty) 'initial': initial,
-        if (description.isNotEmpty) 'description': description,
-      };
+    'type_id': typeId,
+    'name': name,
+    'applies_to': appliesTo,
+    'color': color,
+    'builtin': true,
+    'category': category,
+    if (match != null) 'match': match,
+    if (initial.isNotEmpty) 'initial': initial,
+    if (description.isNotEmpty) 'description': description,
+  };
 }
 
 /// 全部内置预设（按菜单分组顺序排列）。
@@ -123,10 +123,7 @@ final List<FlowNodePreset> kFlowNodePresets = [
     name: '切换背景',
     appliesTo: 'talk',
     category: '演出',
-    initial: {
-      'roleName': '旁白',
-      'content': '【切换背景：把 CG 图片拖到本节点】',
-    },
+    initial: {'roleName': '旁白', 'content': '【切换背景：把 CG 图片拖到本节点】'},
     description: '不单独着色：填 bg 后即带背景徽标的旁白白',
   ),
   const FlowNodePreset(
@@ -134,10 +131,7 @@ final List<FlowNodePreset> kFlowNodePresets = [
     name: '切换音乐',
     appliesTo: 'talk',
     category: '演出',
-    initial: {
-      'roleName': '旁白',
-      'content': '【切换音乐：把音频拖到本节点】',
-    },
+    initial: {'roleName': '旁白', 'content': '【切换音乐：把音频拖到本节点】'},
   ),
   // ---------- 分支逻辑 ----------
   FlowNodePreset(
@@ -147,10 +141,7 @@ final List<FlowNodePreset> kFlowNodePresets = [
     category: '分支',
     color: '#E67E22',
     match: const {'field': 'check', 'nonEmpty': true},
-    initial: const {
-      'roleName': '旁白',
-      'content': '【技能检定：展开节点填 check，出成功/失败双支】',
-    },
+    initial: const {'roleName': '旁白', 'content': '【技能检定：展开节点填 check，出成功/失败双支】'},
     description: 'check 非空后端口自动变为 成功/失败 双支',
   ),
   const FlowNodePreset(
@@ -160,9 +151,7 @@ final List<FlowNodePreset> kFlowNodePresets = [
     category: '分支',
     color: '#00897B',
     match: {'field': 'nextEvtId', 'nonEmpty': true},
-    initial: {
-      'content': '【跳转到事件：填 nextEvtId】',
-    },
+    initial: {'content': '【跳转到事件：填 nextEvtId】'},
     description: '选中该对白后添加；连线终端即跨事件跳转',
   ),
   const FlowNodePreset(
@@ -172,9 +161,7 @@ final List<FlowNodePreset> kFlowNodePresets = [
     category: '分支',
     color: '#7E57C2',
     match: {'field': 'precondition', 'nonEmpty': true},
-    initial: {
-      'content': '【条件选项：填 precondition】',
-    },
+    initial: {'content': '【条件选项：填 precondition】'},
     description: '仅在条件满足时出现的选项',
   ),
   // ---------- 玩法与其他 ----------
@@ -185,10 +172,7 @@ final List<FlowNodePreset> kFlowNodePresets = [
     category: '玩法',
     color: '#0288D1',
     match: {'field': 'miniGame', 'nonEmpty': true},
-    initial: {
-      'roleName': '旁白',
-      'content': '【小游戏：填 miniGame 指令】',
-    },
+    initial: {'roleName': '旁白', 'content': '【小游戏：填 miniGame 指令】'},
   ),
   const FlowNodePreset(
     typeId: 'time_pass',
@@ -197,14 +181,11 @@ final List<FlowNodePreset> kFlowNodePresets = [
     category: '玩法',
     color: '#F9A825',
     match: {'field': 'time', 'nonEmpty': true},
-    initial: {
-      'roleName': '旁白',
-      'content': '【时间流逝】',
-      'time': 60,
-    },
+    initial: {'roleName': '旁白', 'content': '【时间流逝】', 'time': 60},
   ),
 ];
 
 /// 预设库 → flow_cards 同形状列表（追加在插件卡之后，插件优先）。
-List<Map<String, dynamic>> builtinFlowCardSpecs() =>
-    [for (final p in kFlowNodePresets) p.toCardSpec()];
+List<Map<String, dynamic>> builtinFlowCardSpecs() => [
+  for (final p in kFlowNodePresets) p.toCardSpec(),
+];

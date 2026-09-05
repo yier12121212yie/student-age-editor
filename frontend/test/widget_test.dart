@@ -113,8 +113,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200)); // 异步恢复完成
 
-    // 输入并发送（flutter_test 环境所有 HTTP 返回 400 → 触发错误路径）
+    // 输入并发送（flutter_test 环境所有 HTTP 返回 400 → 触发错误路径）。
+    // enterText 后必须补一帧：发送按钮的 canSend 在 ListenableBuilder 内
+    // 依据输入框内容计算，不 pump 则按钮仍是禁用态，tap 无效果。
     await tester.enterText(find.byType(fluent.TextBox), '你好');
+    await tester.pump();
     await tester.tap(find.text('发送'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
@@ -233,6 +236,14 @@ void main() {
     // 回归：设置页挂载在固定 264px 宽的侧栏中，接口协议 ComboBox 的
     // 选中项文本（如 "OpenAI Responses API"）超过可用宽度时，
     // 修复前 RenderFlex 向右溢出 72px；修复后 isExpanded 收缩 + 省略号，无异常。
+    // mock 扩展列表接口：否则 flutter_test 一律 400，失败路径弹出的
+    // InfoBar 带 3s 自动关闭 Timer，测试结束会触发 timersPending 断言。
+    ApiClient.instance.client = MockClient((req) async => http.Response(
+        '{"packs":[],"active":""}', 200,
+        headers: {'content-type': 'application/json'}));
+    addTearDown(() {
+      ApiClient.instance.client = http.Client();
+    });
     await tester.pumpWidget(fluent.FluentApp(
       home: Scaffold(
         body: SizedBox(
