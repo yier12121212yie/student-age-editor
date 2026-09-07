@@ -6,6 +6,8 @@
 // wave-3 seam).
 #pragma once
 
+#include <functional>
+
 #include "server/httpd.h"
 
 namespace sa {
@@ -21,5 +23,12 @@ Router build_router();
 // real owner registers, it is a no-op.
 void set_preview_invalidator_hook(std::function<void()> fn);
 void invalidate_preview_cache();
+
+// Reusable process entry (CLI parse -> init_state -> build_router -> httpd run,
+// identical semantics to the `backend` exe). main.cpp calls it directly;
+// wave-2 atelier harnesses call it with `extra_routes` to black-box their own
+// endpoints before build_router() is rewired by the orchestrator at merge.
+int server_main(int argc, char** argv,
+                const std::function<void(Router&)>& extra_routes = {});
 
 }  // namespace sa
