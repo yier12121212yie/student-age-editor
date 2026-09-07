@@ -14,6 +14,9 @@ namespace str {
 // Remove leading/trailing ASCII whitespace (" \t\n\r\f\v").
 std::string trim(std::string_view s);
 
+// ASCII-only lowercase (path segments, "zh-cn" comparisons).
+std::string lower(std::string_view s);
+
 bool starts_with(std::string_view s, std::string_view prefix);
 bool ends_with(std::string_view s, std::string_view suffix);
 

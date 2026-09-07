@@ -28,4 +28,11 @@ std::string py_dumps(const nlohmann::ordered_json& v);
 //   {"error": "no route: GET /api/nope"}
 std::string error_json(std::string_view message);
 
+// Serialize `v` like CPython `json.dumps(v, ensure_ascii=False, indent=2)` —
+// the on-disk format of cfg files (cfg_store._serialize, cfg_store.py:232-234).
+// Differences from py_dumps (wire format): items separated by "," + newline
+// (no trailing space), nested objects/arrays indented by two spaces per level,
+// empty object/array render as "{}"/"[]" on one line.
+std::string py_dumps_indent(const nlohmann::ordered_json& v);
+
 }  // namespace sa_core

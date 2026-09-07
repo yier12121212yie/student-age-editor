@@ -43,6 +43,14 @@ native/
 新增服务**不需要改 CMakeLists**（glob 收集 `services/*.cpp`）；注册函数在
 `api_router.cpp` 的挂载由主代理完成——子代理在交付报告里给出需要挂载的函数签名清单。
 
+**资源产物契约（P6 已交付，波次 2 之 P4 组必读）**：Unity 解析已从后端剥离为独立 CLI
+`tools/resource_scan/`（`index`/`base-tables`/`decoded-pack`）。C++ 侧不碰 bundle，只读产物：
+`aa_index.json`（v3，跨包重复键已改确定序）、`base_data/*.json + base_meta.json`
+（**替代 pickle**，失效判断直接比 `base_meta.sources[].files` 的 mtime_ns/size）、
+预解码包（`"decoded":true` 形态）。字段边界与最小消费路径见
+`tools/resource_scan/ARTIFACT_FORMAT.md` §1/§5/§8（int64 path_id、norm_key、bundle 按 basename
+重定位、行 id 恒字符串、`partial`/`missing_expected` 处理）。
+
 ## 2. HTTP 传输层契约（移植自 `server/httpd.py`）
 
 | 项 | 规定 |

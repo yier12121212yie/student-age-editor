@@ -53,6 +53,66 @@ std::string py_dumps(const ordered_json& v) {
     return out;
 }
 
+namespace {
+
+// CPython json.dumps(..., indent=2, ensure_ascii=False): newline + (level+1)*2
+// spaces before each member, "," between members (NOT ", "), ": " after keys,
+// "{}"/"[]" for empty containers. (cfg_store._serialize's exact output; used
+// for on-disk bytes parity so unchanged-detection and undo byte-compare work.)
+void dump_indent(const ordered_json& v, std::string& out, int level) {
+    if (v.is_object()) {
+        if (v.empty()) {
+            out += "{}";
+            return;
+        }
+        out += "{\n";
+        bool first = true;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            if (!first) {
+                out += ",\n";
+            }
+            first = false;
+            out.append(static_cast<size_t>(level + 1) * 2, ' ');
+            out += ordered_json(it.key()).dump();
+            out += ": ";
+            dump_indent(it.value(), out, level + 1);
+        }
+        out += "\n";
+        out.append(static_cast<size_t>(level) * 2, ' ');
+        out += '}';
+        return;
+    }
+    if (v.is_array()) {
+        if (v.empty()) {
+            out += "[]";
+            return;
+        }
+        out += "[\n";
+        bool first = true;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            if (!first) {
+                out += ",\n";
+            }
+            first = false;
+            out.append(static_cast<size_t>(level + 1) * 2, ' ');
+            dump_indent(*it, out, level + 1);
+        }
+        out += "\n";
+        out.append(static_cast<size_t>(level) * 2, ' ');
+        out += ']';
+        return;
+    }
+    out += v.dump();
+}
+
+}  // namespace
+
+std::string py_dumps_indent(const ordered_json& v) {
+    std::string out;
+    dump_indent(v, out, 0);
+    return out;
+}
+
 std::string error_json(std::string_view message) {
     ordered_json env;
     env["error"] = std::string(message);

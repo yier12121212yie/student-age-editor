@@ -1,20 +1,14 @@
-// backend: native HTTP server for the StudentAge editor.
+// backend: the native (C++) StudentAge editor server.
 //
-// Wave-0 scaffold. Implements the minimum slice of the Python backend's HTTP
-// contract needed to bootstrap the C++ port and to drive the black-box contract
-// tests:
-//   * GET  /api/ping     -> 200, byte-for-byte identical body + headers to the
-//                            Python server (see sa_core::py_dumps).
-//   * POST /api/shutdown -> 200 {"ok": true}, then clean process exit.
-//   * anything else      -> 404 {"error": "no route: <METHOD> <PATH>"}.
+// Entry point + CLI only (wave 1 refactor): transport semantics live in
+// server/httpd.{h,cpp}, the route bus in server/api_router.cpp, cfg write/read
+// pipelines in server/cfg_store.{h,cpp} / server/cfg_cache.{h,cpp}.
 //
-// CLI (mirrors backend/editor/server/__init__.py main()):
-//   backend --port N [--write-port <file>]
-// plus wave-0 state-injection hooks used only to prove JSON parity against the
-// live Python values (aa_status / base_loaded_count are fixed idle defaults):
-//   [--workspace-root <s>] [--mod-root <s>] [--mod-name <s>]
-//
-// Binding is restricted to 127.0.0.1 (loopback only), matching the Python host.
+// CLI mirrors the Python launcher (server/__init__.py main + run_dev usage):
+//   backend --port N [--write-port FILE]
+//           [--workspace-root DIR] [--mod-root DIR] [--mod-name NAME]
+// --port 0 picks a free loopback port. --write-port receives the actual port
+// as bare decimal text with no trailing newline (CONVENTIONS 2).
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -24,22 +18,18 @@
 #include <string>
 #include <thread>
 
-#include "httplib.h"
-
-#include <nlohmann/json.hpp>
-
-#include "sa_core/json_wire.h"
 #include "sa_core/version.h"
+#include "server/api_router.h"
+#include "server/httpd.h"
+#include "server/state.h"
 
 namespace {
 
-std::atomic<bool> g_shutdown_requested{false};
+std::atomic<bool> g_signal_quit{false};
 
 struct Options {
-    int port = -1;
+    int port = -1;  // -1 == flag missing; 0 == auto
     std::string write_port_file;
-    // Runtime state values reported under ping.state. In later waves these come
-    // from real workspace/mod scanning; for wave 0 they are injected / defaulted.
     std::string workspace_root;
     std::string mod_root;
     std::string mod_name;
@@ -61,7 +51,6 @@ bool parse_args(int argc, char** argv, Options& out, std::string& err) {
         }
         return std::string(argv[++i]);
     };
-
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--port") {
@@ -92,59 +81,19 @@ bool parse_args(int argc, char** argv, Options& out, std::string& err) {
             return false;
         }
     }
-
     if (out.show_help) return true;
     if (out.port < 0) {
         err = "--port is required";
         return false;
     }
-    if (out.port < 1 || out.port > 65535) {
-        err = "--port must be in 1..65535";
+    if (out.port > 65535) {
+        err = "--port must be in 0..65535";
         return false;
     }
     return true;
 }
 
-// Assemble the /api/ping body. Field order + spacing must match Python's
-// build_router().ping() exactly (see api.py ~L742).
-std::string build_ping_body(const Options& o) {
-    nlohmann::ordered_json j;
-    j["ok"] = true;
-    j["app"] = sa_core::app_name();
-    j["cfg_patch"] = true;  // S2 capability gate (verbatim from the Python side).
-
-    nlohmann::ordered_json state;
-    state["workspace_root"] = o.workspace_root;
-    state["mod_root"] = o.mod_root;
-    state["mod_name"] = o.mod_name;
-    state["aa_status"] = "idle";  // wave-0 fixed default; real scanning later.
-    state["base_loaded_count"] = 0;
-    j["state"] = state;
-
-    return sa_core::py_dumps(j);
-}
-
-// Apply the deterministic response headers the Python httpd._respond() emits on
-// every JSON response (Cache-Control / CORS). Registered as the post-routing
-// handler so it covers success AND error responses uniformly, regardless of
-// which handler produced the body.
-//
-// Content-Type is NOT set here: httplib's Response::set_header APPENDS (the
-// header map is a multimap), and every handler already calls
-// res.set_content(body, "application/json; charset=utf-8"), which sets the
-// single canonical Content-Type. Re-setting it here would emit a duplicate.
-void set_contract_headers(httplib::Response& res) {
-    res.set_header("Cache-Control", "no-store");
-    res.set_header("Access-Control-Allow-Origin", "http://127.0.0.1");
-    res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.set_header("Access-Control-Allow-Headers", "Content-Type");
-}
-
-extern "C" void on_signal(int) {
-    // Async-signal-safe enough for a scaffold: request a clean shutdown and let
-    // httplib's own stop() do the socket teardown from a safer context.
-    g_shutdown_requested.store(true);
-}
+extern "C" void on_signal(int) { g_signal_quit.store(true); }
 
 }  // namespace
 
@@ -161,61 +110,22 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const std::string host = "127.0.0.1";  // loopback only, per contract.
+    // Workspace / mod resolution per CONVENTIONS 11: CLI injection wins, then
+    // editor_env.json, then the default user mods dir; auto-select first mod.
+    sa::init_state(opts.workspace_root, opts.mod_root, opts.mod_name);
 
-    httplib::Server server;
-    // Keep-alive is enabled by default on the server side (HTTP/1.1).
-
-    const std::string ping_body = build_ping_body(opts);
-
-    server.Get("/api/ping",
-               [&ping_body](const httplib::Request&, httplib::Response& res) {
-                   res.status = 200;
-                   res.set_content(ping_body, "application/json; charset=utf-8");
-               });
-
-    server.Post("/api/shutdown",
-                [&server](const httplib::Request&, httplib::Response& res) {
-                    // Respond first, then request shutdown. httplib writes this
-                    // response on the connection thread while the listener stops,
-                    // so the {"ok": true} body is actually delivered (the Python
-                    // server races os._exit() here and often drops it).
-                    res.status = 200;
-                    res.set_content(sa_core::py_dumps(nlohmann::ordered_json{{"ok", true}}),
-                                    "application/json; charset=utf-8");
-                    g_shutdown_requested.store(true);
-                    server.stop();
-                });
-
-    // Uniform headers for every response (including the 404/500 handled below).
-    server.set_post_routing_handler(
-        [](const httplib::Request&, httplib::Response& res) { set_contract_headers(res); });
-
-    // 404 / other >=400: emit the api.py error envelope. cpp-httplib routes
-    // unmatched paths AND wrong methods here with status 404, matching Python's
-    // "no route: <METHOD> <PATH>".
-    server.set_error_handler([](const httplib::Request& req, httplib::Response& res) {
-        std::string msg;
-        if (res.status == 404) {
-            msg = "no route: " + req.method + " " + req.path;
-        } else {
-            msg = "http error " + std::to_string(res.status);
-        }
-        res.set_content(sa_core::error_json(msg), "application/json; charset=utf-8");
-    });
-
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
-
-    if (!server.bind_to_port(host, opts.port)) {
-        std::fprintf(stderr, "error: cannot bind %s:%d\n", host.c_str(), opts.port);
+    sa::Router router = sa::build_router();
+    sa::Httpd httpd(&router);
+    std::string bind_err;
+    if (!httpd.bind_to("127.0.0.1", opts.port, &bind_err)) {
+        std::fprintf(stderr, "error: %s\n", bind_err.c_str());
         return 1;
     }
 
     if (!opts.write_port_file.empty()) {
         std::ofstream pf(opts.write_port_file, std::ios::binary | std::ios::trunc);
         if (pf) {
-            pf << opts.port;  // no trailing newline, mirroring Python on_ready().
+            pf << httpd.port();  // no trailing newline, like Python on_ready()
             pf.flush();
         } else {
             std::fprintf(stderr, "cannot write port file: %s\n",
@@ -223,29 +133,19 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::fprintf(stdout, "API server listening on %s:%d (sa_core %s)\n", host.c_str(),
-                 opts.port, sa_core::version());
+    httpd.start();
+    // CONVENTIONS 11 keeps this exact ready line for human debugging (run_dev
+    // polls /api/ping instead of parsing it).
+    std::fprintf(stdout, "API server listening on 127.0.0.1:%d\n", httpd.port());
     std::fflush(stdout);
 
-    // Blocks until stop() is called (via /api/shutdown) or the listening socket
-    // is torn down. SIGINT/SIGTERM set g_shutdown_requested; poll it from here
-    // because stop() must run outside the (blocked) accept call to unblock it.
-    // We run the accept loop on this thread; a watchdog thread performs stop().
-    std::atomic<bool> loop_done{false};
-    std::thread watchdog([&] {
-        while (!g_shutdown_requested.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        server.stop();
-        loop_done.store(true);
-    });
-
-    server.listen_after_bind();  // returns after stop()
-    if (watchdog.joinable()) {
-        watchdog.join();
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+    while (!g_signal_quit.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-
+    httpd.stop();
     std::fprintf(stdout, "API server stopped\n");
     std::fflush(stdout);
-    return 0;  // clean exit for both /api/shutdown and Ctrl-C.
+    return 0;
 }

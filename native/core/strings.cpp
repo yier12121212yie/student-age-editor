@@ -15,6 +15,14 @@ std::string trim(std::string_view s) {
     return std::string(s.substr(b, e - b + 1));
 }
 
+std::string lower(std::string_view s) {
+    std::string out(s);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
 bool starts_with(std::string_view s, std::string_view prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }

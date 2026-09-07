@@ -46,8 +46,13 @@ echo [build.cmd] ninja:
 "%NINJA_BIN%\ninja.exe" --version
 
 echo.
-echo [build.cmd] === configure ^(Ninja, Debug^) -^> "%BUILD_DIR%" ===
-cmake -G Ninja -S "%NATIVE_DIR%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Debug
+echo [build.cmd] === configure (Ninja, Release^) -^> "%BUILD_DIR%" ===
+REM Release is the gate build: the 40MB S1/S2 acceptance cases (tests/
+REM test_perf_s1_s2.cpp, [perf][slow]) need optimized JSON parse/serialize —
+REM under /RTC1 Debug a single cold GET exceeds 300s and the suite is useless.
+REM Override locally with e.g. set BUILD_TYPE=Debug before calling.
+if "%BUILD_TYPE%"=="" set "BUILD_TYPE=Release"
+cmake -G Ninja -S "%NATIVE_DIR%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 if errorlevel 1 (
     echo [build.cmd] ERROR: configure failed 1>&2
     exit /b 1
@@ -55,7 +60,7 @@ if errorlevel 1 (
 
 echo.
 echo [build.cmd] === build ===
-cmake --build "%BUILD_DIR%" --config Debug
+cmake --build "%BUILD_DIR%" --config %BUILD_TYPE%
 if errorlevel 1 (
     echo [build.cmd] ERROR: build failed 1>&2
     exit /b 1
