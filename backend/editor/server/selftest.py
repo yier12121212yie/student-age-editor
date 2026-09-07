@@ -2,7 +2,15 @@
 """后端 API 自测（unittest）：全程使用临时模组 _smoke_test_mod，不触碰真实模组。
 
 运行方式（在 backend 目录下）：
-    python -m unittest editor.server.selftest -v
+    python -m unittest editor.server.selftest -v          # 默认：进程内起后端
+    python -m editor.server.selftest --backend-url http://127.0.0.1:<port>
+    STUDENT_AGE_BACKEND_URL=http://127.0.0.1:<port> python -m unittest editor.server.selftest
+
+外部模式（--backend-url 参数或 STUDENT_AGE_BACKEND_URL 环境变量，参数优先）：
+setUpClass 不再进程内起服务，所有测试类直接打给定 URL；默认行为完全不变。
+注：`python -m unittest` 自身的 argparse 不吃 --backend-url（会报 unrecognized
+argument），跨 unittest 入口请用环境变量方式；`python -m editor.server.selftest`
+入口则两种皆可（该参数会在导入期从 sys.argv 摘除）。
 """
 import json
 import os
@@ -14,9 +22,46 @@ import urllib.request
 
 TEST_MOD = "_smoke_test_mod"
 
+# 外部后端模式支持：导入期从 sys.argv 摘除 --backend-url，避免干扰 unittest 解析
+_BACKEND_URL_ARG = None
+
+
+def _pop_backend_url_arg():
+    global _BACKEND_URL_ARG
+    args = sys.argv[1:]
+    kept = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--backend-url="):
+            _BACKEND_URL_ARG = a.split("=", 1)[1]
+        elif a == "--backend-url" and i + 1 < len(args):
+            _BACKEND_URL_ARG = args[i + 1]
+            i += 1
+        else:
+            kept.append(a)
+        i += 1
+    sys.argv[:] = [sys.argv[0]] + kept
+
+
+_pop_backend_url_arg()
+
+
+def _backend_base_url():
+    """测试用后端基址（无尾部斜杠）：外部 URL 优先，否则进程内启动。"""
+    url = (_BACKEND_URL_ARG or os.environ.get("STUDENT_AGE_BACKEND_URL") or "").strip()
+    url = url.rstrip("/")
+    if url:
+        return url
+    from editor.server import start_server
+    _, port = start_server()
+    return "http://127.0.0.1:%d" % port
+
 
 def _call(port, method, path, body=None, headers=None):
-    url = "http://127.0.0.1:%d%s" % (port, path)
+    # port 兼容两种形态：int（历史进程内端口）或基址字符串（外部模式）
+    base = port if isinstance(port, str) else "http://127.0.0.1:%d" % port
+    url = base + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"Content-Type": "application/json"})
@@ -34,8 +79,7 @@ class BackendApiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     # ---------- 基础端点 ----------
     def test_basic_endpoints(self):
@@ -374,8 +418,7 @@ class StoryAndFixApiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     def test_base_status_endpoint(self):
         status, payload = _call(self.port, "GET", "/api/base/status")
@@ -483,8 +526,7 @@ class AaPreviewTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     @classmethod
     def _cache_path(cls):
@@ -634,8 +676,7 @@ class AiUploadTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     def _upload(self, name, raw):
         import base64
@@ -711,8 +752,7 @@ class AiDomainApiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     def setUp(self):
         status, _ = _call(self.port, "POST", "/api/mods/create",
@@ -1021,8 +1061,7 @@ class ImageApiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     def test_generate_requires_api_key(self):
         status, payload = _call(self.port, "POST", "/api/ai/image/generate",
@@ -1076,8 +1115,7 @@ class StageApiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     def setUp(self):
         status, _ = _call(self.port, "POST", "/api/mods/create",
@@ -1189,8 +1227,7 @@ class EventPreviewApiTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from editor.server import start_server
-        _, cls.port = start_server()
+        cls.port = _backend_base_url()
 
     @classmethod
     def _cache_path(cls):
