@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/cfg_ids?name=EvtCfg",
+  "method": "GET",
+  "response": {
+    "cfg": "EvtCfg",
+    "items": []
+  },
+  "status": 200
+}

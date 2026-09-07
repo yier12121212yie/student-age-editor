@@ -1,0 +1,30 @@
+{
+  "endpoint": "/api/ai/settings",
+  "method": "GET",
+  "response": {
+    "settings": {
+      "apiKey": null,
+      "baseUrl": null,
+      "imageApiKey": "",
+      "imageBaseUrl": "",
+      "imageModel": "",
+      "maxRetries": 3,
+      "model": null,
+      "permissionMode": "confirm",
+      "provider": "openai_compatible",
+      "retryDelayMs": 1000,
+      "temperature": 0.7,
+      "ttsApiKey": "",
+      "ttsBaseUrl": "",
+      "ttsFormat": "wav",
+      "ttsGroupId": "",
+      "ttsModel": "",
+      "ttsPitch": 0,
+      "ttsProvider": "",
+      "ttsSpeed": 1.0,
+      "ttsVoice": "",
+      "ttsVolume": 1.0
+    }
+  },
+  "status": 200
+}

@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/ai/stage/roles?talk_id=0",
+  "method": "GET",
+  "response": {
+    "error": "未选择模组"
+  },
+  "status": 400
+}

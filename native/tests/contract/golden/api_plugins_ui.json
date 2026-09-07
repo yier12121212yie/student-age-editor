@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/plugins/ui",
+  "method": "GET",
+  "response": {
+    "panels": []
+  },
+  "status": 200
+}

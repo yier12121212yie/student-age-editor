@@ -1,0 +1,251 @@
+{
+  "endpoint": "/api/effect_suggest?mode=effect&q=",
+  "method": "GET",
+  "response": {
+    "items": [
+      {
+        "code": "[7, 3, @STATE@]",
+        "desc": "移除状态 @STATE@",
+        "raw_code": "[7, 3, @STATE@]",
+        "raw_desc": "移除状态 @STATE@"
+      },
+      {
+        "code": "[7, 2, @STATE@]",
+        "desc": "获取状态 @STATE@",
+        "raw_code": "[7, 2, @STATE@]",
+        "raw_desc": "获取状态 @STATE@"
+      },
+      {
+        "code": "[1, 1, @ATTR@, V]",
+        "desc": "属性 @ATTR@ 增加 V",
+        "raw_code": "[1, 1, @ATTR@, V]",
+        "raw_desc": "属性 @ATTR@ 增加 V"
+      },
+      {
+        "code": "[1, 11, @ATTR@, V]",
+        "desc": "每回合 @ATTR@ 增加 V",
+        "raw_code": "[1, 11, @ATTR@, V]",
+        "raw_desc": "每回合 @ATTR@ 增加 V"
+      },
+      {
+        "code": "[1, 2, @ATTR@, V]",
+        "desc": "属性 @ATTR@ 设为 V",
+        "raw_code": "[1, 2, @ATTR@, V]",
+        "raw_desc": "属性 @ATTR@ 设为 V"
+      },
+      {
+        "code": "[1, 22, @ATTR@, V]",
+        "desc": "属性 @ATTR@ 增加 V 单位",
+        "raw_code": "[1, 22, @ATTR@, V]",
+        "raw_desc": "属性 @ATTR@ 增加 V 单位"
+      },
+      {
+        "code": "[1, 111, @ATTR@, V]",
+        "desc": "属性 @ATTR@ 增加时额外加 V",
+        "raw_code": "[1, 111, @ATTR@, V]",
+        "raw_desc": "属性 @ATTR@ 增加时额外加 V"
+      },
+      {
+        "code": "[1, 10, @ATTR@, P]",
+        "desc": "属性 @ATTR@ 增长率增加 P",
+        "raw_code": "[1, 10, @ATTR@, P]",
+        "raw_desc": "属性 @ATTR@ 增长率增加 P"
+      },
+      {
+        "code": "[1, 3, @ATTR@, S, V]",
+        "desc": "属性 @ATTR@ 增加 S技能的等级*V",
+        "raw_code": "[1, 3, @ATTR@, S, V]",
+        "raw_desc": "属性 @ATTR@ 增加 S技能的等级*V"
+      },
+      {
+        "code": "[1, 4, @ATTR@, S, P]",
+        "desc": "每等级S技能增加 P(1为100%) @ATTR@ 获取率",
+        "raw_code": "[1, 4, @ATTR@, S, P]",
+        "raw_desc": "每等级S技能增加 P(1为100%) @ATTR@ 获取率"
+      },
+      {
+        "code": "[1, 85, A, P]",
+        "desc": "每回合 A 属性的被动收入增加 P",
+        "raw_code": "[1, 85, A, P]",
+        "raw_desc": "每回合 A 属性的被动收入增加 P"
+      },
+      {
+        "code": "[1, 6, @ATTR@, V1, V2]",
+        "desc": "随机增加 @ATTR@ (V1~V2)",
+        "raw_code": "[1, 6, @ATTR@, V1, V2]",
+        "raw_desc": "随机增加 @ATTR@ (V1~V2)"
+      },
+      {
+        "code": "[1, 66, @ATTR@, V1, V2]",
+        "desc": "每回合随机增加 @ATTR@ (V1~V2)",
+        "raw_code": "[1, 66, @ATTR@, V1, V2]",
+        "raw_desc": "每回合随机增加 @ATTR@ (V1~V2)"
+      },
+      {
+        "code": "[1, 101, X, A, Y, B, Z]",
+        "desc": "每 X 点 A属性 增加 Y 点 B属性 (最多Z)",
+        "raw_code": "[1, 101, X, A, Y, B, Z]",
+        "raw_desc": "每 X 点 A属性 增加 Y 点 B属性 (最多Z)"
+      },
+      {
+        "code": "[1, 1001, X, A, Y, B]",
+        "desc": "每当提升 X 点 A属性 时,提升 Y 点 B属性",
+        "raw_code": "[1, 1001, X, A, Y, B]",
+        "raw_desc": "每当提升 X 点 A属性 时,提升 Y 点 B属性"
+      },
+      {
+        "code": "[1, 20, @RELATION@, X, @ATTR@]",
+        "desc": "每个 @RELATION@ 增加 X 点 @ATTR@",
+        "raw_code": "[1, 20, @RELATION@, X, @ATTR@]",
+        "raw_desc": "每个 @RELATION@ 增加 X 点 @ATTR@"
+      },
+      {
+        "code": "[1, 8, 1, X, Y, Z]",
+        "desc": "每个 X人格等级 增加 Y属性 Z点",
+        "raw_code": "[1, 8, 1, X, Y, Z]",
+        "raw_desc": "每个 X人格等级 增加 Y属性 Z点"
+      },
+      {
+        "code": "[1, 8, 10, X, Y, Z]",
+        "desc": "每个 X人格等级 使 Y属性 增长率+Z",
+        "raw_code": "[1, 8, 10, X, Y, Z]",
+        "raw_desc": "每个 X人格等级 使 Y属性 增长率+Z"
+      },
+      {
+        "code": "[1, 8, 11, X, Y, Z]",
+        "desc": "每个 X人格等级 使 Y属性 ++Z",
+        "raw_code": "[1, 8, 11, X, Y, Z]",
+        "raw_desc": "每个 X人格等级 使 Y属性 ++Z"
+      },
+      {
+        "code": "[1, 40, X, A, V]",
+        "desc": "每精通过1个 X标签 的行动, A属性+V",
+        "raw_code": "[1, 40, X, A, V]",
+        "raw_desc": "每精通过1个 X标签 的行动, A属性+V"
+      },
+      {
+        "code": "[1, 41, X, A, V]",
+        "desc": "每精通过1个 X标签 的行动, A属性++V",
+        "raw_code": "[1, 41, X, A, V]",
+        "raw_desc": "每精通过1个 X标签 的行动, A属性++V"
+      },
+      {
+        "code": "[1, 300, X, A, V]",
+        "desc": "压力等级效果(X=1/10/11) A属性加V",
+        "raw_code": "[1, 300, X, A, V]",
+        "raw_desc": "压力等级效果(X=1/10/11) A属性加V"
+      },
+      {
+        "code": "[1, 50, 1, @ATTR@, V]",
+        "desc": "若你是单身, @ATTR@ +V",
+        "raw_code": "[1, 50, 1, @ATTR@, V]",
+        "raw_desc": "若你是单身, @ATTR@ +V"
+      },
+      {
+        "code": "[1, 50, 11, @ATTR@, V]",
+        "desc": "若你是单身, @ATTR@ ++V",
+        "raw_code": "[1, 50, 11, @ATTR@, V]",
+        "raw_desc": "若你是单身, @ATTR@ ++V"
+      },
+      {
+        "code": "[1, 50, 10, @ATTR@, P]",
+        "desc": "若你是单身, @ATTR@ 增长率+P",
+        "raw_code": "[1, 50, 10, @ATTR@, P]",
+        "raw_desc": "若你是单身, @ATTR@ 增长率+P"
+      },
+      {
+        "code": "[1, 50, 85, A, P]",
+        "desc": "若你是单身, 每回合A属性的被动收入+P",
+        "raw_code": "[1, 50, 85, A, P]",
+        "raw_desc": "若你是单身, 每回合A属性的被动收入+P"
+      },
+      {
+        "code": "[1, 74, V, P]",
+        "desc": "当某项性格超过 V 时, 每超过1点, 效果+P",
+        "raw_code": "[1, 74, V, P]",
+        "raw_desc": "当某项性格超过 V 时, 每超过1点, 效果+P"
+      },
+      {
+        "code": "[1, 75, X, P, A1]",
+        "desc": "获得 X 属性时, 随机获得 P 的 A1 等",
+        "raw_code": "[1, 75, X, P, A1]",
+        "raw_desc": "获得 X 属性时, 随机获得 P 的 A1 等"
+      },
+      {
+        "code": "[1, 76, A, V]",
+        "desc": "智力评级每提升1次, A属性 +V",
+        "raw_code": "[1, 76, A, V]",
+        "raw_desc": "智力评级每提升1次, A属性 +V"
+      },
+      {
+        "code": "[1, 77, A, V]",
+        "desc": "情商评级每提升1次, A属性 +V",
+        "raw_code": "[1, 77, A, V]",
+        "raw_desc": "情商评级每提升1次, A属性 +V"
+      },
+      {
+        "code": "[1, 78, A, V]",
+        "desc": "体魄评级每提升1次, A属性 +V",
+        "raw_code": "[1, 78, A, V]",
+        "raw_desc": "体魄评级每提升1次, A属性 +V"
+      },
+      {
+        "code": "[1, 86, A, V]",
+        "desc": "智力评级每提升1次, A属性 ++V",
+        "raw_code": "[1, 86, A, V]",
+        "raw_desc": "智力评级每提升1次, A属性 ++V"
+      },
+      {
+        "code": "[1, 87, A, V]",
+        "desc": "情商评级每提升1次, A属性 ++V",
+        "raw_code": "[1, 87, A, V]",
+        "raw_desc": "情商评级每提升1次, A属性 ++V"
+      },
+      {
+        "code": "[1, 88, A, V]",
+        "desc": "体魄评级每提升1次, A属性 ++V",
+        "raw_code": "[1, 88, A, V]",
+        "raw_desc": "体魄评级每提升1次, A属性 ++V"
+      },
+      {
+        "code": "[1, 99, A, V]",
+        "desc": "解锁的每个专长提供V点A属性",
+        "raw_code": "[1, 99, A, V]",
+        "raw_desc": "解锁的每个专长提供V点A属性"
+      },
+      {
+        "code": "[1, 98, A, V]",
+        "desc": "A属性固定为解锁的专长数*V",
+        "raw_code": "[1, 98, A, V]",
+        "raw_desc": "A属性固定为解锁的专长数*V"
+      },
+      {
+        "code": "[1, 97, X, V, Y, P]",
+        "desc": "当 X属性 高于V时, Y属性 提升+P",
+        "raw_code": "[1, 97, X, V, Y, P]",
+        "raw_desc": "当 X属性 高于V时, Y属性 提升+P"
+      },
+      {
+        "code": "[1, 96, A, V, B, X]",
+        "desc": "当 A属性 是V的整数倍时, B属性 每回合+X",
+        "raw_code": "[1, 96, A, V, B, X]",
+        "raw_desc": "当 A属性 是V的整数倍时, B属性 每回合+X"
+      },
+      {
+        "code": "[1, 95, V, X]",
+        "desc": "最高/最低(X)的能力每回合+V",
+        "raw_code": "[1, 95, V, X]",
+        "raw_desc": "最高/最低(X)的能力每回合+V"
+      },
+      {
+        "code": "[1, 94, A, B, V, X]",
+        "desc": "当A是最高能力时, B属性 每回合+V",
+        "raw_code": "[1, 94, A, B, V, X]",
+        "raw_desc": "当A是最高能力时, B属性 每回合+V"
+      }
+    ],
+    "mode": "effect",
+    "q": ""
+  },
+  "status": 200
+}

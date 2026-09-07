@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/plugins/agent/tools",
+  "method": "GET",
+  "response": {
+    "tools": []
+  },
+  "status": 200
+}

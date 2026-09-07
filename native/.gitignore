@@ -1,0 +1,7 @@
+# CMake / build outputs (Ninja build/ dir, VS build-<gen>/ dirs, etc.)
+build*/
+
+# Editor / OS noise
+*.user
+Thumbs.db
+.DS_Store

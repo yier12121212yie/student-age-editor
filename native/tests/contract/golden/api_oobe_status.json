@@ -1,0 +1,16 @@
+{
+  "endpoint": "/api/oobe/status",
+  "method": "GET",
+  "response": {
+    "disabled": false,
+    "done": true,
+    "editor_root": "<PATH>",
+    "first_run": false,
+    "forced": false,
+    "mods_count": 0,
+    "server_workspace": "<PATH>",
+    "suggested_workspace": "<PATH>",
+    "workspace_root": "<PATH>"
+  },
+  "status": 200
+}

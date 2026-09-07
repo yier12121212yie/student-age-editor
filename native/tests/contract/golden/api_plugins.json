@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/plugins",
+  "method": "GET",
+  "response": {
+    "plugins": []
+  },
+  "status": 200
+}

@@ -1,0 +1,17 @@
+{
+  "endpoint": "/api/ping",
+  "method": "GET",
+  "response": {
+    "app": "student-age-editor",
+    "cfg_patch": true,
+    "ok": true,
+    "state": {
+      "aa_status": "idle",
+      "base_loaded_count": 0,
+      "mod_name": "",
+      "mod_root": "",
+      "workspace_root": "<PATH>"
+    }
+  },
+  "status": 200
+}

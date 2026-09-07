@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/resource_packs",
+  "method": "GET",
+  "response": {
+    "active": "",
+    "packs": []
+  },
+  "status": 200
+}

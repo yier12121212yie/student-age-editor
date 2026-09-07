@@ -1,0 +1,10 @@
+{
+  "endpoint": "/api/tools/list?scope=mod&path=",
+  "method": "GET",
+  "response": {
+    "entries": [],
+    "path": "",
+    "root": "<PATH>"
+  },
+  "status": 200
+}

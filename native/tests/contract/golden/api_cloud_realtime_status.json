@@ -1,0 +1,49 @@
+{
+  "endpoint": "/api/cloud/realtime/status",
+  "method": "GET",
+  "response": {
+    "cloud_sync": {
+      "action": "",
+      "error": "",
+      "history": [],
+      "last": "",
+      "progress": 0,
+      "provider": "",
+      "running": false,
+      "total": 0
+    },
+    "config": {
+      "auto_start": false,
+      "debounce_ms": 2000,
+      "delete_extra": false,
+      "direction": "upload",
+      "enabled": false,
+      "mod_name": "",
+      "mods": [],
+      "poll_interval_ms": 2000,
+      "provider_id": "",
+      "remote_poll_interval_ms": 30000,
+      "watch_all_mods": false
+    },
+    "direction": "upload",
+    "enabled": false,
+    "error": "",
+    "events": [],
+    "last_sync": "<VOLATILE>",
+    "last_sync_result": null,
+    "mod_name": "",
+    "next_remote_poll": "<VOLATILE>",
+    "pending_count": 0,
+    "pending_files": [],
+    "provider_id": "",
+    "running": false,
+    "stats": {
+      "local_changes": 0,
+      "remote_changes": 0,
+      "sync_failed": 0,
+      "sync_success": 0
+    },
+    "watching_mods": []
+  },
+  "status": 200
+}

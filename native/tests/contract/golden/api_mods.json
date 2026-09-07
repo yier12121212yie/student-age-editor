@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/mods",
+  "method": "GET",
+  "response": {
+    "mods": [],
+    "selected": ""
+  },
+  "status": 200
+}

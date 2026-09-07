@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/plugins/ui/flow_cards",
+  "method": "GET",
+  "response": {
+    "flow_cards": []
+  },
+  "status": 200
+}

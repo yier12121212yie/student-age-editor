@@ -1,0 +1,12 @@
+{
+  "endpoint": "/api/aa/status",
+  "method": "GET",
+  "response": {
+    "bundled": null,
+    "detected": "",
+    "dirs": [],
+    "error": "",
+    "status": "idle"
+  },
+  "status": 200
+}

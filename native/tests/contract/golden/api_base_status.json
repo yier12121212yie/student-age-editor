@@ -1,0 +1,14 @@
+{
+  "endpoint": "/api/base/status",
+  "method": "GET",
+  "response": {
+    "dirs": [],
+    "env_exists": true,
+    "env_path": "<PATH>",
+    "error": "",
+    "loaded": [],
+    "missing": [],
+    "status": "idle"
+  },
+  "status": 200
+}

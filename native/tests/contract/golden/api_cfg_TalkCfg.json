@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/cfg/TalkCfg",
+  "method": "GET",
+  "response": {
+    "cfg": "TalkCfg",
+    "error": "no mod selected"
+  },
+  "status": 400
+}

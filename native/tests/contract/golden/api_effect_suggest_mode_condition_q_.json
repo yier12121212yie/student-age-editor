@@ -1,0 +1,251 @@
+{
+  "endpoint": "/api/effect_suggest?mode=condition&q=",
+  "method": "GET",
+  "response": {
+    "items": [
+      {
+        "code": "[0, 1, V]",
+        "desc": "发生概率为 V(1为100%)",
+        "raw_code": "[0, 1, V]",
+        "raw_desc": "发生概率为 V(1为100%)"
+      },
+      {
+        "code": "[0, 2, @ATTR@, V]",
+        "desc": "属性 @ATTR@ 的 V 概率(1为100%)",
+        "raw_code": "[0, 2, @ATTR@, V]",
+        "raw_desc": "属性 @ATTR@ 的 V 概率(1为100%)"
+      },
+      {
+        "code": "[1, 1, V]",
+        "desc": "年龄 >= V",
+        "raw_code": "[1, 1, V]",
+        "raw_desc": "年龄 >= V"
+      },
+      {
+        "code": "[1, 2, V]",
+        "desc": "年龄 <= V",
+        "raw_code": "[1, 2, V]",
+        "raw_desc": "年龄 <= V"
+      },
+      {
+        "code": "[1, 3, X, Y]",
+        "desc": "X <= 年龄 <= Y",
+        "raw_code": "[1, 3, X, Y]",
+        "raw_desc": "X <= 年龄 <= Y"
+      },
+      {
+        "code": "[1, 0, X, Y]",
+        "desc": "X岁Y月",
+        "raw_code": "[1, 0, X, Y]",
+        "raw_desc": "X岁Y月"
+      },
+      {
+        "code": "[1, 12, 0, V]",
+        "desc": "年级 = V",
+        "raw_code": "[1, 12, 0, V]",
+        "raw_desc": "年级 = V"
+      },
+      {
+        "code": "[1, 12, 1, V]",
+        "desc": "年级 >= V",
+        "raw_code": "[1, 12, 1, V]",
+        "raw_desc": "年级 >= V"
+      },
+      {
+        "code": "[1, 12, -1, V]",
+        "desc": "年级 <= V",
+        "raw_code": "[1, 12, -1, V]",
+        "raw_desc": "年级 <= V"
+      },
+      {
+        "code": "[1, 12, 101, X, Y]",
+        "desc": "X <= 年级 <= Y",
+        "raw_code": "[1, 12, 101, X, Y]",
+        "raw_desc": "X <= 年级 <= Y"
+      },
+      {
+        "code": "[1, 99, V]",
+        "desc": "性别要求 (1男 2女)",
+        "raw_code": "[1, 99, V]",
+        "raw_desc": "性别要求 (1男 2女)"
+      },
+      {
+        "code": "[1, 98, V]",
+        "desc": "文科/理科生 (1文 2理)",
+        "raw_code": "[1, 98, V]",
+        "raw_desc": "文科/理科生 (1文 2理)"
+      },
+      {
+        "code": "[1, -98, V]",
+        "desc": "非文科/非理科生 (1文 2理)",
+        "raw_code": "[1, -98, V]",
+        "raw_desc": "非文科/非理科生 (1文 2理)"
+      },
+      {
+        "code": "[1, 97, 1]",
+        "desc": "已经文理分班",
+        "raw_code": "[1, 97, 1]",
+        "raw_desc": "已经文理分班"
+      },
+      {
+        "code": "[1, 97, -1]",
+        "desc": "未文理分班",
+        "raw_code": "[1, 97, -1]",
+        "raw_desc": "未文理分班"
+      },
+      {
+        "code": "[1, 20, 1]",
+        "desc": "小学毕业之前",
+        "raw_code": "[1, 20, 1]",
+        "raw_desc": "小学毕业之前"
+      },
+      {
+        "code": "[1, 20, 2]",
+        "desc": "小学毕业之后",
+        "raw_code": "[1, 20, 2]",
+        "raw_desc": "小学毕业之后"
+      },
+      {
+        "code": "[2, 0, V]",
+        "desc": "当前为第 V 回合",
+        "raw_code": "[2, 0, V]",
+        "raw_desc": "当前为第 V 回合"
+      },
+      {
+        "code": "[2, 100, V]",
+        "desc": "第 V 回合或以后",
+        "raw_code": "[2, 100, V]",
+        "raw_desc": "第 V 回合或以后"
+      },
+      {
+        "code": "[2, -100, V]",
+        "desc": "当前未到第 V 回合",
+        "raw_code": "[2, -100, V]",
+        "raw_desc": "当前未到第 V 回合"
+      },
+      {
+        "code": "[2, 1, V]",
+        "desc": "当前为 V 月",
+        "raw_code": "[2, 1, V]",
+        "raw_desc": "当前为 V 月"
+      },
+      {
+        "code": "[2, 4, V]",
+        "desc": "当前是 V 季",
+        "raw_code": "[2, 4, V]",
+        "raw_desc": "当前是 V 季"
+      },
+      {
+        "code": "[2, 10, V]",
+        "desc": "当前是 V 年",
+        "raw_code": "[2, 10, V]",
+        "raw_desc": "当前是 V 年"
+      },
+      {
+        "code": "[2, 11, X, Y]",
+        "desc": "当前是 X 年 Y 月",
+        "raw_code": "[2, 11, X, Y]",
+        "raw_desc": "当前是 X 年 Y 月"
+      },
+      {
+        "code": "[2, 110, X, Y]",
+        "desc": "当前是 X 年 Y 月或以后",
+        "raw_code": "[2, 110, X, Y]",
+        "raw_desc": "当前是 X 年 Y 月或以后"
+      },
+      {
+        "code": "[2, 20, X, Y]",
+        "desc": "X 到 Y 年",
+        "raw_code": "[2, 20, X, Y]",
+        "raw_desc": "X 到 Y 年"
+      },
+      {
+        "code": "[2, 12, X]",
+        "desc": "当前是偶数年",
+        "raw_code": "[2, 12, X]",
+        "raw_desc": "当前是偶数年"
+      },
+      {
+        "code": "[2, 3, X, Y]",
+        "desc": "当前为 X 年 Y 季",
+        "raw_code": "[2, 3, X, Y]",
+        "raw_desc": "当前为 X 年 Y 季"
+      },
+      {
+        "code": "[2, 30, X, Y]",
+        "desc": "当前为 X 年 Y 季或以后",
+        "raw_code": "[2, 30, X, Y]",
+        "raw_desc": "当前为 X 年 Y 季或以后"
+      },
+      {
+        "code": "[1, 12, X, Y]",
+        "desc": "当前时间是 X 年 Y 月以后",
+        "raw_code": "[1, 12, X, Y]",
+        "raw_desc": "当前时间是 X 年 Y 月以后"
+      },
+      {
+        "code": "[2, 101, 1]",
+        "desc": "当前是主角生日的回合",
+        "raw_code": "[2, 101, 1]",
+        "raw_desc": "当前是主角生日的回合"
+      },
+      {
+        "code": "[2, 8, 1]",
+        "desc": "当前回合是寒暑假",
+        "raw_code": "[2, 8, 1]",
+        "raw_desc": "当前回合是寒暑假"
+      },
+      {
+        "code": "[2, 8, -1]",
+        "desc": "当前回合不是寒暑假",
+        "raw_code": "[2, 8, -1]",
+        "raw_desc": "当前回合不是寒暑假"
+      },
+      {
+        "code": "[3, 1, V]",
+        "desc": "事件 V 已发生",
+        "raw_code": "[3, 1, V]",
+        "raw_desc": "事件 V 已发生"
+      },
+      {
+        "code": "[3, -1, V]",
+        "desc": "事件 V 未发生",
+        "raw_code": "[3, -1, V]",
+        "raw_desc": "事件 V 未发生"
+      },
+      {
+        "code": "[3, 2, V]",
+        "desc": "选项 V 已激活",
+        "raw_code": "[3, 2, V]",
+        "raw_desc": "选项 V 已激活"
+      },
+      {
+        "code": "[3, -2, V]",
+        "desc": "选项 V 未激活",
+        "raw_code": "[3, -2, V]",
+        "raw_desc": "选项 V 未激活"
+      },
+      {
+        "code": "[3, 3, V]",
+        "desc": "对话 V 已激活",
+        "raw_code": "[3, 3, V]",
+        "raw_desc": "对话 V 已激活"
+      },
+      {
+        "code": "[3, -3, V]",
+        "desc": "对话 V 未激活",
+        "raw_code": "[3, -3, V]",
+        "raw_desc": "对话 V 未激活"
+      },
+      {
+        "code": "[3, 30, V]",
+        "desc": "本回合已发生对话 V",
+        "raw_code": "[3, 30, V]",
+        "raw_desc": "本回合已发生对话 V"
+      }
+    ],
+    "mode": "condition",
+    "q": ""
+  },
+  "status": 200
+}

@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/cfg/OptionCfg",
+  "method": "GET",
+  "response": {
+    "cfg": "OptionCfg",
+    "error": "no mod selected"
+  },
+  "status": 400
+}

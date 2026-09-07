@@ -1,0 +1,11 @@
+{
+  "endpoint": "/api/aa/keys?q=&limit=20",
+  "method": "GET",
+  "response": {
+    "aud": [],
+    "status": "idle",
+    "tex": [],
+    "txt": []
+  },
+  "status": 200
+}

@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/cfg",
+  "method": "GET",
+  "response": {
+    "cfg_files": [],
+    "mod": ""
+  },
+  "status": 200
+}

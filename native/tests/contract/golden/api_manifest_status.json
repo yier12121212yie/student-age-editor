@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/manifest/status",
+  "method": "GET",
+  "response": {
+    "checks": [],
+    "selected": false
+  },
+  "status": 200
+}

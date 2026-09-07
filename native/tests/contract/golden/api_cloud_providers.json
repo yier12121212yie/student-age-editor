@@ -1,0 +1,21 @@
+{
+  "endpoint": "/api/cloud/providers",
+  "method": "GET",
+  "response": {
+    "drivers": [
+      "local",
+      "webdav",
+      "openlist",
+      "alist",
+      "baidu_netdisk",
+      "baidu",
+      "123",
+      "123pan",
+      "google_drive",
+      "gdrive",
+      "onedrive"
+    ],
+    "providers": []
+  },
+  "status": 200
+}

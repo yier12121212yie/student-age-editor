@@ -1,0 +1,15 @@
+{
+  "endpoint": "/api/cloud/status",
+  "method": "GET",
+  "response": {
+    "action": "",
+    "error": "",
+    "history": [],
+    "last": "",
+    "progress": 0,
+    "provider": "",
+    "running": false,
+    "total": 0
+  },
+  "status": 200
+}

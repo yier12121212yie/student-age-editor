@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/history?cfg=EvtCfg",
+  "method": "GET",
+  "response": {
+    "error": "no mod selected"
+  },
+  "status": 400
+}

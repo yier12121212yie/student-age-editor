@@ -1,0 +1,8 @@
+{
+  "endpoint": "/api/search/talk?q=&limit=5",
+  "method": "GET",
+  "response": {
+    "results": []
+  },
+  "status": 200
+}

@@ -1,0 +1,16 @@
+{
+  "endpoint": "/api/state",
+  "method": "GET",
+  "response": {
+    "aa_dirs": [],
+    "aa_error": "",
+    "aa_status": "idle",
+    "base_loaded": [],
+    "mod_name": "",
+    "mod_root": "",
+    "mods": [],
+    "schema_count": 406,
+    "workspace_root": "<PATH>"
+  },
+  "status": 200
+}

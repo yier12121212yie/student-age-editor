@@ -1,0 +1,10 @@
+{
+  "endpoint": "/api/base_ids?cfg=EvtCfg",
+  "method": "GET",
+  "response": {
+    "cfg": "EvtCfg",
+    "ids": [],
+    "loaded": false
+  },
+  "status": 200
+}

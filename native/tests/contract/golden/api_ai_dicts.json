@@ -1,0 +1,59 @@
+{
+  "endpoint": "/api/ai/dicts",
+  "method": "GET",
+  "response": {
+    "dicts": [
+      {
+        "count": 200,
+        "id": "roles",
+        "name": "角色"
+      },
+      {
+        "count": 369,
+        "id": "items",
+        "name": "物品"
+      },
+      {
+        "count": 21,
+        "id": "maps",
+        "name": "地点"
+      },
+      {
+        "count": 17,
+        "id": "jobs",
+        "name": "职业"
+      },
+      {
+        "count": 66,
+        "id": "attrs",
+        "name": "属性"
+      },
+      {
+        "count": 8,
+        "id": "relations",
+        "name": "关系"
+      },
+      {
+        "count": 525,
+        "id": "bgs",
+        "name": "背景"
+      },
+      {
+        "count": 62,
+        "id": "turns",
+        "name": "回合"
+      },
+      {
+        "count": 65,
+        "id": "evt_types",
+        "name": "事件类型"
+      },
+      {
+        "count": 13,
+        "id": "badminton_models",
+        "name": "羽毛球模型"
+      }
+    ]
+  },
+  "status": 200
+}

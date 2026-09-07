@@ -1,0 +1,9 @@
+{
+  "endpoint": "/api/cfg/EvtCfg",
+  "method": "GET",
+  "response": {
+    "cfg": "EvtCfg",
+    "error": "no mod selected"
+  },
+  "status": 400
+}

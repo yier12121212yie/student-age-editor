@@ -1,0 +1,20 @@
+{
+  "endpoint": "/api/cloud/realtime/config",
+  "method": "GET",
+  "response": {
+    "config": {
+      "auto_start": false,
+      "debounce_ms": 2000,
+      "delete_extra": false,
+      "direction": "upload",
+      "enabled": false,
+      "mod_name": "",
+      "mods": [],
+      "poll_interval_ms": 2000,
+      "provider_id": "",
+      "remote_poll_interval_ms": 30000,
+      "watch_all_mods": false
+    }
+  },
+  "status": 200
+}
