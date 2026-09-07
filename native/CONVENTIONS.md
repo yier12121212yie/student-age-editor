@@ -222,22 +222,30 @@ fork/只读视图语义见 5.2：C++ 侧缓存值用 `shared_ptr<const nlohmann:
 ## 9. 服务文件模板
 
 ```cpp
-// server/services/mods.cpp —— 服务导出 register，不自行挂总线
-#include "server/router.h"
+// server/services/<name>.cpp —— 服务导出 register，不自行挂总线（波次 2 期间先放
+// native/wip/<组>/ 同名文件，合并时由主代理搬入正位）。真实 API 以 httpd.h 为准：
+#include "server/httpd.h"
 namespace sa {
-void register_mods_routes(Router& r) {
+void register_demo_routes(Router& r) {
     r.get(R"(/api/mods)", [](const Req& req) -> Resp {
         json body = json::object();
         // ... 语义照第 5 节与各组简报坑点清单 ...
-        return Resp{200, std::move(body)};          // dict → 序列化
-        // return Resp{200, Resp::Bytes{cached_bytes}}; // 免序列化出口
+        return Resp::Json(200, std::move(body));      // dict → py_dumps 序列化
+        // return Resp::Bytes(200, cached_body_str);  // 免序列化出口（bytes 直发）
+    });
+    r.put(R"(/api/cfg/(?P<name>[^/]+))", [](const Req& req) -> Resp {
+        const std::string& name = req.params.at("name");  // (?P<name>) 组入 params
+        return Resp::Json(400, error_json("bad"));         // 错误信封见 2.1
     });
 }
 } // namespace sa
 ```
 
-- `Req`：method/path/query(map<string,string> 取 last)/body(可空 json，含 `_raw` 语义)。
-- `Resp`：status + json 或 bytes；handler 抛异常由 httpd 层转 500 信封（与 Python dispatch 一致）。
+- `Req{method, path, query(map last-wins), body(null=无 body/`{"_raw":…}`=解析失败),
+  params(named groups), host_header, origin}`（httpd.h:36-45）。
+- `Resp::Json(status, json)` / `Resp::Bytes(status, string)`（httpd.h:53-66）；handler 签名
+  `Resp(const Req&)`（httpd.h:69），抛异常由 httpd 层转 500 信封；要带 Python 异常类型名的
+  500 用 `throw ApiError("Type","msg")`（httpd.h:74）。
 - 命名：文件/类型 PascalCase 函数、`snake_case` 方法内变量；中文注释仅写「为什么」（对齐现有
   Python 注释风格，坑点编号沿用 A/B/C/G/S 前缀）。
 
