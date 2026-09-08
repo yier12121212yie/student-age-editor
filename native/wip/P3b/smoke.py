@@ -3,7 +3,7 @@
 
 复刻 golden_env.py 的录制隔离环境（temp data/workspace、editor_env.json 预写、
 EDITOR_PACKS_ROOT/EDITOR_PLUGINS_ROOT 注入、EDITOR_DISABLE_STEAM_DETECT 屏蔽
-创意工坊探测、EDITOR_ASSETS_ROOT 指 native/assets），起 backend_wip.exe 后逐端点
+创意工坊探测、EDITOR_ASSETS_ROOT 指 native/assets），起 backend_wip.exe（现为正树 backend.exe）后逐端点
 normalize + compare 与 golden/*.json 比对，10 件：
 
     api_tools_list_scope_workspace_path_   api_tools_list_scope_mod_path_
@@ -15,7 +15,7 @@ normalize + compare 与 golden/*.json 比对，10 件：
 外加黑盒 URL 编码沙箱逃逸回归（selftest 同款两例的 TCP 形态）。
 
 用法（仓库根）：
-    python native/wip/P3b/smoke.py [--backend native/build-P3b/bin/backend_wip.exe]
+    python native/wip/P3b/smoke.py [--backend native/build/bin/backend.exe]
 退出码 0 = 全部 PASS。
 """
 import json
@@ -34,7 +34,7 @@ GOLDEN_DIR = os.path.join(REPO, "native", "tests", "contract", "golden")
 sys.path.insert(0, os.path.join(REPO, "native", "tests", "contract"))
 import normalize  # noqa: E402
 
-DEFAULT_BACKEND = os.path.join(REPO, "native", "build-P3b", "bin", "backend_wip.exe")
+DEFAULT_BACKEND = os.path.join(REPO, "native", "build", "bin", "backend.exe")
 
 # (golden 文件名, method, path)
 CASES = [

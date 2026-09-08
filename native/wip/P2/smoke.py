@@ -13,7 +13,7 @@ libraryfolders.vdf/创意工坊扫描，效果与 steam_library_paths→[] 的 m
 
 随后逐端点 normalize.normalize + normalize.compare 与 golden/*.json 比对。
 用法（仓库根）：
-    python native/wip/P2/smoke.py [--backend native/build-P2/bin/backend_wip.exe]
+    python native/wip/P2/smoke.py [--backend native/build/bin/backend.exe]
 退出码 0 = 全部 PASS。
 """
 import json
@@ -33,7 +33,7 @@ NORMALIZE_DIR = os.path.join(REPO, "native", "tests", "contract")
 sys.path.insert(0, NORMALIZE_DIR)
 import normalize  # noqa: E402
 
-DEFAULT_BACKEND = os.path.join(REPO, "native", "build-P2", "bin", "backend_wip.exe")
+DEFAULT_BACKEND = os.path.join(REPO, "native", "build", "bin", "backend.exe")
 
 # (golden 文件名, method, path)
 CASES = [

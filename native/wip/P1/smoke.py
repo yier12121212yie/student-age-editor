@@ -3,17 +3,17 @@
 
 模式 1（默认，golden 差分）：复刻 golden/README.md §1 的隔离环境（temp data +
 temp 空 workspace + EDITOR_DISABLE_STEAM_DETECT=1 + EDITOR_ASSETS_ROOT），用
-backend_wip 起服务，逐端点与 native/tests/contract/golden/*.json 过
+backend_wip（现为正树 backend.exe）起服务，逐端点与 native/tests/contract/golden/*.json 过
 normalize.normalize + compare。
 
 模式 2（--equiv）：在两份**逐字节相同**的 temp fixture mod 工作区上，分别用
-Python 后端（子进程 editor.server.main）与 backend_wip 跑
+Python 后端（子进程 editor.server.main）与正树 backend.exe 跑
   POST /api/validate ×3 → POST /api/bugfix/scan → POST /api/bugfix/fix → 磁盘回读，
 逐响应对比（remaining 按内容排序后比——Python 的 touched 集合插入序受
 PYTHONHASHSEED 影响，非契约部分），并对比修复后 Cfgs/zh-cn 落盘 JSON 树。
 
 用法（仓库根）：
-    python native/wip/P1/smoke.py [--backend native/build-P1/bin/backend_wip.exe]
+    python native/wip/P1/smoke.py [--backend native/build/bin/backend.exe]
     python native/wip/P1/smoke.py --equiv
 退出码 0 = 全部 PASS。
 """
@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(NATIVE, "tests", "contract"))
 import normalize  # noqa: E402
 
 BACKEND_DIR = os.path.join(REPO, "backend")
-DEFAULT_BACKEND = os.path.join(NATIVE, "build-P1", "bin", "backend_wip.exe")
+DEFAULT_BACKEND = os.path.join(NATIVE, "build", "bin", "backend.exe")
 
 # (golden 文件名, method, path) —— 简报钉死的 6 份
 CASES = [

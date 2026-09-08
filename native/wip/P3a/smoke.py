@@ -12,7 +12,7 @@ EDITOR_DISABLE_STEAM_DETECT 总开关等价录制的 steam_paths 进程内补丁
      与 api_ai_stage_dicts golden 已验证逐键序全等）。
 
 用法（仓库根）：
-    python native/wip/P3a/smoke.py [--backend native/build-P3a/bin/backend_wip.exe]
+    python native/wip/P3a/smoke.py [--backend native/build/bin/backend.exe]
 退出码 0 = 全部 PASS。
 """
 import json
@@ -32,7 +32,7 @@ NORMALIZE_DIR = os.path.join(REPO, "native", "tests", "contract")
 sys.path.insert(0, NORMALIZE_DIR)
 import normalize  # noqa: E402
 
-DEFAULT_BACKEND = os.path.join(REPO, "native", "build-P3a", "bin", "backend_wip.exe")
+DEFAULT_BACKEND = os.path.join(REPO, "native", "build", "bin", "backend.exe")
 
 # (golden slug, method, path)
 CASES = [

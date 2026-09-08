@@ -39,10 +39,10 @@ CASES = [
 def _find_backend():
     if len(sys.argv) > 1:
         return sys.argv[1]
-    cand = os.path.join(NATIVE, "build-P4", "bin", "backend_wip.exe")
+    cand = os.path.join(NATIVE, "build", "bin", "backend.exe")  # 正树优先
     if os.path.isfile(cand):
         return cand
-    cand = os.path.join(NATIVE, "build", "bin", "backend_wip.exe")
+    cand = os.path.join(NATIVE, "build-P4", "bin", "backend_wip.exe")
     return cand
 
 
