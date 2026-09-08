@@ -1,0 +1,58 @@
+name: native-ci
+
+# C++ 迁移期的独立 CI：只构建/测试 native/（CMake+Ninja，Release），
+# 并跑一次 /api/ping 黑盒冒烟。不触碰现有 release 工作流。
+# 本地一键（含本机工具链路径）是 native/build.cmd；本文件走 runner
+# 自带 VS2022 + CMake 的通用路径（VS generator 免 vcvars）。
+
+on:
+  push:
+    branches: [cpp-backend, main]
+    paths:
+      - "native/**"
+      - ".github/workflows/native-ci.yml"
+  pull_request:
+    paths:
+      - "native/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Windows (MSVC / CMake / ctest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Release, VS generator)
+        run: cmake -G "Visual Studio 17 2022" -A x64 -T host=x64 -S native -B build-native -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-native --config Release
+
+      - name: Test (Catch2 via ctest)
+        run: ctest --test-dir build-native -C Release --output-on-failure
+
+      - name: Ping smoke (blackbox HTTP contract)
+        run: |
+          # VS generator nests bin/Release/, Ninja doesn't — locate uniformly.
+          EXE=$(find build-native -name backend.exe -type f | head -1)
+          [ -n "$EXE" ] || { echo "backend.exe not found"; exit 1; }
+          "$EXE" --port 8799 &
+          BPID=$!
+          for i in $(seq 1 30); do
+            code=$(curl -s -o ping.json -w "%{http_code}" http://127.0.0.1:8799/api/ping || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ] || { echo "ping HTTP $code"; exit 1; }
+          grep -q '"cfg_patch": true' ping.json
+          grep -q '"app": "student-age-editor"' ping.json
+          curl -s -X POST http://127.0.0.1:8799/api/shutdown
+          wait $BPID || true
+          echo "PING SMOKE OK"
