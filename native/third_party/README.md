@@ -15,6 +15,7 @@ new pinned version and updating this table.
 | cpp-httplib | 0.18.3 | `httplib/httplib.h` | MIT | https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.18.3/httplib.h |
 | nlohmann/json | 3.11.3 | `nlohmann/json.hpp` | MIT | https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp |
 | Catch2 (amalgamated) | 3.7.1 | `catch2/catch_amalgamated.hpp`, `catch2/catch_amalgamated.cpp` | Boost Software License 1.0 | https://raw.githubusercontent.com/catchorg/Catch2/v3.7.1/extras/catch_amalgamated.hpp |
+| miniz (amalgamated, P3b wave-2) | 3.0.2 release zip (header `MZ_VERSION` "11.0.2"; sha256 miniz.h `295d1a00…af37b`, miniz.c `0fcdc988…1d3740`) | `miniz/miniz.h`, `miniz/miniz.c`, `miniz/LICENSE` | MIT-style (release LICENSE; header carries the public-domain/unlicense statement) | https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip |
 
 ## Usage notes
 
