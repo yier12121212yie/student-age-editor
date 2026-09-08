@@ -52,3 +52,11 @@ enable_testing()
 add_subdirectory(core)
 add_subdirectory(server)
 add_subdirectory(tests)
+
+# Parallel-wave hook: a group working under -DSA_GROUP_WIP=<G> may ship extra
+# target definitions (own executables, vendored third-party subdirs) in
+# wip/<G>/group.cmake. This keeps every shared build file orchestrator-owned.
+# Inside the hook, ${CMAKE_CURRENT_SOURCE_DIR} still refers to native/.
+if(SA_GROUP_WIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/wip/${SA_GROUP_WIP}/group.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/wip/${SA_GROUP_WIP}/group.cmake")
+endif()
