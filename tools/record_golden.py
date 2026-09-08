@@ -2,8 +2,10 @@
 """波次0 golden 契约录制 / --check 门禁（Python 后端 HTTP 只读 GET 端点）。
 
 用法（仓库根目录）：
-    python tools/record_golden.py            # 录制，写 native/tests/contract/golden/*.json
-    python tools/record_golden.py --check    # 用当前后端复跑比对，输出 PASS/FAIL
+    python tools/record_golden.py                       # 录制，写 native/tests/contract/golden/*.json
+    python tools/record_golden.py --check               # 用当前 Python 后端复跑比对，输出 PASS/FAIL
+    python tools/record_golden.py --check --url URL     # 对任意已实现后端（如 C++ backend.exe）
+                                                        # 打同一套 golden，逐端点 PASS/FAIL
 
 录制状态固定方式见 tools/golden_env.py（tempfile 独立 data 根 + 独立 workspace +
 editor_env.json 预写 + steam 探测打桩），全程零写用户真实 Mods/配置；只录 GET、
@@ -11,6 +13,11 @@ editor_env.json 预写 + steam 探测打桩），全程零写用户真实 Mods/�
 
 golden 保存前统一过 native/tests/contract/normalize.py 归一化（易变字段/绝对路径
 哨兵化），--check 对实测同样归一化后比对。
+
+--url 模式：不起进程、不建隔离环境，直接打给定基址。被测 C++ 后端应在自己的
+temp workspace 下启动（backend --port N --workspace-root <temp>），PATH 哨兵化后
+两侧路径域一致；未实现端点回 404 {"error":"no route: ..."} 会如实 FAIL——波次
+推进的量化进度 = 38 项中的 PASS 数。
 """
 
 import json
@@ -72,8 +79,12 @@ def golden_filename(path):
     return name + ".json"
 
 
-def capture_all():
-    """隔离环境内起进程内后端，录全部端点，返回 {filename: envelope}。"""
+def capture_all(base_url=None):
+    """录全部端点，返回 {filename: envelope}。
+
+    base_url=None：隔离环境内起进程内 Python 后端（录制/自查模式）。
+    base_url 给定：直接打外部已在跑的 HTTP 后端（波次门禁：C++ backend.exe）。
+    """
     sys.path.insert(0, TOOLS_DIR)
     if os.path.join(REPO_ROOT, "native", "tests", "contract") not in sys.path:
         sys.path.insert(0, os.path.join(REPO_ROOT, "native", "tests", "contract"))
@@ -81,10 +92,10 @@ def capture_all():
     import normalize
 
     out = {}
-    cm, base_url, _info = start_isolated_server()
-    try:
+
+    def _fetch(url_base):
         for path in ENDPOINTS:
-            status, body = get_json(base_url, path)
+            status, body = get_json(url_base, path)
             envelope = normalize.normalize({
                 "endpoint": path,
                 "method": "GET",
@@ -92,6 +103,13 @@ def capture_all():
                 "response": body,
             })
             out[golden_filename(path)] = envelope
+
+    if base_url:
+        _fetch(base_url)
+        return out
+    cm, url_base, _info = start_isolated_server()
+    try:
+        _fetch(url_base)
     finally:
         cm.__exit__(None, None, None)
     return out
@@ -108,14 +126,14 @@ def cmd_record():
     return 0
 
 
-def cmd_check():
+def cmd_check(base_url=None):
     if not os.path.isdir(GOLDEN_DIR):
         print("FAIL golden 目录不存在，先运行 python tools/record_golden.py")
         return 1
     sys.path.insert(0, os.path.join(REPO_ROOT, "native", "tests", "contract"))
     import normalize
 
-    recorded = capture_all()
+    recorded = capture_all(base_url)
     expected_files = {golden_filename(p) for p in ENDPOINTS}
     on_disk = {f for f in os.listdir(GOLDEN_DIR) if f.endswith(".json")}
 
@@ -150,15 +168,26 @@ def cmd_check():
 
     total = len(expected_files)
     if failures:
-        print("RESULT: FAIL (%d/%d 端点不符)" % (failures, total))
+        print("RESULT: FAIL (%d/%d 一致, %d 不符)" % (total - failures, total, failures))
         return 1
     print("RESULT: PASS (%d/%d 端点全部一致)" % (total, total))
     return 0
 
 
 def main(argv):
+    url = None
+    if "--url" in argv:
+        i = argv.index("--url")
+        if i + 1 >= len(argv):
+            print("FAIL: --url 需要一个基址参数，如 http://127.0.0.1:8765")
+            return 2
+        url = argv[i + 1].rstrip("/")
+        argv = argv[:i] + argv[i + 2:]
     if "--check" in argv:
-        return cmd_check()
+        return cmd_check(url)
+    if url:
+        print("FAIL: --url 仅与 --check 组合有意义（golden 是录制真相源，不允许外部后端反写）")
+        return 2
     return cmd_record()
 
 
