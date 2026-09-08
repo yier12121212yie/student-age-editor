@@ -1,8 +1,11 @@
 // wip/P4/aa_routes.cpp — /api/aa/{keys,preview,status,export,scan} (port of
 // api.py aa_* routes; the C++ never scans bundles nor decodes them).
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -12,6 +15,7 @@
 #include "sa_core/paths.h"
 #include "sa_core/steam_paths.h"
 #include "sa_core/strings.h"
+#include "sa_core/utf8.h"
 #include "sa_core/util.h"
 #include "server/cfg_cache.h"
 #include "server/httpd.h"
@@ -46,6 +50,59 @@ std::vector<std::string> pick_keys(const std::vector<std::vector<std::string>>& 
 std::string qget(const Req& req, const std::string& key, const std::string& def = "") {
     auto it = req.query.find(key);
     return it == req.query.end() ? def : it->second;
+}
+
+// ---- kind=txt: decoded-pack Cfgs/zh-cn fallback (wave-2 integration) ------
+// File naming per export_decoded_pack.py: core tables land as "<TableName>.json",
+// the ~300 non-core game texts as _safe_name(norm key).json. Resolve
+// case-insensitively over the lowercased stem map (pack dir change invalidates).
+std::optional<std::string> read_pack_txt(const std::string& key) {
+    namespace ps = sa_core::paths;
+    static std::mutex mu;
+    static std::map<std::string, std::string> stems;  // lower stem -> file name
+    static std::string stems_dir;
+    const std::string dir = sa::active_pack_dir();
+    if (dir.empty()) return std::nullopt;
+    const std::string cfgs_dir = ps::join(ps::join(dir, "Cfgs"), "zh-cn");
+    std::string fname;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (stems_dir != dir) {
+            stems.clear();
+            stems_dir = dir;
+            for (const auto& f : ps::listdir_sorted(cfgs_dir)) {
+                if (f.size() > 5 && sa_core::str::lower(f.substr(f.size() - 5)) == ".json")
+                    stems[sa_core::str::lower(f.substr(0, f.size() - 5))] = f;
+            }
+        }
+        std::string probe = sa_core::str::lower(sa::norm_key(key));
+        for (char& c : probe) {
+            unsigned char u = static_cast<unsigned char>(c);
+            if (!(std::isalnum(u) || c == '.' || c == '_' || c == '-')) c = '_';  // _safe_name
+        }
+        auto it = stems.find(probe);
+        if (it == stems.end()) it = stems.find(sa_core::str::lower(key));
+        if (it == stems.end()) return std::nullopt;
+        fname = it->second;
+    }
+    return ps::read_bytes(ps::join(cfgs_dir, fname));
+}
+
+// preview payload: utf-8 errors=replace decode + 200 000 codepoint slice
+// (api.py:2371-2380 — len() is codepoints; 200K truncation + flag).
+json txt_preview_payload(const std::string& raw) {
+    std::string text = sa_core::decode_utf8_sig_replace(raw);
+    size_t cp = 0, i = 0;
+    const size_t n = text.size();
+    while (i < n && cp < 200000) {
+        unsigned char lead = static_cast<unsigned char>(text[i]);
+        size_t len = lead < 0x80 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+        if (i + len > n) len = n - i;
+        i += len;
+        ++cp;
+    }
+    return json{{"kind", "txt"}, {"text", text.substr(0, i)},
+                {"truncated", i < n}};
 }
 
 }  // namespace
@@ -278,6 +335,12 @@ void register_aa_routes(Router& r) {
             return Resp::Json(404, json{{"error", "audio key not found: " + key}});
         }
         if (kind == "txt") {
+            // export：解码包文本原样落盘（无 preview 的 200K 截断）。
+            if (auto raw = read_pack_txt(key)) {
+                if (write_copy(*raw)) return Resp::Json(200, json{{"ok", true}, {"out", out_rel}});
+            }
+            if (idx && idx->has_txt(key))
+                return Resp::Json(422, json{{"error", "text decode failed: " + key}});
             return Resp::Json(404, json{{"error", "text key not found: " + key}});
         }
         return Resp::Json(400, json{{"error", "bad kind"}});
@@ -319,10 +382,12 @@ void register_aa_routes(Router& r) {
             return Resp::Json(404, json{{"error", "audio key not found: " + key}});
         }
         if (kind == "txt") {
-            if (!idx || !idx->has_txt(key))
-                return Resp::Json(404, json{{"error", "text key not found: " + key}});
-            // C++ holds no decoder for the game TextAsset bytes.
-            return Resp::Json(422, json{{"error", "text decode failed: " + key}});
+            if (auto raw = read_pack_txt(key))
+                return Resp::Json(200, txt_preview_payload(*raw));
+            if (idx && idx->has_txt(key))
+                // key 在索引但 pack 无文件（全量解码包未铺满时的合法形态）。
+                return Resp::Json(422, json{{"error", "text decode failed: " + key}});
+            return Resp::Json(404, json{{"error", "text key not found: " + key}});
         }
         return Resp::Json(400, json{{"error", "bad kind"}});
     });

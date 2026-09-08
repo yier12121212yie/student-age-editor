@@ -285,8 +285,14 @@ def export_aud(idx, key, out_dir):
 def export_cfgs(idx, cfgs_out, base_data):
     """官方 Cfgs TextAsset -> utf-8 JSON；汇总进 base_data。
 
-    返回已导出（写入 base_data 的）txt 键列表；失败只警告，不中断。
+    核心表（_match_prefix 白名单）进 base_data 汇总并按表名落盘；其余游戏
+    文本表（成就/题库等 ~300 张）也落盘（文件名 _safe_name(key)），否则
+    解码包形态（C++ 后端 / Android）的 /api/aa/keys 会暴露一批 preview
+    必然 422 的幽灵键（桌面 UnityPy 实时解码掩盖了该供给缺口）。
+
+    返回已导出的 txt 键列表；失败只警告，不中断。
     """
+    os.makedirs(cfgs_out, exist_ok=True)
     exported = []
     for key in sorted(idx.txt_keys()):
         low = key.lower()
@@ -294,6 +300,17 @@ def export_cfgs(idx, cfgs_out, base_data):
             continue
         cfg_name = _match_prefix(key)
         if not cfg_name:
+            # 非核心表：原样文本落 pack（不进 base_data，不清洗）
+            try:
+                raw = idx.export_text(key)
+                if not raw:
+                    continue
+                with open(os.path.join(cfgs_out, _safe_name(key) + ".json"),
+                          "wb") as f:
+                    f.write(raw)
+                exported.append(key)
+            except Exception as e:
+                _warn("txt %s 导出异常: %s" % (key, e))
             continue
         try:
             raw = idx.export_text(key)
@@ -307,7 +324,6 @@ def export_cfgs(idx, cfgs_out, base_data):
             exported.append(key)
         except Exception as e:
             _warn("txt %s 解析异常: %s" % (key, e))
-    os.makedirs(cfgs_out, exist_ok=True)
     for cfg_name in sorted(base_data):
         with open(os.path.join(cfgs_out, cfg_name + ".json"),
                   "w", encoding="utf-8") as f:

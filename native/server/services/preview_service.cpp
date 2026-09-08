@@ -329,8 +329,10 @@ std::shared_ptr<const json> build_meta() {
 // 舞台
 // ---------------------------------------------------------------------------
 
-// _pick_char_tex。C++ 侧 AA tex 索引不可得（P4/P6 域），idx 恒 null ->
-// 首个候选 + 规范化（与 Python 无游戏环境行为一致）。
+// _pick_char_tex（preview_service.py:404-432）。AA 索引经 P4 的进程级
+// ensure_aa_index() 接入：索引可用时按 表情变体 → 基础立绘 → 变体前缀 逐候选
+// has_tex 命中返回（超范围表情回退 base，selftest char_tex_fallback 契约）；
+// 索引不可得时与 Python idx=None 分支一致，返回首个候选。
 std::string pick_char_tex(const json& ck, const json& expr) {
     std::string base = ck.is_object() && ck.contains("base") ? content::story_str(ck.at("base"))
                                                              : std::string();
@@ -344,6 +346,11 @@ std::string pick_char_tex(const json& ck, const json& expr) {
     if (!base.empty()) cands.push_back(base);
     if (!base2.empty() && base.empty()) cands.push_back(base2);
     if (cands.empty()) return "";
+    auto idx = sa::ensure_aa_index();
+    if (idx) {
+        for (const auto& t : cands)
+            if (idx->has_tex(t)) return norm_tex_key(t);
+    }
     return norm_tex_key(cands[0]);
 }
 

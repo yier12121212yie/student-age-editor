@@ -444,12 +444,11 @@ TEST_CASE("p1 routes: bugfix scan reports broken tables (B16) and flags", "[p1][
     CHECK(has_flag(bugs, "FIX_OPTION_1"));
     CHECK(has_flag(bugs, "FIX_TALK_1"));
     CHECK(has_flag(bugs, "RENAME_NPC") == false);  // 本 fixture 无 GiftEvtCfg
-    // 生产语义（mappingproxy 门，D16）：S1 断层/S2 越界/S4-format/S5 REF 段在
-    // HTTP 路由整段空转 —— EvtCfg.npc 悬挂、nextTalk 999 断层都不经 scan 端点上报。
-    // 引擎全语义由 test_p1_semantic（普通 dict 直调）覆盖。
-    CHECK_FALSE(has_flag(bugs, "REF"));
-    CHECK_FALSE(has_flag(bugs, "LOGIC"));
-    CHECK_FALSE(has_flag(bugs, "SCHEMA_HEAL"));
+    // D16 修复后（生产路由走 Mapping 全语义，不再被 mappingproxy 门空转）：
+    // S1 断层（LOGIC）、S5 REF、S4-format（SCHEMA_HEAL）现在都经 scan 端点上报。
+    // 与修复后 Python 后端逐条对齐（见 wip/P1/smoke.py --equiv 的 disk 对比）。
+    CHECK(has_flag(bugs, "REF"));
+    CHECK(has_flag(bugs, "LOGIC"));
     bool broken_reported = false;
     for (const auto& b : bugs) {
         if (b.value("flag", "") != "ERROR") continue;
@@ -572,10 +571,10 @@ TEST_CASE("p1 routes: bugfix schema-heal & rename apply", "[p1][bugfix]") {
     CHECK_FALSE(row.contains("condition"));
     CHECK(row.contains("npc"));
     CHECK(row.contains("cond"));
-    // D16 生产语义：S4-format 段在只读代理门下不触发 → talkId 标量保持原样
-    // （引擎级 1D Array 包装由 test_p1_semantic 的普通 dict 直调用例覆盖）。
+    // D16 修复后：S4-format 段经 HTTP 路由触发，标量 talkId 按 1D Array 包装。
+    // （修复前该段被 mappingproxy 门空转，talkId 保持标量——测试随之更正。）
     auto opt = fx.call("GET", "/api/cfg/OptionCfg");
-    CHECK(opt.json_payload.at("data").at("131417001").at("talkId") == 1314170001);
+    CHECK(opt.json_payload.at("data").at("131417001").at("talkId") == json::array({1314170001}));
 }
 
 TEST_CASE("p1 routes: scan is read-only on cache (G3/B1)", "[p1][bugfix]") {

@@ -563,12 +563,13 @@ class AaPreviewTest(unittest.TestCase):
         keys = {k: (payload.get(k) or []) for k in ("tex", "aud", "txt")}
         self.assertTrue(all(keys.values()), keys)
 
-        # tex -> PNG base64
+        # tex -> 图像 base64。编码随数据源：桌面 UnityPy 现场解码 = PNG；
+        # 预解码资源包（C++ 后端 / Android，发行决策 3）= WebP。
         status, payload = _call(self.port, "POST", "/api/aa/preview",
                                 {"kind": "tex", "key": keys["tex"][0]})
         self.assertEqual(status, 200, payload)
-        self.assertEqual(payload.get("mime"), "image/png")
-        self.assertEqual(base64.b64decode(payload["data"])[:4], b"\x89PNG")
+        self.assertIn(payload.get("mime"), ("image/png", "image/webp"))
+        self.assertIn(base64.b64decode(payload["data"])[:4], (b"\x89PNG", b"RIFF"))
 
         # aud -> 音频 base64 + ext
         status, payload = _call(self.port, "POST", "/api/aa/preview",
@@ -609,8 +610,9 @@ class AaPreviewTest(unittest.TestCase):
         status, payload = _call(self.port, "POST", "/api/aa/preview",
                                 {"kind": "tex", "key": "img_champ"})
         self.assertEqual(status, 200, payload)
-        self.assertEqual(payload.get("mime"), "image/png")
-        self.assertEqual(base64.b64decode(payload["data"])[:4], b"\x89PNG")
+        # 同上：PNG（现场解码）/ WebP（解码包）皆合规形态
+        self.assertIn(payload.get("mime"), ("image/png", "image/webp"))
+        self.assertIn(base64.b64decode(payload["data"])[:4], (b"\x89PNG", b"RIFF"))
 
 
 # ---------- AI 侧栏附件上传 ----------
