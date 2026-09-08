@@ -5,7 +5,9 @@
 #include <cstdlib>
 #include <filesystem>
 
+#include "sa_core/env_store.h"
 #include "sa_core/paths.h"
+#include "sa_core/steam_paths.h"
 #include "sa_core/strings.h"
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
@@ -39,26 +41,20 @@ std::string env_or_empty(const char* name) {
 #endif
 }
 
-// TODO(P2): core/steam_paths.py port (registry + libraryfolders.vdf scan).
-std::string user_mods_dir() {
-    return sa_core::paths::join(sa_core::paths::path_to_utf8(fs::current_path()), "mods");
-}
+// user_mods_dir() is the exported sa::user_mods_dir below; the anon-namespace
+// forward is gone so init_state's fallback call resolves unambiguously.
 
-// api.py:275-286 _env_workspace_root
+// api.py:275-286 _env_workspace_root (utf-8-sig 容错读写走 sa_core::env_store)
 std::string env_workspace_root() {
-    std::string p = sa_core::paths::join(editor_root(), "editor_env.json");
-    if (!sa_core::paths::is_file(p)) return {};
-    auto raw = sa_core::paths::read_bytes(p);
-    if (!raw) return {};
-    auto text = sa_core::decode_utf8_sig_strict(*raw);
-    if (!text) return {};
-    json data = json::parse(*text, nullptr, false);
-    if (data.is_discarded() || !data.is_object()) return {};
+    json data = sa_core::env_store::read_editor_env(editor_root());
     std::string ws;
-    if (data.contains("workspace_root") && data["workspace_root"].is_string()) {
-        ws = data["workspace_root"].get<std::string>();
-    } else if (data.contains("workspace_root") && !data["workspace_root"].is_null()) {
-        ws = sa_core::py_str(data["workspace_root"]);
+    auto it = data.find("workspace_root");
+    if (it != data.end()) {
+        if (it->is_string()) {
+            ws = it->get<std::string>();
+        } else if (!it->is_null()) {
+            ws = sa_core::py_str(*it);
+        }
     }
     if (!ws.empty() && sa_core::paths::is_dir(ws)) return ws;
     return {};
@@ -171,9 +167,12 @@ void set_editor_root(const std::string& root) { g_editor_root_override = root; }
 }  // namespace detail
 
 std::vector<std::string> workshop_mods_roots() {
-    // TODO(P2): core/steam_paths.py workshop_mods_roots (library discovery).
-    return {};
+    return sa_core::steam_paths::workshop_mods_roots(editor_root());
 }
+
+// steam_paths.user_mods_dir exposed for the P2 routes (workspace fallback,
+// oobe suggested_workspace). api.py callers of _user_mods_dir().
+std::string user_mods_dir() { return sa_core::steam_paths::user_mods_dir(); }
 
 std::string cfg_dir() {
     std::lock_guard<std::mutex> lk(STATE().mu_);

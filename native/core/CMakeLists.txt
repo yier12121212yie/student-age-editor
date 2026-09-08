@@ -9,9 +9,18 @@ add_library(sa_core STATIC
     paths.cpp
     atomic_io.cpp
     util.cpp
+    steam_paths.cpp
+    env_store.cpp
+    http_client.cpp
 )
 
 target_include_directories(sa_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+if(WIN32)
+    # steam_paths reads HKCU\Software\Valve\Steam via the registry;
+    # http_client speaks WinHTTP (in-box, schannel TLS — no third-party dep).
+    target_link_libraries(sa_core PUBLIC advapi32 winhttp)
+endif()
 
 # json_wire.h exposes nlohmann::ordered_json in its API, so the dependency must
 # be PUBLIC to propagate the include path to server/ and tests/.

@@ -4,10 +4,9 @@
 // normalization, list_mods with the 2s TTL (A15), select_mod's five-part
 // invalidation (NOT clearing _TABLE_CACHE! api.py:248-264).
 //
-// P2 placeholders kept as explicit TODO(P2) seams:
-//   * steam library / workshop discovery  -> empty root lists
-//   * user_mods_dir (LocalLow) fallback   -> CWD/mods
-//   * STATE.base (BaseDataService)        -> nullptr, base_loaded stays []
+// P2 (landed): steam library / workshop discovery via sa_core::steam_paths,
+// user_mods_dir = LocalLow game Mods. Still a wave-1+ seam:
+//   * STATE.base (BaseDataService)        -> P1 domain, base_loaded stays []
 #pragma once
 
 #include <functional>
@@ -59,8 +58,8 @@ EditorStateT& STATE();
 
 // Startup workspace resolution (CONVENTIONS 11):
 //   CLI --workspace-root wins; else editor_env.json's workspace_root (if it
-//   exists); else <cwd>/mods (TODO(P2): real value is the game's LocalLow Mods
-//   dir). Creates the directory when falling back. Auto-selects the first mod
+//   exists); else steam_paths.user_mods_dir() (LocalLow game Mods). Creates
+//   the directory when falling back. Auto-selects the first mod
 //   when nothing is selected yet (api.py:298-302).
 void init_state(const std::string& cli_workspace_root, const std::string& cli_mod_root,
                 const std::string& cli_mod_name);
@@ -75,8 +74,17 @@ namespace detail {
 void set_editor_root(const std::string& root);
 }  // namespace detail
 
-// Workshop mod roots (P2): empty for now.
+// Workshop mod roots (P2): core/steam_paths.py workshop_mods_roots — the
+// editor_env.json "workshop_root" override plus one
+// <library>/steamapps/workshop/content/1991040 per discovered Steam library.
+// EDITOR_DISABLE_STEAM_DETECT=1 suppresses the library scan (contract
+// isolation; mirrors the golden recorder's in-process steam_paths patch).
 std::vector<std::string> workshop_mods_roots();
+
+// steam_paths.user_mods_dir (P2): %USERPROFILE%\AppData\LocalLow\PakyiGame\
+// StudentAge\Mods on Windows (Proton/XDG fallbacks elsewhere). Not affected
+// by the detection switch — the value is pure path math, never a probe.
+std::string user_mods_dir();
 
 // <STATE.mod_root>/Cfgs/zh-cn or "" when no mod is selected.
 std::string cfg_dir();
