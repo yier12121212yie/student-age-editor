@@ -4,9 +4,18 @@
 #include <functional>
 
 #include "server/cfg_cache.h"
+#include "server/ai_dicts_route.h"
+#include "server/services/aa.h"
+#include "server/services/ai_image.h"
+#include "server/services/base_routes.h"
 #include "server/services/cfg_routes.h"
+#include "server/services/content_routes.h"
 #include "server/services/mods_routes.h"
+#include "server/services/p3b_domain_tools_routes.h"
+#include "server/services/semantic_routes.h"
 #include "server/services/system_routes.h"
+#include "server/services/tts.h"
+#include "server/services/workspace_routes.h"
 #include "server/state.h"
 
 namespace sa {
@@ -31,9 +40,22 @@ Router build_router() {
     set_mod_cfgs_invalidator(&invalidate_mod_cfgs_cache);
     set_preview_invalidator(&invalidate_preview_cache);
 
+    // Wave-1 core; registration order follows api.py to avoid pattern shadow.
     register_system_routes(r);
     register_mods_routes(r);
     register_cfg_routes(r);
+    // Wave-2 merge: semantic (P1) first per its report's ordering note, then
+    // workspace (P2), content (P3a), AI domain/tools (P3b), media (P4).
+    register_semantic_routes(r);      // P1
+    register_workspace_routes(r);     // P2
+    register_content_routes(r);       // P3a
+    register_ai_dicts_route(r);       // orchestrator gap-fill (ai.py:1674)
+    register_domain_tools_routes(r);  // P3b
+    register_base_routes(r);          // P4 — installs the base_store seam
+    register_aa_routes(r);
+    register_tts_routes(r);
+    register_ai_image_routes(r);
+    register_update_routes(r);
     return r;
 }
 

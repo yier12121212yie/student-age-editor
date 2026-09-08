@@ -18,7 +18,11 @@ add_library(sa_server STATIC
 )
 
 # Services include each other and the transport as "server/..." from native/.
-target_include_directories(sa_server PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# Wave-2 merge: the services directory is itself on the include path so the
+# merged files keep their bare-name cross-includes ("p3b_miniz_config.h" etc.).
+target_include_directories(sa_server PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    "${CMAKE_CURRENT_SOURCE_DIR}/services")
 target_link_libraries(sa_server PUBLIC sa_core)
 target_compile_features(sa_server PUBLIC cxx_std_20)
 add_library(sa::server ALIAS sa_server)
