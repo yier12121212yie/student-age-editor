@@ -89,10 +89,10 @@ std::string format_to_display(const json& val, const std::string& key, const std
 json parse_from_display(const std::string& text, const std::string& key, const json& original_val,
                         const std::string& cfg_name);
 // scan_bugs(mod_cfgs, base_cfgs, only_tables|null) -> bugs array.
-// read_only_view：复刻 api.py 的 MappingProxyType 语义（生产路径 _load_mod_cfgs
-// 返回只读代理，scan_bugs 里所有 `isinstance(cfg_data, dict)` 段——S1 断层/二维
-// 深度、S4 schema 格式环、S5 REF——恒不触发，只剩 S3/S4 恶性/改名条目）。
-// 路由首次扫描传 true；fork 后的私有表（Python 普通 dict）传 false。
+// read_only_view：历史遗留——D16 缺陷（api.py 生产路径 MappingProxyType 过
+// isinstance(dict) 门导致 S1/S2/S4/REF 段空转）已于两侧修复：Python 侧门放宽为
+// Mapping（bugfix_service.py/ref_rules.py），路由侧恒传 false 走全语义。
+// 参数保留仅为对照历史行为，波次 3 归一时删除。
 json scan_bugs(const json& mod_data, const json& base_data,
                const std::set<std::string>* only_tables, bool read_only_view = false);
 // apply_fix mutates mod_data in place (private fork). Returns whether changed.

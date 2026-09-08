@@ -6,6 +6,7 @@ utils.format_to_display / parse_from_display 因依赖 PyQt6 而内联为纯逻�
 无 GUI 依赖，供 HTTP API 层复用。
 """
 import json
+from collections.abc import Mapping
 
 from editor.core.game_schema import GAME_SCHEMA
 from editor.core.data_dicts import (
@@ -273,7 +274,10 @@ def scan_bugs(mod_data, base_data, only_tables=None):
     array_keys = ["cond", "effect", "effect2", "precondition", "condition", "stateCond"]
 
     for cfg_name, cfg_dict in m_data.items():
-        if not isinstance(cfg_dict, dict) or _skip(cfg_name):
+        # D16：HTTP 路由传入的是 _load_mod_cfgs 的 MappingProxyType 只读视图，
+        # isinstance(x, dict) 对 mappingproxy 为假 → 整表静默跳过（扫描/一键修复
+        # 的 S2 降维、REF 等检查在生产路径长期空转）。门放宽为 Mapping。
+        if not isinstance(cfg_dict, Mapping) or _skip(cfg_name):
             continue
         for item_id, item_data in cfg_dict.items():
             if not isinstance(item_data, dict):
@@ -357,7 +361,7 @@ def scan_bugs(mod_data, base_data, only_tables=None):
                     "旧版数据 'condition' 需要升级为 'cond'", "RENAME_COND")
 
     for cfg_name, cfg_data in m_data.items():
-        if cfg_name not in GAME_SCHEMA or not isinstance(cfg_data, dict) or _skip(cfg_name):
+        if cfg_name not in GAME_SCHEMA or not isinstance(cfg_data, Mapping) or _skip(cfg_name):
             continue
         schema_rules = GAME_SCHEMA[cfg_name]
         for item_id, item_data in cfg_data.items():

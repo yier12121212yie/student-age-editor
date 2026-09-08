@@ -13,6 +13,8 @@ EvtCfg/OptionCfg/ActionCfg/ItemCfg 等目标表的字段引用。
 1D/2D Array，均展平为 int 列表后逐值判定。目标表完全没有数据（Mod 与原版
 均无）时跳过该规则，避免误报。
 """
+from collections.abc import Mapping
+
 from editor.core.data_dicts import (
     ROLE_DICT, RELATION_DICT, ATTR_DICT, MAP_DICT, JOB_DICT, ITEM_DICT,
     BG_DICT, STATE_DICT, TEXT_DICT, NEGOTIATION_SKILL_DICT,
@@ -117,7 +119,7 @@ def _table_id_strs(table_data, extra):
             ids.add(str(k))
         else:
             ids.add(str(n))
-        if isinstance(table_data, dict) and isinstance(table_data.get(k), dict):
+        if isinstance(table_data, Mapping) and isinstance(table_data.get(k), Mapping):
             rid = _to_int_loose(table_data[k].get("id"))
             if rid is not None:
                 ids.add(str(rid))
@@ -165,7 +167,9 @@ def check_refs(tables, extra_ids=None):
     table_ids_cache = {}
     for rule in REF_RULES:
         data = tables.get(rule["cfg"]) or {}
-        if not isinstance(data, dict):
+        # D16：tables 值来自 _load_mod_cfgs 的 MappingProxyType 只读视图，
+        # dict 判定对 mappingproxy 为假会整表跳过 REF 检查。放宽为 Mapping。
+        if not isinstance(data, Mapping):
             continue
         target = rule["target"]
         # 合法值集合 = 豁免值 ∪ 字典池（若该表有内置字典，如 ROLE_DICT/MAP_DICT）
