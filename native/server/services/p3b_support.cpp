@@ -10,6 +10,7 @@
 
 #include "p3b_miniz_config.h"
 
+#include "sa_core/assets.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/strings.h"
@@ -412,34 +413,12 @@ bool ZipReader::extract_all(const std::string& dest) const {
 // ---------------------------------------------------------------------------
 
 std::string find_asset(const std::string& filename) {
-    static std::mutex mu;
-    static std::map<std::string, std::string> cache;
-    std::lock_guard<std::mutex> lk(mu);
-    auto it = cache.find(filename);
-    if (it != cache.end()) return it->second;
-    std::vector<std::string> candidates;
-    if (const char* env = std::getenv("EDITOR_ASSETS_ROOT"); env && *env) {
-        candidates.push_back(sa_core::paths::join(env, filename));
-    }
-    const std::string exe = sa_core::paths::exe_dir();
-    if (!exe.empty()) {
-        candidates.push_back(sa_core::paths::join(exe, "assets/" + filename));
-        candidates.push_back(sa_core::paths::join(exe, "../assets/" + filename));
-        // bin/ lives two levels below native/ (build-P3b/bin -> native/assets);
-        // the wave-1 system_routes.cpp list stops one level up, which only
-        // works for the official build/ layout.
-        candidates.push_back(sa_core::paths::join(exe, "../../assets/" + filename));
-    }
-    candidates.push_back("assets/" + filename);
-    candidates.push_back("native/assets/" + filename);
-    for (const auto& p : candidates) {
-        if (sa_core::paths::is_file(p)) {
-            cache[filename] = p;
-            return p;
-        }
-    }
-    cache[filename].clear();
-    return {};
+    // The old local candidate list (env, exe_dir up to ../../, cwd) only
+    // resolved the official build/ layout — an archive-verify build placed
+    // beside native/ failed four p3b-domain cases on missing schema.json.
+    // No cache anymore: load_asset only feeds the static-once
+    // schema/dicts/field_cn singletons.
+    return sa_core::assets::find_asset(filename);
 }
 
 const json& game_schema() {

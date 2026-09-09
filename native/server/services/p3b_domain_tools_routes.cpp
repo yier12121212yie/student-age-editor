@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "env_store_ai.h"  // R3: single AI-settings store (shared with tts.cpp)
 #include "p3b_ai_files.h"
-#include "p3b_ai_settings.h"
 #include "p3b_domain_service.h"
 #include "p3b_domain_tools_routes.h"
 #include "p3b_fs_tools.h"
@@ -272,7 +272,7 @@ void register_domain_tools_routes(Router& r) {
     // GET /api/ai/settings — api.py:851-857 (env_store.read_ai_settings).
     r.get(R"(/api/ai/settings)", [](const Req&) -> Resp {
         json body = json::object();
-        body["settings"] = p3b::ai_settings::read_settings(sa::editor_root());
+        body["settings"] = env_store_ai::read_ai_settings(sa::editor_root());
         return Resp::Json(200, std::move(body));
     });
 
@@ -293,7 +293,7 @@ void register_domain_tools_routes(Router& r) {
         }
         json body = json::object();
         body["ok"] = true;
-        body["settings"] = p3b::ai_settings::write_settings(sa::editor_root(), patch);
+        body["settings"] = env_store_ai::write_ai_settings(sa::editor_root(), patch);
         return Resp::Json(200, std::move(body));
     });
 

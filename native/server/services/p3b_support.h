@@ -126,9 +126,9 @@ const json& role_dict();
 // from dicts.json key_maps, first occurrence wins.
 const std::map<std::string, std::string>& field_cn();
 
-// Locate an asset file by the same candidate list system_routes.cpp uses
-// (EDITOR_ASSETS_ROOT, exe_dir/assets, exe_dir/../assets, exe_dir/../../assets,
-// cwd/assets, cwd/native/assets); "" when missing.
+// Locate an asset file — thin forward to sa_core::assets::find_asset (the
+// single resolver; candidate list documented in sa_core/assets.h).
+// "" when missing.
 std::string find_asset(const std::string& filename);
 
 }  // namespace p3b

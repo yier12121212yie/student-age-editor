@@ -2,9 +2,9 @@
 #include "semantic_assets.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <mutex>
 
+#include "sa_core/assets.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/utf8.h"
@@ -17,9 +17,6 @@ namespace {
 
 namespace paths = sa_core::paths;
 
-std::string g_assets_root_override;
-std::mutex g_assets_mu;
-
 std::optional<std::string> read_json_text(const std::string& path) {
     auto raw = paths::read_bytes(path);
     if (!raw) return std::nullopt;
@@ -28,43 +25,10 @@ std::optional<std::string> read_json_text(const std::string& path) {
     return sa_core::decode_utf8_sig_replace(*raw);
 }
 
-std::vector<std::string> candidate_paths(const std::string& filename) {
-    std::vector<std::string> out;
-    {
-        std::lock_guard<std::mutex> lk(g_assets_mu);
-        if (!g_assets_root_override.empty())
-            out.push_back(paths::join(g_assets_root_override, filename));
-    }
-    if (const char* env = std::getenv("EDITOR_ASSETS_ROOT"); env && *env)
-        out.push_back(paths::join(env, filename));
-    if (const char* env = std::getenv("SA_NATIVE_SOURCE_DIR"); env && *env) {
-        out.push_back(paths::join(paths::join(env, "assets"), filename));
-        // SA_NATIVE_SOURCE_DIR may point at native/tests; back up one level.
-        out.push_back(paths::join(
-            paths::join(paths::dirname(env), "assets"), filename));
-    }
-    std::string exe = paths::exe_dir();
-    if (!exe.empty()) {
-        std::string dir = exe;
-        // Walk up several levels from build-<group>/bin looking for a sibling
-        // native/assets (repo layout) or assets dir.
-        for (int i = 0; i < 7 && !dir.empty(); ++i) {
-            out.push_back(paths::join(dir, "assets"));
-            out.push_back(paths::join(paths::join(dir, "native"), "assets"));
-            std::string parent = paths::dirname(dir);
-            if (parent == dir) break;
-            dir = parent;
-        }
-    }
-    out.push_back("assets");
-    out.push_back(paths::join("native", "assets"));
-    std::vector<std::string> files;
-    for (auto& d : out) files.push_back(paths::join(d, filename));
-    return files;
-}
-
+// R1 unification: the candidate list itself moved to sa_core/assets.cpp so
+// every layer resolves assets identically without cross-service includes.
 json load_asset(const std::string& filename) {
-    for (const auto& p : candidate_paths(filename)) {
+    for (const auto& p : sa_core::assets::candidate_paths(filename)) {
         auto text = read_json_text(p);
         if (!text) continue;
         json parsed = json::parse(*text, nullptr, false);
@@ -234,14 +198,11 @@ const json& effect_editor_db() {
 }
 
 std::string find_asset(const std::string& filename) {
-    for (const auto& p : candidate_paths(filename))
-        if (paths::is_file(p)) return p;
-    return std::string();
+    return sa_core::assets::find_asset(filename);
 }
 
 void set_assets_root_for_test(const std::string& root) {
-    std::lock_guard<std::mutex> lk(g_assets_mu);
-    g_assets_root_override = root;
+    sa_core::assets::set_assets_root_override(root);
 }
 
 }  // namespace p1

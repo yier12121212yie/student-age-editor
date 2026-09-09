@@ -2,14 +2,15 @@
 // /api/perf. Ports api.py:742-782 plus the additive GET /api/perf endpoint
 // (CONVENTIONS 7).
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "sa_core/version.h"
 
+#include "sa_core/assets.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/utf8.h"
@@ -25,29 +26,19 @@ namespace {
 
 // /api/state.schema_count = len(GAME_SCHEMA) (api.py:765; golden = 406).
 // assets/schema.json is the wave-0b export of game_schema.GAME_SCHEMA, so the
-// top-level key count is the contract. Lookup order: EDITOR_ASSETS_ROOT env,
-// exe_dir/assets, exe_dir/../assets, cwd/assets, cwd/native/assets.
+// top-level key count is the contract. R1 unification: this used to carry the
+// narrowest wave-0 candidate list (only official build/ layout); resolution is
+// now sa_core::assets.
 int schema_count() {
     static std::once_flag once;
     static int count = 0;
     std::call_once(once, [] {
-        std::vector<std::string> candidates;
-        if (const char* env = std::getenv("EDITOR_ASSETS_ROOT"); env && *env) {
-            candidates.push_back(sa_core::paths::join(env, "schema.json"));
-        }
-        std::string exe = sa_core::paths::exe_dir();
-        if (!exe.empty()) {
-            candidates.push_back(sa_core::paths::join(exe, "assets/schema.json"));
-            candidates.push_back(sa_core::paths::join(exe, "../assets/schema.json"));
-        }
-        candidates.push_back("assets/schema.json");
-        candidates.push_back("native/assets/schema.json");
-        for (const auto& p : candidates) {
-            auto raw = sa_core::paths::read_bytes(p);
-            if (!raw) continue;
+        const std::string p = sa_core::assets::find_asset("schema.json");
+        auto raw = p.empty() ? std::nullopt : sa_core::paths::read_bytes(p);
+        if (raw) {
             auto text = sa_core::decode_utf8_sig_strict(*raw);
             if (!text) text = sa_core::decode_utf8_sig_replace(*raw);
-            json parsed = json::parse(*text, nullptr, false);
+            json parsed = text ? json::parse(*text, nullptr, false) : json{};
             if (!parsed.is_discarded() && parsed.is_object()) {
                 count = static_cast<int>(parsed.size());
                 return;

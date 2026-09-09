@@ -2,9 +2,9 @@
 
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <mutex>
 
+#include "sa_core/assets.h"
 #include "sa_core/paths.h"
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
@@ -384,40 +384,13 @@ std::optional<std::string> read_json_text(const std::string& path) {
     return sa_core::decode_utf8_sig_replace(*raw);
 }
 
-std::vector<std::string> candidate_paths(const std::string& filename) {
-    namespace paths = sa_core::paths;
-    std::vector<std::string> dirs;
-    if (const char* env = std::getenv("EDITOR_ASSETS_ROOT"); env && *env)
-        dirs.push_back(env);
-    if (const char* env = std::getenv("SA_NATIVE_SOURCE_DIR"); env && *env) {
-        dirs.push_back(paths::join(env, "assets"));
-        // SA_NATIVE_SOURCE_DIR 可能指 native/tests，向上回一级。
-        dirs.push_back(paths::join(paths::dirname(env), "assets"));
-    }
-    std::string exe = paths::exe_dir();
-    if (!exe.empty()) {
-        std::string dir = exe;
-        // build-<group>/bin 向上找 native/assets（仓库布局）或 assets。
-        for (int i = 0; i < 7 && !dir.empty(); ++i) {
-            dirs.push_back(paths::join(dir, "assets"));
-            dirs.push_back(paths::join(paths::join(dir, "native"), "assets"));
-            std::string parent = paths::dirname(dir);
-            if (parent == dir) break;
-            dir = parent;
-        }
-    }
-    dirs.push_back("assets");
-    dirs.push_back(paths::join("native", "assets"));
-    std::vector<std::string> files;
-    for (auto& d : dirs) files.push_back(paths::join(d, filename));
-    return files;
-}
-
 const json& dicts_singleton() {
     static std::once_flag once;
     static json g_dicts;
     std::call_once(once, [] {
-        for (const auto& p : candidate_paths("dicts.json")) {
+        // R1 unification: candidate list shared with all other asset loaders
+        // via sa_core/assets.cpp (this used to be a near-verbatim copy).
+        for (const auto& p : sa_core::assets::candidate_paths("dicts.json")) {
             auto text = read_json_text(p);
             if (!text) continue;
             json parsed = json::parse(*text, nullptr, false);

@@ -63,14 +63,13 @@ const json& screen_effect_db();
 const json& action_cmd_db();
 const json& secondary_placeholder_map();  // {"@ATTR@": ["ATTR","属性"], ...}
 
-// Resolve assets/schema.json + assets/dicts.json. Lookup order honours the
-// wave-0 pattern (system_routes.cpp) plus the brief's fallbacks:
-//   EDITOR_ASSETS_ROOT, SA_NATIVE_SOURCE_DIR/assets,
-//   exe_dir/{assets, ../assets, ../../assets ...} walking up,
-//   cwd/{assets, native/assets}.
+// Resolve assets/schema.json + assets/dicts.json. Thin forward to
+// sa_core::assets::find_asset — the single resolver for the whole backend
+// (candidate list documented in sa_core/assets.h).
 std::string find_asset(const std::string& filename);
 
 // For tests / smoke: allow forcing the assets root (empty resets to auto).
+// Forwards to sa_core::assets::set_assets_root_override.
 void set_assets_root_for_test(const std::string& root);
 
 }  // namespace p1

@@ -89,12 +89,10 @@ std::string format_to_display(const json& val, const std::string& key, const std
 json parse_from_display(const std::string& text, const std::string& key, const json& original_val,
                         const std::string& cfg_name);
 // scan_bugs(mod_cfgs, base_cfgs, only_tables|null) -> bugs array.
-// read_only_view：历史遗留——D16 缺陷（api.py 生产路径 MappingProxyType 过
-// isinstance(dict) 门导致 S1/S2/S4/REF 段空转）已于两侧修复：Python 侧门放宽为
-// Mapping（bugfix_service.py/ref_rules.py），路由侧恒传 false 走全语义。
-// 参数保留仅为对照历史行为，波次 3 归一时删除。
+// (历史遗留的 read_only_view 死参已删：D16 只读代理空转缺陷在两侧修复后，
+//  所有调用点恒走全语义，波次 3 归一时移除。)
 json scan_bugs(const json& mod_data, const json& base_data,
-               const std::set<std::string>* only_tables, bool read_only_view = false);
+               const std::set<std::string>* only_tables);
 // apply_fix mutates mod_data in place (private fork). Returns whether changed.
 bool apply_fix(json& mod_data, const json& bug);
 

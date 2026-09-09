@@ -1,5 +1,5 @@
 # sa_core: the shared static library (identity, string utils, wire formatter,
-# UTF-8 codec, SHA-1, path/stat helpers, atomic writes).
+# UTF-8 codec, SHA-1, path/stat helpers, atomic writes, asset resolution).
 add_library(sa_core STATIC
     version.cpp
     strings.cpp
@@ -12,6 +12,7 @@ add_library(sa_core STATIC
     steam_paths.cpp
     env_store.cpp
     http_client.cpp
+    assets.cpp
 )
 
 target_include_directories(sa_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

@@ -667,7 +667,7 @@ void register_semantic_routes(Router& r) {
         ModCfgsView view = load_mod_cfgs();
         // D16 FIXED（用户拍板）：Python 生产路径的 MappingProxyType 门已放宽为
         // Mapping（bugfix_service/ref_rules），本侧同步走全语义扫描。
-        json bugs = p1::scan_bugs(mod_tables_json(view), base_tables_json(), nullptr, false);
+        json bugs = p1::scan_bugs(mod_tables_json(view), base_tables_json(), nullptr);
         for (auto& [cfg, err] : view.broken) bugs.push_back(broken_bug(cfg, err));
         // view.broken is a std::map (sorted by cfg already).
         json out;
@@ -689,7 +689,7 @@ void register_semantic_routes(Router& r) {
         json base_data = base_tables_json();
         // 首次扫描同 scan 路由（D16 修复后全语义）；A11 的 touched 重扫用私有
         // fork ——两条路径现在语义一致，见 semantic_logic.h 注释。
-        json bugs = p1::scan_bugs(mod_tables_json(view), base_data, nullptr, false);
+        json bugs = p1::scan_bugs(mod_tables_json(view), base_data, nullptr);
         // D10：Python 在索引/匹配/remaining 之前就把坏表 ERROR 条目并入 bugs
         // （_report_broken_tables(bugs)），随后 remaining 末尾**再**并入一次——
         // remaining 里 broken 条目出现两次是 api.py 的真实行为，照抄。

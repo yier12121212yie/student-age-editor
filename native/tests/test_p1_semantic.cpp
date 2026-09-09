@@ -238,7 +238,7 @@ TEST_CASE("p1 scan_bugs engine-level: 断层/越界/降维/格式 heal + rename 
         "TalkCfg": {"1314170001": {"id": 1314170001, "nextTalk": [999]}},
         "OptionCfg": {"5": {"id": 5, "talkId": 7}},
         "GiftEvtCfg": {"1": {"id": 1, "npcId": [3], "condition": [[1, 1, 1, 5]]}}})");
-    json bugs = sa::p1::scan_bugs(mod, j("{}"), nullptr /* read_only_view=false */);
+    json bugs = sa::p1::scan_bugs(mod, j("{}"), nullptr);
     // S1：nextTalk 999 / talkId 7 均不在表内 → 致命断层
     int faults = 0;
     for (auto& b : bugs)

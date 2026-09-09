@@ -352,8 +352,7 @@ json parse_from_display(const std::string& text_in, const std::string& key, cons
     return res.empty() ? json(0) : res[0];
 }
 
-json scan_bugs(const json& mod_data, const json& base_data, const std::set<std::string>* only_tables,
-               bool read_only_view) {
+json scan_bugs(const json& mod_data, const json& base_data, const std::set<std::string>* only_tables) {
     json bugs = json::array();
     if (game_schema().empty()) {
         json b;
@@ -388,8 +387,7 @@ json scan_bugs(const json& mod_data, const json& base_data, const std::set<std::
 
     auto is_in = [&](const std::set<std::string>& s, const std::string& v) { return s.count(v); };
 
-    // S1+S2：Python 里 `isinstance(cfg_dict, dict)` 门——只读代理输入整段空转。
-    for (auto it = read_only_view ? m.end() : m.begin(); it != m.end(); ++it) {
+    for (auto it = m.begin(); it != m.end(); ++it) {
         const std::string& cfg = it.key();
         if (!it.value().is_object() || skip(cfg)) continue;
         for (auto ri = it.value().begin(); ri != it.value().end(); ++ri) {
@@ -496,9 +494,8 @@ json scan_bugs(const json& mod_data, const json& base_data, const std::set<std::
                              "旧版数据 'condition' 需要升级为 'cond'", "RENAME_COND");
         }
 
-    // S4-format：同样的 `isinstance(cfg_data, dict)` 门（只读代理下整段空转）。
     const json& gs = game_schema();
-    for (auto it = read_only_view ? m.end() : m.begin(); it != m.end(); ++it) {
+    for (auto it = m.begin(); it != m.end(); ++it) {
         const std::string& cfg = it.key();
         if (!gs.contains(cfg) || !it.value().is_object() || skip(cfg)) continue;
         const json& rules = gs[cfg];
@@ -543,9 +540,7 @@ json scan_bugs(const json& mod_data, const json& base_data, const std::set<std::
         extra_ids[it.key()] = arr;
     }
     try {
-        // S5：check_refs 的 `isinstance(data, dict)` 门在只读代理下全表空转
-        // （实测 ref_rules.check_refs(MappingProxyType 包装) == []）→ 跳过整段。
-        for (auto& ref : read_only_view ? json::array() : check_refs(m, extra_ids)) {
+        for (auto& ref : check_refs(m, extra_ids)) {
             if (skip(ref.value("cfg", ""))) continue;
             std::string desc = ref.value("desc", "");
             bool has_healed = ref.contains("healed") && !ref["healed"].is_null();

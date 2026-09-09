@@ -1,10 +1,11 @@
-// wip/P4/env_store_ai.h — C++ port of `editor/core/env_store.py` AI-settings
-// half (read_ai_settings / write_ai_settings / normalize_ai_settings).
+// server/services/env_store_ai.h — C++ port of `editor/core/env_store.py`
+// AI-settings half (read_ai_settings / write_ai_settings /
+// normalize_ai_settings).
 //
-// Owned by P4 for the /api/tts/settings contract; P3b implements the same
-// store for /api/ai/settings — at merge the orchestrator should keep ONE
-// copy (this one covers the tts* normalisation the配音 routes need; the
-// ai-settings golden api_ai_settings.json pins the identical shape).
+// THE single copy (post-merge refactor R3): serves both /api/tts/settings
+// (tts.cpp) and /api/ai/settings (p3b_domain_tools_routes.cpp). The former
+// p3b_ai_settings.{h,cpp} twin was deleted after its more Python-faithful
+// normalization was absorbed here.
 //
 // Pitfalls honored (env_store.py):
 //   * normalize starts from DEFAULT but every key absent from `data` is
