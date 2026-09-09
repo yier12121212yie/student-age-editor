@@ -14,8 +14,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 缺省构建类型 = Release（波次 3 教训）：组脚本模板的 BUILD_TYPE 默认值写在
+# `( ... )` 块内，%VAR% 解析期展开成空串，-DCMAKE_BUILD_TYPE= 落空——P5/P7/P8
+# 三次「静默 Debug 缓存」皆源于此。门禁本来就要求 Release（40MB [slow] 用例在
+# /RTC1 下不可用），把兜底从 Debug 改成 Release 让误配无害化；需要 Debug 排查
+# 悬垂引用类问题（如 N1）时显式传 -DCMAKE_BUILD_TYPE=Debug。
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (single-config)" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (single-config)" FORCE)
 endif()
 
 # Keep build artifacts out of the source tree and predictable for build.cmd.

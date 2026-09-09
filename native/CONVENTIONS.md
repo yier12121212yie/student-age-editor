@@ -266,9 +266,13 @@ void register_demo_routes(Router& r) {
   （dump 类型标签 default 分支）。规则：取单例子对象一律 `contains + at` 链，禁用
   `value(k, json::object())` 绑引用跨语句（同作用域即用即弃可容忍，但白白拷贝整个子树，
   也建议改）。此类问题只有 Debug 配置能暴露——门禁备注见下。
-- **门禁配置备注（波次 3）**：P8 的 build-P8 因 `build_p8.cmd` 首配未带
-  `-DCMAKE_BUILD_TYPE=Release` 落成 Debug 缓存，才暴露 N1；组构建脚本首配必须显式
-  Release（P4 模板的 BUILD_TYPE 默认值在 config 分支内才生效，直接 cmake 起配会留空）。
+- **门禁配置备注（波次 3，两次事故后收口）**：P8 的 build-P8 因 `build_p8.cmd` 首配未带
+  `-DCMAKE_BUILD_TYPE=Release` 落成 Debug 缓存，才暴露 N1；P7/P5 接管时又发现同型根因：
+  模板把 `if "%BUILD_TYPE_G%"=="" set ...` 与 cmake 调用写进同一 `( ... )` 块，%VAR%
+  解析期展开为空 → 传 `-DCMAKE_BUILD_TYPE=`（空）→ 旧 root CMakeLists 兜底静默 FORCE
+  Debug。已收口：root CMakeLists 缺省兜底改 **Release**（误配无害化；需 Debug 跑 N1
+  那类排查时显式传），P7 组脚本块内展开 bug 由 P7 组自修。规则不变：门禁一律
+  Release，组构建首配直接 cmake 显式 `-DCMAKE_BUILD_TYPE=Release` 最稳。
 
 ## 11. 环境注入与 EditorState（已核实，出处 `server/__init__.py:14-29`、`api.py:151-307`）
 
