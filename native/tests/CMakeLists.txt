@@ -19,6 +19,11 @@ add_executable(sa_tests
 )
 
 target_link_libraries(sa_tests PRIVATE sa_server sa_core)
+# Wave-3 merges: [p7] CLI-logic tests take symbols from sa_cli (whose PUBLIC
+# include dir resolves "p7_cli_logic.h"; <CLI11/CLI11.hpp> rides sa_third_party
+# via sa_core); [p8] TUI logic + FTXUI-DOM snapshot tests take symbols AND the
+# ftxui::dom / "p8_*.h" include dirs PUBLIC from sa_tui.
+target_link_libraries(sa_tests PRIVATE sa_cli sa_tui)
 target_include_directories(sa_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # <catch_amalgamated.hpp> include dir is already on sa_third_party (via sa_core);

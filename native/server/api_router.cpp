@@ -9,6 +9,7 @@
 #include "server/services/ai_image.h"
 #include "server/services/base_routes.h"
 #include "server/services/cfg_routes.h"
+#include "server/services/cloud_routes.h"
 #include "server/services/content_routes.h"
 #include "server/services/mods_routes.h"
 #include "server/services/p3b_domain_tools_routes.h"
@@ -56,6 +57,9 @@ Router build_router() {
     register_tts_routes(r);
     register_ai_image_routes(r);
     register_update_routes(r);
+    // P5 wave-3: cloud 18 路由 + realtime；register 尾部对齐 api.py:3149 触发
+    // rt_auto_start（3s 延迟线程，等同 Python build_router 期行为）。
+    register_cloud_routes(r);
     return r;
 }
 

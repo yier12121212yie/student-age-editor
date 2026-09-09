@@ -56,6 +56,8 @@ enable_testing()
 
 add_subdirectory(core)
 add_subdirectory(server)
+add_subdirectory(cli)   # sa_cli + backend_cli (P7); must precede tests
+add_subdirectory(tui)    # sa_tui + backend_tui (P8); must precede tests
 add_subdirectory(tests)
 
 # Parallel-wave hook: a group working under -DSA_GROUP_WIP=<G> may ship extra

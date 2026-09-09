@@ -16,9 +16,11 @@
 
 ```
 native/
-  CMakeLists.txt            # C++20; sa_core(静态库) / backend(可执行) / sa_tests(Catch2)
-  build.cmd                 # 一键：vcvars64 + cmake -G Ninja → build/ → 测试
-  third_party/              # vendored 单头: httplib.h, json.hpp, catch_amalgamated.*（版本记录于其 README）
+  CMakeLists.txt            # C++20; sa_core/sa_server/sa_cli/sa_tui(静态库) +
+                            #   backend/backend_cli/backend_tui(可执行) + sa_tests(Catch2)
+  build.cmd                 # 一键：vcvars64 + cmake -G Ninja → build/ → 测试（缺省 Release）
+  third_party/              # vendored 单头/amalgamated: httplib.h, json.hpp, catch_amalgamated.*,
+                            #   miniz, CLI11.hpp；+ 首个工程式 vendor ftxui/（版本记录于其 README）
   core/include/, core/src/  # libcore：types、paths、atomic_io、json 工具、schema 加载
   server/main.cpp           # 入口：--port / --write-port
   server/api_router.cpp     # 路由总线组装：逐个调用各服务的 register_<name>_routes(Router&)【主代理专属】
@@ -26,9 +28,14 @@ native/
   server/httpd.{h,cpp}      # 传输层（第 2 节）
   server/cfg_store.{h,cpp}  # 写管线（第 5 节）
   server/perf.{h,cpp}       # 计数器（第 7 节）
+  cli/                      # backend_cli（P7 合并）：p7_cli_logic.{h,cpp} 进 sa_cli（纯逻辑，
+                            #   sa_tests 共享），p7_cli_main.cpp 只进 exe ——禁 glob 收 main
+  tui/                      # backend_tui（P8 合并）：根级 p8_*（逻辑+无头渲染）进 sa_tui，
+                            #   tui/{app,main} 交互层只进 exe；ftxui 经 add_subdirectory
   assets/                   # schema.json（406 表名，非空 *Cfg 303 张）/ dicts.json（0b 产出；
                             #   构建期嵌入二进制的接线在波次 2 落地，先经文件路径加载）
   tests/contract/           # normalize.py + golden/（黑盒契约，任意实现后端可打）
+  tests/smoke_cli.py, tests/smoke_tui.py  # 正树黑盒冒烟（波次 3 起常驻，指 build/bin）
 ```
 
 本机工具链（勿安装别的东西）：
