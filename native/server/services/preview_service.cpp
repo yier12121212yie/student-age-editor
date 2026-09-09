@@ -240,7 +240,15 @@ const json* record_at_table(const json& table, const std::string& rid) {
 
 const json& dict_pool(const char* key) {
     static const json kEmpty = json::object();
-    const json& gd = content::dicts_json().value("game_dicts", json::object());
+    // 陷阱（坑点 N1，见 CONVENTIONS §10）：nlohmann value(key, json 默认值)
+    // 的返回类型是 std::decay<ValueType> —— **按值拷贝**（json.hpp:21517
+    // value_return_type）。旧写法把该拷贝绑到 const json& 再返回其子对象引用，
+    // 拷贝随本函数作用域结束而析构 → 调用方拿到悬垂引用（Release 靠陈旧堆字节
+    // "碰巧"通过；Debug 堆投毒 0xDD 下 meta.bgs/evtTypes 序列化即断言崩溃，
+    // 波次3 P8 首报）。改为全程引用单例本体，永不物化拷贝。
+    const json& all = content::dicts_json();
+    if (!all.is_object() || !all.contains("game_dicts")) return kEmpty;
+    const json& gd = all.at("game_dicts");
     if (!gd.is_object() || !gd.contains(key)) return kEmpty;
     const json& v = gd.at(key);
     return v.is_object() ? v : kEmpty;

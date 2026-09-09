@@ -259,6 +259,16 @@ void register_demo_routes(Router& r) {
   见 `still-stone-stickleback.md` 与 IMPLEMENTATION_STATUS.md 行为变更节，各组简报会带子集。
 - **全局**：`_truthy` 只认真 true/"true"；错误 detail 中文逐字；`sorted()` 显式排序点；
   「假完成」教训——准出证据必须能复跑。
+- **N1（波次 3 发现，已修 `preview_service.dict_pool`）**：nlohmann
+  `value(key, json 默认值)` 的返回类型是 `std::decay` 后的**按值拷贝**（json.hpp:21517
+  `value_return_type`），不是引用——把它绑到 `const json&` 再返回其子对象引用＝返回悬垂引用；
+  Release 靠陈旧堆字节静默通过，Debug（0xDD 投毒）在序列化时炸 `json.hpp:18380`
+  （dump 类型标签 default 分支）。规则：取单例子对象一律 `contains + at` 链，禁用
+  `value(k, json::object())` 绑引用跨语句（同作用域即用即弃可容忍，但白白拷贝整个子树，
+  也建议改）。此类问题只有 Debug 配置能暴露——门禁备注见下。
+- **门禁配置备注（波次 3）**：P8 的 build-P8 因 `build_p8.cmd` 首配未带
+  `-DCMAKE_BUILD_TYPE=Release` 落成 Debug 缓存，才暴露 N1；组构建脚本首配必须显式
+  Release（P4 模板的 BUILD_TYPE 默认值在 config 分支内才生效，直接 cmake 起配会留空）。
 
 ## 11. 环境注入与 EditorState（已核实，出处 `server/__init__.py:14-29`、`api.py:151-307`）
 
