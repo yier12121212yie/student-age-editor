@@ -76,9 +76,11 @@ Name: "officialpack"; Description: "官方资源扩展包（适用于未安装�
 
 [Files]
 ; 核心组件 (core)
+; native C++ 后端三件套（波次 4 起替代 PyInstaller 冻结，无 _internal/ 依赖目录）
 Source: "{#BackendDist}\backend.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: core
-; 共享运行时库（PyInstaller onedir 的 _internal，backend.exe 与 editor_cmd.exe 共用）
-Source: "{#BackendDist}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: core
+; AA 资源扫描独立工具（tools/resource_scan 的 onefile 冻结；可选产物，
+; 构建机未冻结成功时不存在，skipifsourcedoesntexist 让打包照常通过）
+Source: "{#BackendDist}\aa_scan.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 Source: "{#SourceDir}\使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme; Components: core; DestName: "使用说明.txt"
 
 ; GUI 组件 (Flutter 前端)
@@ -86,8 +88,9 @@ Source: "{#SourceDir}\{#AppName}.exe"; DestDir: "{app}"; Flags: ignoreversion; C
 Source: "{#SourceDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: gui
 Source: "{#SourceDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: gui
 
-; TUI 与 CLI 共享终端可执行文件 (editor_cmd.exe)
-Source: "{#BackendDist}\editor_cmd.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: tui cli
+; TUI 与 CLI 独立可执行文件（native：backend_tui.exe / backend_cli.exe）
+Source: "{#BackendDist}\backend_tui.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: tui
+Source: "{#BackendDist}\backend_cli.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: cli
 
 ; 官方资源扩展包
 Source: "{#OfficialPackDir}\*"; DestDir: "{app}\_cache\resource_packs\official-bundled"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: officialpack
@@ -100,10 +103,12 @@ Name: "path_tui"; Description: "添加 editor-tui 命令到系统/用户 PATH �
 Name: "path_cli"; Description: "添加 editor-cli 命令到系统/用户 PATH 环境变量"; GroupDescription: "命令行环境 (PATH):"; Components: cli; Flags: checkedonce
 
 [Icons]
-; 开始菜单快捷方式
+; 开始菜单快捷方式（native 通道：TUI/CLI 各为独立 exe，不再经 editor_cmd 聚合入口；
+; backend_tui 直接进终端界面（内嵌自起后端）；backend_cli 无参启动展示用法，
+; 子命令为 mods/cfg/validate/bugfix/story/oobe/env 直挂（无 Python 版的 cli 前缀））
 Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; IconFilename: "{app}\{#AppName}.exe"; Tasks: startmenu; Components: gui
-Name: "{autoprograms}\{#AppName}\{#AppName} (TUI 终端界面)"; Filename: "{app}\editor_cmd.exe"; Parameters: "tui"; IconFilename: "{app}\editor_cmd.exe"; Tasks: startmenu; Components: tui
-Name: "{autoprograms}\{#AppName}\{#AppName} (CLI 命令行)"; Filename: "{app}\editor_cmd.exe"; Parameters: "cli"; IconFilename: "{app}\editor_cmd.exe"; Tasks: startmenu; Components: cli
+Name: "{autoprograms}\{#AppName}\{#AppName} (TUI 终端界面)"; Filename: "{app}\backend_tui.exe"; IconFilename: "{app}\backend_tui.exe"; Tasks: startmenu; Components: tui
+Name: "{autoprograms}\{#AppName}\{#AppName} (CLI 命令行)"; Filename: "{app}\backend_cli.exe"; IconFilename: "{app}\backend_cli.exe"; Tasks: startmenu; Components: cli
 Name: "{autoprograms}\{#AppName}\使用说明"; Filename: "{app}\使用说明.txt"; Tasks: startmenu; Components: core
 
 ; 桌面快捷方式
@@ -119,7 +124,6 @@ Type: filesandordirs; Name: "{app}\_cache"
 Type: filesandordirs; Name: "{app}\logs"
 Type: files; Name: "{app}\editor_env.json"
 Type: files; Name: "{app}\.editor_ai.json"
-Type: filesandordirs; Name: "{app}\_internal"
 
 [Code]
 var
@@ -320,8 +324,10 @@ var
 begin
   ForceDirectories(BinDir);
   GuiCmd := '@echo off' + #13#10 + 'start "" "%~dp0..\{#AppName}.exe" %*' + #13#10;
-  TuiCmd := '@echo off' + #13#10 + '"%~dp0..\editor_cmd.exe" tui %*' + #13#10;
-  CliCmd := '@echo off' + #13#10 + '"%~dp0..\editor_cmd.exe" cli %*' + #13#10;
+  // native 通道：editor-tui → backend_tui.exe；editor-cli → backend_cli.exe
+  // （子命令直挂 mods/cfg/...，无 Python editor_cmd 的 cli 前缀）
+  TuiCmd := '@echo off' + #13#10 + '"%~dp0..\backend_tui.exe" %*' + #13#10;
+  CliCmd := '@echo off' + #13#10 + '"%~dp0..\backend_cli.exe" %*' + #13#10;
 
   SaveStringToFile(BinDir + '\editor-gui.cmd', GuiCmd, False);
   SaveStringToFile(BinDir + '\editor-tui.cmd', TuiCmd, False);

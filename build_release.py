@@ -1,15 +1,25 @@
 # -*- coding: utf-8 -*-
 """一键构建「学生时代模组编辑器」发行版（多平台）。
 
-流程：PyInstaller 打包后端 → Flutter 构建前端 → 组装发行版目录 → 打 zip
+流程：构建后端 → Flutter 构建前端 → 组装发行版目录 → 打 zip
       → 用平台安装器构建安装包（Windows Inno / Linux deb+AppImage / macOS DMG+PKG）。
 用法：
     python build_release.py [--target windows|macos|linux] [--version Alpha-v0.1]
                             [--skip-backend] [--skip-frontend]
+                            [--prebuilt-backend DIR]
                             [--installer] [--no-installer]
 
 说明：
-- 必须在目标平台上运行本脚本（PyInstaller 不支持交叉编译）：
+- 后端构建通道按平台分叉（波次 4）：
+  windows → C++ native 后端：调用 CMake（优先 PATH，其次 vswhere 探测
+    Visual Studio 自带 cmake/ninja 与 vcvars64）构建 native/，产物三件套
+    backend.exe / backend_cli.exe / backend_tui.exe 拷入 backend_dist/；
+    另尽力用 PyInstaller 冻结 tools/resource_scan 为独立工具 aa_scan.exe
+    （失败仅警告降级为「本次不随包」，不阻塞主链路）。CI 可先用
+    --prebuilt-backend <dir> 传入预构建产物目录，跳过本地 CMake 构建。
+  macos/linux → 暂仍走 PyInstaller（backend.spec，POSIX native 移植在后续
+    子波），产物行为与既往完全一致。
+- 必须在目标平台上运行本脚本（不支持交叉编译）：
   Windows 包在 Windows 上构建，Linux 包在 Linux/WSL 上构建，macOS 包在
   Mac 上构建。跨平台出包请配合 CI（见 .github/workflows/release.yml）。
 - Android 为 APK，由 frontend/android 的 Gradle(Chaquopy) 直接构建，
@@ -22,8 +32,11 @@
   缓存（_cache/base_data.pkl 与 aa_index/aa_index.json，在装过游戏的
   机器上生成）；便携 zip 在缓存缺失时仅跳过内嵌、其余不受影响。
 
-依赖：Python 3.12 + PyInstaller + UnityPy；Flutter SDK（需在 PATH）；
-      Windows 安装包另需 Inno Setup 6；Linux 安装包另需 dpkg-deb 与
+依赖：Windows 后端需 MSVC 工具链（Visual Studio / BuildTools，含 CMake；
+      Ninja 优先 PATH，缺失时回落 VS 生成器）；aa_scan.exe 与 mac/linux 后端
+      另需 PyInstaller + UnityPy；Flutter SDK（需在 PATH）；
+      Windows 安装包另需 Inno Setup 6（缺失时 Windows 通道打印警告后跳过
+      安装包步骤，仅出便携 zip）；Linux 安装包另需 dpkg-deb 与
       appimagetool；macOS 安装包使用系统自带 hdiutil/pkgbuild/productbuild。
 """
 import argparse
@@ -41,6 +54,14 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 FRONTEND = os.path.join(ROOT, "frontend")
 BACKEND_DIST = os.path.join(ROOT, "build", "release", "backend_dist")
 DIST_ROOT = os.path.join(ROOT, "dist")
+
+# Windows native（C++）后端通道
+NATIVE_DIR = os.path.join(ROOT, "native")
+NATIVE_BUILD_DIR = os.path.join(ROOT, "build", "release", "native_build")
+NATIVE_BINS = ("backend.exe", "backend_cli.exe", "backend_tui.exe")
+# AA 资源扫描独立工具（tools/resource_scan 的 PyInstaller onefile 冻结）
+AA_SCAN_SPEC = os.path.join(ROOT, "packaging", "pyinstaller", "aa_scan.spec")
+AA_SCAN_EXE = "aa_scan.exe"
 
 APP_NAME = "学生时代模组编辑器"
 # 发行文件名统一用 ASCII 基名：GitHub Actions 的 artifact 上传/下载链路会把
@@ -171,26 +192,28 @@ def _export_official_pack(zip_path):
 
 
 def build_installer(version, source_dir):
-    """第 5 步：调 ISCC 编译中文安装包到 dist。"""
+    """第 5 步：调 ISCC 编译中文安装包到 dist（仅 Windows 通道）。
+
+    ISCC 缺失时打印警告并返回 False（跳过安装包，保留便携 zip）；
+    需要硬失败的场景（CI）请在流水线里显式校验 setup exe 产物。
+    """
     iscc = _locate_iscc()
     if iscc is None:
-        raise SystemExit(
-            "错误：未找到 Inno Setup 6（ISCC.exe），无法构建 Windows 安装包。\n"
-            "请先安装：\n"
-            "    winget install JRSoftware.InnoSetup\n"
-            "    （失败时下载官方安装包静默安装：\n"
-            "      https://jrsoftware.org/isdl.php  →  innosetup-*.exe /VERYSILENT）\n"
-            "或使用 --no-installer 跳过本步骤。")
+        print("    警告：未找到 Inno Setup 6（ISCC.exe），跳过 Windows 安装包"
+              "构建（本次仅出便携 zip）。\n"
+              "    需要安装包请安装：winget install JRSoftware.InnoSetup\n"
+              "    （或 https://jrsoftware.org/isdl.php → innosetup-*.exe "
+              "/VERYSILENT）")
+        return False
     err = _installer_prereq_error()
     if err:
         raise SystemExit(err)
 
-    cmd_path = os.path.join(BACKEND_DIST, "editor_cmd.exe")
-    assert os.path.isfile(cmd_path), \
-        "后端打包失败：%s 未生成（backend.spec 应产出双 exe）" % cmd_path
-    internal_dir = os.path.join(BACKEND_DIST, "_internal")
-    assert os.path.isdir(internal_dir), \
-        "后端打包失败：%s 未生成（onedir 共享依赖目录）" % internal_dir
+    for name in NATIVE_BINS:
+        p = os.path.join(BACKEND_DIST, name)
+        assert os.path.isfile(p), \
+            "后端产物缺失：%s 未生成（native 三件套应为 backend/backend_cli/" \
+            "backend_tui）" % p
     pack_name, _pack_ver = _ensure_official_pack_dir()
 
     _step(5, "构建 Windows 安装包（Inno Setup）...")
@@ -211,6 +234,7 @@ def build_installer(version, source_dir):
     out = os.path.join(DIST_ROOT, "%s-setup-%s.exe" % (APP_FILE_BASE, version))
     assert os.path.isfile(out), "安装包未生成：%s" % out
     print("完成：%s (%.1f MB)" % (out, os.path.getsize(out) / 1048576))
+    return True
 
 
 # ----------------------------- Linux 安装包 -----------------------------
@@ -328,6 +352,24 @@ def _copy_backend_bundle(dst_dir, bin_subdir=""):
                     os.path.join(target, "_internal"))
 
 
+def _copy_native_backend_bundle(dst_dir):
+    """复制 native 后端产物到发行根：三件套 + 可选 aa_scan.exe。
+
+    native exe 自带全部依赖（静态/单体），不再有 PyInstaller 的 _internal/
+    共享目录；backend_launcher.dart 探测「与主程序同目录的 backend.exe」，
+    故三件套必须与前端主程序平铺同目录。
+    """
+    for name in NATIVE_BINS:
+        shutil.copy2(os.path.join(BACKEND_DIST, name),
+                     os.path.join(dst_dir, name))
+    aa = os.path.join(BACKEND_DIST, AA_SCAN_EXE)
+    if os.path.isfile(aa):
+        shutil.copy2(aa, os.path.join(dst_dir, AA_SCAN_EXE))
+    else:
+        print("    提示：本次未随包 aa_scan.exe（AA 资源扫描工具缺失，"
+              "不影响编辑器运行；重扫资源请用仓库内 python 工具）。")
+
+
 def _embed_official_pack(base_dir, rel=""):
     """把官方资源包以 official_pack/official-bundled 布局放入发行目录。
 
@@ -348,6 +390,11 @@ def _embed_official_pack(base_dir, rel=""):
 # ---------------------------------------------------------------- 后端 ----
 
 def build_backend():
+    """mac/linux 通道：PyInstaller onedir（backend.spec → backend_dist/）。
+
+    Windows 通道已切 native（见 build_backend_native），本函数仅服务
+    POSIX 发行（波次 5+ 移植 native 后整体退役）。
+    """
     _step(1, "打包后端 %s ..." % backend_exe_name())
     # onedir：distpath 指向 build/release，spec 的 COLLECT(name='backend_dist')
     # 把 exe 与共享 _internal/ 写到 build/release/backend_dist/ 下。
@@ -360,6 +407,208 @@ def build_backend():
     ], cwd=ROOT, check=True)
     assert os.path.exists(backend_dist_path()), "后端打包失败：%s 未生成" \
         % backend_exe_name()
+
+
+# ------------------------------------------------------- native (Windows) ----
+
+_VSWHERE_CANDIDATES = (
+    os.path.expandvars(
+        r"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"),
+    r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe",
+)
+
+
+def _vs_install_dir():
+    """用 vswhere 探测带 VC 工具的 VS/BuildTools 安装目录；找不到返回 None。
+
+    不硬编码任何安装路径（如 D:\\BuildTools）：vswhere 是官方发现机制，
+    VS2017+（含 BuildTools）通吃。"""
+    for w in _VSWHERE_CANDIDATES:
+        if not os.path.isfile(w):
+            continue
+        for extra in (["-requires",
+                       "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"], []):
+            try:
+                r = subprocess.run(
+                    [w, "-utf8", "-latest", "-products", "*"] + extra
+                    + ["-property", "installationPath"],
+                    capture_output=True, text=True, timeout=30)
+                line = r.stdout.strip().splitlines()
+                if r.returncode == 0 and line and os.path.isdir(line[0]):
+                    return line[0]
+            except Exception:
+                pass
+    return None
+
+
+def _probe_native_toolchain():
+    """探测 native 构建所需工具，返回 (cmake, ninja, vcvars) 三元组。
+
+    - cmake：PATH 优先；缺失时取 VS 自带（Common7/IDE/.../CMake/bin）。
+    - ninja：PATH 优先；缺失时取 VS 自带；再缺失 → None，构建函数回落
+      「Visual Studio 17 2022」多配置生成器（与 native-ci.yml 同法）。
+    - vcvars：PATH 上已有 cl.exe 则为 None（环境就绪）；否则给出
+      vcvars64.bat 路径；连 VS 都探测不到时返回错误信息供上层报错。
+    """
+    cmake = shutil.which("cmake")
+    ninja = shutil.which("ninja")
+    vcvars = None if shutil.which("cl") else ""
+    if cmake and ninja and vcvars is None:
+        return cmake, ninja, None
+    vs = _vs_install_dir()
+    if not cmake and vs:
+        p = os.path.join(vs, "Common7", "IDE", "CommonExtensions", "Microsoft",
+                         "CMake", "CMake", "bin", "cmake.exe")
+        cmake = p if os.path.isfile(p) else None
+    if not ninja and vs:
+        p = os.path.join(vs, "Common7", "IDE", "CommonExtensions", "Microsoft",
+                         "CMake", "Ninja", "ninja.exe")
+        if os.path.isfile(p):
+            ninja = p
+    if vcvars == "":
+        p = os.path.join(vs, "VC", "Auxiliary", "Build", "vcvars64.bat") if vs \
+            else None
+        vcvars = p if p and os.path.isfile(p) else None
+    return cmake, ninja, vcvars if vcvars else None
+
+
+def _msvc_env(vcvars):
+    """返回带 MSVC x64 环境的 os.environ 副本；vcvars 为 None 时原样返回。"""
+    env = os.environ.copy()
+    if not vcvars:
+        return env
+    # shell=True → cmd.exe /c ""<vcvars64.bat>" && set"（Windows 惯用法，
+    # 避开 list 形式下 cmd 引号解析的坑）
+    r = subprocess.run('"%s" && set' % vcvars, shell=True, cwd=ROOT,
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        raise SystemExit(
+            "错误：初始化 MSVC 环境失败（%s）。\n%s" % (vcvars, r.stderr[-800:]))
+    for line in r.stdout.splitlines():
+        k, sep, v = line.partition("=")
+        if sep and k:
+            env[k] = v
+    return env
+
+
+def _find_native_bin(root, name):
+    """在构建目录内定位可执行文件（Ninja 平铺 bin/，VS 生成器嵌套 bin/Release/）。"""
+    direct = os.path.join(root, "bin", name)
+    if os.path.isfile(direct):
+        return direct
+    for sub in (os.path.join("bin", "Release"), os.path.join("bin", "Debug")):
+        p = os.path.join(root, sub, name)
+        if os.path.isfile(p):
+            return p
+    for dirpath, _dirs, files in os.walk(os.path.join(root, "bin")
+                                         if os.path.isdir(os.path.join(root, "bin"))
+                                         else root):
+        if name in files:
+            return os.path.join(dirpath, name)
+    return None
+
+
+def _reset_backend_dist():
+    """清空重建 backend_dist/（避免残留上一通道产物，如旧 _internal/）。"""
+    if os.path.isdir(BACKEND_DIST):
+        shutil.rmtree(BACKEND_DIST)
+    os.makedirs(BACKEND_DIST)
+
+
+def build_backend_native(prebuilt_dir=None):
+    """Windows 后端：native C++ 三件套（backend/backend_cli/backend_tui）。
+
+    prebuilt_dir 非空 → 从该目录拷三件套（CI 用，跳过自建，工具链缺失无所谓）；
+    否则调用 CMake 构建 native/（复用/新建 NATIVE_BUILD_DIR，Release+Ninja，
+    无 Ninja 回落 VS 生成器；vcvars 环境缺失时给出清晰报错）。
+    """
+    _step(1, "构建 native C++ 后端（backend/backend_cli/backend_tui）...")
+    _reset_backend_dist()
+    src = None
+    if prebuilt_dir:
+        prebuilt_dir = os.path.abspath(prebuilt_dir)
+        if not os.path.isdir(prebuilt_dir):
+            raise SystemExit("错误：--prebuilt-backend 目录不存在：%s" % prebuilt_dir)
+        src = prebuilt_dir
+    else:
+        cmake, ninja, vcvars = _probe_native_toolchain()
+        if not cmake:
+            raise SystemExit(
+                "错误：未找到 cmake（PATH 与 Visual Studio 自带位置均无）。\n"
+                "解决：安装 Visual Studio BuildTools 2022（勾选 C++ CMake 工具），\n"
+                "      或把 cmake 加入 PATH；也可先自行构建 native/ 后用\n"
+                "      --prebuilt-backend <bin目录> 传入现成产物。")
+        if not shutil.which("cl") and not vcvars:
+            raise SystemExit(
+                "错误：MSVC 编译器环境缺失（PATH 无 cl.exe，且经 vswhere 未"
+                "探测到 vcvars64.bat）。\n解决：安装/修复 Visual Studio "
+                "BuildTools 2022（含 C++ 生成工具），或从「x64 Native Tools"
+                " 命令提示符」运行本脚本；也可先自行构建 native/ 后用 "
+                "--prebuilt-backend <bin目录> 传入现成产物。")
+        env = _msvc_env(vcvars)
+        os.makedirs(NATIVE_BUILD_DIR, exist_ok=True)
+        gen_args = (["-G", "Ninja"] if ninja
+                    else ["-G", "Visual Studio 17 2022", "-A", "x64"])
+        if not ninja:
+            print("    提示：未找到 Ninja，回落「Visual Studio 17 2022」生成器。")
+        print("    cmake configure: native → %s (%s)" % (
+            os.path.relpath(NATIVE_BUILD_DIR, ROOT),
+            "Ninja" if ninja else "VS17"))
+        subprocess.run([cmake, "-S", NATIVE_DIR, "-B", NATIVE_BUILD_DIR]
+                       + gen_args + ["-DCMAKE_BUILD_TYPE=Release"],
+                       cwd=ROOT, env=env, check=True)
+        build_cmd = [cmake, "--build", NATIVE_BUILD_DIR]
+        if not ninja:
+            build_cmd += ["--config", "Release"]
+        subprocess.run(build_cmd, cwd=ROOT, env=env, check=True)
+        src = NATIVE_BUILD_DIR
+
+    missing = []
+    for name in NATIVE_BINS:
+        cand = os.path.join(src, name)
+        p = cand if os.path.isfile(cand) else _find_native_bin(src, name)
+        if not p or not os.path.isfile(p):
+            missing.append(name)
+            continue
+        shutil.copy2(p, os.path.join(BACKEND_DIST, name))
+        print("    %s ← %s" % (name, os.path.relpath(p, ROOT)))
+    if missing:
+        raise SystemExit(
+            "错误：native 构建产物缺少 %s（来源 %s）。\n"
+            "首次构建请确认 native/build.cmd 全绿，或用 --prebuilt-backend "
+            "指向已含三件套的目录。" % (", ".join(missing), src))
+
+
+def build_aa_scan():
+    """尽力把 tools/resource_scan 冻结成单文件 aa_scan.exe 放入 backend_dist/。
+
+    可选产物：构建失败或本机无 PyInstaller 时打印警告并返回 False
+    （发行不随 aa_scan.exe，不阻塞主链路）。"""
+    try:
+        import PyInstaller  # noqa: F401
+    except ImportError:
+        print("    警告：未安装 PyInstaller，跳过 aa_scan.exe 冻结；"
+              "本次发行不随资源扫描工具（pip install pyinstaller 后可带上）。")
+        return False
+    print("    冻结 AA 资源扫描工具 aa_scan.exe（tools/resource_scan）...")
+    try:
+        subprocess.run([
+            sys.executable, "-m", "PyInstaller", AA_SCAN_SPEC,
+            "--distpath", os.path.join(ROOT, "build", "release", "aa_scan_dist"),
+            "--workpath", os.path.join(ROOT, "build", "release", "aa_scan_work"),
+            "--noconfirm",
+        ], cwd=ROOT, check=True,
+           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except Exception as e:
+        print("    警告：aa_scan.exe 构建失败（%s），本次发行不随资源扫描工具。" % e)
+        return False
+    exe = os.path.join(ROOT, "build", "release", "aa_scan_dist", AA_SCAN_EXE)
+    if not os.path.isfile(exe):
+        print("    警告：aa_scan.exe 未生成，本次发行不随资源扫描工具。")
+        return False
+    shutil.copy2(exe, os.path.join(BACKEND_DIST, AA_SCAN_EXE))
+    print("    %s (%.1f MB)" % (AA_SCAN_EXE, os.path.getsize(exe) / 1048576))
+    return True
 
 
 # ---------------------------------------------------------------- 前端 ----
@@ -424,7 +673,7 @@ def assemble_windows(version):
         src = os.path.join(release_dir, name)
         _copytree(src, os.path.join(out_dir, name)) if os.path.isdir(src) \
             else shutil.copy2(src, os.path.join(out_dir, name))
-    _copy_backend_bundle(out_dir)
+    _copy_native_backend_bundle(out_dir)
     _copy_readme(out_dir, _TARGET_LABEL)
     return out_dir
 
@@ -551,6 +800,9 @@ def main():
                     help="发行版本号（默认取 frontend/pubspec.yaml）")
     ap.add_argument("--skip-backend", action="store_true", help="跳过后端打包（复用上次产物）")
     ap.add_argument("--skip-frontend", action="store_true", help="跳过 Flutter 构建（复用上次产物）")
+    ap.add_argument("--prebuilt-backend", metavar="DIR", default=None,
+                    help="Windows 通道：从 DIR 拷 native 三件套，跳过本地 CMake "
+                         "构建（CI 预构建场景；DIR 含或嵌套 bin/ 均可）")
     ap.add_argument("--installer", action="store_true",
                     help="构建安装包（各目标默认已开启，保留参数以兼容旧脚本）")
     ap.add_argument("--no-installer", action="store_true",
@@ -575,7 +827,15 @@ def main():
     _TOTAL_STEPS = 5 if build_inst else 4
 
     if not args.skip_backend:
-        build_backend()
+        if args.target == "windows":
+            # Windows 后端通道（波次 4）：native C++ 三件套 + 可选 aa_scan.exe
+            build_backend_native(args.prebuilt_backend)
+            build_aa_scan()
+        else:
+            if args.prebuilt_backend:
+                print("    提示：--prebuilt-backend 仅对 windows（native）通道"
+                      "生效，本目标忽略该参数。")
+            build_backend()
     else:
         assert os.path.exists(backend_dist_path()), \
             "--skip-backend 但找不到 %s" % backend_dist_path()
