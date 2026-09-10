@@ -1,21 +1,31 @@
-// server/run: the reusable process entry — sa::server_main().
+// server/run: the reusable process entry — sa::run_server() / sa::server_main().
 //
 // Moved out of main.cpp (wave-2 preparation) so atelier harnesses can boot the
 // exact production server (same CLI, init_state, transport, shutdown hooks) and
 // graft their own routes via `extra_routes` before build_router() is rewired by
 // the orchestrator. main.cpp's main() simply delegates here.
+//
+// W4-4: the argv-only body was split into run_server(ServerConfig) so the
+// Android JNI channel can pass the same boot parameters without a command
+// line. Everything Android-specific (env setdefaults, bundled-zip extraction)
+// is skipped when its config fields are empty — the desktop path therefore
+// executes exactly the same statement sequence as before the split.
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
 
+#include "server/android_bundled.h"
 #include "server/api_router.h"
 #include "server/httpd.h"
+#include "server/run.h"
 #include "server/state.h"
+#include "sa_core/paths.h"
 
 namespace {
 
@@ -89,45 +99,63 @@ bool parse_args(int argc, char** argv, Options& out, std::string& err) {
 
 extern "C" void on_signal(int) { g_signal_quit.store(true); }
 
+// os.environ.setdefault (server/__init__.py:23-26): a pre-set variable always
+// wins. The desktop path never calls this (config fields stay empty).
+void env_setdefault(const char* name, const std::string& value) {
+    if (value.empty()) return;
+#ifdef _WIN32
+    if (std::getenv(name) != nullptr) return;
+    _putenv_s(name, value.c_str());
+#else
+    if (std::getenv(name) != nullptr) return;
+    ::setenv(name, value.c_str(), /*overwrite=*/0);
+#endif
+}
+
 }  // namespace
 
 namespace sa {
 
-int server_main(int argc, char** argv,
-                const std::function<void(Router&)>& extra_routes) {
-    Options opts;
-    std::string err;
-    if (!parse_args(argc, argv, opts, err)) {
-        std::fprintf(stderr, "error: %s\n", err.c_str());
-        print_usage(argv[0]);
-        return 2;
+int run_server(const ServerConfig& cfg) {
+    // --- Android/embedded injections; no-ops on desktop (W4-4) -------------
+    // BEFORE init_state(): state.cpp resolves EDITOR_DATA_ROOT lazily but the
+    // env-first rule of server/__init__.py only holds if we set it early.
+    env_setdefault("EDITOR_DATA_ROOT", cfg.data_root);
+    if (!cfg.data_root.empty()) {
+        env_setdefault("EDITOR_PLUGINS_ROOT",
+                       sa_core::paths::join(cfg.data_root, "plugins"));
     }
-    if (opts.show_help) {
-        print_usage(argv[0]);
-        return 0;
-    }
+    env_setdefault("EDITOR_PACKS_ROOT", cfg.packs_root);
+    // Silent-failure semantics live inside extract_bundled (Python's
+    // `except Exception: pass` around the whole thing).
+    extract_bundled(cfg.bundled_zip, cfg.packs_root);
 
     // Workspace / mod resolution per CONVENTIONS 11: CLI injection wins, then
     // editor_env.json, then the default user mods dir; auto-select first mod.
-    sa::init_state(opts.workspace_root, opts.mod_root, opts.mod_name);
+    sa::init_state(cfg.workspace_root, cfg.mod_root, cfg.mod_name);
 
     sa::Router router = sa::build_router();
-    if (extra_routes) extra_routes(router);  // atelier graft point
+    if (cfg.extra_routes) cfg.extra_routes(router);  // atelier graft point
     sa::Httpd httpd(&router);
     std::string bind_err;
-    if (!httpd.bind_to("127.0.0.1", opts.port, &bind_err)) {
+    if (!httpd.bind_to("127.0.0.1", cfg.port, &bind_err)) {
         std::fprintf(stderr, "error: %s\n", bind_err.c_str());
         return 1;
     }
 
-    if (!opts.write_port_file.empty()) {
-        std::ofstream pf(opts.write_port_file, std::ios::binary | std::ios::trunc);
+    // Python fires on_ready(port) right after the bind (httpd.py run_server);
+    // the JNI channel hands the actual port back through this hook. The
+    // desktop --write-port block below stays exactly where it always was.
+    if (cfg.on_ready) cfg.on_ready(httpd.port());
+
+    if (!cfg.write_port_file.empty()) {
+        std::ofstream pf(cfg.write_port_file, std::ios::binary | std::ios::trunc);
         if (pf) {
             pf << httpd.port();  // no trailing newline, like Python on_ready()
             pf.flush();
         } else {
             std::fprintf(stderr, "cannot write port file: %s\n",
-                         opts.write_port_file.c_str());
+                         cfg.write_port_file.c_str());
         }
     }
 
@@ -146,6 +174,32 @@ int server_main(int argc, char** argv,
     std::fprintf(stdout, "API server stopped\n");
     std::fflush(stdout);
     return 0;
+}
+
+void request_exit() { g_signal_quit.store(true); }
+
+int server_main(int argc, char** argv,
+                const std::function<void(Router&)>& extra_routes) {
+    Options opts;
+    std::string err;
+    if (!parse_args(argc, argv, opts, err)) {
+        std::fprintf(stderr, "error: %s\n", err.c_str());
+        print_usage(argv[0]);
+        return 2;
+    }
+    if (opts.show_help) {
+        print_usage(argv[0]);
+        return 0;
+    }
+
+    ServerConfig cfg;
+    cfg.port = opts.port;
+    cfg.write_port_file = opts.write_port_file;
+    cfg.workspace_root = opts.workspace_root;
+    cfg.mod_root = opts.mod_root;
+    cfg.mod_name = opts.mod_name;
+    cfg.extra_routes = extra_routes;
+    return run_server(cfg);
 }
 
 }  // namespace sa

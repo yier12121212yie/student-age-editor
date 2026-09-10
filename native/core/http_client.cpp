@@ -457,7 +457,16 @@ Response request_stream(const Request& req, const ChunkHandler& on_chunk) {
 // the W4-4 JNI wave (java.net.HttpURLConnection / OkHttp bridge). Keeping the
 // stub under __ANDROID__ makes that boundary explicit and stops the POSIX curl
 // code from compiling against bionic's absent libcurl.
+//
+// W4-4 shipped that JNI wave: this stub only exists while
+// SA_ANDROID_HTTP_BRIDGE is NOT defined. The Android .so build
+// (native/android/CMakeLists.txt) defines it, and request()/request_stream()
+// are provided there from http_jni_bridge.cpp — Plan A (POSIX dlopen-libcurl
+// on Android) was rejected with evidence: libcurl is not an app-visible
+// public library (absent from NDK r28 meta/system_libs.json, hence blocked by
+// the linker namespace). Windows and POSIX(WSL/mac) branches are untouched.
 #if defined(__ANDROID__)
+#ifndef SA_ANDROID_HTTP_BRIDGE
 
 namespace {
 Response stub_fail() {
@@ -471,6 +480,7 @@ Response stub_fail() {
 Response request(const Request&) { return stub_fail(); }
 Response request_stream(const Request&, const ChunkHandler&) { return stub_fail(); }
 
+#endif  // !SA_ANDROID_HTTP_BRIDGE
 #else   // !_WIN32 && !__ANDROID__ : real libcurl-backed transport -----------
 
 namespace {

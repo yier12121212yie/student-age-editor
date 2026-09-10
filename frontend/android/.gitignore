@@ -15,3 +15,8 @@ key.properties
 
 # 内置资源包大文件（由 export_decoded_pack.py / fetch_bundled.py 生成，不入库）
 /src/main/assets/bundled/*.zip
+
+# W4-4：native 后端 .so 由 native/android/android_build.sh（CI 或本地）交叉
+# 编译产出并落入 jniLibs，属可再生产物，不入库。
+/app/src/main/jniLibs/
+

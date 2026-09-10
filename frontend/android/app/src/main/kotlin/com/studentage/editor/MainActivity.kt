@@ -1,8 +1,6 @@
 package com.studentage.editor
 
 import android.util.Log
-import com.chaquo.python.Python
-import com.chaquo.python.android.AndroidPlatform
 import io.flutter.embedding.android.FlutterActivity
 import java.io.File
 import java.io.FileNotFoundException
@@ -23,31 +21,40 @@ class MainActivity : FlutterActivity() {
         ensureBackend()
     }
 
-    /// Android 上没有桌面版的 backend.exe 子进程，改为在应用内嵌的
-    /// CPython（Chaquopy）里直接运行 editor.server.start_server()，
-    /// 前端仍通过 http://127.0.0.1:8765 访问，架构与桌面版一致。
+    /// W4-4：Android 后端从 Chaquopy 内嵌 CPython 换成 native C++
+    /// （libbackend_shared.so，JNI 线程里跑与桌面完全同一套 sa::run_server）。
+    /// 前端仍按 http://127.0.0.1:8765 访问，dart 侧协议不变
+    /// （backend_launcher.dart 轮询 /api/ping 等就绪）。
     private fun ensureBackend() {
-        thread(name = "python-backend") {
+        thread(name = "native-backend") {
             try {
-                if (!Python.isStarted()) {
-                    Python.start(AndroidPlatform(applicationContext))
-                }
-                if (pingBackend()) return@thread // Activity 重建时后端仍在跑
-                val py = Python.getInstance()
-                // start_server(port, on_ready, data_root, packs_root, bundled_zip)；
-                // 内置资源包由后端解压到 packs_root/bundled 供无游戏的 Android 使用。
+                // Activity 重建时后端线程还活着：nativeStart 幂等，但先探一下省一次跳转。
+                if (pingBackend()) return@thread
                 val bundledZip = copyBundledAsset()
                 val dataRoot = "${filesDir.absolutePath}/data"
                 val packsRoot = "${filesDir.absolutePath}/resource_packs"
-                val result = py.getModule("editor.server")
-                    .callAttr("start_server", backendPort, null, dataRoot, packsRoot, bundledZip)
-                val port = result.asList()[1].toInt()
+                val port = nativeStart(backendPort, dataRoot, packsRoot, bundledZip)
+                if (port == 0) {
+                    Log.e(TAG, "backend failed to start (bind port $backendPort)")
+                    return@thread
+                }
                 Log.i(TAG, "backend started on 127.0.0.1:$port")
             } catch (e: Exception) {
                 Log.e(TAG, "backend failed to start", e)
             }
         }
     }
+
+    /// 起服务（对齐桌面 --write-port 语义：返回实际绑定端口，0=失败）。
+    private external fun nativeStart(
+        port: Int,
+        dataRoot: String,
+        packsRoot: String,
+        bundledZip: String,
+    ): Int
+
+    /// 停服（正常发行路径不调用——进程随 app 结束；保留对称能力与测试钩子）。
+    private external fun nativeStop()
 
     /// 把 assets/bundled/resource_pack.zip 流式拷贝到 filesDir/bundled_resource_pack.zip。
     /// 返回解出后的绝对路径；APK 未内置时返回空字符串（后端按无内置资源运行）。
@@ -108,7 +115,13 @@ class MainActivity : FlutterActivity() {
         false
     }
 
-    private companion object {
+    companion object {
         const val TAG = "StudentAgeBackend"
+
+        init {
+            // 依赖注入的 jniLibs/<abi>/libbackend_shared.so（native/android/
+            // android_build.sh 产物；CI 与本地构建同路径）。
+            System.loadLibrary("backend_shared")
+        }
     }
 }

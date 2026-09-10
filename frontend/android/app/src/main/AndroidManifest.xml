@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 本地回环 HTTP 通信（Flutter 前端 ↔ 内嵌 Python 后端） -->
+    <!-- 本地回环 HTTP 通信（Flutter 前端 ↔ 内嵌 native C++ 后端 libbackend_shared.so） -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 模组编辑需直接读写用户指定目录下的游戏文件（侧载应用可授权“所有文件访问”） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
