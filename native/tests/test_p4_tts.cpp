@@ -363,7 +363,8 @@ TEST_CASE("tts_store: save/register/bind/list/read/delete round-trip", "[p4][tts
     CHECK(id2 == 2);  // max id + 1
     sa::invalidate_mod_cfgs_cache();
     // AudioCfg.json carries url without extension + truncated 24-char title.
-    auto ac = json::parse(std::string(*sa_core::paths::read_bytes(cfg_dir + "\\AudioCfg.json")));
+    auto ac = json::parse(std::string(*sa_core::paths::read_bytes(
+        sa_core::paths::path_to_utf8(fx.cfg_dir() / "AudioCfg.json"))));
     CHECK(ac["1"]["url"] == "audio/tts/greeting");
     CHECK(ac["1"]["name"] == "配音 greeting");  // empty title -> default summary
     CHECK(ac["2"]["name"].get<std::string>() == "ABCDEFGHIJKLMNOPQRSTUVWX");
@@ -372,7 +373,8 @@ TEST_CASE("tts_store: save/register/bind/list/read/delete round-trip", "[p4][tts
     auto bound = tts_store::bind_talk_audio(mod_root, "5001", id1);
     CHECK(bound["talkId"] == "5001");
     CHECK(bound["audioCfgId"] == 1);
-    auto tc = json::parse(std::string(*sa_core::paths::read_bytes(cfg_dir + "\\TalkCfg.json")));
+    auto tc = json::parse(std::string(*sa_core::paths::read_bytes(
+        sa_core::paths::path_to_utf8(fx.cfg_dir() / "TalkCfg.json"))));
     CHECK(tc["5001"]["audio"] == 1);
     CHECK_THROWS_AS(tts_store::bind_talk_audio(mod_root, "9999", 1), TtsStoreError);
 

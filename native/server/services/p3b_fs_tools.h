@@ -9,6 +9,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -37,6 +38,13 @@ json list_dir(const std::string& root, const std::string& rel_path, bool deep);
 
 // fs_tools.read_file: {"path","size","text"} or {"path","size","base64"}.
 json read_file(const std::string& root, const std::string& rel_path, bool as_binary);
+
+// fs_tools.read_file's gbk-replace fallback (Windows CP936 / POSIX iconv),
+// exposed so the [p3b] suite validates the decoder directly (incl. the illegal-
+// byte path) without the sandbox path gate. Mirrors raw.decode("gbk",
+// errors="replace"): ASCII passthrough, valid GBK pairs -> one codepoint, each
+// maximal bad subpart -> one U+FFFD advancing a single byte.
+std::string gbk_replace_decode(std::string_view raw);
 
 // fs_tools.write_file: text content or base64; parent dirs auto-created.
 json write_file(const std::string& root, const std::string& rel_path,

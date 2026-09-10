@@ -35,6 +35,18 @@ using sa::cloud::json;  // == sa::realtime::json == nlohmann::ordered_json
 
 namespace {
 
+// Env-var write helper (W4-3 POSIX port): MSVC's _putenv_s on Windows,
+// setenv/unsetenv on POSIX. Empty value unsets on both, matching the old
+// restore-to-"" behaviour. Same shape as test_p2_workspace.cpp's ScopedEnv.
+void putenv_portable(const char* k, const char* v) {
+#ifdef _WIN32
+    _putenv_s(k, v);
+#else
+    if (v && *v) setenv(k, v, 1);
+    else unsetenv(k);
+#endif
+}
+
 std::string P(const fs::path& p) { return sa_core::paths::path_to_utf8(p); }
 
 void wfile(const fs::path& p, const std::string& content) {
@@ -73,8 +85,8 @@ class RtFixture {
         }
         saved_data_root_ = env_get("EDITOR_DATA_ROOT");
         saved_no_steam_ = env_get("EDITOR_DISABLE_STEAM_DETECT");
-        _putenv_s("EDITOR_DATA_ROOT", P(data_).c_str());
-        _putenv_s("EDITOR_DISABLE_STEAM_DETECT", "1");
+        putenv_portable("EDITOR_DATA_ROOT", P(data_).c_str());
+        putenv_portable("EDITOR_DISABLE_STEAM_DETECT", "1");
         sa::realtime::clear_ambig_cache();
     }
     ~RtFixture() {
@@ -89,8 +101,8 @@ class RtFixture {
             st.mod_name = saved_mod_name_;
             st.mods_cache_valid = false;
         }
-        _putenv_s("EDITOR_DATA_ROOT", saved_data_root_.c_str());
-        _putenv_s("EDITOR_DISABLE_STEAM_DETECT", saved_no_steam_.c_str());
+        putenv_portable("EDITOR_DATA_ROOT", saved_data_root_.c_str());
+        putenv_portable("EDITOR_DISABLE_STEAM_DETECT", saved_no_steam_.c_str());
         std::error_code ec;
         fs::remove_all(root_, ec);
     }

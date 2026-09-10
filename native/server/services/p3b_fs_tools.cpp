@@ -11,6 +11,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else   // W4-3 class-B POSIX port: glibc ships iconv in libc (no link dep).
+#include <iconv.h>
 #endif
 
 #include "p3b_support.h"
@@ -34,13 +36,24 @@ bool contains_ci_ext(const std::vector<std::string>& set_, const std::string& ex
     return false;
 }
 
+}  // namespace
+
 // CPython's gbk codec (errors="replace") approximated through the in-box
-// CP936 decoder: ASCII bytes pass through, a 0x81-0xFE lead + 0x40-0xFE trail
+// decoder: ASCII bytes pass through, a 0x81-0xFE lead + 0x40-0xFE trail
 // (skipping 0x7F) is decoded pairwise, anything unrepresentable emits one
 // U+FFFD and advances a single byte — the same "replace one per maximal
 // bad subpart" behaviour the Python error handler gives on the data we ever
-// see (GBK legacy mod files). Deviation: the CP936 and CPython gbk tables
-// differ only on a handful of euro-sign / user-defined slots.
+// see (GBK legacy mod files). Deviation: the CP936/GBK tables differ only on a
+// handful of euro-sign / user-defined slots.
+//
+// W4-3: the POSIX branch mirrors this exact maximal-subpart rule but decodes
+// each accepted 2-byte pair through glibc iconv("GBK"->"UTF-8") instead of
+// MultiByteToWideChar(CP_GBK). Doing the lead/trail range gating in C++ (not
+// relying on iconv's own error advance) keeps the per-byte output identical to
+// Windows on every input — including a truncated lead at EOF and a lead paired
+// with an out-of-range trail — so callers (fs_tools.read_file) get byte-for-byte
+// the same "text" on both platforms. Declared in p3b_fs_tools.h so the [p3b]
+// suite can validate the decoder directly without the sandbox path gate.
 std::string gbk_replace_decode(std::string_view raw) {
 #ifdef _WIN32
     std::string out;
@@ -69,12 +82,47 @@ std::string gbk_replace_decode(std::string_view raw) {
     }
     return out;
 #else
-    // Non-Windows hosts never run the editor; keep a deterministic fallback.
-    return sa_core::decode_utf8_sig_replace(raw);
+    std::string out;
+    iconv_t cd = iconv_open("UTF-8", "GBK");
+    if (cd == reinterpret_cast<iconv_t>(-1)) {
+        // iconv should always be present on glibc/macOS libc; if it somehow is
+        // not, degrade like the pre-port behaviour rather than crash.
+        return sa_core::decode_utf8_sig_replace(raw);
+    }
+    size_t i = 0;
+    while (i < raw.size()) {
+        const unsigned char c = static_cast<unsigned char>(raw[i]);
+        if (c < 0x80) {
+            out.push_back(static_cast<char>(c));
+            ++i;
+            continue;
+        }
+        if (c >= 0x81 && c <= 0xFE && i + 1 < raw.size()) {
+            const unsigned char trail = static_cast<unsigned char>(raw[i + 1]);
+            if ((trail >= 0x40 && trail <= 0xFE && trail != 0x7F)) {
+                // iconv is stateful for the shift; feed exactly these two bytes
+                // and require both consumed with no error to accept the pair.
+                char inbuf[2] = {static_cast<char>(c), static_cast<char>(trail)};
+                char outbuf[8];
+                char* inp = inbuf;
+                size_t inleft = 2;
+                char* outp = outbuf;
+                size_t outleft = sizeof(outbuf);
+                size_t rc = iconv(cd, &inp, &inleft, &outp, &outleft);
+                if (rc != static_cast<size_t>(-1) && inleft == 0) {
+                    out.append(outbuf, sizeof(outbuf) - outleft);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        sa_core::append_codepoint(out, 0xFFFDu);
+        ++i;
+    }
+    iconv_close(cd);
+    return out;
 #endif
 }
-
-}  // namespace
 
 const std::vector<std::string> kTextExts = {
     ".json", ".txt",  ".md",   ".csv",   ".xml",   ".html", ".css",   ".js",    ".ts",

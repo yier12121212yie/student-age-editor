@@ -33,6 +33,18 @@ using namespace std::string_literals;
 
 namespace {
 
+// Env-var write helper: MSVC's _putenv_s on Windows, setenv/unsetenv on POSIX
+// (an empty value unsets on both, matching the old restore-to-"" behaviour).
+// Same shape as test_p2_workspace.cpp's ScopedEnv precedent, W4-3 POSIX port.
+void putenv_portable(const char* k, const char* v) {
+#ifdef _WIN32
+    _putenv_s(k, v);
+#else
+    if (v && *v) setenv(k, v, 1);
+    else unsetenv(k);
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Fixture: temp workspace + temp data root; STATE + env redirected so nothing
 // ever touches the real backend/ tree or the user's Mods dir.
@@ -58,8 +70,8 @@ class CloudFixture {
         }
         saved_data_root_ = env_get("EDITOR_DATA_ROOT");
         saved_no_steam_ = env_get("EDITOR_DISABLE_STEAM_DETECT");
-        _putenv_s("EDITOR_DATA_ROOT", sa_core::paths::path_to_utf8(data_).c_str());
-        _putenv_s("EDITOR_DISABLE_STEAM_DETECT", "1");
+        putenv_portable("EDITOR_DATA_ROOT", sa_core::paths::path_to_utf8(data_).c_str());
+        putenv_portable("EDITOR_DISABLE_STEAM_DETECT", "1");
     }
     ~CloudFixture() {
         auto& st = sa::STATE();
@@ -70,8 +82,8 @@ class CloudFixture {
             st.mod_name = saved_mod_name_;
             st.mods_cache_valid = false;
         }
-        _putenv_s("EDITOR_DATA_ROOT", saved_data_root_.c_str());
-        _putenv_s("EDITOR_DISABLE_STEAM_DETECT", saved_no_steam_.c_str());
+        putenv_portable("EDITOR_DATA_ROOT", saved_data_root_.c_str());
+        putenv_portable("EDITOR_DISABLE_STEAM_DETECT", saved_no_steam_.c_str());
         std::error_code ec;
         fs::remove_all(root_, ec);
     }
