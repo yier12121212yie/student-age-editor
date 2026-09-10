@@ -29,6 +29,7 @@ using sa_socket_t = SOCKET;
 #include <arpa/inet.h>
 #include <cerrno>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 using sa_socket_t = int;
@@ -537,8 +538,50 @@ struct Httpd::Impl {
 
     void accept_loop() {
         for (;;) {
+#ifdef _WIN32
             sa_socket_t conn = ::accept(listen_sock, nullptr, nullptr);
             if (conn == SA_INVALID_SOCKET) break;  // closed listen socket or fatal
+#else
+            // POSIX cannot stop a blocking accept() by closing the fd (unlike
+            // Winsock's closesocket, which returns WSAENOTSOCK to a thread
+            // parked in accept -- verified live on this code path). The loop
+            // therefore polls the listen socket with a short timeout and owns
+            // its fd: quit is re-checked at least every 100 ms, and the fd is
+            // closed here -- after accept() has definitely returned -- so it
+            // never re-enters the fd-reuse pool while a parked accept() still
+            // references it (which would make a later bind()/listen() hand its
+            // new fd number to this loop and let it steal accepted sockets).
+            sa_socket_t conn = SA_INVALID_SOCKET;
+            for (;;) {
+                if (quit.load()) break;
+                struct pollfd pfd;
+                pfd.fd = listen_sock;
+                pfd.events = POLLIN;
+                pfd.revents = 0;
+                int pr = ::poll(&pfd, 1, 100);
+                if (pr < 0) {
+                    if (SA_ERRNO == SA_EINTR) continue;
+                    break;  // dead listen socket or fatal
+                }
+                if (pr == 0) continue;  // idle: loop and re-check quit
+                conn = ::accept(listen_sock, nullptr, nullptr);
+                if (conn == SA_INVALID_SOCKET) {
+                    int e = SA_ERRNO;
+                    if (e == SA_EINTR || e == ECONNABORTED || e == EAGAIN ||
+                        e == EWOULDBLOCK)
+                        continue;
+                    break;  // listen socket gone or fatal
+                }
+                break;  // accepted
+            }
+            if (conn == SA_INVALID_SOCKET) {
+                if (listen_sock != SA_INVALID_SOCKET) {
+                    ::close(listen_sock);
+                    listen_sock = SA_INVALID_SOCKET;
+                }
+                break;
+            }
+#endif
             if (!try_acquire()) {
                 // httpd.py:224-231: bare 503, Content-Length: 0, Connection: close.
                 static const char k503[] =
@@ -566,14 +609,23 @@ struct Httpd::Impl {
 
     void stop() {
         quit.store(true);
-        if (listen_sock != SA_INVALID_SOCKET) {
 #ifdef _WIN32
+        if (listen_sock != SA_INVALID_SOCKET) {
             ::closesocket(listen_sock);
-#else
-            ::close(listen_sock);
-#endif
             listen_sock = SA_INVALID_SOCKET;
         }
+#else
+        // closesocket() interrupts a blocked accept() on Winsock; POSIX close()
+        // does neither -- the parked accept keeps the file description alive
+        // (observed as wchan=inet_csk_accept surviving stop()) and the fd
+        // number would be recycled into unrelated sockets. accept_loop() owns
+        // the close on POSIX; see the comment there. If the loop never started
+        // or already exited, close directly so the fd is not leaked.
+        if (!accept_thread.joinable() && listen_sock != SA_INVALID_SOCKET) {
+            ::close(listen_sock);
+            listen_sock = SA_INVALID_SOCKET;
+        }
+#endif
     }
 };
 
