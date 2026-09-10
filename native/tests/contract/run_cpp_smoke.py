@@ -30,7 +30,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 等价地把 backend 加入 sys.path 以便按模块名加载。
 sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend")))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-BACKEND_EXE = os.path.join(REPO, "native", "build", "bin", "backend.exe")
+# Portable builds drop the .exe suffix on Linux/macOS; on Windows this resolves
+# to ".exe", so the default path below stays byte-identical to before.
+EXE = ".exe" if sys.platform == "win32" else ""
+BACKEND_EXE = os.path.join(REPO, "native", "build", "bin", "backend" + EXE)
 BACKEND_DIR = os.path.join(REPO, "backend")
 
 # CONVENTIONS 7 准出：40MB benchdata 规格（与 backend/editor/server/benchdata.py 同源）

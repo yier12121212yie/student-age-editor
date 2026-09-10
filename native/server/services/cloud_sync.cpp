@@ -369,9 +369,16 @@ class LocalDriver : public Driver {
         std::string base = root();
         std::string abs_p = rp.empty() ? base : spath::abs_path(spath::join(base, rp));
         // Python compares raw strings with os.sep; normcase keeps the same
-        // verdict under separator jitter (contract = escape refusal).
+        // verdict under separator jitter (contract = escape refusal). normcase
+        // maps '/' to '\' only on Windows, so the containment suffix must be
+        // the host separator: hardcoding '\\' made every POSIX child path of
+        // a local root read as an escape (W4-2 WSL gate).
         std::string nk = spath::normcase(abs_p), bk = spath::normcase(base);
+#ifdef _WIN32
         if (nk != bk && !sp::starts_with(nk, bk + "\\")) raise_value_error("path escapes root");
+#else
+        if (nk != bk && !sp::starts_with(nk, bk + "/")) raise_value_error("path escapes root");
+#endif
         return abs_p;
     }
 
@@ -2281,7 +2288,13 @@ json sync_single_file(const std::string& provider_id, const std::string& directi
     std::string local_path = spath::abs_path(spath::join(mod_dir_real, rel));
     std::string base = spath::abs_path(mod_dir_real);
     std::string nk = spath::normcase(local_path), bk = spath::normcase(base);
+    // Host-separator containment (see LocalDriver::abs_for above): Python's
+    // startswith(base + os.sep) needs '/' on POSIX too.
+#ifdef _WIN32
     if (nk != bk && !sp::starts_with(nk, bk + "\\")) raise_value_error("path escapes mod");
+#else
+    if (nk != bk && !sp::starts_with(nk, bk + "/")) raise_value_error("path escapes mod");
+#endif
     std::string remote = remote_path_for(*prov_opt, mod_name, rel);
     if (dry_run) {
         bool local_exists = spath::is_file(local_path);

@@ -60,6 +60,40 @@ std::string env_workspace_root() {
     return {};
 }
 
+#ifndef _WIN32
+// POSIX editor_root() fallbacks only — Windows keeps its historical exe-dir/cwd
+// rule untouched. Mirrors backend/editor/core/paths.py app_data_dir().
+std::string home_dir() { return env_or_empty("HOME"); }
+
+// paths.py:36-46 _dir_writable: makedirs(exist_ok=True) then create+delete a
+// probe file (an AppImage squashfs mount or a root-owned /opt fails here).
+bool dir_writable(const std::string& d) {
+    if (d.empty()) return false;
+    sa_core::paths::create_dirs(d);  // makedirs(exist_ok=True); ignore result
+    const std::string probe = sa_core::paths::join(d, ".write_probe_selftest");
+    if (!sa_core::paths::write_bytes_simple(probe, "ok")) return false;
+    return sa_core::paths::remove_file(probe);
+}
+
+// paths.py:49-56 platform_data_dir(). Note the two names differ on purpose:
+// macOS uses "StudentAgeEditor", Linux uses "student-age-editor" (exact, per
+// the Python source).
+std::string platform_data_dir() {
+#if defined(__APPLE__)
+    std::string p = sa_core::paths::join(home_dir(), "Library");
+    p = sa_core::paths::join(p, "Application Support");
+    return sa_core::paths::join(p, "StudentAgeEditor");
+#else
+    std::string base = env_or_empty("XDG_DATA_HOME");
+    if (base.empty()) {
+        base = sa_core::paths::join(home_dir(), ".local");
+        base = sa_core::paths::join(base, "share");
+    }
+    return sa_core::paths::join(base, "student-age-editor");
+#endif
+}
+#endif  // !_WIN32
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -156,6 +190,14 @@ std::string editor_root() {
         fs::path exe = fs::path(buf).parent_path();
         return sa_core::paths::path_to_utf8(exe);
     }
+#else
+    // paths.py:59-70 app_data_dir(): prefer the exe directory when writable so
+    // data travels with an unpacked/portable install; otherwise fall back to
+    // the platform user-data dir (read-only AppImage, root-owned /opt, ...).
+    const std::string exe = sa_core::paths::exe_dir();
+    if (!exe.empty() && dir_writable(exe)) return exe;
+    const std::string pdata = platform_data_dir();
+    if (!pdata.empty()) return pdata;
 #endif
     return sa_core::paths::path_to_utf8(fs::current_path());
 }

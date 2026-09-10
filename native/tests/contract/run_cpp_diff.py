@@ -18,6 +18,9 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+# Portable builds drop the .exe suffix on Linux/macOS; on Windows this resolves
+# to ".exe", so the default path used in start_cpp() stays byte-identical.
+EXE = ".exe" if sys.platform == "win32" else ""
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(REPO, "backend"))
 import normalize  # noqa: E402
@@ -88,7 +91,7 @@ def start_cpp(ws):
     pf = os.path.join(tempfile.gettempdir(), "cpp_diff_port.txt")
     if os.path.exists(pf):
         os.unlink(pf)
-    proc = subprocess.Popen([os.path.join(REPO, "native", "build", "bin", "backend.exe"),
+    proc = subprocess.Popen([os.path.join(REPO, "native", "build", "bin", "backend" + EXE),
                              "--port", "0", "--write-port", pf, "--workspace-root", ws],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     t0 = time.time()

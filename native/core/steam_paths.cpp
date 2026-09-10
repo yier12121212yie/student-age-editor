@@ -238,7 +238,8 @@ std::vector<std::string> steam_root_candidates() {
     // here; HOME-based probing kept best-effort per the wave-2 brief.
     std::string home = home_dir();
     if (home.empty()) return out;
-#if defined(SA_TARGET_MACOS)
+#if defined(__APPLE__)
+    // steam_paths.py:52-54 — darwin: ~/Library/Application Support/Steam.
     std::string mac = paths::join(paths::join(home, "Library"), "Application Support");
     out.push_back(paths::join(mac, "Steam"));
 #else
@@ -347,8 +348,10 @@ std::string user_mods_dir() {
     p = paths::join(p, "Mods");
     return paths::abs_path(p);
 #else
-    // darwin branch (kept behind the same #else for this build):
-#if defined(SA_TARGET_MACOS)
+    // darwin branch — steam_paths.py:143-146: ~/Library/Application Support/
+    // <publisher>/<game>/Mods (no native game build; CrossOver/Wine users
+    // repoint the workspace in the UI).
+#if defined(__APPLE__)
     std::string p = paths::join(home_dir(), "Library");
     p = paths::join(p, "Application Support");
     p = paths::join(p, kGamePublisher);

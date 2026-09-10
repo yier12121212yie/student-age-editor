@@ -17,7 +17,12 @@ target_compile_features(sa_cli PUBLIC cxx_std_20)
 
 add_executable(backend_cli p7_cli_main.cpp)
 # shell32 = CommandLineToArgvW/LocalFree in utf8_args (p7_cli_main.cpp:60-72;
-# same need as wip/P7/group.cmake:19). winhttp/advapi32 come PUBLIC from
-# sa_core (core/CMakeLists.txt:22); ws2_32 from sa_server (server/CMakeLists.txt:36).
-target_link_libraries(backend_cli PRIVATE sa_cli sa_server sa_core shell32)
+# same need as wip/P7/group.cmake:19). It is a Windows-only system library, so
+# link it only on Windows. winhttp/advapi32 come PUBLIC from sa_core
+# (core/CMakeLists.txt:22) and ws2_32 from sa_server (server/CMakeLists.txt:36),
+# each already WIN32-guarded; on POSIX the exe needs no extra system libs.
+target_link_libraries(backend_cli PRIVATE sa_cli sa_server sa_core)
+if(WIN32)
+    target_link_libraries(backend_cli PRIVATE shell32)
+endif()
 set_target_properties(backend_cli PROPERTIES OUTPUT_NAME "backend_cli")

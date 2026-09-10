@@ -23,6 +23,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NATIVE = os.path.abspath(os.path.join(HERE, ".."))
+# Portable builds drop the .exe suffix on Linux/macOS; on Windows this resolves
+# to ".exe", so the default path below stays byte-identical to before.
+EXE = ".exe" if sys.platform == "win32" else ""
 
 CHECKS = []  # (name, ok, detail)
 
@@ -37,7 +40,7 @@ def check(name, cond, detail=""):
 def find_cli():
     if len(sys.argv) > 1:
         return sys.argv[1]
-    cand = os.path.join(NATIVE, "build", "bin", "backend_cli.exe")
+    cand = os.path.join(NATIVE, "build", "bin", "backend_cli" + EXE)
     return cand
 
 

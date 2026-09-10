@@ -29,8 +29,11 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))           # native/tests
 NATIVE = os.path.abspath(os.path.join(HERE, ".."))    # native
-BACKEND = os.path.join(NATIVE, "build", "bin", "backend.exe")
-TUI = os.path.join(NATIVE, "build", "bin", "backend_tui.exe")
+# Portable builds drop the .exe suffix on Linux/macOS; on Windows this resolves
+# to ".exe", so the paths below stay byte-identical to before.
+EXE = ".exe" if sys.platform == "win32" else ""
+BACKEND = os.path.join(NATIVE, "build", "bin", "backend" + EXE)
+TUI = os.path.join(NATIVE, "build", "bin", "backend_tui" + EXE)
 PORTS = [8772, 8773, 8774, 8775]
 
 checks = []
