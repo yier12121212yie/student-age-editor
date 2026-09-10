@@ -225,6 +225,14 @@ fork/只读视图语义见 5.2：C++ 侧缓存值用 `shared_ptr<const nlohmann:
 - 现状基线：`backend/editor/server/selftest.py` 已支持外部模式
   （`STUDENT_AGE_BACKEND_URL=http://127.0.0.1:<port> python -m unittest editor.server.selftest`），
   对 Python 后端 `Ran 83 tests / OK (skipped=1)`——同一命令打 C++ 后端即波次门禁。
+- **provisioned 复跑配方（2026-09-10 实测定型，W4-2 验收时发现）**：C++ 后端打全 83 例需要两路工件
+  接线——① 后端 editor_root（Windows=exe 目录）下放 `_cache/aa_index/aa_index.json`（可直接拷
+  `backend/_cache/` 现成品），否则 POST `/api/aa/scan` 回 "unityfs unavailable"、3 例 AaPreview
+  以 FAILED 而非 skip 出场（skip 门控查的是 selftest 进程侧 Python `_editor_root()/_cache`，两侧路径
+  不同源）；② 起服务时 `EDITOR_DECODED_PACK_DIR=<repo>/dist/bundled_full`（解码包：aa_index.json +
+  tex/*.webp + aud + Cfgs/zh-cn 317 表 + base_data.json），缺它则 2 例 EventPreviewApi（base EvtCfg
+  结构、bg meta 合并）+ 2 例 tex 解码红。两路齐 → `Ran 83 / OK (skipped=1)` 与 Python 基线全平。
+  缺工件时的红**不是回归**——判据是新旧两个 backend.exe 同环境同红。
 
 ## 9. 服务文件模板
 
