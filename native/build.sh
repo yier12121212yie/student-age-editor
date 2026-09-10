@@ -77,16 +77,22 @@ cmake --build "$BUILD_DIR" --config "$BUILD_TYPE"
 # --- test -------------------------------------------------------------------
 # The Catch2 binary is 'sa_tests' on POSIX (no .exe suffix, unlike build.cmd).
 # Default exclusions cover the cases that are not yet POSIX-runnable:
-#   [httpd]  wire-level cases that bind a real port and drive httplib::Client
-#            hang on POSIX (W4-2 WSL evidence; tracked for W4-4/W4-5)
 #   [slow]   the 40MB [perf][s1][s2][bench][slow] acceptance cases (already
 #            covered by the Windows gate; IO-heavy over the WSL NTFS mount)
-#   [network]  the one real-HTTPS case in test_http_client_posix.cpp
+#   [network]  the one real-HTTPS case in test_http_client_posix.cpp (needs
+#            outbound egress; Windows/WSL gates cover the local paths)
+# [httpd] used to be excluded here: the wire-level cases hung on POSIX because
+# Httpd::stop() relied on closing the listen fd to interrupt a parked accept()
+# (a Winsock-only behaviour). W4-H fixed that in httpd.cpp and the whole tag is
+# green on POSIX now, so it runs in the default set.
 # Vendored Catch2 reports v3.7.1 but without the --exclude-tags option:
 # exclusions go through the positional '~[tag]' test-spec list (verified the
-# 3 specs drop exactly the tagged cases). Intentional word-split below.
+# specs drop exactly the tagged cases). Intentional word-split below.
 # Override e.g. TEST_ARGS='' to run everything.
-TEST_ARGS="${TEST_ARGS:-~[httpd] ~[slow] ~[network]}"
+# NOTE: when BUILD_DIR points outside the repo tree, the asset resolver's
+# exe-dir walk-up cannot reach native/assets and the [p1] schema cases crash;
+# set EDITOR_ASSETS_ROOT="$NATIVE_DIR/assets" in that case.
+TEST_ARGS="${TEST_ARGS:-~[slow] ~[network]}"
 echo
 echo "[build.sh] === test (sa_tests $TEST_ARGS) ==="
 # shellcheck disable=SC2086  # intentional word-split of TEST_ARGS

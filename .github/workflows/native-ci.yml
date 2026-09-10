@@ -56,3 +56,59 @@ jobs:
           curl -s -X POST http://127.0.0.1:8799/api/shutdown
           wait $BPID || true
           echo "PING SMOKE OK"
+
+  build-test-linux:
+    name: Linux (g++ / CMake / Ninja)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # build.sh is the POSIX counterpart of build.cmd: configure (Ninja,
+      # Release) + build all + run sa_tests with the [slow]/[network] tag
+      # exclusions. It is what W4-2/W4-3/W4-H validated on WSL (same toolchain
+      # shape: g++ 13, cmake, ninja). BUILD_DIR stays inside the checkout so
+      # the asset resolver's exe-dir walk-up reaches native/assets (a build dir
+      # outside the tree needs EDITOR_ASSETS_ROOT).
+      - name: Configure + build + test (native/build.sh)
+        run: BUILD_DIR="$GITHUB_WORKSPACE/build-native-linux" bash native/build.sh
+
+      # Same blackbox contract/property as the Windows job, on the POSIX
+      # binary; shutdown is asserted to return before the process exits.
+      - name: Ping smoke (blackbox HTTP contract)
+        run: |
+          EXE="$GITHUB_WORKSPACE/build-native-linux/bin/backend"
+          [ -x "$EXE" ] || { echo "backend not found/executable"; exit 1; }
+          "$EXE" --port 8799 &
+          BPID=$!
+          code=""
+          for i in $(seq 1 30); do
+            code=$(curl -s -o ping.json -w "%{http_code}" http://127.0.0.1:8799/api/ping || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ] || { echo "ping HTTP $code"; exit 1; }
+          grep -q '"cfg_patch": true' ping.json
+          grep -q '"app": "student-age-editor"' ping.json
+          curl -s -X POST http://127.0.0.1:8799/api/shutdown
+          wait $BPID || true
+          echo "PING SMOKE OK"
+
+  # Informational until a first green run is recorded: the macOS port (W4-2
+  # landed __APPLE__ paths for exe_dir/steam_paths/editor_root) has never run
+  # on a real darwin host, so this job is non-blocking. Promote it to a
+  # required job once it has passed at least once (track in W4-6).
+  build-test-macos:
+    name: macOS (clang++ / CMake / Ninja) [informational]
+    runs-on: macos-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure + build + test (native/build.sh)
+        run: BUILD_DIR="$GITHUB_WORKSPACE/build-native-macos" bash native/build.sh
