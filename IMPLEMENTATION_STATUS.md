@@ -1,5 +1,14 @@
 # Implementation Status Report（第二轮：大表读写链路）
 
+> **后端现状注记**：本文件记录的是 **Python 后端时代**（`backend/editor/`）
+> 大表读写链路优化的最终状态与证据。该后端已整体迁移为 **native C++**
+> （`native/`，CMake 构建），上述读写语义与计数器契约按
+> [`native/CONVENTIONS.md`](native/CONVENTIONS.md) 移植到 C++（如
+> `server/perf.cpp` 的 perf 计数器、`server/cfg_store.cpp` 的写管线、
+> `cfg_cache` 的免序列化出口）；`backend/editor/` 删除后本文件的 Python
+> 命令不再可执行，相关数字仅为当时的历史记录。当前门禁为 Catch2
+> `native/tests/sa_tests`（含 `test_perf_s1_s2.cpp` 等）。
+
 > 本文件是大表链路优化（still-stone-stickleback.md）的最终状态报告。
 > 2026-09-03 的旧报告描述的「S1 部分完成」实为**死代码**（api.py 未导入
 > perf，NameError 被 `except Exception: pass` 吞掉，缓存从未建立），已在
@@ -33,7 +42,13 @@
 
 ## 🧪 测试水位（最终）
 
-- 后端：`cd backend && python -m pytest editor -q` → **293 passed**（基线 248 + 本轮新增 45）
+> 以下为 **Python 后端时代**的测试水位（历史记录）。后端迁 native 后，后端
+> 门禁改为 `native/build.cmd`（Windows）/ `native/build.sh`（POSIX）跑 Catch2
+> `sa_tests`，以及黑盒契约 `python tools/record_golden.py --check` 与
+> `native/tests/smoke_cli.py` / `smoke_tui.py`；`backend/editor` 删除后原 pytest
+> 命令不再可执行。
+
+- 后端（历史）：`cd backend && python -m pytest editor -q` → **293 passed**（基线 248 + 本轮新增 45）
 - 前端：`cd frontend && flutter test` → **392 passed / 7 skipped / 0 失败**
   （skip 均为 backend_integration_test 的「活后端未运行」环境性跳过，
   `setUpAll` 探测 8765 端口实现，后端在跑时照常执行）
@@ -51,7 +66,11 @@
 5. **S1-3**：`GET /api/cfg/<t>` 的 `keys` 字段改为显式 `?keys=1` 才返回。
 6. **B12**（前批）：跨站 OPTIONS 预检不再无条件放行。
 
-## 👀 GUI 目视验证清单（无法自动化，需人工跑 `python run_dev.py`）
+## 👀 GUI 目视验证清单（Python 后端时代：需人工跑 `python run_dev.py`）
+
+> 注：下述清单为报告当时（Python 后端）的验证方式。迁 native 后开发启动应改为
+> 先跑 `native/build.cmd`（或 `build.sh`）得到 `native/build/bin/backend[.exe]`，
+> 再以 Flutter 连接；仓库根的 `run_dev.py` 仍是 Python 后端启动器，尚未随迁。
 
 - [ ] 小地图节点块跟手拖动（D1）
 - [ ] 候选浮层在宿主 setState 时不消失（D2）

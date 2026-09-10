@@ -1,6 +1,14 @@
 # 学生时代 模组编辑器 — CLI / TUI 指南
 
-> 终端版编辑器，与 Flutter 图形版共用同一套 `Cfgs/zh-cn/*.json` 与 `GAME_SCHEMA`，**离线文件模式**（无需启动 HTTP server），适合 SSH、CI、批处理、键盘重度用户。
+> 终端版编辑器，与 Flutter 图形版共用**同一套 native C++ 后端 HTTP API**（`127.0.0.1`
+> 本地服务）与同一份 `Cfgs/zh-cn/*.json`。CLI / TUI 是各自独立的可执行文件
+> （`backend_cli` / `backend_tui`，Windows 带 `.exe`），不再是 `backend tui` /
+> `backend cli` 子命令，也不再有 Python 时代的 `run_cli.py` / `run_tui.py` /
+> `editor_cmd.exe`。
+>
+> CLI 默认**内嵌自起**一个后端进程（临时端口，自调自），也可用 `--url` 打一个已在
+> 运行的后端实例；TUI 则是纯客户端，**需要已有后端在运行**（`--url` / `--port`），
+> 本身不启动服务。
 
 ---
 
@@ -8,57 +16,57 @@
 
 ### OOBE 首次使用引导
 
-首次访问任一端时会自动开启一次 OOBE 向导（欢迎 → 工作区选择 → 可选创建首个 Mod → **可选 AI 助手 → 可选 TTS 配音 → 可选云存储**）。完成标记写入 `editor_env.json` 的 `oobe_completed`，**CLI / TUI / GUI 三端共用**，任一端完成后不再自动弹出。
-
-- GUI 额外含「界面风格（创作/经典）」步骤（终端无 UI 模式概念，CLI/TUI 无此步）
-- AI / TTS 配置写入三端共享的 `.editor_ai.json`；云存储写入工作区 `.editor_cloud.json`
-- 所有新步骤均「全空跳过」即不配置，之后可在设置页 / 云同步面板随时补充
+native CLI 把首次引导显式化为 `oobe` 子命令（`status` / `done` / `setup`），
+完成标记写入 `editor_env.json` 的 `oobe_completed`，**CLI / TUI / GUI 三端共用**，
+任一端完成后不再自动弹出。CLI **不会**在首次访问时自动弹出向导（旧 Python 版的
+交互式 REPL 特性未移植）；`EDITOR_OOBE` / `EDITOR_NO_OOBE` 环境变量由各消费方
+自理，CLI 不消费。
 
 ```powershell
-# 强制重新开启 OOBE
-python run_cli.py --oobe          # CLI：rich 向导，完成后可继续执行其它子命令
-python run_tui.py --oobe         # TUI：OOBE 弹窗向导
-# GUI：发行版 StudentAgeEditor.exe --oobe 或环境变量 EDITOR_OOBE=1
+# 查看是否首次运行 / 是否已完成
+backend_cli oobe status
 
-# 管道 / CI / 脚本中不会自动弹出（非 TTY 自动跳过）；彻底禁用：
-$env:EDITOR_NO_OOBE="1"
+# 设置工作区、可选顺手建一个模组（默认同时标记 OOBE 完成）
+backend_cli oobe setup --workspace D:\MyMods --mod FirstMod --desc "第一个模组"
+
+# 只标记完成
+backend_cli oobe done
 ```
 
 ### 环境要求
 
-- Python 3.12+
-- 依赖：`rich`（已自带）、`textual`（TUI 用，`pip install textual`）
-- workspace 默认：`%USERPROFILE%\AppData\LocalLow\PakyiGame\StudentAge\Mods`（与图形版一致）
-- 也可通过 `editor_env.json` 或 `--workspace` 显式指定
+- 无需 Python / pip / Flutter：发行版为原生可执行文件，`backend_cli` /
+  `backend_tui` 随包分发。
+- `backend_cli` 默认内嵌自起后端，无需另开后端；`backend_tui` 需先有一个后端在运行
+  （GUI 启动的 `backend`，或手工 `backend --port 8770`）。
+- workspace 默认：`%USERPROFILE%\AppData\LocalLow\PakyiGame\StudentAge\Mods`（与图形版一致）；
+  也可通过 `editor_env.json` 或全局 `--workspace` 显式指定。
 
-### 启动方式（源码运行）
-
-```powershell
-# 方式 A: 专用启动器（自动处理 PYTHONPATH）
-python run_cli.py --help
-python run_cli.py mods list
-python run_tui.py --mod test
-
-# 方式 B: 模块调用（需 PYTHONPATH=backend）
-$env:PYTHONPATH="backend"
-python -m editor.cli --help
-python -m editor.cli tui
-python -m editor.tui
-```
-
-### 发行版（PyInstaller）
+### 启动方式
 
 ```powershell
-# GUI 仍由 Flutter 启动 backend.exe --port 8765
-# CLI/TUI 复用同一 exe（需控制台）：
-backend.exe --cli mods list
-backend.exe --cli cfg get EvtCfg --mod test --id 320101
-backend.exe --tui
-# 源码模式更推荐：python run_cli.py / run_tui.py
+# CLI：内嵌自起后端（默认），子命令直挂
+backend_cli --help
+backend_cli mods list
+backend_cli cfg get EvtCfg --mod test --id 320101
+
+# CLI：打一个已在运行的后端（例如 GUI 已开 8765）
+backend_cli --url http://127.0.0.1:8765 mods list
+
+# TUI：连接已在运行的后端（默认 http://127.0.0.1:8770，可用 --url/--port 覆盖）
+backend_tui --port 8765
+backend_tui --url http://127.0.0.1:8765
 ```
 
-> 注意：`build/release/backend.spec` 默认 `console=False`（GUI 无黑框）。  
-> 若需发行版 CLI 控制台，请用 `console=True` 另行打包 `backend-cli.exe`，或直接分发源码 + `run_cli.py`。
+### 发行版安装器提供的命令包装
+
+Windows 安装器会视组件创建三个 PATH 包装（默认只勾选 CLI）：
+
+| 包装命令 | 目标 |
+| --- | --- |
+| `editor-gui` | 主程序 `学生时代模组编辑器.exe` |
+| `editor-cli` | `backend_cli.exe`（子命令直挂 `mods`/`cfg`/...） |
+| `editor-tui` | `backend_tui.exe` |
 
 ---
 
@@ -67,142 +75,153 @@ backend.exe --tui
 ### 全局参数
 
 ```
---workspace PATH   覆盖工作区根目录
---json             JSON 输出（便于管道，需放在子命令后或全局）
---help
+--url URL          打已在运行的后端实例（省略则内嵌自起，随机临时端口）
+--data-root DIR    数据根目录（EDITOR_DATA_ROOT；内嵌模式与 env 子命令使用）
+--workspace DIR    工作区目录（内嵌模式 init_state 注入）
+--mod NAME         本次命令使用的模组（等价旧 Python CLI 的每命令 --mod）
+--json             原样输出后端 JSON 响应（便于管道）
+--timeout SEC      HTTP 超时秒数
+--version / --help
 ```
+
+全局参数可放在子命令之前或之后（CLI11 fallthrough；如 `backend_cli cfg list --mod test`
+与 `backend_cli --mod test cfg list` 等价）。
+
+### 退出码
+
+| 码 | 含义 |
+| --- | --- |
+| 0 | 成功 |
+| 1 | 后端业务错误（非 2xx 响应 / 选择项不存在等），错误信封照常打印 |
+| 2 | 用法错误（参数缺失或非法） |
+| 3 | 传输失败（`--url` 指向的实例不可达 / 连接中断） |
 
 ### 模组管理
 
 ```powershell
-python run_cli.py mods list                      # 列出全部（Mods + workshop）
-python run_cli.py mods list --json
-python run_cli.py mods show test                 # 详情 + Cfgs 统计
-python run_cli.py mods create MyMod --desc "xxx" # 新建
-python run_cli.py mods delete MyMod --force
+backend_cli mods list                       # 列出全部（Mods + workshop）与当前选中
+backend_cli mods list --json
+backend_cli mods create MyMod --desc "xxx"  # 新建空模组（add 的别名）
+backend_cli mods add MyMod --desc "xxx"     # 新建 / 导入
+backend_cli mods add --path D:\Mods\SomeMod --name Imported   # 复制已有目录进工作区并选中
+backend_cli mods add --zip .\mod.zip --name Imported          # 解包 zip 进工作区并选中
+backend_cli mods select MyMod               # 选中（--root 可显式指定目录）
+backend_cli mods remove MyMod               # 删除
 ```
 
 ### 配置表 CRUD
 
-`Cfgs/zh-cn/*.json` 为 `{ id: record }` 字典。`cfg` 命令自动做 `Cfgs/zh-cn/` 前缀与大小写归一。
+`Cfgs/zh-cn/*.json` 为 `{ id: record }` 字典。`cfg` 命令自动做 `Cfgs/zh-cn/` 前缀与
+大小写归一。
 
 ```powershell
-# 列出
-python run_cli.py cfg list --mod test
+# 列出当前模组的表
+backend_cli cfg list --mod test
 
-# 读取整表: 默认表格视图 (自动挑选 title/name 等列), 大表仅显示前 30 行
-python run_cli.py cfg get EvtCfg --mod test
-python run_cli.py cfg get TalkCfg --mod test --fields title,npc,type   # 自定义列
-python run_cli.py cfg get TalkCfg --mod test --all                    # 全部行
+# 读取表 / 单条 / 单字段 / 键列表 / 元信息 / 前缀过滤
+backend_cli cfg get EvtCfg --mod test
+backend_cli cfg get EvtCfg --mod test --id 320101
+backend_cli cfg get EvtCfg --mod test --id 320101 --field title
+backend_cli cfg get EvtCfg --mod test --keys
+backend_cli cfg get EvtCfg --mod test --meta
+backend_cli cfg get TalkCfg --mod test --prefix 32 --suffix 3 --limit 50
 
-# 读取单条: 按 GAME_SCHEMA 字段顺序展示 (schema 外字段标 *, 缺失字段在底部列出)
-python run_cli.py cfg get EvtCfg --mod test --id 320101
+# 整表覆盖写入（PUT）
+backend_cli cfg set EvtCfg --mod test --file .\full_table.json
+backend_cli cfg set EvtCfg --mod test --data '{"1": {"id":1,"title":"新事件"}}'
+backend_cli cfg set EvtCfg --mod test --file .\t.json --expect-mtime 1725... --force
 
-# 读取单字段 / 整表纯 JSON (管道)
-python run_cli.py cfg get EvtCfg --mod test --id 320101 --key title
-python run_cli.py cfg get EvtCfg --mod test --id 320101 --json
+# 行级补丁（PUT body 判别 patch 字段，无 PATCH 动词）
+backend_cli cfg patch TalkCfg --mod test --set '{"9003":{"id":9003,"content":"第三行"}}' --remove 9001
+backend_cli cfg patch TalkCfg --mod test --set-file .\patch.json --if-match '{"9003":{"content":"第三行"}}'
+backend_cli cfg patch TalkCfg --mod test --set-file .\patch.json --force
 
-# 写入：整表 / 单条 / 单字段
-python run_cli.py cfg set EvtCfg --mod test --id 999 --value '{"id":999,"title":"新事件","type":1}'
-python run_cli.py cfg set EvtCfg --mod test --id 320101 --key title --value '"新标题"'
-# 从文件写入（推荐，避免 shell 转义）
-python run_cli.py cfg set EvtCfg --mod test --id 999 --file ./new_record.json
-python run_cli.py cfg set EvtCfg --mod test --file ./full_table.json  # 覆盖整表
-
-# 新建记录：按 schema 自动填默认值，ID 默认取最大数字 ID+1；--value/--file 仅覆盖指定字段
-python run_cli.py cfg add TalkCfg --mod test
-python run_cli.py cfg add TalkCfg --mod test --value '{"title":"我的对话"}'
-
-# CLI 内置逐字段编辑器（无需外部编辑器）：
-#   cfg set/edit 不带 --value 时逐个字段询问 — 回车=保留, 输入=替换,
-#   "" 清空字符串, 数组支持 [1,2] 或 1,2 简写, !q 放弃, 结束汇总变更后 y/N 落盘
-python run_cli.py cfg set TalkCfg --mod test --id 32010101
-python run_cli.py cfg edit TalkCfg --mod test --id 32010101      # 同上 (无 --id 则编辑整表文件)
-
-# 外部编辑器：加 --editor 改用 $EDITOR 打开临时 JSON
-EDITOR="code --wait" python run_cli.py cfg edit EvtCfg --mod test --editor
-
-# 删除
-python run_cli.py cfg delete EvtCfg --mod test --id 999 --force
-
-# 校验（对照 GAME_SCHEMA）
-python run_cli.py cfg validate --mod test
-python run_cli.py cfg validate --mod test --verbose
-python run_cli.py cfg validate                 # 校验 workspace 下全部 mods
-
-# 导入导出（覆盖）
-python run_cli.py cfg export EvtCfg --mod test --out ./evt.json
-python run_cli.py cfg import EvtCfg --mod test --in ./evt.json --force
+# 历史快照 / 撤销 / 重做
+backend_cli cfg history EvtCfg --mod test
+backend_cli cfg history EvtCfg --mod test --undo
+backend_cli cfg history EvtCfg --mod test --redo
 ```
 
-### Schema / 搜索 / 工作区 / 自检
+### 校验 / Bug 扫描 / 剧情
 
 ```powershell
-python run_cli.py schema                 # 406 张表概览
-python run_cli.py schema EvtCfg          # 单表字段: 18 字段 + 类型
-python run_cli.py schema EvtCfg --json
+# schema + 跨表校验（--strict 时有 error 级问题则 exit 1）
+backend_cli validate EvtCfg --mod test
+backend_cli validate EvtCfg --mod test --data '{"1": {}}'
+backend_cli validate EvtCfg --mod test --file .\t.json --strict
 
-python run_cli.py search 320101                        # 跨全部 mods
-python run_cli.py search 关键词 --mod test --cfg TalkCfg
-python run_cli.py search 320101 --json
+# 逻辑 bug 扫描 / 修复
+backend_cli bugfix scan
+backend_cli bugfix scan --mod test
+backend_cli bugfix fix
+backend_cli bugfix fix --from-file .\bugs.json
 
-python run_cli.py workspace show
-python run_cli.py workspace set D:\MyMods
-
-python run_cli.py doctor                 # 环境自检
-python run_cli.py server start --port 8765  # 启动 HTTP 后端供 Flutter 用
+# 剧情文本导入导出
+backend_cli story export --evt 101,102 --mod test
+backend_cli story export --evt 101 --out .\story.txt --dual both
+backend_cli story import --start-id 101 --file .\story.txt          # 默认仅预览
+backend_cli story import --start-id 101 --file .\story.txt --write  # 落库
+backend_cli story import --start-id 101 --text "【甲】你好" --write --append
 ```
 
-### 检查更新（update）
+### 环境变量文件（本地，非 HTTP）
 
 ```powershell
-python run_cli.py update           # 通过 GitHub Release 检查新版本
-python run_cli.py update --json    # JSON 输出（便于脚本解析）
+backend_cli env get workspace_root
+backend_cli env set workspace_root D:\MyMods
+backend_cli env set some_flag 42 --json-value
 ```
 
-显示最新版本号、发布说明与各资产的下载链接；REPL（`python run_cli.py` 无参进入）内 `/update` 等效。
+`env` 直接读写 `editor_env.json`（`--json-value` 时值按 JSON 解析后存）；键不存在时
+`env get` 退出码 1。
 
 ### Shell 转义提示（Windows）
 
-PowerShell 单引号内 `\"` 会保留反斜杠，导致 JSON 失效。推荐：
+PowerShell 单引号内 `\"` 会保留反斜杠，导致 JSON 失效。推荐用 `--file` / `--set-file`
+传 JSON，或：
 
 ```powershell
 # 推荐 1: 单引号 + 无转义
-python run_cli.py cfg set EvtCfg --mod test --id 1 --value '{"title":"hello"}'
+backend_cli cfg set EvtCfg --mod test --data '{"1":{"title":"hello"}}'
 
 # 推荐 2: 双引号 + 转义内部双引号
-python run_cli.py cfg set EvtCfg --mod test --id 1 --value "{""title"":""hello""}"
-
-# 推荐 3: 用 --file 彻底避免转义
-'{"title":"hello"}' | Set-Content -Path tmp.json -Encoding UTF8
-python run_cli.py cfg set EvtCfg --mod test --id 1 --file tmp.json
+backend_cli cfg set EvtCfg --mod test --data "{""1"":{""title"":""hello""}}"
 ```
-
-CLI 已内置对 `\"` 的容错修复（PowerShell 误转义会自动还原）。
 
 ---
 
 ## 3. TUI 使用
 
 ```powershell
-python run_tui.py
-python run_tui.py --mod test
-python run_cli.py tui --mod test        # 等价
-python -m editor.tui --mod test         # 需 PYTHONPATH=backend
+backend_tui                                  # 连默认 127.0.0.1:8770
+backend_tui --port 8765
+backend_tui --url http://127.0.0.1:8765
+backend_tui --data-root D:\editor_data       # 覆盖 EDITOR_DATA_ROOT
+```
+
+TUI 是纯客户端，需先有一个后端实例在运行；连接失败会在状态栏报错。
+
+### 无头自检（排障 / CI）
+
+```powershell
+backend_tui --render-check all               # 渲染全部页面样例到 stdout（不发网络）
+backend_tui --render-check table --width 100
+backend_tui --connect                        # ping→mods→select→cfg list→load，打印 CONNECT_OK
 ```
 
 ### 布局
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Header: 学生时代 模组编辑器 — TUI   (mod 名)                          │
-├──────────────┬────────────────────┬─────────────────────────────────┤
-│ 左: Mods/Cfgs│ 中: Records         │ 右: Detail / JSON                │
-│  Tree        │  DataTable(ID,prev)│  TextArea + [保存][校验][外部编辑]│
-│  workspace   │  选中高亮同步右侧  │  状态栏                          │
-├──────────────┴────────────────────┴─────────────────────────────────┤
-│ 搜索条 (/ 呼出)                                                     │
-│ Footer: 快捷键提示                                                  │
+│ Header: 学生时代 模组编辑器 — TUI                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│ 当前页：Mods / Tables / Table / Bugfix / Agent                      │
+│                                                                     │
+│  列表（模组 / 表 / 行 / Bug / 聊天记录） + 右侧内容区                 │
+│                                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│ 状态行（操作提示 / 错误）                                            │
+│ Footer: [?] 帮助  [Ctrl-Q] 退出                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -210,273 +229,133 @@ python -m editor.tui --mod test         # 需 PYTHONPATH=backend
 
 | 按键 | 动作 |
 |------|------|
-| `q` | 退出 |
-| `r` | 刷新 workspace / 当前 cfg |
-| `n` | 新建记录（基于 schema 自动填默认值，ID= max+1）；未选中 cfg 时转入新建 Mod |
-| `N`（Shift+N） | 新建 Mod：在 workspace 下生成 manifest.json + Cfgs/zh-cn 空骨架并自动选中 |
-| `e` | 聚焦右侧 JSON 编辑区 |
-| `d` | 删除（按两次确认） |
-| `s` | 保存：先暂存 TextArea JSON → 写入 `Cfgs/zh-cn/*.json`（原子替换） |
-| `/` | 搜索（当前 mod / 当前 cfg 内大小写不敏感） |
-| `c` | 云同步面板（provider 增删改查 / 测试 / 同步） |
-| `a` | AI 助手聊天面板（对话式改模，写操作需确认；面板内「⚙ 配置」可直接改 AI 配置，「📜 历史」回看/恢复 AI 会话） |
-| `u` | 检查更新（比对 GitHub Release，弹窗展示最新版本 / 发布说明 / 下载链接） |
-| `?` | 帮助 |
-| `Enter` | 左树展开 / 打开 cfg；中表选中 |
-| `↑↓` | 导航 |
-| `Esc` | 关闭搜索条 |
+| `Ctrl-Q` | 退出 |
+| `?` | 开关帮助覆盖层（任意键先行关闭） |
+| `Ctrl-D` / `Ctrl-T` / `Ctrl-B` / `Ctrl-A` | 切换 模组 / 表 / Bug / AI 助手 页 |
+| `↑↓` | 列表 / 行移动 |
+| `Enter` | 模组页进入表列表 / 表列表打开表 / 行进入编辑 / 助手页发送消息 |
+| `Esc` | 返回上一页 / 退出编辑 |
+| `r` | 刷新当前列表（表列表、模组） |
+| `Ctrl-R` | 在 Bug 页重新扫描 |
+| `Ctrl-S` | 表页保存（行级补丁）/ Bug 页应用修复 |
+| `d` | 表页标记删除当前行 |
+| 直接输入 | 表列表 / 表页按字符过滤 |
 
 ### 操作流
 
-1. 左侧树 `Enter` 选 mod → 自动展开 Cfgs；`Enter` 选 cfg → 中间表加载。
-2. 中间表 `↑↓` 高亮即在右侧预览；`Enter` 锁定。
-3. 右侧 `e` 进入编辑，改 JSON 后 `s` 保存落盘（先校验 schema，`warn` 放行，`error` 阻止，可在 CLI 用 `--force` 绕过）。
-4. `校验` 按钮把问题以 `{"_validation": [...]}` 形式回显；`外部编辑` 用 `$EDITOR` 悬挂 TUI 打开原文件，关闭后自动重载。
-5. `/` 搜索后结果暂代中表，`r` 刷新回到正常列表。
+1. `Ctrl-D` 模组页，`↑↓` 选择，`Enter` 进入该模组的表列表。
+2. 表列表 `↑↓` 选择，`Enter` 打开表（拉取该表行）。
+3. 表页 `↑↓` 选行，`Enter` 编辑该行 JSON；`d` 标记删除；
+   `Ctrl-S` 保存（增量补丁，冲突 / lossy 会在状态行给出后端错误）。
+4. Bug 页 `Ctrl-R` 扫描，`↑↓` 选择，`Ctrl-S` 应用修复。
+5. 助手页 `Ctrl-A`，直接输入后 `Enter` 发送；`Esc` 返回。
 
-数据安全：保存采用 `*.tmp_<pid>` + `os.replace` 原子替换，避免断电半截文件；CLI/TUI 每次写盘前还会保留上一代 `*.json.bak`，误写可手动回滚。REPL 的 `/cfg` 与单命令版共用同一实现（含表格视图、`cfg add`、$EDITOR 单条编辑），`/mods use` 的上下文会自动注入 `--mod`。
+数据安全：保存通过后端写管线（原子替换 + 快照），TUI 不直接写文件；与图形版同时
+编辑同一 cfg 可能互相覆盖，保存前 `r` 刷新。
 
 ---
 
 ## 4. 架构
 
 ```
-backend/editor/
-  cli/
-    __main__.py  ← python -m editor.cli
-    app.py       ← argparse + rich，离线直接读写 Cfgs
-    oobe.py      ← OOBE 首次运行向导（三端共享标记 + CLI rich 向导实现）
-    utils.py     ← workspace/mod/cfg/schema/validate/search 复用层（与 server/api.py 逻辑镜像）
-  tui/
-    __main__.py  ← python -m editor.tui
-    app.py       ← textual 三栏 App，复用 cli.utils
-  core/
-    game_schema.py (406 cfg schemas)
-    data_dicts.py
-  server/
-    api.py       ← HTTP 版（Flutter 用），本 CLI/TUI 不依赖，平行实现
-
-run_cli.py / run_tui.py          ← 源码启动器（处理 PYTHONPATH）
-packaging/backend_entry.py        ← PyInstaller 入口，支持 --cli/--tui 分流
-build/release/backend.spec        ← 已追加 rich/textual/editor.cli/tui 的 hiddenimports
+native/
+  cli/                       backend_cli（CLI11 + sa_core::http）
+    p7_cli_logic.{h,cpp}     语法/命令规划/渲染/退出码（纯逻辑，进 sa_cli 供 sa_tests）
+    p7_cli_main.cpp          main + 内嵌服务器引导（仅进 backend_cli）
+  tui/                       backend_tui（FTXUI）
+    p8_model.h               AppState / Page / Intent / KeyInput
+    p8_view_model.cpp        纯状态机 HandleKey（不发网络，只产出 Intent）
+    p8_api.{h,cpp}           BackendApi（HTTP + 静态响应解析）
+    p8_cfg.{h,cpp}           编辑 diff → 补丁 body
+    p8_agent.{h,cpp}         openai_compatible 对话编解码 + 会话落盘
+    p8_render.{h,cpp}        AppState → FTXUI DOM + 无头字符串渲染
+    tui/{app,main}.cpp       交互层与入口（仅进 backend_tui）
 ```
 
-CLI/TUI **不启动 http server**，直接 `Path.read_text(utf-8-sig)` / `json.loads` / `json.dump` 操作文件，因此：
-- 可在无游戏、无网络、无 Flutter 环境下使用
-- 与图形版无冲突（文件锁仅靠原子替换，无并发守护；建议勿与图形版同时编辑同一 cfg，TUI 的 `r` 可手动同步）
-
-校验：`utils.validate_cfg()` 对照 `GAME_SCHEMA` 做宽松类型检查（String/Number/1D Array/2D Array，未知字段 warn，类型不符 warn），与图形版 `field_utils.dart` 策略一致。
+- **CLI**：默认在进程内起真后端（`sa::init_state + build_router + Httpd`，
+  与桌面同一组 route handler），再经 `sa_core::http` 走 loopback HTTP 自调自；
+  `--json` 时原样透传后端字节。`--url` 时退化为纯客户端。
+- **TUI**：纯客户端，用 `BackendApi` 调后端 HTTP API（mods / cfg / bugfix /
+  history），agent 页用 `AgentClient` 直连模型服务。
+- 二者都不再离线直接读写文件（旧 Python CLI/TUI 的「离线文件模式」已随迁移取消）；
+  所有读写经后端，语义与 GUI 一致。
 
 ---
 
 ## 5. 构建与分发
 
 ```powershell
-# 源码分发（推荐）：直接发本仓库，用户
-pip install textual rich
-python run_cli.py doctor
-python run_tui.py
+# 手动构建（Windows）：vcvars64 + CMake/Ninja → native/build/bin/ 三件套 + sa_tests
+cmd //c native\build.cmd
 
-# PyInstaller 单文件（Windows 示例）
-pip install pyinstaller UnityPy textual rich
+# POSIX（Linux / macOS）：需 cmake + ninja + C++20 编译器
+./native/build.sh
+
+# 发行版（三件套随包 + 可选 aa_scan）
 python build_release.py --target windows --version Alpha-v0.1
-# 产物 dist/*.zip 含 backend.exe + Flutter 前端；CLI 额外文档见本文件
-# 如需控制台版：
-#   修改 build/release/backend.spec: console=True
-#   pyinstaller build/release/backend.spec --distpath dist/cli --name backend-cli
+python build_release.py --target linux   --version Alpha-v0.1
+python build_release.py --target macos   --version Alpha-v0.1
 ```
+
+产物 `backend_dist/`（Windows 为 `.exe`）含 `backend` / `backend_cli` / `backend_tui`
+三件套；不再有 PyInstaller 的 `_internal/` 与 `editor_cmd.exe`。Windows 安装器提供
+`editor-cli.cmd` / `editor-tui.cmd` 包装与可选 PATH 注册。
 
 ---
 
 ## 6. 常见问题
 
-- **中文乱码**：PowerShell 默认 GBK，请 `chcp 65001` 或用 Windows Terminal（UTF-8）。文件本身为 UTF-8，`cat` 乱码不影响 JSON 正确性。
-- **--mod 必填**：workspace 下多 mod 时无法推断，需显式 `--mod`；单 mod 时可省略。
-- **workshop mods 不可删**：CLI 拒绝删除 `steamapps/workshop/content/1991040/*`，需在 Steam 客户端取消订阅。
-- **TUI 无法启动**：`pip install textual`；`doctor` 会检测。CI/无 TTY 环境请用 CLI 代替。
-- **同时编辑冲突**：CLI/TUI 与 Flutter 图形版同时写同一文件可能覆盖，保存前 `r` 刷新或避免并行编辑。
+- **中文乱码**：PowerShell 默认 GBK，请 `chcp 65001` 或用 Windows Terminal（UTF-8）。
+  文件本身为 UTF-8，`cat` 乱码不影响 JSON 正确性。
+- **`--mod` 必填**：workspace 下多 mod 时无法推断，需显式 `--mod`；单 mod 时可省略。
+- **workshop mods 不可删**：拒绝删除 `steamapps/workshop/content/1991040/*`，
+  需在 Steam 客户端取消订阅。
+- **TUI 连不上**：确认已有后端在运行，或 `--url` / `--port` 指向正确实例；
+  可用 `backend_tui --connect` 排查。
+- **同时编辑冲突**：CLI/TUI 与 Flutter 图形版同时写同一文件可能覆盖，保存前 `r`
+  刷新或避免并行编辑。
 
 ---
 
-## 7. Agent 助手（AI 对话式改模）
+## 7. AI 助手
 
-CLI / TUI 内置 AI 助手，与 GUI 的 AI 侧栏同一套工具与提示词（领域 CRUD / 字典 /
-只读文件 / 舞台调度，共 13 个；图片生成为 GUI 专属）。模型服务配置存在
-`.editor_ai.json`（editor 根目录，**GUI / CLI / TUI 三端共享、实时生效**）：
-GUI 设置页保存即写该文件；CLI 可直接读写。
+- **TUI** 内置轻量 AI 对话面板（`Ctrl-A`）：**仅支持 `openai_compatible` 协议**、
+  **纯对话无工具**（不能直接改模），显示在独立的会话记录里。配置来源：
+  `--agent-config <json>`（`{provider, baseUrl, model, temperature, apiKey}`）或环境变量
+  `P8_AI_PROVIDER` / `P8_AI_BASE` / `P8_AI_MODEL` / `P8_AI_KEY`。会话历史以单文件
+  JSON 落盘于 `<data_root>/.p8_ai_history/`。
+- **CLI 没有 agent 子命令**（旧 Python 版的 `agent chat/config/history` 未移植）。
+- GUI 的完整 AI 侧栏（工具调用、字段级 diff 审批、多协议、并行子代理、自动重连）
+  仍由 Flutter 前端直连后端 AI 路由提供；配置三端共享 `.editor_ai.json`。
 
-```powershell
-# 查看 / 交互式修改配置（协议、baseUrl、apiKey、model、temperature，可测试连通性）
-python run_cli.py agent config
+> 与旧 Python 版的差异：native TUI 的 agent 是大幅简化的「纯对话」实现（无 14 个领域
+> 工具、无审批回调、无 `spawn_subagents`、无自动重连退避/取消、无多协议）。
 
-# 单次任务：执行完退出（流式输出 + 工具调用记录）
-python run_cli.py agent chat -m test 把开局事件的标题改成「新的开始」
+---
 
-# 交互聊天：多轮上下文，输入 exit / Ctrl+D 退出
-python run_cli.py agent chat
-python run_cli.py agent chat -m test
+## 8. 云同步
 
-# 临时覆盖配置（不改文件）
-python run_cli.py agent chat --provider anthropic --base-url https://… --api-key sk-… --model …
-```
+- **CLI / TUI 未移植云同步命令**（旧 Python 版的 `cloud providers/add/test/show/remove/sync`
+  不存在）。
+- 后端 `/api/cloud/*` 路由与同步引擎仍在，由 GUI 云同步页消费（7 种驱动：local /
+  webdav / openlist / 百度 / 123 / Google Drive / OneDrive；配置存
+  `<workspace>/.editor_cloud.json`）。实时自动同步为 GUI 专属。
 
-REPL（`python run_cli.py` 无参进入）内亦可：`/agent` 直接进入 AI 对话；
-`/agent <任务>` 以该任务开场进入对话；`/agent setting` 查看/交互式修改 AI
-模型配置（`/agent config` 仍可用）；`/agent chat` 单命令模式带任务时为
-一次性执行（非交互，等价 `python run_cli.py agent chat <任务>`）。
+---
 
-TUI 修改配置：聊天面板（`a`）内点「⚙ 配置」直接编辑协议 / baseUrl / apiKey /
-model / temperature / AI 权限，可保存前测试连通；REPL 内 `/agent setting`（或
-`/agent config`）同效。
+## 9. 配音（TTS）
 
-安全语义与 GUI 一致：所有写操作（update/create/delete/set_talk_stage）都会
-先展示字段级 diff，等待 `y/N` 审批；工具循环上限 20 轮；未配置时给出引导而非报错栈。
+- **CLI / TUI 未移植 TTS 命令**（旧 Python 版的 `tts config/voices/test/synthesize/list/delete`
+  不存在）。
+- 后端 `/api/tts/*` 路由仍在，由 GUI 设置页 / 领声功能消费；配置沿用
+  `.editor_ai.json` 的 `tts*` 字段（三端共享）。
 
-AI 权限（`permissionMode`，三端共享）：`confirm`=变更前确认（默认，每次写操作
-弹出审批框 / `y/N`）；`full`=完全访问（AI 直接执行修改，不再弹出确认框）。
-GUI 在设置页「AI 权限」或 AI 面板顶栏的盾牌按钮切换；CLI 在 `agent config` 里
-切换，`agent chat` 以完全访问启动时会提示 ⚠；TUI 在「⚙ 配置」里切换，标题栏
-会显示「完全访问」标识。
+---
 
-并行子代理：AI 可通过 `spawn_subagents` 把可独立完成的调研类子任务并行分派给
-最多 4 个只读子代理并汇总结论（子代理只读，不可写）；所有写操作仍由主代理
-执行并按当前 AI 权限模式确认。
+## 10. 插件管理
 
-自动重连：连接失败 / 流式中断 / HTTP 429、5xx 会自动按指数退避重试（默认 3 次、
-首个间隔 1 秒，`agent config` 里可调 `maxRetries` / `retryDelayMs`，`maxRetries=0`
-关闭）；重连前输出「⚠ 连接中断，正在自动重连 (n/N)…」，断流前已显示的半截文本
-会随重连重新生成。用户主动取消（Ctrl+C）不会触发重连。
-
-TUI 内按 `a` 打开聊天面板（Esc 关闭，写操作弹出确认框），按 `u` 检查更新；
-REPL 内 `/agent`、`/agent setting|config`、`/agent chat`（当前 `/mods use`
-选定的 mod 自动作为 `-m` 默认）。
-
-### AI 会话历史（CLI / TUI 共享）
-
-CLI 聊天与 TUI 聊天面板的每轮对话会**自动记录**到 editor 根目录下的
-`.editor_ai_history/`（一会话一 JSON，含 provider / model / 模组 / 全量消息），
-最多保留 50 个会话、超出自动淘汰最旧；`--no-history`（CLI）可对单次会话关闭。
-GUI 不读取该目录。
-
-```powershell
-python run_cli.py agent history                 # 列出会话（时间/来源/模组/消息数/标题/id）
-python run_cli.py agent history show last       # 回看某次会话内容（last=最新一条）
-python run_cli.py agent history resume last     # 恢复会话并继续对话（上下文接上）
-python run_cli.py agent chat --resume <id>      # 同上，chat 方式进入
-python run_cli.py agent history delete <id>     # 删除一个会话
-python run_cli.py agent history clear           # 清空全部（交互确认，-y 跳过）
-```
-
-恢复时历史消息会自动归一化为 OpenAI 风格，因此换协议（如 anthropic →
-openai_compatible）后仍能无缝续聊。REPL 内 `/agent history` 同效；TUI 聊天
-面板点「📜 历史」打开会话列表，↑↓ 选择即预览，回车 / 「▶ 继续会话」载入
-聊天面板接着对话（继续写回同一会话文件），另支持删除 / 清空 / 刷新。
-
-## 8. 云同步（手动上传 / 下载 Mod）
-
-CLI/TUI 直接复用后端同步引擎（7 种驱动：local / webdav / openlist / 百度 /
-123 / Google Drive / OneDrive；阿里云盘、夸克、天翼已停止支持，历史配置
-会在操作时提示改用 OpenList 代理）。配置存于
-`<workspace>/.editor_cloud.json`，**与 GUI 云页同一份**。
-
-```powershell
-python run_cli.py cloud providers              # 列出（GUI 配好的直接可见）
-python run_cli.py cloud add                    # 交互式新增（选驱动 → 按 schema 问询字段）
-python run_cli.py cloud add --type local --name 备份 --remote-root mods --cfg root=D:ackup
-python run_cli.py cloud test <id>              # 测试连接
-python run_cli.py cloud show <id>              # 详情（敏感字段掩码，--reveal 明文）
-python run_cli.py cloud remove <id>            # 删除配置（远端文件不受影响）
-
-# 同步（upload=本地→远端, download=远端→本地, sync=双向新者为准）
-python run_cli.py cloud sync <id> --mod test --dry-run        # 只预览
-python run_cli.py cloud sync <id> --mod test                  # 上传（增量）
-python run_cli.py cloud sync <id> --mod test --direction sync --delete-extra
-python run_cli.py cloud sync <id> --mod test --files readme.txt,Cfgs/zh-cn/EvtCfg.json
-```
-
-说明：
-- 实时自动同步仍是 GUI 专属（realtime_sync）；CLI/TUI 为手动触发。
-- 同步结果按动作汇总（上传新增/更新、跳过一致、删除多余…），失败文件单独列出。
-- `--dry-run` 建议先跑一次，确认 `delete-extra` 影响范围后再真跑。
-- TUI 内按 `c` 打开云同步面板：左侧选择网盘并测试，`新增 / 编辑 / 删除` 直接
-  维护 provider（按驱动 schema 动态出表单，敏感字段掩码回显、保存保留原值），
-  右侧选方向 / DRY-RUN / 删除多余后开始同步（后台线程 + 进度条），Esc 可随时关闭。
-
-### REPL Tab 补全（agent / cloud）
-
-REPL（`python run_cli.py` 无参进入）内 Tab 补全已覆盖 `agent` / `cloud` 全族
-（裸词 `agent` / `cloud` 也可直接输入）：
-
-- 子命令级：`/cloud ` → providers/add/test/show/remove/sync；`/agent ` → setting/config/chat/history
-- 网盘 ID：`cloud test|show|remove|sync <Tab>` → 已配置 provider 的 id + 名称 [类型]
-- 会话 ID：`agent history show|resume|delete <Tab>` / `agent chat --resume <Tab>`
-  → 最近 30 个会话的 id + 标题·条数（`last` = 最新一条）
-- 值补全：`--type`（10 种驱动）、`--direction`（upload/download/sync）、
-  `--remote-root`（mods/cfgs/save）、`--provider`（三种 AI 协议）、
-  `-m/--mod`（Mod 列表）；`cloud add --cfg` 提示为 `<驱动字段 k=v>`
-- Flag 补全：未用过的 flag 自动去重提示（含 `--dry-run`、`--delete-extra`、`--reveal` 等）
-
-## 9. 配音（TTS：合成 / 音色 / 素材）
-
-CLI 可把文本合成为语音素材（阿里云 DashScope 百炼 / MiniMax T2A V2），保存到
-`<mod>/audio/tts/` 并登记 `Cfgs/zh-cn/AudioCfg.json`。配音配置与 GUI 设置页共用
-`.editor_ai.json` 的 `tts*` 字段（**三端共享**；`agent config` 的交互流程里也可顺带配置）。
-
-```powershell
-# 查看 / 交互式配置配音服务（provider、apiKey、groupId、baseUrl、model、voice、speed）
-python run_cli.py tts config
-python run_cli.py tts config --json      # JSON 输出（完整设置，ttsApiKey 打码为 ***）
-
-# 列出音色（缺省取设置里的 ttsProvider，再缺省 aliyun；并标注来源：在线拉取 / 内置音色表）
-python run_cli.py tts voices
-python run_cli.py tts voices aliyun
-python run_cli.py tts voices aliyun --model cosyvoice-v2   # 按模型切换内置音色表
-
-# 连通性测试（minimax 拉一次音色列表；aliyun 会真实合成一句短文本后丢弃）
-python run_cli.py tts test
-python run_cli.py tts test minimax
-
-# 合成并保存（默认自动登记 AudioCfg；wav 自动转 Ogg，本机需装 ffmpeg/oggenc）
-python run_cli.py tts synthesize "欢迎来到学生时代" --mod test
-python run_cli.py tts synthesize --mod test --key talk_intro_01 --voice Cherry "正文文本"
-echo 长文本… | python run_cli.py tts synthesize - --mod test     # '-' 从 stdin 读取
-python run_cli.py tts synthesize "文本" --mod test --no-cfg --raw-wav  # 不登记 / 保留 wav
-
-# 素材管理（模组定位与 cfg 命令一致：唯一模组自动选定，多模组需 --mod）
-python run_cli.py tts list --mod test
-python run_cli.py tts delete talk_intro_01.ogg --mod test        # y/N 二次确认
-python run_cli.py tts delete audio/tts/talk_intro_01.ogg --mod test --force
-```
-
-说明：
-
-- `--provider/--voice/--model/--speed` 可单次覆盖共享设置（不改 `.editor_ai.json`）。
-- `--key` 为素材键名（缺省 `tts_<时间戳>`），AudioCfg 的 `url` 登记为 `audio/tts/<key>`（与落盘路径一致、不带扩展名）；建议以 `talk_` 等前缀自行命名。
-- 不写 `TalkCfg.vocals`（原版无逐行配音通道），只登记 AudioCfg，素材由 mod 作者自行接入。
-- 未配置 apiKey 时 `synthesize` / `test` 返回中文错误提示；先运行 `tts config` 完成配置。
-- 合成结果为 wav；`ffmpeg` / `oggenc` 任一存在即自动转 Ogg（游戏原生格式），无编码器时保留 wav。
-
-## 10. 插件管理（Plugin）
-
-插件是第三方 Python 代码，可与编辑器同权限运行（读文件 / 网络 / 系统调用）。
-**安装默认停用；启用是唯一闸门**——三端每次启用都要高危确认，确认后才写
-`risk_ack_at` 留痕（服务端强制校验，无法绕过）。详见 `PLUGIN_GUIDE.md`。
-
-```powershell
-python run_cli.py plugin list                     # 列出全部插件
-python run_cli.py plugin info hello_plugin        # 详情（含四类贡献 / risk_ack_at）
-python run_cli.py plugin install ./hello_plugin.zip   # 安装（默认停用；已被占用 id 拒绝）
-python run_cli.py plugin enable hello_plugin      # 启用：高危确认 y/N
-python run_cli.py plugin enable hello_plugin --yes     # 跳过高危确认（CI / 脚本）
-python run_cli.py plugin disable hello_plugin     # 停用
-python run_cli.py plugin uninstall hello_plugin   # 卸载（须先停用）
-python run_cli.py plugin reload                   # 重载全部已启用插件（改代码后生效）
-```
-
-- 插件贡献四类：HTTP 路由、AI Agent 工具、GUI 面板、CLI 命令。
-- 已启用插件注册的 CLI 命令按全名直接调用：`python run_cli.py hello_plugin.greet 同学`。
-- REPL（`python run_cli.py` 无参进入）内 `/plugins` 查看与操作插件；插件命令同样
-  可直接输入。
-- TUI 插件屏：**空格** = 启用 / 停用（启用走确认框）、**i** = 详情、**r** = 重载、
-  **d** = 卸载。
-- 示例插件与完整指南：`examples/plugins/hello_plugin`、`PLUGIN_GUIDE.md`。
+- **CLI / TUI 没有 plugin 子命令**（旧 Python 版的 `plugin list/info/install/enable/...`
+  未移植）；插件系统已改为**声明型**（目录 + `manifest.json`，不执行代码、无启用/停用态），
+  不存在旧版的「启用高危确认」「启用的插件注册 CLI 命令」等机制。
+- GUI 插件页可查看插件与流程卡片贡献；插件作者指南见 `PLUGIN_GUIDE.md`，规范以
+  `native/PLUGIN_SPEC.md` 为唯一真相源。
