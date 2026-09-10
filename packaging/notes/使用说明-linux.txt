@@ -32,16 +32,16 @@
         ./xxx.AppImage --appimage-extract-and-run
 
 4) 便携模式
-    直接给两个可执行文件加执行权限（一般解压工具已保留）：
-        chmod +x 学生时代模组编辑器 backend
+    直接给可执行文件加执行权限（一般解压工具已保留）：
+        chmod +x 学生时代模组编辑器 backend backend_cli backend_tui
     然后双击（或 ./学生时代模组编辑器）即可，无需安装 Python 或 Flutter。
-    首次启动后端解压较慢，请耐心等待。
+    后端为原生 C++ 可执行文件，启动即用（无解压/初始化等待）。
 
 命令行
     editor-gui    启动图形界面
-    editor-tui    终端字符界面
-    editor-cli    命令行接口（如 editor-cli mods list）
-    便携模式可直接运行 ./backend tui 或 ./backend cli
+    editor-tui    终端字符界面（等价 ./backend_tui）
+    editor-cli    命令行接口（等价 ./backend_cli，如 editor-cli mods list）
+    便携模式可直接运行 ./backend_tui 或 ./backend_cli
 
 数据与日志位置
     安装目录可写（便携 / ~/.local 安装）时与程序同目录

@@ -4,7 +4,7 @@
 # 用法：make_appimage.sh --source <zip发行目录> --version X.Y.Z --output <dist目录>
 # 由 build_release.py 调用；调用前会设置 APPIMAGETOOL 环境变量指向工具路径。
 #
-# 说明：AppImage 以只读 squashfs 挂载，后端（core/paths.py）会自动
+# 说明：AppImage 以只读 squashfs 挂载，native 后端（core paths）会自动
 # 将缓存/日志回退到 ~/.local/share/student-age-editor，无需额外处理。
 set -euo pipefail
 
@@ -53,9 +53,12 @@ mkdir -p "$APPDIR/usr/share/$PKG_ID" \
          "$APPDIR/usr/share/icons/hicolor/512x512/apps"
 cp -R "$SRC/." "$APPDIR/usr/share/$PKG_ID/"
 chmod 0755 "$APPDIR/usr/share/$PKG_ID/$APP_NAME" \
-          "$APPDIR/usr/share/$PKG_ID/backend" 2>/dev/null || true
+          "$APPDIR/usr/share/$PKG_ID/backend" \
+          "$APPDIR/usr/share/$PKG_ID/backend_cli" \
+          "$APPDIR/usr/share/$PKG_ID/backend_tui" 2>/dev/null || true
 
-# AppRun：GUI 主程序从真实位置启动（后端为其兄弟目录，启动逻辑不变）
+# AppRun：GUI 主程序从真实位置启动（native 后端三件套为其兄弟文件，
+# launcher 探测同目录 backend，启动逻辑不变）
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"

@@ -146,7 +146,7 @@ die() { echo "[错误] $*" >&2; exit 1; }
 
 # ------------------------------------------------------------ 数据目录 ----
 
-# 与 backend/editor/core/paths.py 一致：exe 同目录可写探测（建+删临时文件）
+# 与 native 后端 core 里 exe 同目录可写探测一致（建+删临时文件）
 dir_writable() {
   local d="$1"
   mkdir -p "$d" 2>/dev/null || return 1
@@ -280,10 +280,17 @@ install_component_gui() {
 }
 
 install_component_core() {
-  cp -R "$SRC_DIR/backend" "$SRC_DIR/_internal" \
+  # native 三件套（backend/backend_cli/backend_tui）+ 可选 aa_scan；可执行
+  # 文件自带全部依赖，无额外共享运行库目录。
+  cp -R "$SRC_DIR/backend" "$SRC_DIR/backend_cli" "$SRC_DIR/backend_tui" \
         "$SRC_DIR/使用说明.txt" "$INSTALL_DIR/" 2>/dev/null \
     || die "复制核心文件失败（zip 不完整？）"
-  chmod 0755 "$INSTALL_DIR/backend" 2>/dev/null || true
+  if [[ -f "$SRC_DIR/aa_scan" ]]; then
+    cp -R "$SRC_DIR/aa_scan" "$INSTALL_DIR/" 2>/dev/null || true
+  fi
+  chmod 0755 "$INSTALL_DIR/backend" "$INSTALL_DIR/backend_cli" \
+             "$INSTALL_DIR/backend_tui" 2>/dev/null || true
+  [[ -f "$INSTALL_DIR/aa_scan" ]] && chmod 0755 "$INSTALL_DIR/aa_scan" 2>/dev/null || true
 }
 
 install_official_pack() {
@@ -406,8 +413,8 @@ do_install() {
   for c in $cmds; do
     case "$c" in
       editor-gui) write_command editor-gui "$APP_NAME" "" ;;
-      editor-tui) write_command editor-tui backend tui ;;
-      editor-cli) write_command editor-cli backend cli ;;
+      editor-tui) write_command editor-tui backend_tui "" ;;
+      editor-cli) write_command editor-cli backend_cli "" ;;
     esac
   done
 

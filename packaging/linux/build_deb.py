@@ -69,7 +69,7 @@ def main():
     out_dir = os.path.abspath(args.output)
     if not os.path.isdir(src):
         raise SystemExit("错误：--source 目录不存在：%s" % src)
-    for need in (APP_NAME, "backend", "_internal"):
+    for need in (APP_NAME, "backend", "backend_cli", "backend_tui"):
         if not os.path.exists(os.path.join(src, need)):
             raise SystemExit("错误：--source 缺少 %s（zip 发行目录不完整？）" % need)
     os.makedirs(out_dir, exist_ok=True)
@@ -82,14 +82,15 @@ def main():
         # 安装向导脚本只随 zip/install.sh 分发，不进 /opt（有 /usr/bin 命令即可）
         shutil.rmtree(os.path.join(app_dir, "install.sh"), ignore_errors=True)
         ensure_exec(os.path.join(app_dir, APP_NAME))
-        ensure_exec(os.path.join(app_dir, "backend"))
+        for backend_bin in ("backend", "backend_cli", "backend_tui", "aa_scan"):
+            ensure_exec(os.path.join(app_dir, backend_bin))
 
-        # /usr/bin 启动命令
+        # /usr/bin 启动命令（native：三件套为独立可执行文件，直挂各自 main）
         usr_bin = os.path.join(pkg, "usr", "bin")
         os.makedirs(usr_bin)
         for name, rel, mode in (("editor-gui", APP_NAME, ""),
-                                ("editor-tui", "backend", "tui"),
-                                ("editor-cli", "backend", "cli")):
+                                ("editor-tui", "backend_tui", ""),
+                                ("editor-cli", "backend_cli", "")):
             cmd = os.path.join(usr_bin, name)
             with open(cmd, "w", encoding="utf-8") as f:
                 f.write(wrapper_script(os.path.join(INSTALL_PREFIX, rel), mode))
@@ -132,13 +133,14 @@ def main():
         postinst = (
             "#!/bin/sh\n"
             "set -e\n"
-            "chmod +x /opt/%s/%s /opt/%s/backend 2>/dev/null || true\n"
+            "chmod +x /opt/%s/%s /opt/%s/backend /opt/%s/backend_cli "
+            "/opt/%s/backend_tui 2>/dev/null || true\n"
             "if command -v update-desktop-database >/dev/null 2>&1; then "
             "update-desktop-database /usr/share/applications >/dev/null 2>&1 || true; fi\n"
             "if command -v gtk-update-icon-cache >/dev/null 2>&1; then "
             "gtk-update-icon-cache -q /usr/share/icons/hicolor >/dev/null 2>&1 || true; fi\n"
             "exit 0\n"
-        ) % (PKG_ID, APP_NAME, PKG_ID)
+        ) % (PKG_ID, APP_NAME, PKG_ID, PKG_ID, PKG_ID)
         postinst_path = os.path.join(debian, "postinst")
         with open(postinst_path, "w", encoding="utf-8") as f:
             f.write(postinst)

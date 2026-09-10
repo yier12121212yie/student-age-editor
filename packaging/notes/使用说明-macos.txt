@@ -30,8 +30,8 @@
         editor-tui    终端字符界面
         editor-cli    命令行接口
     便携模式可直接运行 app 内后端：
-        学生时代模组编辑器.app/Contents/MacOS/backend tui
-        学生时代模组编辑器.app/Contents/MacOS/backend cli
+        学生时代模组编辑器.app/Contents/MacOS/backend_tui
+        学生时代模组编辑器.app/Contents/MacOS/backend_cli
 
 数据与日志位置
     安装到 /Applications（root 所有）时自动使用

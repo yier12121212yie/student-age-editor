@@ -10,15 +10,18 @@
                             [--installer] [--no-installer]
 
 说明：
-- 后端构建通道按平台分叉（波次 4）：
+- 后端构建通道全平台 native（波次 4/5）：
   windows → C++ native 后端：调用 CMake（优先 PATH，其次 vswhere 探测
     Visual Studio 自带 cmake/ninja 与 vcvars64）构建 native/，产物三件套
     backend.exe / backend_cli.exe / backend_tui.exe 拷入 backend_dist/；
     另尽力用 PyInstaller 冻结 tools/resource_scan 为独立工具 aa_scan.exe
     （失败仅警告降级为「本次不随包」，不阻塞主链路）。CI 可先用
     --prebuilt-backend <dir> 传入预构建产物目录，跳过本地 CMake 构建。
-  macos/linux → 暂仍走 PyInstaller（backend.spec，POSIX native 移植在后续
-    子波），产物行为与既往完全一致。
+  macos/linux → C++ native 后端：调用 CMake+Ninja 构建 native/，产物
+    backend / backend_cli / backend_tui（POSIX 无 .exe 后缀）拷入
+    backend_dist/；aa_scan 同样尽力冻结为 aa_scan（无 .exe）。PyInstaller
+    backend.spec 冻结 Python 的通道整体退役（删 backend/editor 后不再有
+    依赖）。--prebuilt-backend <dir> 同样适用。
 - 必须在目标平台上运行本脚本（不支持交叉编译）：
   Windows 包在 Windows 上构建，Linux 包在 Linux/WSL 上构建，macOS 包在
   Mac 上构建。跨平台出包请配合 CI（见 .github/workflows/release.yml）。
@@ -33,8 +36,9 @@
   机器上生成）；便携 zip 在缓存缺失时仅跳过内嵌、其余不受影响。
 
 依赖：Windows 后端需 MSVC 工具链（Visual Studio / BuildTools，含 CMake；
-      Ninja 优先 PATH，缺失时回落 VS 生成器）；aa_scan.exe 与 mac/linux 后端
-      另需 PyInstaller + UnityPy；Flutter SDK（需在 PATH）；
+      Ninja 优先 PATH，缺失时回落 VS 生成器）；Linux/macOS 后端需
+      CMake+Ninja（Ninja 缺失时回落系统默认生成器）+ C++20 编译器；
+      aa_scan 冻结另需 PyInstaller + UnityPy；Flutter SDK（需在 PATH）；
       Windows 安装包另需 Inno Setup 6（缺失时 Windows 通道打印警告后跳过
       安装包步骤，仅出便携 zip）；Linux 安装包另需 dpkg-deb 与
       appimagetool；macOS 安装包使用系统自带 hdiutil/pkgbuild/productbuild。
@@ -58,10 +62,14 @@ DIST_ROOT = os.path.join(ROOT, "dist")
 # Windows native（C++）后端通道
 NATIVE_DIR = os.path.join(ROOT, "native")
 NATIVE_BUILD_DIR = os.path.join(ROOT, "build", "release", "native_build")
+NATIVE_BUILD_DIR_POSIX = os.path.join(ROOT, "build", "release", "native_build_posix")
 NATIVE_BINS = ("backend.exe", "backend_cli.exe", "backend_tui.exe")
+# POSIX native 产物名无 .exe（native/build.sh 同样如此）
+NATIVE_BINS_POSIX = ("backend", "backend_cli", "backend_tui")
 # AA 资源扫描独立工具（tools/resource_scan 的 PyInstaller onefile 冻结）
 AA_SCAN_SPEC = os.path.join(ROOT, "packaging", "pyinstaller", "aa_scan.spec")
 AA_SCAN_EXE = "aa_scan.exe"
+AA_SCAN_POSIX = "aa_scan"
 
 APP_NAME = "学生时代模组编辑器"
 # 发行文件名统一用 ASCII 基名：GitHub Actions 的 artifact 上传/下载链路会把
@@ -143,8 +151,9 @@ def _installer_prereq_error():
     return (
         "错误：未找到游戏资源缓存（base_data.pkl 与 aa_index/aa_index.json）。\n"
         "安装包需要内嵌完整官方资源包，而缓存只能在装有《学生时代》的\n"
-        "机器上生成。请先在本机启动一次编辑器（学生时代模组编辑器.exe 或\n"
-        "python run_dev.py），待其生成 _cache 缓存后重新构建；\n"
+        "机器上生成。请先在本机启动一次编辑器（学生时代模组编辑器，或\n"
+        "native 的 backend / backend_tui），待其生成 _cache 缓存后重新构建；\n"
+        "或用仓库内 tools/resource_scan（native aa_scan 工具）扫描游戏资源；\n"
         "或使用 --no-installer 跳过安装包构建（仅出便携 zip）。"
     )
 
@@ -338,36 +347,40 @@ def backend_dist_path():
     return os.path.join(BACKEND_DIST, backend_exe_name())
 
 
-def _copy_backend_bundle(dst_dir, bin_subdir=""):
-    """复制 onedir 后端产物：可执行文件 + 整个 _internal/ 到目标目录。
+def _native_bins():
+    """native 三件套产物名（Windows 带 .exe，POSIX 无后缀）。"""
+    return NATIVE_BINS if _is_windows() else NATIVE_BINS_POSIX
 
-    PyInstaller 6 onedir 的 bootloader 相对 exe 查找 _internal/，二者必须
-    保持同目录；bin_subdir 非空时作为 dst_dir 下的相对子目录（exe 与
-    _internal 一起放入）。只带 backend 可执行文件，不带 editor_cmd.exe
-    （便携 zip 行为与 onefile 时期保持一致）。
+
+def _aa_scan_name():
+    """AA 扫描工具产物名（Windows aa_scan.exe，POSIX aa_scan）。"""
+    return AA_SCAN_EXE if _is_windows() else AA_SCAN_POSIX
+
+
+def _copy_native_backend_bundle(dst_dir, bin_subdir=""):
+    """复制 native 后端产物到发行根：三件套 + 可选 aa_scan。
+
+    native 可执行文件自带全部依赖（静态/单体），不再有 PyInstaller 的
+    _internal/ 共享目录；backend_launcher.dart 探测「与主程序同目录的
+    backend」，故三件套必须与前端主程序平铺同目录。bin_subdir 非空时作为
+    dst_dir 下的相对子目录（macOS .app 的 Contents/MacOS）。POSIX 上复制后
+    补执行位（copy2 一般已保留，显式 chmod 兜底）。
     """
     target = os.path.join(dst_dir, bin_subdir) if bin_subdir else dst_dir
-    shutil.copy2(backend_dist_path(), os.path.join(target, backend_exe_name()))
-    shutil.copytree(os.path.join(BACKEND_DIST, "_internal"),
-                    os.path.join(target, "_internal"))
-
-
-def _copy_native_backend_bundle(dst_dir):
-    """复制 native 后端产物到发行根：三件套 + 可选 aa_scan.exe。
-
-    native exe 自带全部依赖（静态/单体），不再有 PyInstaller 的 _internal/
-    共享目录；backend_launcher.dart 探测「与主程序同目录的 backend.exe」，
-    故三件套必须与前端主程序平铺同目录。
-    """
-    for name in NATIVE_BINS:
+    for name in _native_bins():
         shutil.copy2(os.path.join(BACKEND_DIST, name),
-                     os.path.join(dst_dir, name))
-    aa = os.path.join(BACKEND_DIST, AA_SCAN_EXE)
+                     os.path.join(target, name))
+        if not _is_windows():
+            _make_executable(os.path.join(target, name))
+    aa_name = _aa_scan_name()
+    aa = os.path.join(BACKEND_DIST, aa_name)
     if os.path.isfile(aa):
-        shutil.copy2(aa, os.path.join(dst_dir, AA_SCAN_EXE))
+        shutil.copy2(aa, os.path.join(target, aa_name))
+        if not _is_windows():
+            _make_executable(os.path.join(target, aa_name))
     else:
-        print("    提示：本次未随包 aa_scan.exe（AA 资源扫描工具缺失，"
-              "不影响编辑器运行；重扫资源请用仓库内 python 工具）。")
+        print("    提示：本次未随包 %s（AA 资源扫描工具缺失，"
+              "不影响编辑器运行；重扫资源请用仓库内 python 工具）。" % aa_name)
 
 
 def _embed_official_pack(base_dir, rel=""):
@@ -389,25 +402,9 @@ def _embed_official_pack(base_dir, rel=""):
 
 # ---------------------------------------------------------------- 后端 ----
 
-def build_backend():
-    """mac/linux 通道：PyInstaller onedir（backend.spec → backend_dist/）。
-
-    Windows 通道已切 native（见 build_backend_native），本函数仅服务
-    POSIX 发行（波次 5+ 移植 native 后整体退役）。
-    """
-    _step(1, "打包后端 %s ..." % backend_exe_name())
-    # onedir：distpath 指向 build/release，spec 的 COLLECT(name='backend_dist')
-    # 把 exe 与共享 _internal/ 写到 build/release/backend_dist/ 下。
-    subprocess.run([
-        sys.executable, "-m", "PyInstaller",
-        os.path.join(ROOT, "packaging", "pyinstaller", "backend.spec"),
-        "--distpath", os.path.join(ROOT, "build", "release"),
-        "--workpath", os.path.join(ROOT, "build", "release", "pyinstaller_work"),
-        "--noconfirm",
-    ], cwd=ROOT, check=True)
-    assert os.path.exists(backend_dist_path()), "后端打包失败：%s 未生成" \
-        % backend_exe_name()
-
+# POSIX（linux/macos）native 构建见下方 build_backend_native_posix。
+# 旧的 PyInstaller backend.spec 通道已随 W4-5a 整体退役（删 backend/editor
+# 后不再存在 Python 后端可冻结）。
 
 # ------------------------------------------------------- native (Windows) ----
 
@@ -579,18 +576,75 @@ def build_backend_native(prebuilt_dir=None):
             "指向已含三件套的目录。" % (", ".join(missing), src))
 
 
+def build_backend_native_posix(prebuilt_dir=None):
+    """Linux/macOS 后端：native C++ 三件套（backend/backend_cli/backend_tui）。
+
+    镜像 Windows 的 build_backend_native，但工具链探测走 POSIX：cmake 必须
+    在 PATH；ninja 优先，缺失时用 CMake 默认生成器（Unix Makefiles）。
+    prebuilt_dir 非空 → 从该目录拷三件套（CI 预构建注入，跳过自建）。
+    """
+    _step(1, "构建 native C++ 后端（backend/backend_cli/backend_tui）...")
+    _reset_backend_dist()
+    src = None
+    if prebuilt_dir:
+        prebuilt_dir = os.path.abspath(prebuilt_dir)
+        if not os.path.isdir(prebuilt_dir):
+            raise SystemExit("错误：--prebuilt-backend 目录不存在：%s" % prebuilt_dir)
+        src = prebuilt_dir
+    else:
+        cmake = shutil.which("cmake")
+        if not cmake:
+            raise SystemExit(
+                "错误：未找到 cmake。\n解决：安装 cmake（如 apt install "
+                "cmake ninja-build，或 brew install cmake ninja）；也可先自行"
+                "构建 native/ 后用 --prebuilt-backend <bin目录> 传入现成产物。")
+        ninja = shutil.which("ninja")
+        os.makedirs(NATIVE_BUILD_DIR_POSIX, exist_ok=True)
+        gen_args = ["-G", "Ninja"] if ninja else []
+        if not ninja:
+            print("    提示：未找到 Ninja，回落 CMake 默认生成器（Unix Makefiles）。")
+        print("    cmake configure: native → %s (%s)" % (
+            os.path.relpath(NATIVE_BUILD_DIR_POSIX, ROOT),
+            "Ninja" if ninja else "default"))
+        subprocess.run([cmake, "-S", NATIVE_DIR, "-B", NATIVE_BUILD_DIR_POSIX]
+                       + gen_args + ["-DCMAKE_BUILD_TYPE=Release"],
+                       cwd=ROOT, check=True)
+        subprocess.run([cmake, "--build", NATIVE_BUILD_DIR_POSIX],
+                       cwd=ROOT, check=True)
+        src = NATIVE_BUILD_DIR_POSIX
+
+    missing = []
+    for name in NATIVE_BINS_POSIX:
+        cand = os.path.join(src, name)
+        p = cand if os.path.isfile(cand) else _find_native_bin(src, name)
+        if not p or not os.path.isfile(p):
+            missing.append(name)
+            continue
+        dst = os.path.join(BACKEND_DIST, name)
+        shutil.copy2(p, dst)
+        _make_executable(dst)
+        print("    %s ← %s" % (name, os.path.relpath(p, ROOT)))
+    if missing:
+        raise SystemExit(
+            "错误：native 构建产物缺少 %s（来源 %s）。\n"
+            "首次构建请确认 native/build.sh 全绿，或用 --prebuilt-backend "
+            "指向已含三件套的目录。" % (", ".join(missing), src))
+
+
 def build_aa_scan():
-    """尽力把 tools/resource_scan 冻结成单文件 aa_scan.exe 放入 backend_dist/。
+    """尽力把 tools/resource_scan 冻结成单文件 aa_scan（+ .exe）放入 backend_dist/。
 
     可选产物：构建失败或本机无 PyInstaller 时打印警告并返回 False
-    （发行不随 aa_scan.exe，不阻塞主链路）。"""
+    （发行不随 aa_scan，不阻塞主链路）。"""
+    aa_name = _aa_scan_name()
     try:
         import PyInstaller  # noqa: F401
     except ImportError:
-        print("    警告：未安装 PyInstaller，跳过 aa_scan.exe 冻结；"
-              "本次发行不随资源扫描工具（pip install pyinstaller 后可带上）。")
+        print("    警告：未安装 PyInstaller，跳过 %s 冻结；"
+              "本次发行不随资源扫描工具（pip install pyinstaller 后可带上）。"
+              % aa_name)
         return False
-    print("    冻结 AA 资源扫描工具 aa_scan.exe（tools/resource_scan）...")
+    print("    冻结 AA 资源扫描工具 %s（tools/resource_scan）..." % aa_name)
     try:
         subprocess.run([
             sys.executable, "-m", "PyInstaller", AA_SCAN_SPEC,
@@ -600,14 +654,16 @@ def build_aa_scan():
         ], cwd=ROOT, check=True,
            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except Exception as e:
-        print("    警告：aa_scan.exe 构建失败（%s），本次发行不随资源扫描工具。" % e)
+        print("    警告：%s 构建失败（%s），本次发行不随资源扫描工具。"
+              % (aa_name, e))
         return False
-    exe = os.path.join(ROOT, "build", "release", "aa_scan_dist", AA_SCAN_EXE)
+    exe = os.path.join(ROOT, "build", "release", "aa_scan_dist", aa_name)
     if not os.path.isfile(exe):
-        print("    警告：aa_scan.exe 未生成，本次发行不随资源扫描工具。")
+        print("    警告：%s 未生成，本次发行不随资源扫描工具。" % aa_name)
         return False
-    shutil.copy2(exe, os.path.join(BACKEND_DIST, AA_SCAN_EXE))
-    print("    %s (%.1f MB)" % (AA_SCAN_EXE, os.path.getsize(exe) / 1048576))
+    shutil.copy2(exe, os.path.join(BACKEND_DIST, aa_name))
+    _make_executable(os.path.join(BACKEND_DIST, aa_name))
+    print("    %s (%.1f MB)" % (aa_name, os.path.getsize(exe) / 1048576))
     return True
 
 
@@ -693,9 +749,8 @@ def assemble_linux(version):
         src = os.path.join(bundle_dir, name)
         _copytree(src, os.path.join(out_dir, name)) if os.path.isdir(src) \
             else shutil.copy2(src, os.path.join(out_dir, name))
-    _copy_backend_bundle(out_dir)
+    _copy_native_backend_bundle(out_dir)
     _make_executable(os.path.join(out_dir, APP_NAME))
-    _make_executable(os.path.join(out_dir, backend_exe_name()))
     _embed_official_pack(out_dir)
     if os.path.isfile(ICON_SOURCE):
         shutil.copy2(ICON_SOURCE, os.path.join(out_dir, "editor_icon.png"))
@@ -721,11 +776,9 @@ def assemble_macos(version):
     os.makedirs(out_dir)
     dst_app = os.path.join(out_dir, "%s.app" % APP_NAME)
     shutil.copytree(app_bundle, dst_app, symlinks=True)
-    # 后端可执行文件与 _internal/ 放进 .app/Contents/MacOS/（_internal 须与
-    # exe 同目录，onedir bootloader 相对 exe 查找依赖），与前端主程序同目录
-    # （launcher 查找逻辑）
-    _copy_backend_bundle(dst_app, os.path.join("Contents", "MacOS"))
-    _make_executable(os.path.join(dst_app, "Contents", "MacOS", backend_exe_name()))
+    # native 三件套放进 .app/Contents/MacOS/，与前端主程序同目录（launcher
+    # 探测同目录 backend）；不再有 PyInstaller 的 _internal/。
+    _copy_native_backend_bundle(dst_app, os.path.join("Contents", "MacOS"))
     _embed_official_pack(dst_app, os.path.join("Contents", "MacOS"))
     _copy_readme(out_dir, _TARGET_LABEL)
     return out_dir
@@ -801,8 +854,9 @@ def main():
     ap.add_argument("--skip-backend", action="store_true", help="跳过后端打包（复用上次产物）")
     ap.add_argument("--skip-frontend", action="store_true", help="跳过 Flutter 构建（复用上次产物）")
     ap.add_argument("--prebuilt-backend", metavar="DIR", default=None,
-                    help="Windows 通道：从 DIR 拷 native 三件套，跳过本地 CMake "
-                         "构建（CI 预构建场景；DIR 含或嵌套 bin/ 均可）")
+                    help="全平台通道：从 DIR 拷 native 三件套，跳过本地 CMake "
+                         "构建（CI 预构建场景；DIR 含或嵌套 bin/ 均可；"
+                         "Windows 为 .exe，Linux/macOS 无后缀）")
     ap.add_argument("--installer", action="store_true",
                     help="构建安装包（各目标默认已开启，保留参数以兼容旧脚本）")
     ap.add_argument("--no-installer", action="store_true",
@@ -832,13 +886,16 @@ def main():
             build_backend_native(args.prebuilt_backend)
             build_aa_scan()
         else:
-            if args.prebuilt_backend:
-                print("    提示：--prebuilt-backend 仅对 windows（native）通道"
-                      "生效，本目标忽略该参数。")
-            build_backend()
+            # Linux/macOS 后端通道（波次 5）：native C++ 三件套 + 可选 aa_scan
+            build_backend_native_posix(args.prebuilt_backend)
+            build_aa_scan()
     else:
-        assert os.path.exists(backend_dist_path()), \
-            "--skip-backend 但找不到 %s" % backend_dist_path()
+        missing = [n for n in _native_bins()
+                   if not os.path.exists(os.path.join(BACKEND_DIST, n))]
+        if missing:
+            raise SystemExit("--skip-backend 但找不到 %s"
+                             % ", ".join(os.path.join(BACKEND_DIST, n)
+                                         for n in missing))
 
     _, main_prog = _frontend_release_dir(args.target)
     if not args.skip_frontend:

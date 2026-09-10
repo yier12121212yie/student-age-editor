@@ -7,7 +7,8 @@
 #                                     --version 1.4.0 --output <输出目录>
 #
 # 组件划分（对齐 Windows Inno setup.iss，见同目录 distribution.xml）：
-#   core          核心运行时（.app 骨架 + 内嵌 backend/_internal），固定必选
+#   core          核心运行时（.app 骨架 + 内嵌 native 三件套
+#                 backend/backend_cli/backend_tui），固定必选
 #   gui           图形界面（GUI 主程序；postinstall 创建 editor-gui 命令）
 #   tui / cli     终端/命令行界面（nopayload 脚本包；创建 editor-tui/editor-cli 命令）
 #   officialpack  官方资源扩展包（.app/Contents/MacOS/official_pack）
@@ -97,6 +98,8 @@ PLIST="$APP_PATH/Contents/Info.plist"
 MACOS_DIR="$APP_PATH/Contents/MacOS"
 [ -f "$PLIST" ]             || die "无效的 .app（缺少 Contents/Info.plist）：$APP_PATH"
 [ -f "$MACOS_DIR/backend" ] || die ".app 内缺少内嵌 backend（请先运行 build_release.py --target macos）"
+[ -f "$MACOS_DIR/backend_cli" ] || die ".app 内缺少内嵌 backend_cli（请先运行 build_release.py --target macos）"
+[ -f "$MACOS_DIR/backend_tui" ] || die ".app 内缺少内嵌 backend_tui（请先运行 build_release.py --target macos）"
 [ -d "$MACOS_DIR/official_pack" ] || die ".app 内缺少 official_pack/（官方资源扩展包未内嵌，安装包前置条件不满足）"
 
 GUIBIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST" 2>/dev/null \
@@ -122,14 +125,16 @@ if ! codesign --force --deep --sign - "$WORK_DIR/app.app"; then
 fi
 
 # 拆出三个 payload 根（dist 版 .app 的完整内容由 gui + core + officialpack 合并还原）
-# gui：整个 .app 去掉 backend/_internal/official_pack
+# gui：整个 .app 去掉 native 三件套/official_pack（aa_scan 可选）
 GUI_ROOT="$WORK_DIR/gui_root"
 mkdir -p "$GUI_ROOT"
 cp -R "$WORK_DIR/app.app" "$GUI_ROOT/$APP_NAME.app"
 rm -rf "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/backend" \
-       "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/_internal" \
+       "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/backend_cli" \
+       "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/backend_tui" \
+       "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/aa_scan" \
        "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/official_pack"
-# core：.app 骨架 + backend/_internal（含随包说明文档）
+# core：.app 骨架 + native 三件套（含随包说明文档）
 CORE_ROOT="$WORK_DIR/core_root"
 mkdir -p "$CORE_ROOT/Contents/MacOS"
 cp -R "$WORK_DIR/app.app/Contents/Info.plist" "$WORK_DIR/app.app/Contents/PkgInfo" "$CORE_ROOT/Contents/" 2>/dev/null || true
@@ -137,7 +142,10 @@ for d in Frameworks Resources; do
     [ -d "$WORK_DIR/app.app/Contents/$d" ] && cp -R "$WORK_DIR/app.app/Contents/$d" "$CORE_ROOT/Contents/"
 done
 cp -R "$WORK_DIR/app.app/Contents/MacOS/backend" \
-      "$WORK_DIR/app.app/Contents/MacOS/_internal" "$CORE_ROOT/Contents/MacOS/"
+      "$WORK_DIR/app.app/Contents/MacOS/backend_cli" \
+      "$WORK_DIR/app.app/Contents/MacOS/backend_tui" "$CORE_ROOT/Contents/MacOS/"
+[ -f "$WORK_DIR/app.app/Contents/MacOS/aa_scan" ] && \
+    cp "$WORK_DIR/app.app/Contents/MacOS/aa_scan" "$CORE_ROOT/Contents/MacOS/"
 if [ -f "$(dirname "$APP_PATH")/使用说明.txt" ]; then
     cp "$(dirname "$APP_PATH")/使用说明.txt" "$CORE_ROOT/Contents/MacOS/使用说明.txt"
 fi
@@ -164,7 +172,7 @@ cat > "$WORK_DIR/scripts_tui/postinstall" <<EOF
 #!/bin/sh
 set -e
 mkdir -p /usr/local/bin
-printf '#!/bin/sh\\nexec "%s/backend" tui "\\$@"\\n' > /usr/local/bin/editor-tui
+printf '#!/bin/sh\\nexec "%s/backend_tui" "\\$@"\\n' > /usr/local/bin/editor-tui
 chmod 0755 /usr/local/bin/editor-tui
 exit 0
 EOF
@@ -172,7 +180,7 @@ cat > "$WORK_DIR/scripts_cli/postinstall" <<EOF
 #!/bin/sh
 set -e
 mkdir -p /usr/local/bin
-printf '#!/bin/sh\\nexec "%s/backend" cli "\\$@"\\n' > /usr/local/bin/editor-cli
+printf '#!/bin/sh\\nexec "%s/backend_cli" "\\$@"\\n' > /usr/local/bin/editor-cli
 chmod 0755 /usr/local/bin/editor-cli
 exit 0
 EOF

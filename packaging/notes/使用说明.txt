@@ -3,16 +3,18 @@
 
 【运行】
     双击「学生时代模组编辑器.exe」即可使用，无需安装 Python 或 Flutter。
-    首次启动时本地服务解压需要数秒，请稍候。
+    后端为原生 C++ 可执行文件，随主程序自动启动，无需解压等待。
 
 【v1.3.0 更新内容】
     - 首个多平台版本：同时提供 Windows / Linux / macOS / Android 发行版
-    - Linux/macOS：后端以同名 backend 可执行文件随包分发，自动拉起
-    - Android：后端以 Chaquopy 内嵌 CPython 方式运行，无需后台进程
+    - Linux/macOS：后端以 native 三件套 backend / backend_cli / backend_tui
+      随包分发，自动拉起
+    - Android：后端以 native C++（.so，进程内 JNI 调用）方式运行，无需后台进程
 
 【目录结构】
     学生时代模组编辑器.exe   主程序（双击运行）
     backend.exe   本地服务（主程序自动启动，请勿手动运行）
+    backend_cli.exe / backend_tui.exe   命令行 / 终端界面（可选）
     data/、*.dll   程序运行所需文件，请勿删除
     logs/   运行日志（后端启动异常时可查看 backend.log）
 

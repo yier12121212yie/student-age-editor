@@ -8,13 +8,14 @@
 #
 # 输入 .app 由 build_release.py --target macos 的 assemble_macos 产出
 # （dist/学生时代模组编辑器-<版本>-macos/学生时代模组编辑器.app，Flutter 产物
-# 骨架 + Contents/MacOS 下的 backend、_internal/、official_pack/）。
+# 骨架 + Contents/MacOS 下的 native 三件套 backend/backend_cli/backend_tui、
+# official_pack/）。
 # 产出（文件名固定，供 CI 归档）：
 #   student-age-editor-<版本>-macos.dmg
 # 卷内布局为拖拽安装式：.app + /Applications 软链。
 #
 # 说明：
-# - assemble_macos 在 Flutter 产物 .app 内新增了 backend/_internal，原内嵌
+# - assemble_macos 在 Flutter 产物 .app 内新增了 native 可执行文件，原内嵌
 #   签名已失效；本脚本在 staging 副本上做 ad-hoc 重签
 #   （codesign --force --deep --sign -，失败仅警告、继续打包）。
 #   正式分发请在 CI 配置开发者签名与公证（见 build/release/使用说明-macos.txt）。
@@ -103,6 +104,8 @@ PLIST="$APP_PATH/Contents/Info.plist"
 MACOS_DIR="$APP_PATH/Contents/MacOS"
 [ -f "$PLIST" ]              || die "无效的 .app（缺少 Contents/Info.plist）：$APP_PATH"
 [ -f "$MACOS_DIR/backend" ]  || die ".app 内缺少内嵌 backend（请先运行 build_release.py --target macos）：$MACOS_DIR/backend"
+[ -f "$MACOS_DIR/backend_cli" ] || die ".app 内缺少内嵌 backend_cli（请先运行 build_release.py --target macos）：$MACOS_DIR/backend_cli"
+[ -f "$MACOS_DIR/backend_tui" ] || die ".app 内缺少内嵌 backend_tui（请先运行 build_release.py --target macos）：$MACOS_DIR/backend_tui"
 
 APP_BASENAME="$(basename "$APP_PATH")"
 if [ "$APP_BASENAME" != "$APP_NAME.app" ]; then
