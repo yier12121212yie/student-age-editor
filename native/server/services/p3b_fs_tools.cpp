@@ -162,7 +162,15 @@ std::string resolve(const std::string& root, const std::string& rel_path) {
     // never looser than the escape check itself).
     const std::string a = cs::normcase(abs_path);
     const std::string r = cs::normcase(root_abs);
+    // Host-separator containment (Python: startswith(abspath + os.sep)): the
+    // literal "\\" made every legitimate POSIX path inside the root read as an
+    // escape — the same gate class closed by W4-2b across mods_routes/cloud_sync
+    // (W4-2b sweep list; Windows bytes unchanged).
+#ifdef _WIN32
     if (a != r && !sa_core::str::starts_with(a, r + "\\")) {
+#else
+    if (a != r && !sa_core::str::starts_with(a, r + "/")) {
+#endif
         throw SandboxError("path escapes sandbox: " + sa_core::py_repr_str(rel_path));
     }
     return abs_path;
