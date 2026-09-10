@@ -88,7 +88,16 @@ void register_mods_routes(Router& r) {
                     break;
                 }
                 std::string prefix = nb;
+                // Containment suffix must be the HOST separator (Python:
+                // startswith(normcase(b) + os.sep), api.py:889). normcase maps
+                // '/'->'\' only on Windows, so a hardcoded "\\" made every POSIX
+                // child of a workspace/workshop base read as an escape and the
+                // workshop-root select answer a constant 400 (W4-2 WSL gate).
+#ifdef _WIN32
                 if (!prefix.empty() && prefix.back() != '\\' && prefix.back() != '/') prefix += "\\";
+#else
+                if (!prefix.empty() && prefix.back() != '/') prefix += "/";
+#endif
                 if (norm_root.size() > prefix.size() &&
                     norm_root.compare(0, prefix.size(), prefix) == 0) {
                     inside = true;
@@ -138,7 +147,14 @@ void register_mods_routes(Router& r) {
         }
         if (base.empty()) base = cs::join(sa_core::paths::path_to_utf8(std::filesystem::current_path()), "mods");
         std::string mod_dir = cs::join(base, title);
+        // Host separator (Python: abspath(mod_dir).startswith(abspath(base)+os.sep),
+        // api.py:913); a literal "\\" made every POSIX create report "title escapes
+        // workspace" (W4-2 WSL gate).
+#ifdef _WIN32
         std::string abs_base = cs::abs_path(base) + "\\";
+#else
+        std::string abs_base = cs::abs_path(base) + "/";
+#endif
         if (cs::abs_path(mod_dir).size() <= abs_base.size() ||
             cs::normcase(cs::abs_path(mod_dir)).compare(0, cs::normcase(abs_base).size(),
                                                         cs::normcase(abs_base)) != 0) {
@@ -177,7 +193,16 @@ void register_mods_routes(Router& r) {
             if (m.value("name", "") != name) continue;
             std::string abs_root = cs::abs_path(m.value("root", ""));
             for (const auto& w : workshop_mods_roots()) {
+                // Workshop protection prefix must use the host separator
+                // (Python: abs_root.startswith(abspath(r)+os.sep), api.py:936).
+                // The literal "\\" never matched a POSIX subscription path, so on
+                // Linux a workshop dir slipped past the guard and the rmtree below
+                // deleted live Steam content (destructive; W4-2 WSL gate).
+#ifdef _WIN32
                 std::string base = cs::abs_path(w) + "\\";
+#else
+                std::string base = cs::abs_path(w) + "/";
+#endif
                 if (cs::normcase(abs_root).size() > cs::normcase(base).size() &&
                     cs::normcase(abs_root).compare(0, cs::normcase(base).size(),
                                                    cs::normcase(base)) == 0) {

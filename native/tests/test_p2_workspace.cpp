@@ -491,15 +491,7 @@ TEST_CASE("list_mods multi-root with workshop override; workshop is read-only",
     auto resp = sat::call_router(r, "POST", "/api/mods/select", {},
                                  json{{"name", "772517644"},
                                       {"root", sa_core::paths::join(shop, "772517644")}});
-#ifdef _WIN32
     CHECK(resp.status == 200);
-#else
-    // W4-2 WSL evidence: the select sandbox (mods_routes.cpp:86-93) appends a
-    // literal "\\" when building the containment prefix, which never matches
-    // POSIX '/' paths → workshop-root select answers 400. The production fix
-    // is outside W4-2's owning scope (left to W4-4/W4-5); route still exercised.
-    (void)resp;
-#endif
     // 越界 root 拒绝
     resp = sat::call_router(r, "POST", "/api/mods/select", {},
                             json{{"name", "x"}, {"root", "C:\\Windows"}});
@@ -514,18 +506,10 @@ TEST_CASE("list_mods multi-root with workshop override; workshop is read-only",
 #endif
 
     // 创意工坊订阅内容拒删（api.py:936-939）
-#ifdef _WIN32
     resp = sat::call_router(r, "POST", "/api/mods/delete", {}, json{{"name", "772517644"}});
     CHECK(resp.status == 400);
     CHECK(resp.json_payload["error"].get<std::string>().find("创意工坊") == 0);
     CHECK(sa_core::paths::is_dir(sa_core::paths::join(shop, "772517644")));
-#else
-    // W4-2 WSL evidence: mods_routes.cpp:176-183 builds the workshop-prefix
-    // test with `abs_path(w) + "\\"` too, so on POSIX a workshop subscription
-    // directory is NOT recognized as protected and DELETE ACTUALLY REMOVES it
-    // (destructive; same separator bug class as select above, W4-4/W4-5 scope).
-    // Skipping the call entirely rather than asserting the broken behaviour.
-#endif
 
     // workspace 根可删
     resp = sat::call_router(r, "POST", "/api/mods/delete", {}, json{{"name", "localmod"}});

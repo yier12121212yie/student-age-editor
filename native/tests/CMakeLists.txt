@@ -25,18 +25,12 @@ file(GLOB SA_TEST_SOURCES CONFIGURE_DEPENDS
 # Windows-only". On Windows this block is skipped entirely, so the official
 # build keeps every test file (275 cases / 3055 assertions gate unchanged).
 if(NOT WIN32)
+    # W4-2b: test_p5_cloud.cpp re-admitted (cloud_sync.cpp safe_rel_join gate +
+    # LocalDriver win.ini case now host-separator aware; green on WSL).
     set(SA_POSIX_INCOMPATIBLE_TESTS
         test_cfg_store.cpp         # Win32 CP_UTF8/GBK conversion oracle + Win-only test hook
         test_p4_aa.cpp             # _putenv (EDITOR_DECODED_PACK_DIR)
         test_p3b_domain_tools.cpp  # _putenv_s; R4-owned surface, left to R4
-        # Compiles on POSIX but 3 cases stay red (W4-2 WSL evidence, 201/204
-        # passed): safe_rel_join traversal + sync_mod_folder skip_unsafe_path
-        # cluster trace to the third hardcoded-'\\' gate in
-        # cloud_sync.cpp:1984 (outside W4-2's two-gate authorization; W4-4/
-        # W4-5), and the LocalDriver "C:/Windows/win.ini escapes root" case
-        # tests Windows-only drive-letter absoluteness (Python behaves
-        # identically non-raising under POSIX join). Re-admit with those fixes.
-        test_p5_cloud.cpp
     )
     foreach(_sa_t ${SA_POSIX_INCOMPATIBLE_TESTS})
         list(REMOVE_ITEM SA_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${_sa_t}")

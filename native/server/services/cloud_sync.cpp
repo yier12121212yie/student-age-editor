@@ -1988,7 +1988,14 @@ std::optional<std::string> safe_rel_join(const std::string& mod_dir, const std::
     for (const auto& p : parts) full = spath::join(full, p);
     full = spath::abs_path(full);
     std::string nk = spath::normcase(full), bk = spath::normcase(base);
+    // Host-separator containment (see LocalDriver::abs_for): Python's
+    // startswith(abspath(base) + os.sep) needs '/' on POSIX too; the literal
+    // "\\" flagged every POSIX child of the mod dir as unsafe (W4-2 WSL gate).
+#ifdef _WIN32
     if (nk != bk && !sp::starts_with(nk, bk + "\\")) return std::nullopt;
+#else
+    if (nk != bk && !sp::starts_with(nk, bk + "/")) return std::nullopt;
+#endif
     return full;
 }
 

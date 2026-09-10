@@ -496,12 +496,21 @@ TEST_CASE("P5 LocalDriver list/stat/get/put/delete/mkdir + escape refusals", "[p
     } catch (const sa::cloud::PyError& e) {
         CHECK(e.str_msg.find("invalid remote path") != std::string::npos);
     }
+    // A drive-lettered remote escapes the root only because Windows treats it as
+    // absolute; os.path.join on POSIX keeps it a relative segment appended under
+    // the root, so containment never trips and stat() reports the missing child
+    // instead of raising (Python behaves identically; cloud_sync.py:174). Windows
+    // keeps the escape assertion, POSIX asserts the real non-raising semantics.
+#ifdef _WIN32
     try {
         drv->stat("C:/Windows/win.ini");
         FAIL("expected ValueError");
     } catch (const sa::cloud::PyError& e) {
         CHECK(e.str_msg == "path escapes root");
     }
+#else
+    CHECK(drv->stat("C:/Windows/win.ini") == std::nullopt);
+#endif
 }
 
 // ---------------------------------------------------------------------------
