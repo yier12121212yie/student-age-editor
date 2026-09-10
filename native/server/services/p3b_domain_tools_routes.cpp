@@ -1,8 +1,9 @@
 // wip/P3b — see p3b_domain_tools_routes.h. Port of the api.py families:
 //   AI 工具沙箱 (api.py:1618-1666), AI 细分领域 (api.py:1670-1752),
 //   AI 共享配置 /api/ai/settings (api.py:851-869), 附件上传 (api.py:1997-2020),
-//   官方模组 manifest/status (api.py:2023-2051), 资源包 (api.py:2636-2712),
-//   plugins 只读桩 (api.py:3006-3127, retired engine -> golden shape).
+//   官方模组 manifest/status (api.py:2023-2051), 资源包 (api.py:2636-2712).
+// The plugins family (api.py:3006-3127) moved out to plugins_routes.cpp with
+// R4 (PLUGIN_SPEC §5 declarative implementation).
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -62,62 +63,6 @@ json b_or(const json& v, const char* key) {
 
 Resp sandbox_400(const SandboxError& e) {
     return Resp::Json(400, json{{"error", e.what()}});
-}
-
-// ---------------------------------------------------------------------------
-// plugins 只读桩 helpers
-// ---------------------------------------------------------------------------
-
-std::string plugins_root() {
-    // plugin_system.plugins_root: EDITOR_PLUGINS_ROOT or <app_data>/plugins.
-    const char* env = std::getenv("EDITOR_PLUGINS_ROOT");
-    std::string root = (env && *env) ? std::string(env) : sa_core::paths::join(sa::editor_root(), "plugins");
-    sa_core::paths::create_dirs(root);  // best-effort like Python
-    return root;
-}
-
-// The retired plugin engine collected cards registered in-process. The C++
-// stub keeps the wire shape ({"flow_cards": [...]}) and serves DECLARATIVE
-// manifests only: <plugins_root>/<pid>/manifest.json -> "ui"."flow_cards"
-// (or top-level "flow_cards") list entries, plugin_id injected, pids sorted.
-json declarative_flow_cards() {
-    json out = json::array();
-    const std::string root = plugins_root();
-    bool ok = false;
-    const std::vector<std::string> names = sa_core::paths::listdir_sorted(root, &ok);
-    if (!ok) return out;
-    for (const auto& pid : names) {
-        const std::string dir = sa_core::paths::join(root, pid);
-        if (!sa_core::paths::is_dir(dir)) continue;
-        auto raw = sa_core::paths::read_bytes(sa_core::paths::join(dir, "manifest.json"));
-        if (!raw) continue;
-        auto text = sa_core::decode_utf8_sig_strict(*raw);  // utf-8-sig read
-        if (!text) continue;
-        json manifest = json::parse(*text, nullptr, false);
-        if (manifest.is_discarded() || !manifest.is_object()) continue;
-        const json* cards = nullptr;
-        if (manifest.contains("ui") && manifest.at("ui").is_object() &&
-            manifest.at("ui").contains("flow_cards") && manifest.at("ui").at("flow_cards").is_array()) {
-            cards = &manifest.at("ui").at("flow_cards");
-        } else if (manifest.contains("flow_cards") && manifest.at("flow_cards").is_array()) {
-            cards = &manifest.at("flow_cards");
-        }
-        if (cards == nullptr) continue;
-        for (const auto& c : *cards) {
-            if (!c.is_object()) continue;
-            json card = json::object();
-            for (const char* k : {"type_id", "name", "icon", "color", "applies_to", "match",
-                                  "body_fields", "hidden_ports", "description"}) {
-                card[k] = c.contains(k) ? c.at(k) : json();
-            }
-            card["plugin_id"] = pid;  // setdefault in the engine; inject here
-            if (c.contains("plugin_id") && json_truthy(c.at("plugin_id"))) {
-                card["plugin_id"] = c.at("plugin_id");
-            }
-            out.push_back(std::move(card));
-        }
-    }
-    return out;
 }
 
 }  // namespace
@@ -484,43 +429,6 @@ void register_domain_tools_routes(Router& r) {
         } catch (const p3b::PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }
-    });
-
-    // ---------------------------------------------------------------- plugins
-    // 只读桩：进程内 Python 插件机制已废弃；形状 = golden（空聚合）。
-    // GET /api/plugins — api.py:3006-3012.
-    r.get(R"(/api/plugins)", [](const Req&) -> Resp {
-        json body = json::object();
-        body["plugins"] = json::array();
-        return Resp::Json(200, std::move(body));
-    });
-
-    // GET /api/plugins/ui — api.py:3059-3061.
-    r.get(R"(/api/plugins/ui)", [](const Req&) -> Resp {
-        json body = json::object();
-        body["panels"] = json::array();
-        return Resp::Json(200, std::move(body));
-    });
-
-    // GET /api/plugins/ui/flow_cards — api.py:3063-3065; the stub answers the
-    // declarative manifest-directory reader (see declarative_flow_cards()).
-    r.get(R"(/api/plugins/ui/flow_cards)", [](const Req&) -> Resp {
-        json body = json::object();
-        body["flow_cards"] = declarative_flow_cards();
-        return Resp::Json(200, std::move(body));
-    });
-
-    // GET /api/plugins/agent/tools — api.py:3067-3069.
-    r.get(R"(/api/plugins/agent/tools)", [](const Req&) -> Resp {
-        json body = json::object();
-        body["tools"] = json::array();
-        return Resp::Json(200, std::move(body));
-    });
-
-    // GET /api/plugins/<pid> — api.py:3086-3094; no plugin can be loaded in
-    // the retired engine, so always the golden's "plugin not found" 404.
-    r.get(R"(/api/plugins/(?P<pid>[^/]+))", [](const Req&) -> Resp {
-        return Resp::Json(404, json{{"error", "plugin not found"}});
     });
 }
 

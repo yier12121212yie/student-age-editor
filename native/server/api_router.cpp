@@ -13,6 +13,7 @@
 #include "server/services/content_routes.h"
 #include "server/services/mods_routes.h"
 #include "server/services/p3b_domain_tools_routes.h"
+#include "server/services/plugins_routes.h"
 #include "server/services/semantic_routes.h"
 #include "server/services/system_routes.h"
 #include "server/services/tts.h"
@@ -52,6 +53,11 @@ Router build_router() {
     register_content_routes(r);       // P3a
     register_ai_dicts_route(r);       // orchestrator gap-fill (ai.py:1674)
     register_domain_tools_routes(r);  // P3b
+    // R4: the /api/plugins family (PLUGIN_SPEC §5 declarative implementation).
+    // It used to be part of register_domain_tools_routes as read-only stubs;
+    // statics-before-<pid> ordering is handled inside register_plugins_routes,
+    // and no other family matches /api/plugins/*.
+    register_plugins_routes(r);
     register_base_routes(r);          // P4 — installs the base_store seam
     register_aa_routes(r);
     register_tts_routes(r);

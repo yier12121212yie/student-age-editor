@@ -2,8 +2,8 @@
 // Python selftest's MockClient). Covers: sandbox escape suite, tools
 // list/read/write/stat semantics, domain CRUD -> undo rollback, docx/xlsx
 // attachment parsing (zip fixtures built with Python zipfile), resource-pack
-// install/activate/uninstall, ai_settings roundtrip, manifest/status, plugins
-// read-only stubs.
+// install/activate/uninstall, ai_settings roundtrip, manifest/status.
+// (The /api/plugins stub coverage moved to test_plugins.cpp with R4.)
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -779,38 +779,5 @@ TEST_CASE("manifest status: no mod / no manifest / valid / broken", "[p3b][manif
                                     "解析失败:"));
 }
 
-// ---------------------------------------------------------------------------
-// plugins read-only stubs
-// ---------------------------------------------------------------------------
-
-TEST_CASE("plugins stubs: golden shapes + declarative flow_cards reader", "[p3b][plugins]") {
-    const std::string proot = cs::join(fixture_root(), "plugins_" + std::to_string(rand()));
-    ScopedEnv env("EDITOR_PLUGINS_ROOT", proot);
-    P3bFixture fx;
-
-    CHECK(fx.call("GET", "/api/plugins").json_payload["plugins"].empty());
-    CHECK(fx.call("GET", "/api/plugins/ui").json_payload["panels"].empty());
-    CHECK(fx.call("GET", "/api/plugins/agent/tools").json_payload["tools"].empty());
-    auto fc0 = fx.call("GET", "/api/plugins/ui/flow_cards");
-    REQUIRE(fc0.status == 200);
-    CHECK(fc0.json_payload["flow_cards"].empty());
-    auto info = fx.call("GET", "/api/plugins/anything");
-    CHECK(info.status == 404);
-    CHECK(info.json_payload.value("error", "") == "plugin not found");
-
-    // declarative manifest directory: <root>/p1/manifest.json -> ui.flow_cards
-    const std::string pdir = cs::join(proot, "p1");
-    cs::create_dirs(pdir);
-    cs::write_bytes_simple(cs::join(pdir, "manifest.json"),
-                           R"({"name":"P1","ui":{"flow_cards":[{"type_id":"cardX","name":"卡片"}]}})");
-    cs::write_bytes_simple(cs::join(proot, "broken.json"), "junk");  // not a dir: ignored
-    auto fc = fx.call("GET", "/api/plugins/ui/flow_cards");
-    REQUIRE(fc.status == 200);
-    REQUIRE(fc.json_payload["flow_cards"].size() == 1);
-    const auto& c = fc.json_payload["flow_cards"][0];
-    CHECK(c["type_id"] == "cardX");
-    CHECK(c["name"] == "卡片");
-    CHECK(c["plugin_id"] == "p1");
-    CHECK(c.contains("hidden_ports"));
-    CHECK(c.size() == 10);
-}
+// The /api plugins family (read-only stubs here until R4) is covered by
+// test_plugins.cpp ([plugins]) now that it lives in plugins_routes.cpp.
