@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong
  *    W4-6 真机回归观察点。
  *  - (b) 流式分块由 C++ 侧逐次调 httpRead 驱动（网络节奏保持）；提前停止时
  *    C++ 直接关连接并带回部分体，不视为错误。
- *  - (c) 错误分类靠异常类名（SocketTimeout/SSL*/UnknownHost|Connect|Socket/
+ *  - (c) 错误分类靠异常类名（SocketTimeout / SSL / UnknownHost|Connect|Socket /
  *    Malformed|Protocol）映射，C++ 侧完成。
  *  - (d) >=400 不是错误：读 errorStream 正常返回。
  *  - (e) instanceFollowRedirects = true。

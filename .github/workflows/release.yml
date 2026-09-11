@@ -118,7 +118,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: 安装 Python 打包依赖
-        run: python -m pip install pyinstaller unitypy rich textual prompt_toolkit
+        # Linux 后端已是 native C++（W4-5）；pyinstaller/unitypy 仅供 aa_scan
+        # 冻结（可选，失败脚本降级为不随包）；旧 CLI/TUI 的运行时依赖
+        # （rich/textual/prompt_toolkit）已随 Python 后端退役。
+        run: python -m pip install pyinstaller unitypy
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -153,8 +156,19 @@ jobs:
           python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建 native C++ 后端（CMake + Ninja）
+        shell: bash
+        run: |
+          # 本 job 已装 clang/cmake/ninja-build；与 native/build.sh 同法但显式
+          # 构建三件套并收集到 build/native_bin 供 --prebuilt-backend 注入。
+          cmake -G Ninja -S native -B build-native-posix -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-native-posix
+          mkdir -p build/native_bin
+          cp build-native-posix/bin/backend build-native-posix/bin/backend_cli \
+             build-native-posix/bin/backend_tui build/native_bin/
+          ls -l build/native_bin
       - name: 构建 Linux 发行版与安装包（deb + AppImage）
-        run: python build_release.py --target linux --version $RELEASE_VERSION
+        run: python build_release.py --target linux --version $RELEASE_VERSION --prebuilt-backend build/native_bin
       - name: 上传 Linux 产物
         uses: actions/upload-artifact@v4
         with:
@@ -173,7 +187,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: 安装 Python 打包依赖
-        run: python3 -m pip install pyinstaller unitypy rich textual prompt_toolkit
+        # macOS 后端已是 native C++（W4-5）；pyinstaller/unitypy 仅供 aa_scan
+        # 冻结（可选）；旧 CLI/TUI 的 rich/textual/prompt_toolkit 已退役。
+        run: python3 -m pip install pyinstaller unitypy
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -202,8 +218,22 @@ jobs:
           python3 -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建 native C++ 后端（CMake + Ninja）
+        shell: bash
+        run: |
+          # macos-14 runner 自带 cmake；ninja 缺失时回落 CMake 默认生成器
+          # （build_release.py 的 POSIX 通道同样容忍），三件套收进
+          # build/native_bin 供 --prebuilt-backend 注入。
+          if ! command -v ninja >/dev/null; then brew install ninja || true; fi
+          GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"
+          cmake $GEN -S native -B build-native-posix -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-native-posix
+          mkdir -p build/native_bin
+          cp build-native-posix/bin/backend build-native-posix/bin/backend_cli \
+             build-native-posix/bin/backend_tui build/native_bin/
+          ls -l build/native_bin
       - name: 构建 macOS 发行版与安装包（DMG + PKG）
-        run: python3 build_release.py --target macos --version $RELEASE_VERSION
+        run: python3 build_release.py --target macos --version $RELEASE_VERSION --prebuilt-backend build/native_bin
       - name: 上传 macOS 产物
         uses: actions/upload-artifact@v4
         with:
@@ -221,8 +251,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: 安装 Python 打包依赖
-        run: python -m pip install unitypy
+      # W4-4: Android 后端已是 native C++（libbackend_shared.so），不再内嵌 CPython。
+      # setup-python 仅保留给 fetch_bundled.py（纯标准库 urllib，无需 pip 依赖）。
+      - uses: android-actions/setup-android@v3
+      - name: 安装 Android NDK（native 后端交叉编译）
+        run: sdkmanager "ndk;28.2.13676358"
+      - name: 确保 cmake/ninja 可用
+        shell: bash
+        run: |
+          if ! command -v cmake >/dev/null; then sudo apt-get update && sudo apt-get install -y cmake; fi
+          if ! command -v ninja >/dev/null; then sudo apt-get update && sudo apt-get install -y ninja-build; fi
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -240,8 +278,9 @@ jobs:
             exit 1
           fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
-      - name: 同步 Python 后端到 Android 工程
-        run: python packaging/sync_android_python.py
+      - name: 交叉编译 native 后端（NDK，产物落 jniLibs/<abi>/）
+        shell: bash
+        run: bash native/android/android_build.sh
       - name: 注入内置资源包（可选，从 GitHub Release 下载）
         shell: bash
         run: |
