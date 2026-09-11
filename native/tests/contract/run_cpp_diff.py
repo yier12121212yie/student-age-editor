@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
-"""波次 1 差分：同一夹具下，Python 后端与 C++ 后端的 wave-1 端点响应比对
+"""波次 1 差分：同一夹具下，参考后端与本地 C++ 后端的 wave-1 端点响应比对
 （复用 native/tests/contract/normalize.py 的树等值规则 + 字节级序列化抽查）。
 
+Python 后端树已随 W4-5 删除，本脚本不再进程内起 Python 参考后端：
+    --url <base>   参考后端基址（既有 URL 打点约定不变）；本地仍起 C++ 后端做对照
+    无 --url       明确报错退出（提示用 --url 指向运行中的参考后端）
+注意：参考后端会被本脚本按既有流程 PUT/patch 写入夹具表（与旧 Python 侧行为一致），
+请指向一个一次性/可丢弃的实例，并保证其 workspace 与本地 C++ 侧同构。
+
 一次性核对脚本（非 golden 库成员）。用法（仓库根）：
-    python native/tests/contract/run_cpp_diff.py
+    python native/tests/contract/run_cpp_diff.py --url http://127.0.0.1:8766
 """
 import json
 import os
@@ -22,7 +28,6 @@ REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 # to ".exe", so the default path used in start_cpp() stays byte-identical.
 EXE = ".exe" if sys.platform == "win32" else ""
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(REPO, "backend"))
 import normalize  # noqa: E402
 
 CASES = [
@@ -72,19 +77,25 @@ def http(base, method, path, body=None):
         return e.code, json.loads(e.read().decode("utf-8"))
 
 
-def start_python(ws):
-    os.environ.pop("STUDENT_AGE_BACKEND_URL", None)
-    os.environ["EDITOR_DATA_ROOT"] = ws
-    from editor.server import httpd, api
-    from editor.core import steam_paths
-    steam_paths.steam_library_paths = lambda: []
-    steam_paths.user_mods_dir = lambda: os.path.join(ws, "_none")
-    steam_paths.workshop_mods_roots = lambda: []
-    api.STATE.workspace_root = ws
-    api._init_state()
-    router = api.build_router()
-    _t, port = httpd.run_server(router, port=0)
-    return port
+def reference_base_url():
+    """参考后端基址。Python 后端已移除，只能由外部提供；缺失即报错退出。
+
+    优先级：--url 参数 > STUDENT_AGE_BACKEND_URL 环境变量（与 selftest 外部模式约定一致）。
+    """
+    argv = sys.argv[1:]
+    url = ""
+    for i, a in enumerate(argv):
+        if a == "--url" and i + 1 < len(argv):
+            url = argv[i + 1]
+        elif a.startswith("--url="):
+            url = a.split("=", 1)[1]
+    url = (url or os.environ.get("STUDENT_AGE_BACKEND_URL") or "").strip().rstrip("/")
+    if not url:
+        print("ERROR: Python 后端已移除，已无法在本进程内启动参考后端；"
+              "请用 --url <base>（或 STUDENT_AGE_BACKEND_URL）指向运行中的参考后端"
+              "（例如 --url http://127.0.0.1:8766）。", file=sys.stderr)
+        return None
+    return url
 
 
 def start_cpp(ws):
@@ -111,21 +122,22 @@ def start_cpp(ws):
 
 
 def main():
-    ws_py = make_workspace("py")
-    base_py = "http://127.0.0.1:%d" % start_python(ws_py)
+    base_ref = reference_base_url()
+    if base_ref is None:
+        return 2
     ws_cpp = make_workspace("cpp")
     proc, base_cpp = start_cpp(ws_cpp)
     fails = 0
     try:
         # 两侧做同一次全量 PUT：/api/history 在两边同为非空，且验证 PUT 响应契约
-        for name, base in (("py", base_py), ("cpp", base_cpp)):
+        for name, base in (("ref", base_ref), ("cpp", base_cpp)):
             c, r = http(base, "PUT", "/api/cfg/EvtCfg", {"data": dict(
                 MOD_JSON, **{"1003": {"id": 1003, "title": "新事件", "type": 1}})})
             print("%s PUT ->" % name, c, "snapshot=", bool(r.get("snapshot")))
             assert c == 200 and r.get("ok") is True
 
         # 两侧再做同一次 patch（响应形状 + if_match 冲突路径）
-        for name, base in (("py", base_py), ("cpp", base_cpp)):
+        for name, base in (("ref", base_ref), ("cpp", base_cpp)):
             c, r = http(base, "PUT", "/api/cfg/EvtCfg",
                         {"patch": {"set": {"2001": {"id": 2001}}, "remove": ["abc123"],
                                    "if_match": {"1001": {"id": 1001, "title": "开场",
@@ -139,23 +151,23 @@ def main():
             assert c == 200 or (c == 409 and r.get("reason") == "rows")
 
         for method, path, body in CASES:
-            code_py, resp_py = http(base_py, method, path, body)
+            code_ref, resp_ref = http(base_ref, method, path, body)
             code_cpp, resp_cpp = http(base_cpp, method, path, body)
-            same, diffs = normalize.compare(normalize.normalize(resp_py),
+            same, diffs = normalize.compare(normalize.normalize(resp_ref),
                                             normalize.normalize(resp_cpp))
             # 快照文件名内嵌落盘毫秒：跨进程必然不同，属预期差异
             if (path.startswith("/api/history?") and diffs
                     and all(ENTRY_FILE_RE.match(d) for d in diffs)):
                 same, diffs = True, []
-            ok = code_py == code_cpp and same
+            ok = code_ref == code_cpp and same
             fails += 0 if ok else 1
-            print("%s %s %s  (py=%d cpp=%d)" % ("OK " if ok else "DIFF", method, path,
-                                                code_py, code_cpp))
+            print("%s %s %s  (ref=%d cpp=%d)" % ("OK " if ok else "DIFF", method, path,
+                                                code_ref, code_cpp))
             for d in diffs[:6]:
                 print("      ", d)
 
         # 撤销/重做契约（两侧行为等价性由 selftest + C++ 测试覆盖，这里比响应形状）
-        for name, base in (("py", base_py), ("cpp", base_cpp)):
+        for name, base in (("ref", base_ref), ("cpp", base_cpp)):
             c, r = http(base, "POST", "/api/history/undo", {"cfg": "EvtCfg"})
             print("%s undo ->" % name, c, "ok=", r.get("ok"))
             assert c == 200 and r.get("ok") is True
@@ -164,15 +176,15 @@ def main():
             assert c == 200 and r.get("ok") is True
 
         # 字节级序列化比对：全表 GET，掩掉 mtime_ns 后逐字节相等
-        raw_py = urllib.request.urlopen(base_py + "/api/cfg/EvtCfg", timeout=10).read()
+        raw_ref = urllib.request.urlopen(base_ref + "/api/cfg/EvtCfg", timeout=10).read()
         raw_cpp = urllib.request.urlopen(base_cpp + "/api/cfg/EvtCfg", timeout=10).read()
         strip = lambda b: re.sub(rb'"mtime_ns": \d+', b'"mtime_ns": <MS>', b)
-        if strip(raw_py) == strip(raw_cpp):
+        if strip(raw_ref) == strip(raw_cpp):
             print("OK  byte-level serialization parity (mtime_ns masked)")
         else:
             fails += 1
             print("DIFF byte-level serialization parity")
-            print("   py :", strip(raw_py)[:220])
+            print("   ref:", strip(raw_ref)[:220])
             print("   cpp:", strip(raw_cpp)[:220])
     finally:
         http(base_cpp, "POST", "/api/shutdown", {})
@@ -180,7 +192,6 @@ def main():
             proc.wait(timeout=10)
         except Exception:
             proc.kill()
-        shutil.rmtree(ws_py, ignore_errors=True)
         shutil.rmtree(ws_cpp, ignore_errors=True)
     print("RESULT:", "PASS" if fails == 0 else "FAIL (%d diffs)" % fails)
     return 0 if fails == 0 else 1

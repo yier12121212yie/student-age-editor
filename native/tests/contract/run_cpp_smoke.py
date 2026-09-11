@@ -1,18 +1,22 @@
 # -*- coding: utf-8 -*-
 """波次 1 黑盒门禁：C++ backend 的 selftest 子集 + 40MB 性能证据。
 
-一次性驱动脚本（新增文件，不属于 golden 契约库）：
+一次性驱动脚本（不属于 golden 契约库）：
   1. 在 temp 目录造 workspace + mod（绝不碰真实 Mods，思路同 golden/README.md）；
   2. 起 native/build/bin/backend.exe --port 0 --workspace-root <temp>；
-  3. 以 STUDENT_AGE_BACKEND_URL 跑 editor.server.selftest 中
+  3. 以 STUDENT_AGE_BACKEND_URL 跑 native/tests/contract/selftest_blackbox.py 中
      cfg/history/mods/ping/state/shutdown 相关的用例白名单；
   4. 打 /api/perf 计数器，输出 40MB 冷/热/补丁/补后 四行证据；
   5. POST /api/shutdown 验证进程自退。
+
+selftest_blackbox.py 是原 editor.server.selftest 黑盒面的 stdlib-only 迁移版
+（Python 后端树已随 W4-5 删除）；它只打外部 URL，不再 import editor.*。
 
 用法（仓库根）：
     python native/tests/contract/run_cpp_smoke.py [--backend <exe>]
 退出码 0 = 子集全绿 + 性能门槛达标。
 """
+import importlib.util
 import json
 import os
 import shutil
@@ -26,31 +30,37 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# selftest.py 的官方运行目录是 backend/（`cd backend && python -m unittest ...`），
-# 等价地把 backend 加入 sys.path 以便按模块名加载。
-sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend")))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 # Portable builds drop the .exe suffix on Linux/macOS; on Windows this resolves
 # to ".exe", so the default path below stays byte-identical to before.
 EXE = ".exe" if sys.platform == "win32" else ""
 BACKEND_EXE = os.path.join(REPO, "native", "build", "bin", "backend" + EXE)
-BACKEND_DIR = os.path.join(REPO, "backend")
+SELFTEST_BLACKBOX = os.path.join(HERE, "selftest_blackbox.py")
 
 # CONVENTIONS 7 准出：40MB benchdata 规格（与 backend/editor/server/benchdata.py 同源）
 NUM_ROWS = 98963
 TARGET_SIZE = 40_258_490
 ROW_TARGET_BYTES = 405
 
-# 白名单：selftest.py 中与波次 1（cfg/history/mods/ping/state/shutdown）直接相关的用例。
-# 其余 77 例在波次 2/3 落地前必然 404（原因见脚本末尾清单输出）。
+# 白名单：selftest_blackbox.py 中与波次 1（cfg/history/mods/ping/state/shutdown）直接相关的用例。
+# 其余用例在波次 2/3 落地前必然 404（原因见脚本末尾清单输出）。
 SELFTEST_WHITELIST = [
-    "editor.server.selftest.BackendApiTest.test_forbidden_host_rejected",
-    "editor.server.selftest.BackendApiTest.test_forbidden_origin_rejected",
-    "editor.server.selftest.BackendApiTest.test_local_origin_allowed",
-    "editor.server.selftest.BackendApiTest.test_mod_create_title_injection_blocked",
-    "editor.server.selftest.BackendApiTest.test_mod_select_root_outside_workspace_blocked",
-    "editor.server.selftest.BackendApiTest.test_mod_lifecycle",
+    "selftest_blackbox.BackendApiTest.test_forbidden_host_rejected",
+    "selftest_blackbox.BackendApiTest.test_forbidden_origin_rejected",
+    "selftest_blackbox.BackendApiTest.test_local_origin_allowed",
+    "selftest_blackbox.BackendApiTest.test_mod_create_title_injection_blocked",
+    "selftest_blackbox.BackendApiTest.test_mod_select_root_outside_workspace_blocked",
+    "selftest_blackbox.BackendApiTest.test_mod_lifecycle",
 ]
+
+
+def load_selftest_blackbox():
+    """按文件路径加载 stdlib-only 黑盒门禁模块并注册进 sys.modules（供 unittest 名字加载）。"""
+    spec = importlib.util.spec_from_file_location("selftest_blackbox", SELFTEST_BLACKBOX)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["selftest_blackbox"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _generate_bench_text():
@@ -148,6 +158,7 @@ def main():
 
         print()
         print("=== 2) selftest 波次1 子集（%d 例）===" % len(SELFTEST_WHITELIST))
+        load_selftest_blackbox()
         env = dict(os.environ)
         env["STUDENT_AGE_BACKEND_URL"] = base
         os.environ["STUDENT_AGE_BACKEND_URL"] = base
@@ -271,10 +282,9 @@ def main():
             os.unlink(pf)
 
 
-# 其余 77 例在波次 2 前必然失败/无关的清单（实测：83 例中 56 失败、27 通过）——
-# 纯 Python 进程内逻辑用例（BaseServiceLogicTest 4、CloudSyncLogicTest 7、
-# GuideRulesLogicTest 8 等，共 21 例）不打 HTTP，外部模式下恒通过，与后端无关；
-# 波次 1 白名单 6 例覆盖 cfg/history/mods/ping/state；剩余 56 例全部依赖
+# 其余 57 例在波次 2 前必然失败/无关的清单（selftest_blackbox 实测 63 例 = 波次1
+# 白名单 6 例 + 其余 57 例；另有 21 例纯 Python 逻辑单测已随 Python 后端一起丢弃，不再迁移）。
+# 其中 6 例是无 aa_index 缓存时 skip 的资源预览用例；剩余 51 例全部依赖
 # 波次 2+ 端点（当前按契约返回 404 {"error":"no route: ..."}）：
 KNOWN_WAVE2_PLUS = [
     ("BackendApiTest.test_basic_endpoints",
@@ -284,16 +294,16 @@ KNOWN_WAVE2_PLUS = [
      "/api/tools/read 沙箱属波次 2（tools 域；错误子串 'escapes' 契约已备好）"),
     ("BackendApiTest.test_guide_validate_and_effect_modes",
      "/api/validate /api/effect_suggest 属波次 2（validate/bugfix 域）"),
-    ("StoryAndFixApiTest (6 例)",
+    ("StoryAndFixApiTest (7 例)",
      "/api/base/status /api/base/events /api/bugfix/* /api/story/* 属波次 2"),
-    ("AiUploadTest (8 例)", "/api/ai/upload* 属波次 4（AI 域）"),
-    ("AiDomainApiTest (14 例)", "/api/ai/domains /api/ai/domain/items 属波次 4"),
+    ("AiUploadTest (9 例)", "/api/ai/upload* 属波次 4（AI 域）"),
+    ("AiDomainApiTest (15 例)", "/api/ai/domains /api/ai/domain/items 属波次 4"),
     ("ImageApiTest (7 例)", "/api/ai/image/* 属波次 4"),
     ("StageApiTest (3 例)", "/api/ai/stage/* 属波次 4"),
-    ("AaPreviewTest (4 例) + EventPreviewApiTest (6 例)",
+    ("AaPreviewTest (4 例) + EventPreviewApiTest (7 例)",
      "/api/aa/* /api/preview/* 属波次 3（Unity 资源走 P6 产物契约）"),
-    ("BaseServiceLogicTest(4) / CloudSyncLogicTest(7) / GuideRulesLogicTest(8)",
-     "纯 Python 逻辑单测，不经 HTTP，外部模式下恒通过（不计入波次门禁）"),
+    ("(已丢弃) BaseServiceLogicTest(4) / CloudSyncLogicTest(7) / GuideRulesLogicTest(8)",
+     "纯 Python 逻辑单测，直接 import editor 内部模块，随 Python 后端树删除，不迁移"),
 ]
 
 if __name__ == "__main__":
