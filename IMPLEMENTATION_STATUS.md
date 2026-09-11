@@ -66,11 +66,11 @@
 5. **S1-3**：`GET /api/cfg/<t>` 的 `keys` 字段改为显式 `?keys=1` 才返回。
 6. **B12**（前批）：跨站 OPTIONS 预检不再无条件放行。
 
-## 👀 GUI 目视验证清单（Python 后端时代：需人工跑 `python run_dev.py`）
+## 👀 GUI 目视验证清单（Python 后端时代记录）
 
-> 注：下述清单为报告当时（Python 后端）的验证方式。迁 native 后开发启动应改为
+> 注：下述清单为报告当时（Python 后端）的验证方式。迁 native 后开发启动改为
 > 先跑 `native/build.cmd`（或 `build.sh`）得到 `native/build/bin/backend[.exe]`，
-> 再以 Flutter 连接；仓库根的 `run_dev.py` 仍是 Python 后端启动器，尚未随迁。
+> 再以 Flutter 连接；`run_dev.py` 已随 Python 后端整树退役（W4-5）。
 
 - [ ] 小地图节点块跟手拖动（D1）
 - [ ] 候选浮层在宿主 setState 时不消失（D2）
