@@ -41,4 +41,10 @@ bool is_utf8(std::string_view raw);
 // UTF-8 encode a single code point (surrogates encode to U+FFFD).
 void append_codepoint(std::string& out, unsigned cp);
 
+// Decode UTF-16 (e.g. a JNI GetStringChars buffer, which is full UTF-16, not
+// the Modified UTF-8 GetStringUTFChars would hand back) to standard UTF-8.
+// Handles BMP + surrogate pairs; unpaired surrogates become U+FFFD. A trailing
+// UTF-16 byte-order mark is left in place (callers that need stripping do it).
+std::string utf16_to_utf8(const char16_t* data, size_t len);
+
 }  // namespace sa_core

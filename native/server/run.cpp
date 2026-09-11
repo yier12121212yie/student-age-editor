@@ -103,13 +103,8 @@ extern "C" void on_signal(int) { g_signal_quit.store(true); }
 // wins. The desktop path never calls this (config fields stay empty).
 void env_setdefault(const char* name, const std::string& value) {
     if (value.empty()) return;
-#ifdef _WIN32
-    if (std::getenv(name) != nullptr) return;
-    _putenv_s(name, value.c_str());
-#else
-    if (std::getenv(name) != nullptr) return;
-    ::setenv(name, value.c_str(), /*overwrite=*/0);
-#endif
+    // setdefault semantics + UTF-8-safe storage (Windows env roots may be CJK).
+    sa_core::paths::setenv_utf8(name, value, /*overwrite=*/false);
 }
 
 }  // namespace

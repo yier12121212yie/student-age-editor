@@ -61,5 +61,15 @@ std::vector<std::string> listdir_sorted(std::string_view p, bool* ok = nullptr);
 std::optional<std::string> read_bytes(std::string_view p);  // any IO failure -> nullopt
 bool write_bytes_simple(std::string_view p, std::string_view data);  // truncate-write
 
+// UTF-8-safe environment access. The MSVC CRT getenv/_putenv work in the ANSI
+// codepage, so an env root (USERPROFILE, EDITOR_DATA_ROOT, ...) containing
+// non-ASCII -- e.g. a Chinese Windows username -- comes back as mojibake and
+// every path built from it fails to resolve. These go through the wide Win32
+// API and always hand back / store UTF-8; POSIX keeps getenv/setenv.
+std::string getenv_utf8(const char* name);  // missing -> ""
+// Set an env var (UTF-8). `overwrite=false` is setdefault semantics: a name
+// that already exists is left untouched. Returns false only on API failure.
+bool setenv_utf8(const char* name, std::string_view value, bool overwrite = true);
+
 }  // namespace paths
 }  // namespace sa_core

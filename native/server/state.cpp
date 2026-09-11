@@ -30,15 +30,9 @@ std::function<void()> g_mod_cfgs_invalidator;
 std::function<void()> g_preview_invalidator;
 
 std::string env_or_empty(const char* name) {
-#ifdef _WIN32
-    // getenv is ANSI-codepage; env roots may contain non-ASCII paths. Wave 1
-    // uses it like the Python os.environ equivalent for our temp-based tests.
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
-#else
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
-#endif
+    // UTF-8-safe on Windows (see sa_core::paths::getenv_utf8): env roots may
+    // contain non-ASCII and must not be ANSI-mojibake'd.
+    return sa_core::paths::getenv_utf8(name);
 }
 
 // user_mods_dir() is the exported sa::user_mods_dir below; the anon-namespace

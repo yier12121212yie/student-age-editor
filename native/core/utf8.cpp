@@ -155,6 +155,29 @@ void append_codepoint(std::string& out, unsigned cp) {
     }
 }
 
+std::string utf16_to_utf8(const char16_t* data, size_t len) {
+    std::string out;
+    out.reserve(len);
+    for (size_t i = 0; i < len; ++i) {
+        uint32_t w = data[i];
+        if (w >= 0xD800 && w <= 0xDBFF) {
+            // High surrogate: need a following low surrogate to form a pair.
+            if (i + 1 < len && data[i + 1] >= 0xDC00 && data[i + 1] <= 0xDFFF) {
+                uint32_t cp = 0x10000u + ((w - 0xD800u) << 10) + (data[i + 1] - 0xDC00u);
+                ++i;
+                append_codepoint(out, cp);
+            } else {
+                append_codepoint(out, 0xFFFDu);  // unpaired high surrogate
+            }
+        } else if (w >= 0xDC00 && w <= 0xDFFF) {
+            append_codepoint(out, 0xFFFDu);  // unpaired low surrogate
+        } else {
+            append_codepoint(out, w);
+        }
+    }
+    return out;
+}
+
 std::string decode_utf8_sig_replace(std::string_view raw) {
     const std::string s(lstrip_bom(raw));
     std::string out;

@@ -244,9 +244,11 @@ bool create_dirs(std::string_view p) {
 }
 
 bool remove_tree(std::string_view p) {
+    // shutil.rmtree(ignore_errors=True) parity for callers that don't care, but
+    // report the real outcome: error_code must be clear (or the tree absent).
     std::error_code ec;
     fs::remove_all(to_fs(p), ec);
-    return true;  // shutil.rmtree(ignore_errors=True)
+    return !ec;
 }
 
 std::vector<std::string> listdir_sorted(std::string_view p, bool* ok) {
@@ -288,7 +290,9 @@ std::optional<std::string> read_bytes(std::string_view p) {
     if (!f) return std::nullopt;
     std::string out;
     if (!f.seekg(0, std::ios::end)) return std::nullopt;
-    out.resize(static_cast<size_t>(f.tellg()));
+    const std::streampos end = f.tellg();
+    if (end < 0) return std::nullopt;  // tellg() == -1 must not become SIZE_MAX
+    out.resize(static_cast<size_t>(end));
     f.seekg(0, std::ios::beg);
     size_t off = 0;
     while (off < out.size()) {
@@ -309,6 +313,60 @@ bool write_bytes_simple(std::string_view p, std::string_view data) {
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
     f.flush();
     return f.good();
+}
+
+#ifdef _WIN32
+namespace {
+std::wstring utf8_to_wide(std::string_view s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+std::string wide_to_utf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
+                        nullptr);
+    return s;
+}
+}  // namespace
+#endif
+
+std::string getenv_utf8(const char* name) {
+#ifdef _WIN32
+    std::wstring wn = utf8_to_wide(name);
+    DWORD n = GetEnvironmentVariableW(wn.c_str(), nullptr, 0);
+    if (n == 0) return {};  // missing or empty
+    std::wstring buf(static_cast<size_t>(n), L'\0');
+    DWORD got = GetEnvironmentVariableW(wn.c_str(), buf.data(), n);
+    if (got == 0 || got >= n) return {};
+    buf.resize(got);
+    return wide_to_utf8(buf);
+#else
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+#endif
+}
+
+bool setenv_utf8(const char* name, std::string_view value, bool overwrite) {
+#ifdef _WIN32
+    if (!overwrite && !getenv_utf8(name).empty()) return true;
+    // SetEnvironmentVariableW with a null value deletes the variable; empty
+    // input is normalized to "" (present-but-empty), matching _putenv_s.
+    std::wstring wn = utf8_to_wide(name);
+    std::wstring wv = utf8_to_wide(value.empty() ? std::string_view("") : value);
+    return SetEnvironmentVariableW(wn.c_str(), wv.c_str()) != 0;
+#else
+    std::string v(value);
+    return ::setenv(name, v.c_str(), overwrite ? 1 : 0) == 0;
+#endif
 }
 
 }  // namespace paths

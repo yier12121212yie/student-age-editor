@@ -27,8 +27,9 @@ namespace {
 namespace fs = std::filesystem;
 
 std::string getenv_str(const char* name) {
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
+    // UTF-8-safe: a Chinese Windows username in USERPROFILE must not come back
+    // as ANSI mojibake, or the derived mods path never resolves.
+    return paths::getenv_utf8(name);
 }
 
 // os.path.expanduser("~"): USERPROFILE wins on Windows, then HOME; POSIX HOME.

@@ -212,6 +212,7 @@ std::size_t write_bytes_atomic(const std::string& abs_path, std::string_view dat
                     if (errno == EINTR) continue;
                     throw FsError("write failed: " + tmp);
                 }
+                if (n == 0) throw FsError("write returned 0: " + tmp);  // never spin
                 off += static_cast<size_t>(n);
             }
             if (::fsync(fd) != 0) throw FsError("fsync failed: " + tmp);

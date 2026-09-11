@@ -33,6 +33,7 @@
 #include <jni.h>
 
 #include "sa_core/http_client.h"
+#include "sa_core/utf8.h"
 
 namespace sa {
 namespace android_http {
@@ -81,9 +82,13 @@ struct JniEnv {
 
 std::string jstring_to_utf8(JNIEnv* env, jstring s) {
     if (!s) return {};
-    const char* c = env->GetStringUTFChars(s, nullptr);
-    std::string out = c ? c : "";
-    if (c) env->ReleaseStringUTFChars(s, c);
+    // UTF-16 path, not GetStringUTFChars: the latter returns Modified UTF-8 in
+    // which astral code points are CESU-8 surrogate pairs (invalid UTF-8).
+    const jchar* c = env->GetStringChars(s, nullptr);
+    if (!c) return {};
+    std::string out = sa_core::utf16_to_utf8(reinterpret_cast<const char16_t*>(c),
+                                             env->GetStringLength(s));
+    env->ReleaseStringChars(s, c);
     return out;
 }
 
@@ -105,6 +110,10 @@ sa_core::http::Response::Error take_exception(JNIEnv* env, std::string* msg) {
         auto name = (jstring)env->CallObjectMethod(exCls, getName);
         cls = jstring_to_utf8(env, name);
         if (name) env->DeleteLocalRef(name);
+    } else {
+        // GetMethodID failure leaves a pending NoSuchMethodError; left set it
+        // would poison every later JNI call on this thread.
+        env->ExceptionClear();
     }
     env->DeleteLocalRef(exCls);
     if (classCls) env->DeleteLocalRef(classCls);
@@ -117,6 +126,8 @@ sa_core::http::Response::Error take_exception(JNIEnv* env, std::string* msg) {
         auto m = (jstring)env->CallObjectMethod(ex, get_msg);
         detail = jstring_to_utf8(env, m);
         if (m) env->DeleteLocalRef(m);
+    } else {
+        env->ExceptionClear();
     }
     env->DeleteLocalRef(ex);
     if (cls.empty()) {
@@ -178,6 +189,7 @@ bool install(JNIEnv* env, JavaVM* vm) {
     if (env->ExceptionCheck() || !g_open || !g_status || !g_headers || !g_read ||
         !g_close) {
         env->ExceptionClear();
+        env->DeleteGlobalRef(g_cls);  // never leak the ref on a failed install
         g_cls = nullptr;
         LOGW("BackendHttp method IDs missing — outbound HTTP disabled");
         return false;
