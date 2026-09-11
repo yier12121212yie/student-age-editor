@@ -3470,6 +3470,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
   Widget build(BuildContext context) {
     final t = widget.talk;
     final opts = normalizeStoryIdList(t['option']);
+    final optIdsSeen = <String>{};  // 生成选项行时去重，避免重复 ValueKey
     final advancedKeys = _advancedKeys();
     return Column(
       children: [
@@ -3632,14 +3633,17 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   ),
                 ]),
                 _section('玩家选项', [
+                  // 去重：模组数据可能重复 option id，重复会生成相同的
+                  // ValueKey 并触发 Flutter 重复 key 断言。
                   for (final optId in opts)
-                    _OptionRow(
-                      key: ValueKey<dynamic>(cln(optId)),
-                      optId: cln(optId),
-                      opt: widget.stageOpts[cln(optId)],
-                      onChanged: widget.onChanged,
-                      onRemove: () => widget.onRemoveOption(cln(optId)),
-                    ),
+                    if (optIdsSeen.add(cln(optId)))
+                      _OptionRow(
+                        key: ValueKey<dynamic>(cln(optId)),
+                        optId: cln(optId),
+                        opt: widget.stageOpts[cln(optId)],
+                        onChanged: widget.onChanged,
+                        onRemove: () => widget.onRemoveOption(cln(optId)),
+                      ),
                   const SizedBox(height: 8),
                   MouseRegion(
                     cursor: SystemMouseCursors.click,
@@ -4036,7 +4040,10 @@ class _OptionRowState extends State<_OptionRow> {
   void didUpdateWidget(covariant _OptionRow oldWidget) {
     super.didUpdateWidget(oldWidget);
     final opt = widget.opt;
-    final content = opt is Map ? cln(opt['content']) : '';
+    // 用原始文本比较，不能用 cln：cln 会 trim 并去掉尾部 ".0"，用户输入
+    // "abc " / "1.0" 时会被误判为外部变更而立刻回写，吞掉刚输入的字符。
+    final content =
+        opt is Map && opt['content'] != null ? opt['content'].toString() : '';
     if (content != _contentCtrl.text) {
       _contentCtrl.text = content;
     }

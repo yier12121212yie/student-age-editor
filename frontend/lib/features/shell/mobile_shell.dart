@@ -117,7 +117,7 @@ class _MobileShellState extends State<MobileShell> {
       },
       child: ListenableBuilder(
         key: ValueKey(_tab),
-        listenable: Listenable.merge([shell, state, shell.controller]),
+        listenable: Listenable.merge([shell, state, shell.controller, widget.pluginState]),
         builder: (context, _) {
           switch (_tab) {
             case 0:

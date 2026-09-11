@@ -45,6 +45,12 @@ using sa_socket_t = int;
 #endif
 
 namespace sa {
+
+// Set by /api/shutdown (request_shutdown) and consumed by the owning connection
+// thread, which exits the process after the response is flushed. Declared here
+// so serve_connection can force a prompt close instead of parking in keep-alive.
+std::atomic<bool> g_shutdown_after{false};
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -458,6 +464,10 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 int status = resp.status;
                 std::string body;
                 serialize_payload(status, resp, body);  // may downgrade to 500
+                // /api/shutdown must not wait out the 65s keep-alive idle: force
+                // Connection: close so this loop exits immediately and the owning
+                // thread can _Exit(0) right after flushing the response.
+                if (g_shutdown_after.load()) close_after = true;
                 if (!write_response(sock, status, body, close_after)) break;
             }
         } catch (const std::exception&) {
@@ -534,8 +544,6 @@ Resp Router::dispatch(Req& req) const {
 // Httpd (listen/accept/slots)
 // ---------------------------------------------------------------------------
 
-std::atomic<bool> g_shutdown_after{false};
-
 struct Httpd::Impl {
     Router* router;
     sa_socket_t listen_sock = SA_INVALID_SOCKET;
@@ -595,9 +603,13 @@ struct Httpd::Impl {
 
     // Block until every detached connection thread has finished using Impl and
     // Router (all slots released). Keeps waking parked recv()ers so a keep-alive
-    // idle connection (65s) never stretches the drain past the guard.
+    // idle connection never stretches the drain. The wait is deliberately
+    // unbounded: a handler may legitimately run for minutes (ai_image and tts
+    // use 300s outbound timeouts), and a bounded guard that expires early would
+    // let ~Httpd free Impl while the detached thread is still inside
+    // serve_connection -- a use-after-free on Impl and the caller's Router.
     void drain_conns() {
-        for (int spin = 0; spin < 6000 && slots.load() > 0; ++spin) {  // <= ~60s guard
+        while (slots.load() > 0) {
             wake_conns();
             std::unique_lock<std::mutex> lk(conn_mu);
             conn_cv.wait_for(lk, std::chrono::milliseconds(10),

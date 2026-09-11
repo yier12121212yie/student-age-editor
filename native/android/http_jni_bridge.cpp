@@ -263,9 +263,22 @@ sa_core::http::Response do_request(const sa_core::http::Request& req,
     jbyteArray jbody = nullptr;
     if (!req.body.empty() || method == "POST") {
         jbody = env->NewByteArray((jsize)req.body.size());
-        if (!req.body.empty())
+        if (jbody == nullptr) {
+            // Allocation failed (OutOfMemoryError pending): Clear it so the
+            // subsequent CallStaticLongMethod does not run with a pending throw.
+            env->ExceptionClear();
+            return fail(Resp::Error::Other, "Android JNI: 分配请求体字节数组失败");
+        }
+        if (!req.body.empty()) {
             env->SetByteArrayRegion(jbody, 0, (jsize)req.body.size(),
                                     (const jbyte*)req.body.data());
+            if (env->ExceptionCheck()) {
+                std::string em2;
+                take_exception(env, &em2);
+                env->DeleteLocalRef(jbody);
+                return fail(Resp::Error::Other, "Android JNI: 写入请求体失败: " + em2);
+            }
+        }
     }
 
     std::string em;

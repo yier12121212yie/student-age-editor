@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -13,6 +15,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "sa_core/atomic_io.h"
@@ -36,6 +39,8 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -664,25 +669,64 @@ std::optional<std::string> run_capture(const std::vector<std::string>& argv,
         if (nul_w) CloseHandle(nul_w);
         return std::nullopt;
     }
-    DWORD wr = 0;
-    if (!input.empty()) WriteFile(c_in_w, input.data(), static_cast<DWORD>(input.size()), &wr, nullptr);
-    CloseHandle(c_in_w);
+    // Feed stdin on a helper thread while the main thread drains stdout. Writing
+    // all of `input` first (the old code) deadlocks whenever the child fills its
+    // bounded stdout pipe (~64KB) before it has consumed all of stdin: the child
+    // blocks on write, the parent blocks on WriteFile.
+    std::thread feeder;
+    if (!input.empty()) {
+        feeder = std::thread([in = input, h = c_in_w]() {
+            size_t off = 0;
+            while (off < in.size()) {
+                DWORD chunk = static_cast<DWORD>(std::min<size_t>(in.size() - off, 1u << 20));
+                DWORD written = 0;
+                if (!WriteFile(h, in.data() + off, chunk, &written, nullptr) || written == 0) break;
+                off += written;
+            }
+            CloseHandle(h);  // EOF for the child
+        });
+    } else {
+        CloseHandle(c_in_w);
+    }
+
     std::string out;
     char buf[8192];
-    DWORD avail = 0, rd = 0;
-    while (PeekNamedPipe(c_out_r, nullptr, 0, nullptr, &avail, nullptr) && (avail || true)) {
-        if (!ReadFile(c_out_r, buf, sizeof(buf), &rd, nullptr) || rd == 0) break;
-        out.append(buf, rd);
-        if (rd == 0) break;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(kTimeoutEncode);
+    bool timed_out = false;
+    for (;;) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            timed_out = true;  // enforced below: the old bounded-spin was unreachable
+            break;
+        }
+        DWORD avail = 0;
+        if (!PeekNamedPipe(c_out_r, nullptr, 0, nullptr, &avail, nullptr)) break;
+        if (avail > 0) {
+            DWORD rd = 0;
+            if (!ReadFile(c_out_r, buf, sizeof(buf), &rd, nullptr) || rd == 0) break;
+            out.append(buf, rd);
+            continue;
+        }
+        if (WaitForSingleObject(pi.hProcess, 10) == WAIT_OBJECT_0) {
+            // Child exited: drain whatever is still buffered, then stop.
+            while (PeekNamedPipe(c_out_r, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                DWORD rd = 0;
+                if (!ReadFile(c_out_r, buf, sizeof(buf), &rd, nullptr) || rd == 0) break;
+                out.append(buf, rd);
+            }
+            break;
+        }
     }
-    WaitForSingleObject(pi.hProcess, kTimeoutEncode * 1000);
+    if (timed_out) TerminateProcess(pi.hProcess, 1);
+    WaitForSingleObject(pi.hProcess, 5000);
+    if (feeder.joinable()) feeder.join();  // pipe break on terminate unblocks WriteFile
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(c_out_r);
     if (nul_w) CloseHandle(nul_w);
-    if (code != 0 || out.empty()) return std::nullopt;
+    if (timed_out || code != 0 || out.empty()) return std::nullopt;
     return out;
 #else
     int in_pipe[2], out_pipe[2];
@@ -708,21 +752,71 @@ std::optional<std::string> run_capture(const std::vector<std::string>& argv,
     }
     close(in_pipe[0]);
     close(out_pipe[1]);
-    size_t off = 0;
-    while (off < input.size()) {
-        ssize_t w = write(in_pipe[1], input.data() + off, input.size() - off);
-        if (w <= 0) break;
-        off += static_cast<size_t>(w);
-    }
-    close(in_pipe[1]);
+    // Non-blocking stdin so a full pipe to a child that has not yet drained
+    // stdout cannot deadlock the parent; poll() multiplexes both directions and
+    // the deadline bounds the whole exchange (SIGKILL the child on timeout).
+    fcntl(in_pipe[1], F_SETFL, fcntl(in_pipe[1], F_GETFL, 0) | O_NONBLOCK);
     std::string out;
     char buf[8192];
-    ssize_t n;
-    while ((n = read(out_pipe[0], buf, sizeof(buf))) > 0) out.append(buf, static_cast<size_t>(n));
+    size_t off = 0;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(kTimeoutEncode);
+    bool timed_out = false;
+    bool in_open = true;
+    while (true) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            timed_out = true;
+            break;
+        }
+        struct pollfd fds[2];
+        nfds_t nfds = 0;
+        int in_idx = -1, out_idx = -1;
+        if (in_open && off < input.size()) {
+            in_idx = static_cast<int>(nfds);
+            fds[nfds].fd = in_pipe[1];
+            fds[nfds].events = POLLOUT;
+            fds[nfds].revents = 0;
+            ++nfds;
+        }
+        out_idx = static_cast<int>(nfds);
+        fds[nfds].fd = out_pipe[0];
+        fds[nfds].events = POLLIN;
+        fds[nfds].revents = 0;
+        ++nfds;
+        int pr = ::poll(fds, nfds, 200);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR)) {
+            ssize_t n = read(out_pipe[0], buf, sizeof(buf));
+            if (n > 0) {
+                out.append(buf, static_cast<size_t>(n));
+            } else if (n == 0) {
+                break;  // EOF: child closed stdout
+            } else if (errno != EAGAIN && errno != EINTR) {
+                break;
+            }
+        }
+        if (in_idx >= 0 && (fds[in_idx].revents & (POLLOUT | POLLERR | POLLHUP))) {
+            ssize_t w = write(in_pipe[1], input.data() + off, input.size() - off);
+            if (w > 0) off += static_cast<size_t>(w);
+        }
+        // Deliver EOF as soon as stdin is drained: encoders that buffer until
+        // end-of-input would otherwise never finish (and hit the deadline).
+        if (in_open && off >= input.size()) {
+            close(in_pipe[1]);
+            in_open = false;
+        }
+        if (!in_open && (fds[out_idx].revents & POLLHUP)) break;
+    }
+    if (in_open) close(in_pipe[1]);
     close(out_pipe[0]);
+    if (timed_out) kill(pid, SIGKILL);
     int status = 0;
     waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || out.empty()) return std::nullopt;
+    if (timed_out || !WIFEXITED(status) || WEXITSTATUS(status) != 0 || out.empty())
+        return std::nullopt;
     return out;
 #endif
 }
@@ -730,8 +824,8 @@ std::optional<std::string> run_capture(const std::vector<std::string>& argv,
 std::optional<std::string> which_exe(const std::string& name) {
 #ifdef _WIN32
     std::string env = name + ".exe";
-    const char* path = std::getenv("PATH");
-    if (!path) return std::nullopt;
+    std::string path = sa_core::paths::getenv_utf8("PATH");
+    if (path.empty()) return std::nullopt;
     std::istringstream ps(path);
     std::string dir;
     while (std::getline(ps, dir, ';')) {
@@ -741,8 +835,8 @@ std::optional<std::string> which_exe(const std::string& name) {
     }
     return std::nullopt;
 #else
-    const char* path = std::getenv("PATH");
-    if (!path) return std::nullopt;
+    std::string path = sa_core::paths::getenv_utf8("PATH");
+    if (path.empty()) return std::nullopt;
     std::istringstream ps(path);
     std::string dir;
     while (std::getline(ps, dir, ':')) {
@@ -761,9 +855,8 @@ std::string detect_encoder() {
         if (!cached.empty()) return cached;
     }
     // Test/ops override: force "no encoder available" deterministically.
-    if (const char* dis = std::getenv("EDITOR_TTS_ENCODER_DISABLE"); dis && *dis &&
-        std::string(dis) != "0")
-        return "";
+    std::string dis = sa_core::paths::getenv_utf8("EDITOR_TTS_ENCODER_DISABLE");
+    if (!dis.empty() && dis != "0") return "";
     std::string found;
     if (which_exe("ffmpeg")) found = "ffmpeg";
     else if (which_exe("oggenc")) found = "oggenc";

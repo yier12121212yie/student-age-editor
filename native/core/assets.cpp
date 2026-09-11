@@ -21,9 +21,11 @@ std::vector<std::string> candidate_paths(const std::string& filename) {
         std::lock_guard<std::mutex> lk(g_mu);
         if (!g_root_override.empty()) dirs.push_back(g_root_override);
     }
-    if (const char* env = std::getenv("EDITOR_ASSETS_ROOT"); env && *env)
+    // getenv_utf8 (not std::getenv): on Windows the CRT returns the ANSI value,
+    // which mojibakes a CJK EDITOR_ASSETS_ROOT / SA_NATIVE_SOURCE_DIR.
+    if (std::string env = paths::getenv_utf8("EDITOR_ASSETS_ROOT"); !env.empty())
         dirs.push_back(env);
-    if (const char* env = std::getenv("SA_NATIVE_SOURCE_DIR"); env && *env) {
+    if (std::string env = paths::getenv_utf8("SA_NATIVE_SOURCE_DIR"); !env.empty()) {
         dirs.push_back(paths::join(env, "assets"));
         // SA_NATIVE_SOURCE_DIR may point at native/tests; back up one level.
         dirs.push_back(paths::join(paths::dirname(env), "assets"));

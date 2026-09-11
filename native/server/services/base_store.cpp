@@ -106,7 +106,9 @@ std::string base_artifact_dir() {
         std::lock_guard<std::mutex> lk(g_dir_mu);
         if (!g_dir_override.empty()) return g_dir_override;
     }
-    if (const char* env = std::getenv("EDITOR_BASE_ARTIFACT_DIR"); env && *env) return env;
+    if (std::string env = sa_core::paths::getenv_utf8("EDITOR_BASE_ARTIFACT_DIR");
+        !env.empty())
+        return env;
     // editor_env.json "base_data_dir".
     json env = esp::read_editor_env(sa::editor_root());
     if (env.contains("base_data_dir") && env.at("base_data_dir").is_string()) {

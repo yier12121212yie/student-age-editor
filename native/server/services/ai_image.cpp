@@ -13,6 +13,7 @@
 
 #include "sa_core/http_client.h"
 #include "sa_core/json_wire.h"
+#include "sa_core/paths.h"
 #include "sa_core/strings.h"
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
@@ -412,11 +413,12 @@ json check_update(int timeout, const std::string& url_override, const std::strin
     std::string current = current_in.empty() ? "Alpha-v0.1" : current_in;
     std::string url = url_override;
     if (url.empty()) {
-        if (const char* u = std::getenv("EDITOR_UPDATE_URL"); u && *u) url = u;
+        if (std::string u = sa_core::paths::getenv_utf8("EDITOR_UPDATE_URL"); !u.empty())
+            url = u;
     }
     if (url.empty()) {
-        const char* repo = std::getenv("EDITOR_UPDATE_REPO");
-        std::string r = (repo && *repo) ? repo : "yier12121212yie/student-age-editor";
+        std::string repo = sa_core::paths::getenv_utf8("EDITOR_UPDATE_REPO");
+        std::string r = !repo.empty() ? repo : "yier12121212yie/student-age-editor";
         url = "https://api.github.com/repos/" + r + "/releases?per_page=5";
     }
     try {

@@ -59,11 +59,6 @@ std::shared_ptr<std::recursive_mutex> path_lock_for(const std::string& key) {
     return m;
 }
 
-StackPair& stacks_entry(const std::string& key) {
-    std::lock_guard<std::mutex> lk(g_reg_mu);
-    return g_stacks[key];
-}
-
 void put_opt_mtime(json& out, const char* key, const std::optional<long long>& v) {
     out[key] = v.has_value() ? json(*v) : json();
 }
@@ -254,9 +249,13 @@ json commit(const std::string& abs_path, const json& data, const std::optional<s
     std::optional<long long> new_mtime = stat_mtime_ns(abs_path);
 
     // (6) undo stack: snapshot-backed entries never store table text (A8).
-    StackPair& entry = stacks_entry(path_key(abs_path));
+    // g_reg_mu must cover the lookup AND the mutation in one critical section:
+    // forget() erases the same map entry under only g_reg_mu (cloud_sync calls
+    // it after downloading a /Cfgs/*.json), so holding a reference past the
+    // unlock would dangle and make the push_back a use-after-free.
     {
         std::lock_guard<std::mutex> lk(g_reg_mu);
+        StackPair& entry = g_stacks[path_key(abs_path)];
         StackEntry item;
         item.snap = snap_name;
         if (!snap_name) item.text = read_text_from(raw);  // in-memory fallback

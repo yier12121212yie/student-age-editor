@@ -1,6 +1,7 @@
 #include "sa_core/steam_paths.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -369,7 +370,9 @@ std::string user_mods_dir() {
 #endif
 }
 
-bool workshop_override_warned = false;  // steam_paths._workshop_override_warned
+// steam_paths._workshop_override_warned. Atomic: read/mutated from concurrent
+// HTTP handlers (list_mods and the mods routes), so a plain bool would race.
+std::atomic<bool> workshop_override_warned{false};
 
 std::vector<std::string> workshop_mods_roots(const std::string& editor_root) {
     std::vector<std::string> roots;

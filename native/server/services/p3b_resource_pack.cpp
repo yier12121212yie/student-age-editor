@@ -30,8 +30,8 @@ namespace {
 namespace cs = sa_core::paths;
 
 std::string env_or_empty(const char* name) {
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
+    // UTF-8-safe read: EDITOR_PACKS_ROOT / EDITOR_SYSTEM_PACK_ROOT are paths.
+    return cs::getenv_utf8(name);
 }
 
 bool is_pycache(const std::string& name) { return name == "__pycache__"; }

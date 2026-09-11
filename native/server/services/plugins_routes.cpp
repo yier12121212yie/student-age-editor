@@ -52,9 +52,9 @@ constexpr std::size_t kInstallMaxBytes = 100ull * 1024 * 1024;  // api.py:3026
 
 std::string plugins_root() {
     // plugin_system.plugins_root: EDITOR_PLUGINS_ROOT or <app_data>/plugins.
-    const char* env = std::getenv("EDITOR_PLUGINS_ROOT");
-    std::string root =
-        (env && *env) ? std::string(env) : cs::join(sa::editor_root(), "plugins");
+    // getenv_utf8: the override is a path and may contain CJK on Windows.
+    std::string env = cs::getenv_utf8("EDITOR_PLUGINS_ROOT");
+    std::string root = !env.empty() ? env : cs::join(sa::editor_root(), "plugins");
     cs::create_dirs(root);  // best-effort like Python
     return root;
 }

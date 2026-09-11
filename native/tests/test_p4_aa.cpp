@@ -147,6 +147,25 @@ TEST_CASE("DecodedPack: tex/aud scan + txt from decoded index + header size", "[
     CHECK(dp.txt_keys() == std::vector<std::string>{"PersonCfg", "TalkCfg"});
 }
 
+TEST_CASE("DecodedPack: truncated PNG header does not read out of bounds", "[p4][aa]") {
+    // 16 bytes = 8-byte signature + "IHDR" + 4 bytes. A valid PNG signature with
+    // "IHDR" at offset 12 can be as short as 16 bytes, but the width/height live
+    // at 16..23, so image_size must guard on >= 24 instead of indexing past the
+    // end of the string (previously unchecked UB).
+    auto pack = sat::make_temp_dir("p4_aa_trunc");
+    std::string png;
+    const unsigned char sig[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00,
+                                 0x00, 0x0D, 'I',  'H',  'D',  'R'};
+    png.assign(reinterpret_cast<const char*>(sig), sizeof(sig));
+    wfile(pack / "tex" / "Broken.png", png);
+    wfile(pack / "aa_index.json",
+          R"({"v":3,"decoded":true,"tex":["broken"],"aud":[],"txt":[]})");
+    DecodedPack dp;
+    dp.refresh(sa_core::paths::path_to_utf8(pack));
+    REQUIRE(dp.active());
+    CHECK(dp.tex_meta("broken") == std::nullopt);  // unrecognised -> no size, no OOB
+}
+
 // ---- route-level behaviour -----------------------------------------------
 
 TEST_CASE("/api/aa/* empty-degradation (no game index, no pack)", "[p4][aa][routes]") {

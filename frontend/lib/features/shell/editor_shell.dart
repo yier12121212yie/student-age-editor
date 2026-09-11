@@ -37,7 +37,9 @@ class CreationShell extends StatelessWidget {
         ),
       ),
       child: ListenableBuilder(
-        listenable: shell,
+        // 也要听 pluginState：install/uninstall/reload 后 uiPanels 变化需重建
+        // ActivityBar，冷启动时 refresh 完成也要在此触发。
+        listenable: Listenable.merge([shell, pluginState]),
         builder: (context, _) => Column(
           children: [
             Expanded(

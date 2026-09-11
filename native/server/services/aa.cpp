@@ -56,7 +56,11 @@ std::optional<std::array<int, 2>> image_size(const std::string& b) {
     if (b.size() < 12) return std::nullopt;
     auto u = [&](size_t i) { return static_cast<unsigned char>(b[i]); };
     // PNG
-    if (b.compare(0, 8, "\x89PNG\r\n\x1a\n", 0, 8) == 0 && b.compare(12, 4, "IHDR") == 0) {
+    // PNG needs the IHDR chunk's width/height at offsets 16..23; a valid 8-byte
+    // signature plus "IHDR" can be as short as 16 bytes, so guard >= 24 before
+    // be() indexes the string unchecked.
+    if (b.compare(0, 8, "\x89PNG\r\n\x1a\n", 0, 8) == 0 && b.size() >= 24 &&
+        b.compare(12, 4, "IHDR") == 0) {
         return std::array<int, 2>{static_cast<int>(be(b, 16, 4)), static_cast<int>(be(b, 20, 4))};
     }
     // WEBP: RIFF....WEBP <fmt>
@@ -346,7 +350,8 @@ std::optional<std::pair<std::string, std::string>> DecodedPack::read_file(
 
 // ---- accessors + pack-dir resolution -------------------------------------
 std::string active_pack_dir() {
-    if (const char* env = std::getenv("EDITOR_DECODED_PACK_DIR"); env && *env) return env;
+    if (std::string env = sa_core::paths::getenv_utf8("EDITOR_DECODED_PACK_DIR"); !env.empty())
+        return env;
     json env = sa_core::env_store::read_editor_env(sa::editor_root());
     if (env.contains("decoded_pack_dir") && env.at("decoded_pack_dir").is_string()) {
         std::string d = p4::strip(env.at("decoded_pack_dir").get<std::string>());

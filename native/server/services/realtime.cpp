@@ -19,6 +19,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -1037,7 +1038,23 @@ json rt_start() {
     // here on, so the next start sees a live thread and does not spawn a second.
     g_alive = true;
     g_watcher_starts.fetch_add(1);
-    std::thread(watcher_loop).detach();
+    try {
+        std::thread(watcher_loop).detach();
+    } catch (const std::system_error& e) {
+        // Thread construction failed (resource exhaustion): no watcher owns
+        // g_alive, so leaving it true would make every later rt_start observe
+        // alive && draining and fail forever. Roll the published state back.
+        g_alive = false;
+        g_watcher_starts.fetch_sub(1);
+        {
+            std::lock_guard<std::mutex> lk(g_state_mu);
+            g_state["running"] = false;
+            g_state["enabled"] = false;
+            g_state["error"] = exc_str(e);
+        }
+        rt_update_config(json{{"enabled", false}});
+        throw ApiError("RuntimeError", "实时同步线程创建失败: " + exc_str(e));
+    }
     rt_log("realtime sync enabled provider=" +
                sa_core::py_str(cfg.contains("provider_id") ? cfg["provider_id"] : json("")) +
                " mods=" + p5::py_list_repr(json(mods)) +

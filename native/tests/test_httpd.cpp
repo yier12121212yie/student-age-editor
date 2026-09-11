@@ -431,6 +431,59 @@ TEST_CASE("destructor drains a parked keep-alive connection without hanging",
     if (connected) close_test_socket(s);
 }
 
+TEST_CASE("destructor waits for an in-flight slow handler (no UAF)",
+          "[httpd][keepalive][shutdown]") {
+    // A handler may legitimately run for minutes (ai_image/tts use 300s outbound
+    // timeouts), so ~Httpd must not return -- and must not free Impl or the
+    // caller's Router -- while such a handler is still executing on its detached
+    // thread. The pre-fix code gave up after a fixed ~60s guard, which is not
+    // waitable in a unit test; a 2s handler still catches any regression to a
+    // shorter bounded guard and, under ASan, any early-free UAF.
+    auto router = std::make_unique<sa::Router>(sa::build_router());
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+    std::atomic<bool> handler_done{false};
+    router->get(R"(/api/block)", [&](const sa::Req&) {
+        entered.store(true);
+        while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        handler_done.store(true);
+        return sa::Resp::Json(200, sa::json{{"ok", true}});
+    });
+    auto server = std::make_unique<sa::Httpd>(router.get());
+    std::string err;
+    REQUIRE(server->bind_to("127.0.0.1", 0, &err));
+    server->start();
+    const int port = server->port();
+
+    std::thread client([&]() {
+        httplib::Client cli("127.0.0.1", port);
+        cli.set_read_timeout(10, 0);
+        cli.Get("/api/block");  // status ignored: the socket is woken mid-flight
+    });
+    for (int i = 0; i < 400 && !entered.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(entered.load());
+
+    // Destroy server (then the Router) while the handler is mid-flight.
+    auto t0 = std::chrono::steady_clock::now();
+    std::thread destroyer([&]() {
+        server.reset();
+        router.reset();
+    });
+    // The destructor must still be blocked at 500ms: the handler is not released.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK_FALSE(handler_done.load());
+    release.store(true);
+    destroyer.join();
+    client.join();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - t0)
+                       .count();
+    CHECK(handler_done.load());
+    CHECK(elapsed >= 500);
+}
+
 TEST_CASE("shutdown route answers 200 {ok:true} and requests process exit",
           "[httpd][shutdown]") {
     // The _Exit(0) itself is exercised end-to-end by the python smoke driver;

@@ -43,8 +43,8 @@ bool py_truthy(const json& v) {
 }
 
 std::string env_get(const char* name) {
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
+    // UTF-8-safe: USERPROFILE/HOME feed OOBE `~` expansion and are paths.
+    return sa_core::paths::getenv_utf8(name);
 }
 
 // `(body.get(k) or "")` 语义（api.py:769 / 802-804）：缺失/null/JSON 假值

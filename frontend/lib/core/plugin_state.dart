@@ -2,6 +2,28 @@ import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
 
+/// 容错字符串取值：非字符串（数字/布尔/对象）转字符串，null/缺失归 ''。
+/// 后端 or_raw 会原样透传 manifest 值，`"version": 2` 之类不能抛异常。
+String _jsonStr(Object? v) => v == null ? '' : (v is String ? v : v.toString());
+
+/// uiPanels 中必须为字符串的字段；refresh 时统一归一化，
+/// 避免 activity_bar/mobile_shell 在 build 期做无保护的 `as String?`。
+const List<String> _panelStringKeys = [
+  'plugin_id',
+  'panel_id',
+  'title',
+  'icon',
+  'description',
+];
+
+Map<String, dynamic> _normPanel(Map e) {
+  final m = Map<String, dynamic>.from(e);
+  for (final k in _panelStringKeys) {
+    if (m.containsKey(k)) m[k] = _jsonStr(m[k]);
+  }
+  return m;
+}
+
 /// 插件条目（来自 GET /api/plugins）。
 class PluginSummary {
   PluginSummary({
@@ -31,16 +53,16 @@ class PluginSummary {
 
   /// 容错解析：任何字段缺失/类型不符都不抛异常。
   factory PluginSummary.fromJson(Map<String, dynamic> json) => PluginSummary(
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        version: json['version'] as String? ?? '',
-        author: json['author'] as String? ?? '',
-        description: json['description'] as String? ?? '',
-        entry: json['entry'] as String? ?? '',
+        id: _jsonStr(json['id']),
+        name: _jsonStr(json['name']),
+        version: _jsonStr(json['version']),
+        author: _jsonStr(json['author']),
+        description: _jsonStr(json['description']),
+        entry: _jsonStr(json['entry']),
         enabled: json['enabled'] == true,
         loaded: json['loaded'] == true,
-        error: json['error'] as String? ?? '',
-        riskAckAt: json['risk_ack_at'] as String? ?? '',
+        error: _jsonStr(json['error']),
+        riskAckAt: _jsonStr(json['risk_ack_at']),
       );
 }
 
@@ -72,7 +94,7 @@ class PluginState extends ChangeNotifier {
       final panels = rs[1] is Map ? (rs[1]['panels'] as List? ?? const []) : const [];
       uiPanels = [
         for (final e in panels)
-          if (e is Map) Map<String, dynamic>.from(e),
+          if (e is Map) _normPanel(e),
       ];
       error = null;
     } catch (e) {
