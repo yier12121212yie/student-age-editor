@@ -8,7 +8,8 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/app_theme.dart';
 import '../../core/plugin_state.dart';
 
-/// 插件管理页：列表 / 启用（高危确认）/ 停用 / 卸载 / 安装 zip / 重载。
+/// 插件管理页：列表 / 卸载 / 安装 zip / 重载。
+/// 声明型插件常开无启用态（后端的 enable/disable 恒 410），故不提供启用/停用。
 /// 不自带 Scaffold：既嵌入侧栏 SidePaneView，也嵌入移动端 MobileSubPage。
 class PluginsPage extends StatefulWidget {
   const PluginsPage({super.key, required this.pluginState});
@@ -26,30 +27,9 @@ class _PluginsPageState extends State<PluginsPage> {
 
   // ---------------- 操作 ----------------
 
-  /// 启用：每次都先弹高危确认框（不做"不再提示"），确认后带 risk_ack:true 调用。
-  Future<void> _enable(PluginSummary p) async {
-    final ok = await _confirmEnable(p);
-    if (ok != true || !mounted) return;
-    try {
-      await _ps.enable(p.id);
-    } catch (e) {
-      if (mounted) _showError('启用失败：$e');
-    }
-  }
-
-  Future<void> _disable(PluginSummary p) async {
-    try {
-      await _ps.disable(p.id);
-    } catch (e) {
-      if (mounted) _showError('停用失败：$e');
-    }
-  }
-
+  /// 卸载。声明型插件常开、无停用态（后端的 enable/disable 一律 410），
+  /// 因此不再要求「先停用」，直接进入确认框。
   Future<void> _uninstall(PluginSummary p) async {
-    if (p.enabled) {
-      _showInfo('该插件处于启用状态，请先停用后再卸载');
-      return;
-    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => fluent.ContentDialog(
@@ -84,8 +64,9 @@ class _PluginsPageState extends State<PluginsPage> {
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
     if (file == null) return;
     setState(() => _busy = true);
+    Directory? tmpDir;
     try {
-      final tmpDir = await Directory.systemTemp.createTemp('plugin_import_');
+      tmpDir = await Directory.systemTemp.createTemp('plugin_import_');
       final dest = '${tmpDir.path}${Platform.pathSeparator}${file.name}';
       await File(file.path).copy(dest);
       await _ps.installZip(dest, file.name);
@@ -93,6 +74,10 @@ class _PluginsPageState extends State<PluginsPage> {
     } catch (e) {
       if (mounted) _showError('安装失败：$e');
     } finally {
+      // 后端已读完 zip，临时目录不再需要（失败也一并清理）。
+      try {
+        if (tmpDir != null) await tmpDir.delete(recursive: true);
+      } catch (_) {}
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -108,75 +93,6 @@ class _PluginsPageState extends State<PluginsPage> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  /// 高危启用确认框：名称/版本/作者/描述 + 红色警示块，确认按钮为危险红「仍要启用」。
-  Future<bool> _confirmEnable(PluginSummary p) async {
-    return await showDialog<bool>(
-          context: context,
-          builder: (ctx) => fluent.ContentDialog(
-            title: const Text('启用插件'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(p.name,
-                    style: TextStyle(
-                        fontSize: 14, color: palette.textHigh, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
-                Text(
-                  '版本 v${p.version.isEmpty ? '?' : p.version} · 作者：${p.author.isEmpty ? '未知' : p.author}',
-                  style: TextStyle(fontSize: 11, color: palette.textHint),
-                ),
-                if (p.description.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(p.description,
-                      style: TextStyle(fontSize: 12, color: palette.textSecondary, height: 1.5)),
-                ],
-                const SizedBox(height: 12),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: palette.tintDanger,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: palette.statusDanger),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(FluentIcons.warning_24_regular,
-                          size: 16, color: palette.statusDanger),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '该插件为第三方 Python 代码，启用后将以与编辑器相同的用户权限在本机运行，'
-                          '可读写文件、访问网络。请仅启用来自可信来源的插件。',
-                          style: TextStyle(
-                              fontSize: 12, color: palette.statusDanger, height: 1.5),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              fluent.Button(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('取消'),
-              ),
-              fluent.FilledButton(
-                style: const fluent.ButtonStyle(
-                  backgroundColor: WidgetStatePropertyAll(Colors.red),
-                ),
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('仍要启用'),
-              ),
-            ],
-          ),
-        ) ??
-        false;
   }
 
   // ---------------- 提示 ----------------
@@ -317,9 +233,14 @@ class _PluginsPageState extends State<PluginsPage> {
                       fontSize: 14, color: palette.textHigh, fontWeight: FontWeight.w600),
                 ),
               ),
-              fluent.ToggleSwitch(
-                checked: p.enabled,
-                onChanged: (v) => v ? _enable(p) : _disable(p),
+              // 声明型插件常开、无停用态（后端 enable/disable 恒 410），
+              // 因此不再提供开关，只标注状态。
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Text(
+                  '常开',
+                  style: TextStyle(fontSize: 11, color: palette.textHint),
+                ),
               ),
             ],
           ),

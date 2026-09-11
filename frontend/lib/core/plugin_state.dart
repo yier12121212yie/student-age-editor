@@ -83,24 +83,7 @@ class PluginState extends ChangeNotifier {
     }
   }
 
-  /// 启用插件（始终携带 risk_ack:true；UI 层负责先弹高危确认框）。
-  Future<dynamic> enable(String id) async {
-    try {
-      return await ApiClient.instance
-          .post('/api/plugins/$id/enable', body: {'risk_ack': true});
-    } finally {
-      await refresh();
-    }
-  }
-
-  Future<dynamic> disable(String id) async {
-    try {
-      return await ApiClient.instance.post('/api/plugins/$id/disable');
-    } finally {
-      await refresh();
-    }
-  }
-
+  /// 卸载插件。声明型插件常开，若需「停用」请直接卸载（enable/disable 后端恒 410）。
   Future<dynamic> uninstall(String id) async {
     try {
       return await ApiClient.instance.delete('/api/plugins/$id');

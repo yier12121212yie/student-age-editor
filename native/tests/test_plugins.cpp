@@ -335,6 +335,38 @@ TEST_CASE("plugins from manifests: entries, panels, flow_cards, broken ignored",
     CHECK(reload.json_payload["plugins"] == plugins);
 }
 
+TEST_CASE("plugins panel content route serves declared panels, 404 otherwise", "[plugins]") {
+    const std::string root = fresh_root("panelcontent");
+    ScopedEnv env("EDITOR_PLUGINS_ROOT", root);
+    make_plugin(root, "pdemo", R"JSON({
+      "ui": {"panels": [
+        {"panel_id": "main", "title": "主面板", "icon": "star",
+         "description": "一段面板说明"},
+        {"panel_id": "bare", "title": "无说明"}
+      ]}
+    })JSON");
+    PluginsFixture fx;
+
+    // Declared panel with a description -> markdown block.
+    auto r = fx.call("GET", "/api/plugins/pdemo/panel/main");
+    REQUIRE(r.status == 200);
+    CHECK(r.json_payload["title"] == "主面板");
+    REQUIRE(r.json_payload["blocks"].size() == 1);
+    CHECK(r.json_payload["blocks"][0]["type"] == "markdown");
+    CHECK(r.json_payload["blocks"][0]["text"] == "一段面板说明");
+
+    // Declared panel without description -> no blocks (still 200).
+    auto bare = fx.call("GET", "/api/plugins/pdemo/panel/bare");
+    REQUIRE(bare.status == 200);
+    CHECK(bare.json_payload["title"] == "无说明");
+    CHECK(bare.json_payload["blocks"].empty());
+
+    // Unknown panel id / unknown plugin / traversal -> 404, never a filesystem hit.
+    CHECK(fx.call("GET", "/api/plugins/pdemo/panel/nope").status == 404);
+    CHECK(fx.call("GET", "/api/plugins/ghost/panel/main").status == 404);
+    CHECK(fx.call("GET", "/api/plugins/..%2F..%2Fetc/panel/x").status == 404);
+}
+
 TEST_CASE("plugins top-level flow_cards alias still aggregates", "[plugins]") {
     const std::string root = fresh_root("toplevel");
     ScopedEnv env("EDITOR_PLUGINS_ROOT", root);

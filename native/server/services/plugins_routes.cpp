@@ -242,6 +242,40 @@ json plugin_info(const std::string& pid) {
     return entry;
 }
 
+// GET /api/plugins/<pid>/panel/<panel_id> payload (plugin_pane.dart consumes
+// {"title", "blocks"}). Declarative plugins carry no executable panels, so the
+// only content available is the manifest declaration itself: the description is
+// rendered as a markdown block. Returns nullopt when the plugin or the declared
+// panel_id does not exist (caller answers 404), mirroring the panel list served
+// by GET /api/plugins/ui (declarative_panels above).
+std::optional<json> declarative_panel_content(const std::string& pid,
+                                              const std::string& panel_id) {
+    if (!safe_pid(pid) || panel_id.empty()) return std::nullopt;
+    const std::string dir = cs::join(plugins_root(), pid);
+    if (!cs::is_dir(dir)) return std::nullopt;
+    auto manifest = read_manifest(dir);
+    if (!manifest) return std::nullopt;
+    if (!manifest->contains("ui") || !manifest->at("ui").is_object()) return std::nullopt;
+    const json& ui = manifest->at("ui");
+    if (!ui.contains("panels") || !ui.at("panels").is_array()) return std::nullopt;
+    for (const auto& p : ui.at("panels")) {
+        if (!p.is_object()) continue;
+        if (!p.contains("panel_id") || !p.at("panel_id").is_string()) continue;
+        if (p.at("panel_id").get<std::string>() != panel_id) continue;
+        json out = json::object();
+        out["title"] = p.contains("title") ? p.at("title") : json(panel_id);
+        json blocks = json::array();
+        if (p.contains("description") && p.at("description").is_string() &&
+            !p.at("description").get<std::string>().empty()) {
+            blocks.push_back(json{{"type", "markdown"},
+                                  {"text", p.at("description")}});
+        }
+        out["blocks"] = std::move(blocks);
+        return out;
+    }
+    return std::nullopt;
+}
+
 // ---------------------------------------------------------------------------
 // 安装 / 卸载（plugin_system._install_zip / install_plugin* / uninstall_plugin）
 // ---------------------------------------------------------------------------
@@ -440,6 +474,21 @@ void register_plugins_routes(Router& r) {
         body["flow_cards"] = declarative_flow_cards();
         return Resp::Json(200, std::move(body));
     });
+
+    // GET /api/plugins/<pid>/panel/<panel_id> — content of one declared panel.
+    // The frontend PluginPane requests this per opened panel; declarative
+    // manifests only declare (title/icon/description), so the description is
+    // served as a markdown block. Registered here (not retired) because the
+    // panel list endpoint advertises these panels as openable.
+    r.get(R"(/api/plugins/(?P<pid>[^/]+)/panel/(?P<panel_id>[^/]+))",
+          [](const Req& req) -> Resp {
+              const std::string pid = req.params.count("pid") ? req.params.at("pid") : "";
+              const std::string panel_id =
+                  req.params.count("panel_id") ? req.params.at("panel_id") : "";
+              auto content = declarative_panel_content(pid, panel_id);
+              if (!content) return Resp::Json(404, json{{"error", "panel not found"}});
+              return Resp::Json(200, std::move(*content));
+          });
 
     // GET /api/plugins/agent/tools — api.py:3067-3069 / agent_tool_defs():600.
     // Declarative plugins contribute no executable tools, so this stays the
