@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -25,6 +28,7 @@ using sa_socket_t = SOCKET;
 #define SA_ERRNO ((int)WSAGetLastError())
 #define SA_EINTR WSAEINTR
 #define sa_close closesocket
+#define sa_shutdown(s) ::shutdown((s), SD_BOTH)
 #else
 #include <arpa/inet.h>
 #include <cerrno>
@@ -37,6 +41,7 @@ using sa_socket_t = int;
 #define SA_ERRNO errno
 #define SA_EINTR EINTR
 #define sa_close ::close
+#define sa_shutdown(s) ::shutdown((s), SHUT_RDWR)
 #endif
 
 namespace sa {
@@ -326,6 +331,13 @@ void serialize_payload(int& status, const Resp& r, std::string& body) {
 
 constexpr int kKeepAliveIdleMs = 65000;
 
+// Cap the request body buffered in memory. The transport reads the whole body
+// up front, so without a bound a local client (or a DNS-rebinding page past the
+// Host check) can send Content-Length: 9e18 and drive the process into
+// bad_alloc. 256 MiB leaves ample room for the base64 plugin/resource-pack
+// installs (their own limits are 100 MB decoded).
+constexpr long long kMaxBodyBytes = 256ll * 1024 * 1024;
+
 void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<bool>& quit_flag) {
     set_recv_timeout(sock, kKeepAliveIdleMs);
     LineReader reader(sock);
@@ -409,6 +421,13 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 }
                 std::string body_raw;
                 long long want = *length < 0 ? 0 : *length;  // length = max(0, length)
+                if (want > kMaxBodyBytes) {
+                    // Refuse before reading: the body is buffered whole in memory.
+                    responded = true;
+                    json env{{"error", "request body too large"}};
+                    write_response(sock, 413, sa_core::py_dumps(env), true);
+                    break;
+                }
                 if (want > 0 && !reader.read_exact(body_raw, static_cast<size_t>(want))) {
                     break;  // truncated body: connection is no longer framed
                 }
@@ -450,7 +469,8 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
         }
         if (close_after) break;
     }
-    sa_close(sock);
+    // The owning thread closes the socket (see the Release guard in the accept
+    // loop) so close + deregister can be fenced together under conn_mu.
 }
 
 }  // namespace
@@ -524,9 +544,66 @@ struct Httpd::Impl {
     std::thread accept_thread;
     int bound_port = -1;
 
+    // Live-connection registry. serve_connection runs on a detached thread and
+    // holds references into this Impl (quit) and into the caller-owned Router,
+    // so ~Httpd must not return while any of them is still running. wake_conns()
+    // unblocks a thread parked in recv(); the drain waits on `slots` (the
+    // thread-finished counter) rather than the registry size, because on Windows
+    // wake_conns() closes the socket and drops it from the registry while the
+    // owning thread may still be executing serve_connection's tail.
+    std::mutex conn_mu;
+    std::condition_variable conn_cv;
+    std::set<sa_socket_t> conns;
+
     static constexpr int kMaxSlots = 64;  // B13 (httpd.py:221)
 
     explicit Impl(Router* r) : router(r) {}
+
+    void register_conn(sa_socket_t s) {
+        std::lock_guard<std::mutex> lk(conn_mu);
+        conns.insert(s);
+    }
+
+    // Owner-side close + deregister, fenced under conn_mu. On Windows wake_conns
+    // may have already closed+erased the socket, in which case erase() is empty
+    // and this is deliberately a no-op (no double close on a recycled handle).
+    void close_conn(sa_socket_t s) {
+        std::lock_guard<std::mutex> lk(conn_mu);
+        if (conns.erase(s)) sa_close(s);
+    }
+
+    // Interrupt every thread parked in recv().
+    //   * POSIX: shutdown() makes recv() return without releasing the fd.
+    //     close() would NOT interrupt the parked syscall, and freeing the fd
+    //     number early lets accept() recycle it under the blocked thread.
+    //   * Windows/Winsock: closesocket() is what unblocks a blocked recv();
+    //     shutdown() does not reliably do so. The entry is removed here so the
+    //     owning thread's later close_conn() is a no-op.
+    void wake_conns() {
+        std::lock_guard<std::mutex> lk(conn_mu);
+        for (auto it = conns.begin(); it != conns.end();) {
+#ifdef _WIN32
+            sa_socket_t s = *it;
+            it = conns.erase(it);
+            sa_close(s);
+#else
+            sa_shutdown(*it);
+            ++it;
+#endif
+        }
+    }
+
+    // Block until every detached connection thread has finished using Impl and
+    // Router (all slots released). Keeps waking parked recv()ers so a keep-alive
+    // idle connection (65s) never stretches the drain past the guard.
+    void drain_conns() {
+        for (int spin = 0; spin < 6000 && slots.load() > 0; ++spin) {  // <= ~60s guard
+            wake_conns();
+            std::unique_lock<std::mutex> lk(conn_mu);
+            conn_cv.wait_for(lk, std::chrono::milliseconds(10),
+                             [this] { return slots.load() == 0; });
+        }
+    }
 
     bool try_acquire() {
         int cur = slots.load(std::memory_order_relaxed);
@@ -591,11 +668,22 @@ struct Httpd::Impl {
                 sa_close(conn);
                 continue;
             }
+            register_conn(conn);
             std::thread([this, conn]() {
                 struct Release {
+                    Impl* impl;
+                    sa_socket_t sock;
                     std::atomic<int>& s;
-                    ~Release() { s.fetch_sub(1); }
-                } release{slots};
+                    ~Release() {
+                        impl->close_conn(sock);  // fenced close + deregister
+                        // Publish "thread finished" while holding conn_mu: the
+                        // drain waits on s, so it must not observe 0 and free
+                        // Impl until this destructor is done touching it.
+                        std::lock_guard<std::mutex> lk(impl->conn_mu);
+                        s.fetch_sub(1);
+                        impl->conn_cv.notify_all();
+                    }
+                } release{this, conn, slots};
                 serve_connection(conn, *router, quit);
                 if (g_shutdown_after.exchange(false)) {
                     // api.py:777-782 /api/shutdown semantics: respond first, then
@@ -609,6 +697,9 @@ struct Httpd::Impl {
 
     void stop() {
         quit.store(true);
+        // Wake every connection thread parked in recv() so it observes quit and
+        // exits (platform-specific: closesocket on Windows, shutdown on POSIX).
+        wake_conns();
 #ifdef _WIN32
         if (listen_sock != SA_INVALID_SOCKET) {
             ::closesocket(listen_sock);
@@ -635,11 +726,12 @@ Httpd::~Httpd() {
     impl_->stop();
     if (impl_->accept_thread.joinable()) impl_->accept_thread.join();
     // The per-connection threads are detached (daemon-thread semantics), so the
-    // Router they reference must outlive them: wait for the slot counter to
-    // drain before returning. Bounded because a client may hold keep-alive.
-    for (int spin = 0; spin < 400 && impl_->slots.load() > 0; ++spin) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    // Router they reference must outlive them: block until every one has closed
+    // its socket. stop() already shutdown() the registered sockets, so a
+    // keep-alive idle thread returns from recv() immediately instead of waiting
+    // out its 65s timeout -- without this the threads would dereference the
+    // destroyed Impl/Router (use-after-free on /api/shutdown and in tests).
+    impl_->drain_conns();
 }
 
 bool Httpd::bind_to(const std::string& host, int port, std::string* err) {

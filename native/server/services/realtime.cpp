@@ -79,6 +79,18 @@ std::condition_variable g_sleep_cv;  // interruptible sleep
 std::mutex g_done_mu;
 std::condition_variable g_done_cv;   // thread-exit signalling
 
+// Serializes the start/stop lifecycle. Without it two concurrent POST
+// /api/cloud/realtime/start calls both observe g_alive==false (it is only set
+// inside the freshly detached watcher, or not yet set at all) and each spawn a
+// watcher; the two threads then race the unsynchronized g_pending /
+// g_prev_snapshots / g_remote_last_poll globals and can double-upload or
+// double-delete. The watcher never takes this lock (its exit only sets
+// g_alive/false + notifies), so wait_thread_done cannot deadlock against it.
+std::mutex g_life_mu;
+
+// Test-only: counts how many watcher threads rt_start has actually spawned.
+std::atomic<int> g_watcher_starts{0};
+
 std::mutex g_cfg_mu;  // _rt_config_lock
 
 // _RT_AMBIG_SHA (250-251)
@@ -559,7 +571,8 @@ std::optional<json> poll_remote_and_sync(const std::string& provider_id,
 
 // _watcher_loop (476-641)
 void watcher_loop() {
-    g_alive = true;
+    // g_alive is published by rt_start before the thread is detached, so a
+    // concurrent start cannot race this entry point into a second watcher.
     try {
         rt_log("realtime watcher started", "info");
         json cfg = rt_get_config();
@@ -985,6 +998,9 @@ json rt_start() {
     if (mods.empty()) {
         cloud::raise_value_error("no mods to watch (select mod or enable watch_all)");
     }
+    // Serialize the whole lifecycle decision so a second concurrent start
+    // cannot slip past the g_alive check before the first watcher sets it.
+    std::lock_guard<std::mutex> life(g_life_mu);
     bool alive = false, draining = false;
     {
         std::lock_guard<std::mutex> lk(g_state_mu);
@@ -1017,6 +1033,10 @@ json rt_start() {
     }
     rt_update_config(json{{"enabled", true}});
     g_stop = false;
+    // Publish aliveness BEFORE detaching: the new watcher owns the flag from
+    // here on, so the next start sees a live thread and does not spawn a second.
+    g_alive = true;
+    g_watcher_starts.fetch_add(1);
     std::thread(watcher_loop).detach();
     rt_log("realtime sync enabled provider=" +
                sa_core::py_str(cfg.contains("provider_id") ? cfg["provider_id"] : json("")) +
@@ -1028,6 +1048,7 @@ json rt_start() {
 }
 
 json rt_stop() {
+    std::lock_guard<std::mutex> life(g_life_mu);
     rt_update_config(json{{"enabled", false}});
     g_stop = true;
     wake_sleepers();
@@ -1063,6 +1084,8 @@ void rt_auto_start() {
     } catch (...) {
     }
 }
+
+int watcher_starts_for_test() { return g_watcher_starts.load(); }
 
 }  // namespace realtime
 }  // namespace sa

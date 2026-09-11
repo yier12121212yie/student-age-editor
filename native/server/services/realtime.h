@@ -48,6 +48,9 @@ bool ambig_content_changed(const std::string& mod_name, const std::string& rel);
 void clear_ambig_cache();
 // Block until the watcher thread has exited (test/shutdown helper).
 bool wait_thread_done(int timeout_ms);
+// Number of times rt_start has actually spawned a watcher thread. Used by the
+// [p5] concurrency regression: two racing starts must still spawn exactly one.
+int watcher_starts_for_test();
 
 }  // namespace realtime
 }  // namespace sa

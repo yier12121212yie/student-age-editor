@@ -8,8 +8,10 @@
 
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -283,6 +285,24 @@ TEST_CASE("invalid Content-Length -> 400 JSON envelope (httpd.py:135-139)", "[ht
     CHECK(resp.find("invalid Content-Length") != std::string::npos);
 }
 
+TEST_CASE("oversized Content-Length -> 413 before the body is buffered", "[httpd]") {
+    ServerFixture fx;
+    auto sock = make_test_socket(fx.server.port());
+    REQUIRE(sock_valid(sock));
+    // Advertise far more than the cap while sending no body at all: the server
+    // must refuse from the header alone (it used to try to buffer the whole
+    // declared size in memory).
+    const char* req =
+        "PUT /api/cfg/x HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Content-Length: 999999999999\r\n\r\n";
+    send_all_test(sock, req, strlen(req));
+    std::string resp = read_http_response(sock);
+    close_test_socket(sock);
+    REQUIRE(!resp.empty());
+    CHECK(resp.find("HTTP/1.1 413") != std::string::npos);
+    CHECK(resp.find("request body too large") != std::string::npos);
+}
+
 TEST_CASE("body JSON parse failure arrives as {\"_raw\": text}", "[httpd]") {
     ServerFixture fx;
     fx.router.put(R"(/api/echo)", [](const sa::Req& req) {
@@ -372,6 +392,43 @@ TEST_CASE("keep-alive: two requests reuse one connection", "[httpd][keepalive]")
     REQUIRE(r2);
     CHECK(r1->status == 200);
     CHECK(r2->status == 200);
+}
+
+TEST_CASE("destructor drains a parked keep-alive connection without hanging",
+          "[httpd][keepalive][shutdown]") {
+    // A connected-but-idle client holds serve_connection inside recv() with a
+    // 65s timeout. Before the fix the destructor's 2s drain expired and the
+    // detached thread went on to dereference the destroyed Router (UAF). The
+    // destructor must now shutdown() the socket, wake the thread, and return
+    // promptly (well under the 65s idle timeout).
+    bool connected = false;
+    test_socket_t s = INVALID_SOCKET;
+#ifndef _WIN32
+    s = -1;
+#endif
+    auto t0 = std::chrono::steady_clock::now();
+    {
+        auto router = std::make_unique<sa::Router>(sa::build_router());
+        auto server = std::make_unique<sa::Httpd>(router.get());
+        std::string err;
+        REQUIRE(server->bind_to("127.0.0.1", 0, &err));
+        server->start();
+        s = make_test_socket(server->port());
+        REQUIRE(sock_valid(s));
+        connected = true;
+        // Complete one request, then sit idle on the still-open connection.
+        const char* req = "GET /api/ping HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        send_all_test(s, req, strlen(req));
+        std::string resp = read_http_response(s);
+        CHECK(resp.find("200") != std::string::npos);
+        t0 = std::chrono::steady_clock::now();
+        // server (then router) destroyed here: this is what used to UAF/hang.
+    }
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - t0)
+                       .count();
+    CHECK(elapsed < 5000);
+    if (connected) close_test_socket(s);
 }
 
 TEST_CASE("shutdown route answers 200 {ok:true} and requests process exit",

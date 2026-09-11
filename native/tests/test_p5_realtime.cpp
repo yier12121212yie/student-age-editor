@@ -11,6 +11,7 @@
 // beyond the call and would otherwise race with later [p5] assertions.
 #include <catch_amalgamated.hpp>
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -464,6 +465,49 @@ TEST_CASE("P5 rt_start -> watcher syncs a local change end to end -> rt_stop",
     REQUIRE(st2["last_sync_result"].is_object());
     CHECK(st2["last_sync_result"]["total"] == 1);
     CHECK(st2["last_sync_result"]["results"][0]["result"]["ok"] == true);
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency regression: two racing rt_start calls must spawn ONE watcher.
+// Previously g_state["running"]/g_alive were only published inside the freshly
+// detached thread, so both callers saw alive==false and each detached a
+// watcher, which then raced the unsynchronized watcher-owned globals.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("P5 rt_start concurrent calls spawn a single watcher", "[p5][rt][control]") {
+    RtFixture fx("rtrace");
+    fs::path remote = fx.root() / "remote";
+    fs::create_directories(remote);
+    std::string pid = add_local_provider("raceprov", P(remote));
+    make_mod(fx, "m1");
+    sa::realtime::rt_update_config(json{
+        {"provider_id", pid}, {"mod_name", "m1"}, {"direction", "upload"},
+        {"debounce_ms", 300}, {"poll_interval_ms", 500},
+    });
+
+    const int before = sa::realtime::watcher_starts_for_test();
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::vector<std::thread> racers;
+    std::atomic<int> running_seen{0};
+    for (int i = 0; i < 8; ++i) {
+        racers.emplace_back([&]() {
+            ready.fetch_add(1);
+            while (!go.load()) std::this_thread::yield();
+            try {
+                if (sa::realtime::rt_start()["running"] == true) running_seen.fetch_add(1);
+            } catch (...) {
+            }
+        });
+    }
+    while (ready.load() < 8) std::this_thread::yield();
+    go.store(true);  // release them together to maximize the race window
+    for (auto& t : racers) t.join();
+
+    CHECK(running_seen.load() == 8);                                 // all report running
+    CHECK(sa::realtime::watcher_starts_for_test() - before == 1);    // exactly one spawned
+    CHECK(sa::realtime::rt_get_status()["running"] == true);
+    sa::realtime::rt_stop();
 }
 
 // ---------------------------------------------------------------------------
