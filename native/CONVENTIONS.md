@@ -218,6 +218,12 @@ fork/只读视图语义见 5.2：C++ 侧缓存值用 `shared_ptr<const nlohmann:
   新增易变字段先在 normalize 常量表登记再比对，不得放宽成"整 key 忽略"。
 - 一键门禁：`python tools/record_golden.py --check`（独立进程起 Python 后端逐端点比对 golden，
   当前 `RESULT: PASS (38/38)`）；打任意实现后端未来用同思路的 URL 模式。
+- **C++ 后端一键门禁（W5-4 落位，长期入口）**：`python native/tests/contract/golden_gate.py
+  [path\to\backend.exe]`（缺省 `native/build/bin/backend.exe`）——自建隔离 temp 环境、起 C++
+  后端、调 `record_golden.py --check --url`，退出码 0 == 38/38 PASS。它替代裸跑
+  `record_golden.py`（后者无 URL 会去起已删除的 Python 后端），是 §8 provisioned 配方的
+  C++ 侧收口脚本（原为 wave-3 P5 的 `native/wip/P5/golden_gate.py`，W5-4 迁移期归档退役时
+  移入正树）。
 - 录制隔离方式见 golden/README.md（temp data/workspace + `EDITOR_DATA_ROOT` 等 + 进程内补丁
   steam_paths），**绝不写用户真实 Mods**。
 - `mtime_ns`、时间戳类字段在**功能断言**里用「与写前比较」而非绝对值。

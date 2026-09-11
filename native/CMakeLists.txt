@@ -60,6 +60,15 @@ add_subdirectory(cli)   # sa_cli + backend_cli (P7); must precede tests
 add_subdirectory(tui)    # sa_tui + backend_tui (P8); must precede tests
 add_subdirectory(tests)
 
+# Android cross build (W4-4, permanent since W5-4): native/android/group.cmake
+# defines the JNI backend_shared target (libbackend_shared.so). Explicitly gated
+# on ANDROID (set by the NDK android.toolchain.cmake) so official Windows/POSIX
+# builds never include it and stay byte-for-byte unaffected. Configure via
+# native/android/android_build.sh.
+if(ANDROID)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/android/group.cmake")
+endif()
+
 # Parallel-wave hook: a group working under -DSA_GROUP_WIP=<G> may ship extra
 # target definitions (own executables, vendored third-party subdirs) in
 # wip/<G>/group.cmake. This keeps every shared build file orchestrator-owned.

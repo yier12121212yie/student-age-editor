@@ -5,10 +5,11 @@
 # Replaces the Chaquopy python-embedding channel: MainActivity.kt loads this
 # .so and calls nativeStart/nativeStop (see jni_bridge.cpp).
 #
-# Mechanism: official root tree (`-S native`) + the orchestrator's parallel-
-# wave hook `-DSA_GROUP_WIP=android` (native/wip/android/group.cmake defines
-# the backend_shared target). No shared CMake file is edited; cli/tui/tests
-# are configured but never built (only the target is requested).
+# Mechanism: official root tree (`-S native`) + the NDK toolchain. The toolchain
+# sets ANDROID, which makes native/CMakeLists.txt explicitly include
+# native/android/group.cmake (the backend_shared target definition, permanent
+# since W5-4). cli/tui/tests are configured but never built (only the target is
+# requested).
 #
 # Usage (Git Bash on the Windows build host; CI runs the same on ubuntu):
 #   native/android/android_build.sh                  # arm64-v8a + x86_64
@@ -62,8 +63,7 @@ for abi in $ABIS; do
         -DANDROID_PLATFORM="android-$API" \
         -DANDROID_STL=c++_static \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_MAKE_PROGRAM="$NINJA" \
-        -DSA_GROUP_WIP=android
+        -DCMAKE_MAKE_PROGRAM="$NINJA"
     "$CMAKE" --build "$build" --target backend_shared
 
     so="$(find "$build" -name 'libbackend_shared.so' -type f | head -1)"

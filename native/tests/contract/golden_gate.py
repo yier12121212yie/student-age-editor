@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""P5 golden 门禁：复刻 tools/golden_env.make_env() 的隔离环境，用 C++
-backend_wip.exe（wave-3 P5，含 18 条 /api/cloud* 路由）打 record_golden.py
---check 全 38 端点。
+"""golden 门禁（W4-5 后落位正树）：复刻 tools/golden_env.make_env() 的隔离环境，
+用任一本机 C++ backend.exe 打 record_golden.py --check 全 38 端点。
+（原为 wave-3 P5 的 native/wip/P5/golden_gate.py；迁移期归档退役后移入
+native/tests/contract/，与 normalize.py / run_cpp_*.py 同桌，成为长期门禁入口。）
 
 make_env() 的进程内补丁在独立进程里等价实现：
   * steam_library_paths -> []   => EDITOR_DISABLE_STEAM_DETECT=1 + editor_env.json
@@ -12,7 +13,7 @@ make_env() 的进程内补丁在独立进程里等价实现：
                                    的第一优先级）
 绝不写真实游戏 Mods / backend 目录。只用 8790-8799 端口；只杀自己启动的 PID。
 
-用法：python native/wip/P5/golden_gate.py [path\\to\\backend_wip.exe]
+用法：python native/tests/contract/golden_gate.py [path\\to\\backend.exe]
 退出码 0 == 38/38 PASS（输出为 record_golden.py 原文）。
 """
 import json

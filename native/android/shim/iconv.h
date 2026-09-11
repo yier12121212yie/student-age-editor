@@ -1,6 +1,6 @@
 // W4-4 Android build shim — DECLARATIONS ONLY (never active in Windows/POSIX
 // builds: this directory only joins the include path via
-// native/wip/android/group.cmake).
+// native/android/group.cmake, included only when ANDROID is defined).
 //
 // Why: server/services/p3b_fs_tools.cpp (W4-3 landed, don't-touch surface)
 // includes <iconv.h> on any non-Windows platform, and bionic has none. The

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# WSL Ubuntu 24.04 构建环境准备：Linux 桌面工具链 + Flutter SDK(linux) + Python 打包依赖。
+# WSL Ubuntu 24.04 构建环境准备：Linux 桌面工具链 + Flutter SDK(linux) + 资源工具用 Python。
+# 注：桌面后端已是 native C++，不再有 Python 后端打包依赖；此处 Python 仅服务
+# aa_scan 冻结与 tools/resource_scan 资源工具（pyinstaller 用于冻结这些工具，unitypy 只服务
+# 「录制新 golden / 现场解码」的百年一遇操作）。
 set -euxo pipefail
 
 export DEBIAN_FRONTEND=noninteractive

@@ -7,7 +7,7 @@
 产物为可在设置中加载的 Zip 扩展，含:
   manifest.json
   aa_index.json (可选，来自 _cache/aa_index/aa_index.json)
-  base_data.json (来自 _cache/base_data.pkl 转 JSON)
+  base_data.json (优先来自 _cache/base_data.json；旧布局 base_data.pkl 仅作历史回退)
   Cfgs/zh-cn/*.json (如有分散导出)
 
 也可直接用于打包时内置到 backend/editor/data/bundled/
@@ -31,8 +31,19 @@ def build_zip(out_path, include_aa=True):
     # 兼容 backend/_cache 与 _cache 两种位置
     candidates_aa = [os.path.join(editor_root, "_cache", "aa_index", "aa_index.json"), os.path.join(editor_root, "backend", "_cache", "aa_index", "aa_index.json"), os.path.join(editor_root, "backend", "_cache", "aa_index", "aa_index.json")]
     cache_aa = next((c for c in candidates_aa if os.path.isfile(c)), candidates_aa[0])
+    # base_data 优先 JSON：C++ 侧资源工只产 base_data.json（tools/resource_scan
+    # 的 base_data/<Table>.json 汇总 + decoded_export 的 base_data.json，落点见
+    # dist/bundled_full/ 与 build/release/installer_official_pack/）。删 Python
+    # 后端后 base_data.pkl 已无任何生产者，仅保留作历史缓存回退（旧装机 _cache）。
+    candidates_json = [
+        os.path.join(editor_root, "_cache", "base_data.json"),
+        os.path.join(editor_root, "backend", "_cache", "base_data.json"),
+        os.path.join(editor_root, "dist", "bundled_full", "base_data.json"),
+        os.path.join(editor_root, "build", "release", "installer_official_pack", "base_data.json"),
+    ]
+    cache_json = next((c for c in candidates_json if os.path.isfile(c)), None)
     candidates_pkl = [os.path.join(editor_root, "_cache", "base_data.pkl"), os.path.join(editor_root, "backend", "_cache", "base_data.pkl")]
-    cache_pkl = next((c for c in candidates_pkl if os.path.isfile(c)), candidates_pkl[0])
+    cache_pkl = next((c for c in candidates_pkl if os.path.isfile(c)), None)
     # manifest
     manifest = {
         "name": "StudentAge Bundled Resources",
@@ -48,18 +59,34 @@ def build_zip(out_path, include_aa=True):
             print(f" + aa_index.json ({os.path.getsize(cache_aa)} bytes)")
         else:
             print(" - skip aa_index.json (not found)")
-        if os.path.isfile(cache_pkl):
+        if cache_json:
+            # base_data.json 顶层已是 {标准表名: {id: record}}，直接序列化。
+            try:
+                with open(cache_json, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and data:
+                    z.writestr("base_data.json", json.dumps(data, ensure_ascii=False))
+                    print(f" + base_data.json ({len(data)} cfgs, from base_data.json)")
+                else:
+                    print(" - base_data.json empty, try loading from resource pack fallback")
+            except Exception as e:
+                print(f" - base_data.json error: {e}")
+        elif cache_pkl:
+            # 历史回退：base_data.pkl 已无生产者（C++ 侧只产 base_data.json），
+            # 仅兼容旧装机残留的 pickle 缓存；新流程不应再走到这里。
             try:
                 with open(cache_pkl, "rb") as f:
                     cached = pickle.load(f)
                 data = cached.get("data") if isinstance(cached, dict) else cached
                 if isinstance(data, dict) and data:
                     z.writestr("base_data.json", json.dumps(data, ensure_ascii=False))
-                    print(f" + base_data.json ({len(data)} cfgs)")
+                    print(f" + base_data.json ({len(data)} cfgs, from legacy base_data.pkl)")
                 else:
                     print(" - base_data empty, try loading from resource pack fallback")
             except Exception as e:
                 print(f" - base_data.pkl error: {e}")
+        else:
+            print(" - skip base_data.json (not found)")
         # 若有已安装的资源包中的 Cfgs，也可一并导出
         # 检查 _cache/resource_packs/active
         active = ""
