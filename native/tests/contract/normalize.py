@@ -46,7 +46,7 @@ VOLATILE_KEYS = frozenset({
 })
 
 # 这些 key 的「字符串值 / 列表元素」若形似文件系统绝对路径，替换为 PATH 哨兵。
-# 录制使用 tempfile 独立工作区（见 tools/golden_env.py），路径每次必变；
+# 录制使用 tempfile 独立工作区（隔离配方见 native/tests/contract/golden_gate.py），路径每次必变；
 # 真实运行环境路径同理与机器绑定，不属于 API 契约。
 #   workspace_root / mod_root / server_workspace / root / dirs / detected：
 #     EditorState 与 /api/state /api/mods /api/ping /api/aa/status

@@ -10,7 +10,8 @@
    `core/include/` 公共头、本文档**只有主代理能改。
 2. 子代理不执行任何 git 写操作。
 3. 验收 = 简报中写死的命令输出；没有跑过的命令不许写进报告。
-4. 不改 `backend/`（0b 的 selftest.py 除外）、`frontend/`、`.gitignore`。
+4. 不改 `frontend/`、`.gitignore`。`backend/` 已于 W4-5 删除（Python 后端整树退役），
+   现只剩本地缓存/状态文件（`_cache/`、`editor_env.json` 等，均 gitignore）。
 
 ## 1. 工程结构与构建
 
@@ -228,17 +229,20 @@ fork/只读视图语义见 5.2：C++ 侧缓存值用 `shared_ptr<const nlohmann:
   steam_paths），**绝不写用户真实 Mods**。
 - `mtime_ns`、时间戳类字段在**功能断言**里用「与写前比较」而非绝对值。
 - 响应头逐条比对第 2 节表格（bytes 直发路径额外比对 body 字节全等）。
-- 现状基线：`backend/editor/server/selftest.py` 已支持外部模式
-  （`STUDENT_AGE_BACKEND_URL=http://127.0.0.1:<port> python -m unittest editor.server.selftest`），
-  对 Python 后端 `Ran 83 tests / OK (skipped=1)`——同一命令打 C++ 后端即波次门禁。
-- **provisioned 复跑配方（2026-09-10 实测定型，W4-2 验收时发现）**：C++ 后端打全 83 例需要两路工件
+- 现状基线（W4-5 后）：黑盒契约门禁为 `native/tests/contract/selftest_blackbox.py`
+  （W5-1 从 `backend/editor/server/selftest.py` 迁出的 8 个 HTTP 类，stdlib-only）。跑法：
+  `STUDENT_AGE_BACKEND_URL=http://127.0.0.1:<port> [STUDENT_AGE_EDITOR_ROOT=<exe目录>] python native/tests/contract/selftest_blackbox.py`
+  → `Ran 63 tests / OK (skipped=1)`（源 selftest 83 例 = 63 HTTP + 20 个已随树删除的
+  Python 内部逻辑单测类）。
+- **provisioned 复跑配方（2026-09-10 实测定型）**：C++ 后端跑黑盒门禁需要两路工件
   接线——① 后端 editor_root（Windows=exe 目录）下放 `_cache/aa_index/aa_index.json`（可直接拷
-  `backend/_cache/` 现成品），否则 POST `/api/aa/scan` 回 "unityfs unavailable"、3 例 AaPreview
-  以 FAILED 而非 skip 出场（skip 门控查的是 selftest 进程侧 Python `_editor_root()/_cache`，两侧路径
-  不同源）；② 起服务时 `EDITOR_DECODED_PACK_DIR=<repo>/dist/bundled_full`（解码包：aa_index.json +
-  tex/*.webp + aud + Cfgs/zh-cn 317 表 + base_data.json），缺它则 2 例 EventPreviewApi（base EvtCfg
-  结构、bg meta 合并）+ 2 例 tex 解码红。两路齐 → `Ran 83 / OK (skipped=1)` 与 Python 基线全平。
-  缺工件时的红**不是回归**——判据是新旧两个 backend.exe 同环境同红。
+  `_cache/` 现成品；`backend/_cache/` 是历史位置，现树保留为本地缓存），否则 POST `/api/aa/scan`
+  回 "unityfs unavailable"、3 例 AaPreview 以 FAILED 而非 skip 出场（不给
+  `STUDENT_AGE_EDITOR_ROOT` 时门禁侧保守不跳过、真跑真报错）；② 起服务时
+  `EDITOR_DECODED_PACK_DIR=<repo>/dist/bundled_full`（解码包：aa_index.json + tex/*.webp + aud +
+  Cfgs/zh-cn 317 表 + base_data.json），缺它则 2 例 EventPreviewApi（base EvtCfg 结构、bg meta
+  合并）+ 2 例 tex 解码红。两路齐 → `Ran 63 / OK (skipped=1)`。
+  缺工件时的红**不是回归**——判据是同一环境下比对已冻结的基线。
 
 ## 9. 服务文件模板
 

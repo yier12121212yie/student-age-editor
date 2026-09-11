@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
-"""波次0 golden 契约录制 / --check 门禁（Python 后端 HTTP 只读 GET 端点）。
+"""golden 契约 --check 门禁（后端 HTTP 只读 GET 端点，对任意实现后端比对）。
 
 用法（仓库根目录）：
-    python tools/record_golden.py                       # 录制，写 native/tests/contract/golden/*.json
-    python tools/record_golden.py --check               # 用当前 Python 后端复跑比对，输出 PASS/FAIL
-    python tools/record_golden.py --check --url URL     # 对任意已实现后端（如 C++ backend.exe）
+    python tools/record_golden.py --check --url URL     # 对运行中的后端（C++ backend）
                                                         # 打同一套 golden，逐端点 PASS/FAIL
 
-录制状态固定方式见 tools/golden_env.py（tempfile 独立 data 根 + 独立 workspace +
-editor_env.json 预写 + steam 探测打桩），全程零写用户真实 Mods/配置；只录 GET、
-绝不录任何有写盘/外联/后台线程副作用的端点（排除清单见 golden/README.md）。
+无 --url 的录制模式已随 Python 后端退役（W4-5），golden 为冻结契约。
+现行门禁入口是 native/tests/contract/golden_gate.py：它自建隔离环境起 C++ 后端、
+再调本脚本的 --check --url，退出码 0 == 38/38（隔离配方见其文件头与 golden/README.md）。
+
+隔离要点（全程零写用户真实 Mods/配置；只比 GET，绝不碰有写盘/外联/后台线程副作用的
+端点，排除清单见 golden/README.md）：tempfile 独立 data 根 + 独立 workspace +
+editor_env.json 预写 + steam 探测打桩。
 
 golden 保存前统一过 native/tests/contract/normalize.py 归一化（易变字段/绝对路径
 哨兵化），--check 对实测同样归一化后比对。
@@ -28,6 +30,32 @@ import sys
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TOOLS_DIR)
 GOLDEN_DIR = os.path.join(REPO_ROOT, "native", "tests", "contract", "golden")
+
+
+def get_json(base_url, path, timeout=30):
+    """GET 一个端点，返回 (status, parsed_body_or_text)。只读，不写盘。
+
+    W4-5 前住在 tools/golden_env.py（已随 Python 后端退役），此处内联保留，
+    使 --check --url 门禁路径不再依赖已删除的 Python 后端环境。
+    """
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(base_url + path, method="GET",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            try:
+                return resp.status, json.loads(raw)
+            except ValueError:
+                return resp.status, {"_raw": raw}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            return e.code, json.loads(raw)
+        except ValueError:
+            return e.code, {"_raw": raw}
+
 
 # (GET 路径) —— 全部只读；带 query 的写全参数保证可复现。
 ENDPOINTS = [
@@ -82,13 +110,18 @@ def golden_filename(path):
 def capture_all(base_url=None):
     """录全部端点，返回 {filename: envelope}。
 
-    base_url=None：隔离环境内起进程内 Python 后端（录制/自查模式）。
-    base_url 给定：直接打外部已在跑的 HTTP 后端（波次门禁：C++ backend.exe）。
+    base_url 给定：直接打外部已在跑的 HTTP 后端（现行门禁：C++ backend）。
+    base_url=None：旧的「隔离环境内起进程内 Python 后端」录制模式——W4-5 删除
+    Python 后端后已不可用（golden_env.py 一并退役）。保留该分支只为给出清晰报错。
     """
-    sys.path.insert(0, TOOLS_DIR)
-    if os.path.join(REPO_ROOT, "native", "tests", "contract") not in sys.path:
-        sys.path.insert(0, os.path.join(REPO_ROOT, "native", "tests", "contract"))
-    from golden_env import start_isolated_server, get_json
+    if not base_url:
+        raise SystemExit(
+            "错误：无 --url 的录制模式已随 Python 后端退役（W4-5）。\n"
+            "golden 是冻结契约，现无可作真相源的参考实现；如需比对请用：\n"
+            "  python tools/record_golden.py --check --url http://127.0.0.1:<port>\n"
+            "或直接跑 native/tests/contract/golden_gate.py（自建隔离环境起 C++ 后端）。"
+        )
+    sys.path.insert(0, os.path.join(REPO_ROOT, "native", "tests", "contract"))
     import normalize
 
     out = {}
@@ -104,14 +137,7 @@ def capture_all(base_url=None):
             })
             out[golden_filename(path)] = envelope
 
-    if base_url:
-        _fetch(base_url)
-        return out
-    cm, url_base, _info = start_isolated_server()
-    try:
-        _fetch(url_base)
-    finally:
-        cm.__exit__(None, None, None)
+    _fetch(base_url)
     return out
 
 

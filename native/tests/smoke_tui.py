@@ -11,10 +11,10 @@ against a temp data root + a temp workspace containing one synthesized mod, then
   3. runs backend_tui.exe --render-check all to prove every panel renders and
      assert the key text lines are present.
 
-Isolation recipe mirrors tools/golden_env.py: temp EDITOR_DATA_ROOT / PLUGINS /
-PACKS roots, workspace via --workspace-root, EDITOR_DISABLE_STEAM_DETECT=1. Only
-ports 8770-8779 are used; only the child PIDs are terminated. Never writes to any
-user data root or the game tree.
+Isolation recipe mirrors native/tests/contract/golden_gate.py: temp
+EDITOR_DATA_ROOT / PLUGINS / PACKS roots, workspace via --workspace-root,
+EDITOR_DISABLE_STEAM_DETECT=1. Only ports 8770-8779 are used; only the child
+PIDs are terminated. Never writes to any user data root or the game tree.
 
 Exit 0 + "RESULT: PASS" on success.
 """

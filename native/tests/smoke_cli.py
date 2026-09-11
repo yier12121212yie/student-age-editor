@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """P7 CLI black-box smoke: full command surface against an isolated temp data
-root, mirroring the tools/golden_env.py recipe (EDITOR_DATA_ROOT / PLUGINS /
-PACKS + EDITOR_DISABLE_STEAM_DETECT=1; nothing ever touches the real game
-Mods or the user's editor_env.json).
+root, mirroring the native/tests/contract/golden_gate.py isolation recipe
+(EDITOR_DATA_ROOT / PLUGINS / PACKS + EDITOR_DISABLE_STEAM_DETECT=1; nothing ever
+touches the real game Mods or the user's editor_env.json).
 
 Every subcommand is asserted on BOTH its exit code and its stdout JSON.
 Flow: fixture mod import -> cfg set/get/patch roundtrip -> history ->

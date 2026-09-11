@@ -7,14 +7,21 @@ Python 后端只读 GET 端点的响应基线，作为后续所有波次 C++ 重
 ## 生成与门禁
 
 ```
-python tools/record_golden.py            # 录制，重写本目录 *.json（38 个端点）
-python tools/record_golden.py --check    # 复跑比对：逐端点 PASS/FAIL + RESULT 行，FAIL 退码 1
+# C++ 后端门禁（现行，W4-5 后唯一可用）：自建隔离环境起后端 + --check --url
+python native/tests/contract/golden_gate.py [path\to\backend.exe]   # 退出码 0 == 38/38
+
+# 对已在跑的任意后端复跑比对（需自行保证隔离环境与录制时一致）
+python tools/record_golden.py --check --url http://127.0.0.1:<port>
 python native/tests/contract/normalize.py <golden.json> <actual.json>   # 单文件比对 CLI
 ```
 
+> `--check` 必须带 `--url`：无 URL 的录制模式已随 Python 后端退役（W4-5）。
+> golden 是冻结契约，无参考实现可再录制；`golden_gate.py` 已封装正确的隔离环境。
+
 ## 录制状态固定方式（保证跨机器可复现、零污染真实环境）
 
-实现见 `tools/golden_env.py`（record_golden / export_assets 共用）：
+隔离配方现由 `native/tests/contract/golden_gate.py` 实现（W4-5 前原为
+`tools/golden_env.py`，已随 Python 后端退役）。要点（对任意实现后端同样适用）：
 
 1. **tempfile 独立目录**：`<tmp>/data` 作为应用数据根、`<tmp>/workspace` 作为
    Mod 工作区；环境变量 `EDITOR_DATA_ROOT` / `EDITOR_PLUGINS_ROOT` /

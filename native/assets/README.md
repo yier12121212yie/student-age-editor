@@ -1,17 +1,16 @@
 # native/assets — 波次0 数据资产（Python 后端 → C++ 后端）
 
 C++ 后端不再 import Python 模块，而是直接加载本目录的静态 JSON 资产。
-资产由 `tools/export_assets.py` 在仓库根目录生成（幂等，重复运行输出逐字节
-一致；仅标准库 + backend/editor 自身，无需 pip）：
 
-```
-python tools/export_assets.py
-```
+**状态（W4-5 后）**：导出脚本 `tools/export_assets.py` 已随 Python 后端整树退役
+（它从 `backend/editor/core/game_schema.py` 导出）。本目录两份 JSON 已入库、
+即为**冻结真相源**，C++ 后端直接消费，无需再生成。schema.json 与原 `GAME_SCHEMA`
+逐键相等（406 键），故如需还原来源可从本文件反向取；dicts.json 的抓取口径见下。
 
 | 文件 | 内容 | 来源 |
 | --- | --- | --- |
-| `schema.json` | `editor.core.game_schema.GAME_SCHEMA` 原样导出：`{表名: {字段: 类型}}`，406 个表名（其中非空 `*Cfg` 游戏配置表 303 个、非空 `*Attribute` 辅助表 4 个、空壳 `*Define` 占位 99 个），字段条目合计 1901 | 静态 dict |
-| `dicts.json` | `GET /api/dicts` 响应体原样，顶层 key：`key_maps`(9) / `game_dicts`(14) / `story_dicts`(0)；items 369、roles 200、attrs 66、maps 21、bgs 525、turns 62、evt_types 65 条等 | 进程内隔离后端实测抓取 |
+| `schema.json` | 原 `editor.core.game_schema.GAME_SCHEMA` 原样导出：`{表名: {字段: 类型}}`，406 个表名（其中非空 `*Cfg` 游戏配置表 303 个、非空 `*Attribute` 辅助表 4 个、空壳 `*Define` 占位 99 个），字段条目合计 1901 | 静态 dict（已冻结） |
+| `dicts.json` | 原 `GET /api/dicts` 响应体原样，顶层 key：`key_maps`(9) / `game_dicts`(14) / `story_dicts`(0)；items 369、roles 200、attrs 66、maps 21、bgs 525、turns 62、evt_types 65 条等 | 进程内隔离后端实测抓取（已冻结） |
 
 ## dicts.json 的自包含性说明
 
@@ -22,15 +21,15 @@ CONDITION_TYPE/EFFECT_TYPE/…_SECONDARY/SECONDARY_CODE_ALL 等 CSV 并合并进
 `参考资料/友商产品/_internal/csv_dicts` 内有原版，运行时不参与开发态解析），
 因此导出结果 = 硬编码字典 + 空 CSV 合并，与开发环境 `GET /api/dicts` 实测完全一致。
 导出走「真实起服务→请求端点」路径，动态读取结果已烘进 JSON；C++ 侧只需读
-`dicts.json`，不需要（也不应）再实现 CSV 目录扫描。
-若未来在任一候选路径放入 `csv_dicts/`，重跑导出脚本即可刷新本资产。
+`dicts.json`，不需要（也不应）再实现 CSV 目录扫描。`dicts.json` 已冻结入库，
+即当前契约值；未来游戏字典若变更，需以其权威来源重建该资产。
 
 `game_dicts.audios` 在干净进程为空对象：它由 `STATE.base.data["AudioCfg"]`
 派生（本体数据经 POST /api/base/load 装载后才非空）。契约端点（golden）同样
 录制于未装载态，故 C++ 首启契约即 `audios: {}`；带本体数据时的动态扩展属
 波次1+ 的 base-data 契约，不在本资产范围。
 
-## 赞助图/图标 base64 外置调研（backend/editor/core/sponsor_data.py）
+## 赞助图/图标 base64 外置调研（原 backend/editor/core/sponsor_data.py，已随树删除）
 
 - 文件 2201 行、173,684 字符，仅含一个常量 `APP_ICON_B64`；base64 解码后为
   118,704 字节 PNG（magic `89504e47`），即应用图标原图。
