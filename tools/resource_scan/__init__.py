@@ -6,7 +6,8 @@
                backend/_cache/aa_index/aa_index.json）+ keys.json。
   base-tables  原版配置表（TextAsset / 解包 Cfgs 目录）导出为
                base_data/<Table>.json + base_meta.json，替代 pickle base_data.pkl。
-  decoded-pack 薄封装透传 packaging/export_decoded_pack.py（预解码资源包）。
+  decoded-pack 预解码资源包导出（Texture2D→WebP / AudioClip / TextAsset→JSON），
+               实现见 decoded_export.py（W5-3 从 packaging 迁入，零 editor 依赖）。
 
 零 editor 包依赖：所需常量/函数均自 backend 复制（注明来源文件），
 波次 4 删除 backend 原件后本工具须独立存活。

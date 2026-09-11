@@ -27,9 +27,9 @@
   base_data/<Table>.json  # §4  每张原版配置表一个文件，<Table> ∈ 46+ 标准表名
   base_meta.json          # §5  源指纹 + 表清单 + 诊断（替代 base_data.pkl 的头部）
 
-<decoded-pack --out>/     # py -m resource_scan decoded-pack（透传既有工具）
+<decoded-pack --out>/     # py -m resource_scan decoded-pack（进程内调用 decoded_export.py）
   <预解码资源包 zip/目录>  # §6  仅格式提示；契约仍以本文档冻结，产物由
-                          #     packaging/export_decoded_pack.py 生成
+                          #     tools/resource_scan/decoded_export.py 生成
 ```
 
 ---
@@ -72,7 +72,7 @@
 `[bundle_path, path_id]`：
 - `bundle_path`：Windows 绝对路径（JSON 内为 `\\` 转义），**生成机器的路径**。
   换机器/换 Steam 库后可能失效。backend 的缓解措施（C++ 应照做）：文件不存在时
-  按 `basename(bundle_path)` 在当前 aa 目录递归重定位（`export_decoded_pack._remap_bundles`
+  按 `basename(bundle_path)` 在当前 aa 目录递归重定位（`decoded_export._remap_bundles`
   语义）；重定位成功则 `cabs` 不可信需丢弃重建。
 - `path_id`：Unity SerializedFile 对象 ID（int64，见上）。解码 = 打开 bundle →
   找 path_id 对象（backend `_find_object`：只查主 bundle 的 SerializedFile 对象表，
@@ -136,7 +136,7 @@ C++ 侧仅在排障/CI 需要时读；**不属于**backend 兼容契约。
 C++ 无法读 pickle，这是本产物存在的理由）。**每张表一个文件**，内容即
 `base_data["<Table>"]`：`{"行id": 行对象}`，与 backend 内存中的
 `BaseDataService.data[表名]` 及解包资源包 `Cfgs/zh-cn/<表名>.json`
-（`export_decoded_pack.export_cfgs` 同款 `json.dump(ensure_ascii=False)`）逐字段一致。
+（`decoded_export.export_cfgs` 同款 `json.dump(ensure_ascii=False)`）逐字段一致。
 
 - 文件名：标准表名（下表 46+ 个，PascalCase，如 `EvtCfg.json`、`TalkCfg.json`）。
 - 顶层键（行 id）：JSON 里**恒为字符串**（Python dict 键序列化即如此；原表存在
@@ -228,18 +228,24 @@ C++ 侧失效判断的**推荐做法（不必复现 sha1）**：重扫 `--aa` �
 catalog。**bundle 内容变而顶层清单不变的情形 backend 本就检测不到**，工具不引入
 新问题；若 P4 要更严格，可自行哈希 bundle 文件（契约会另行升 `v`）。
 
-## 6. `decoded-pack` 子命令（透传，非本工具冻结格式）
+## 6. `decoded-pack` 子命令（独立实现，非本工具冻结格式）
 
-`py -m resource_scan decoded-pack -- <args...>` 原样调用
-`packaging/export_decoded_pack.py`（其参数集 `--out/--tier/--max-side/--quality/
---limit/--no-audios/--no-zip`，`decoded-pack --show-help` 查看）。产物 zip 布局：
+`py -m resource_scan decoded-pack -- <args...>` 进程内调用
+`tools/resource_scan/decoded_export.py`（W5-3 起零 `backend/editor` 依赖；其参数集
+`--out/--tier/--max-side/--quality/--limit/--no-audios/--no-zip`，索引覆盖
+`--index/--aa-dir/--cache-dir`，`decoded-pack --show-help` 查看）。
+`packaging/export_decoded_pack.py` 保留为同实现薄壳入口（历史脚本引用）。
+产物 zip 布局：
 `manifest.json`、`aa_index.json`（**另一形态的 v3**：
 `{"v":3,"decoded":true,"tex":[…],"aud":[…],"txt":[…]}`——键列表而非 bundle 引用，
-判别标志是 `"decoded": true`，backend 读取类为 `services/decoded_pack.py`
+判别标志是 `"decoded": true`，读取类为 `decoded_pack.py`
 `DecodedPackStore`）、`base_data.json`、`Cfgs/zh-cn/<表>.json`、`tex/*.webp`、
 `aud/*.ogg|wav|m4a`。C++ 若消费预解码包：先查 `"decoded"` 标志再选解析路径。
-该脚本依赖 `backend/editor`（波次 4 删除 backend 后此入口失效，`--script` 可指向
-迁移后的新位置；解码职责届时归 C++ 或独立工具，本文档 §1–§5 不受影响）。
+
+消费/生产闭环都在本目录：`decoded_export.py`（生产，桌面 UnityPy 解码）↔
+`decoded_pack.py`（消费，扫描解压后目录映射 key→文件）；索引类 `Index` 语义由
+`unityfs_res.UnityFsIndex` 提供（从后端剥离，含内联的游戏 aa 目录探测，
+`SA_GAME_AA_DIR` 可覆盖）。本文档 §1–§5 不受影响。
 
 ## 7. testdata/ 与 selfcheck.py
 

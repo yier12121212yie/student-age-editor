@@ -5,9 +5,9 @@
   py -m resource_scan index --aa <aa目录>... --out <目录> [--jobs N] [--limit n]
   py -m resource_scan base-tables --aa <aa目录|Cfgs目录>... --out <目录>
         [--jobs N] [--limit n] [--bundle-name-filter s] [--from-index aa_index.json]
-  py -m resource_scan decoded-pack [-- 透传参数...]   # packaging/export_decoded_pack.py
+  py -m resource_scan decoded-pack [-- 参数...]       # 进程内调用 decoded_export.py
 
-依赖：index / base-tables（bundle 模式）需要 UnityPy：
+依赖：index / base-tables / decoded-pack（bundle 模式）需要 UnityPy：
   py -m pip install --user unitypy
 产物格式契约：见本目录 ARTIFACT_FORMAT.md（C++ 后端消费方对接文档）。
 """
@@ -182,7 +182,7 @@ _bund_cache = {}
 
 def _locate_bundle(aa_dirs, bundle_name):
     """按文件名在 aa 目录中重定位 bundle（索引内路径过期场景，
-    对齐 packaging/export_decoded_pack._remap_bundles）。"""
+    对齐 decoded_export._remap_bundles）。"""
     key = bundle_name.lower()
     if key in _bund_cache:
         return _bund_cache[key]
@@ -324,27 +324,43 @@ def cmd_base_tables(args):
 
 
 def cmd_decoded_pack(args):
-    """薄封装：透传到 packaging/export_decoded_pack.py（其自身依赖 backend/editor，
-    波次 4 前可用；届时解码职责移交 C++ 后端，见 ARTIFACT_FORMAT.md §5）。"""
-    root = os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))  # editor 仓库根
-    script = args.script or os.path.join(root, "packaging", "export_decoded_pack.py")
-    if not os.path.isfile(script):
-        sys.stderr.write(
-            "错误：未找到 %s。packaging/export_decoded_pack.py 依赖 backend/editor，\n"
-            "波次 4 删除 backend 后本透传入口将失效（届时预解码由 C++ 侧接管）。\n"
-            "可用 --script 指定迁移后的新位置。\n" % script)
-        return 2
+    """预解码资源包导出：进程内调用本目录 decoded_export.py（零 editor 依赖）。
+
+    历史写法 `decoded-pack -- <参数>` 保留：argparse REMAINDER 会把分隔符
+    `--` 一并收进 passthrough，这里剥掉首个 `--`（同时兼容不写分隔符的直接
+    写法，修复旧透传把裸 `--` 传给被包装脚本导致参数报错的缺陷）。
+    `--script` 仍作为逃生口指向外部实现脚本（subprocess 透传）。
+    """
+    passthrough = list(args.passthrough or [])
+    while passthrough and passthrough[0] == "--":
+        passthrough.pop(0)
+    if args.script:
+        if not os.path.isfile(args.script):
+            sys.stderr.write("错误：--script 指向的文件不存在: %s\n" % args.script)
+            return 2
+        cmd = [sys.executable, args.script] + passthrough
+        print("$", " ".join(cmd))
+        return subprocess.run(cmd, check=False).returncode
+    try:
+        from . import decoded_export
+    except ImportError:  # python resource_scan/__main__.py 直跑
+        import decoded_export
     if args.show_help:
-        subprocess.run([sys.executable, script, "--help"], check=False)
-        print("\n[resource_scan decoded-pack] 透传包装器：参数原样传给上述脚本"
-              "（用 `-- ` 分隔）。常用：--out dist/bundled_preview.zip "
+        decoded_export.build_parser().print_help()
+        print("\n[resource_scan decoded-pack] 进程内调用 tools/resource_scan/decoded_export.py"
+              "（参数用 `-- ` 分隔或直接跟在子命令后）。常用：--out dist/bundled_preview.zip "
               "--tier preview|full --max-side 1600 --quality 80 --limit N "
-              "--no-audios --no-zip")
+              "--no-audios --no-zip；索引覆盖 --index/--aa-dir/--cache-dir。")
         return 0
-    cmd = [sys.executable, script] + list(args.passthrough or [])
-    print("$", " ".join(cmd))
-    return subprocess.run(cmd, check=False).returncode
+    try:
+        return decoded_export.main(passthrough)
+    except SystemExit as e:  # argparse 的 --help/-h 或 SystemExit("消息")
+        if e.code is None:
+            return 0
+        if isinstance(e.code, int):
+            return e.code
+        sys.stderr.write("%s\n" % e.code)
+        return 2
 
 
 # ------------------------------------------------------------------ CLI ----
@@ -386,17 +402,17 @@ def build_parser():
 
     p = sub.add_parser(
         "decoded-pack",
-        help="薄封装透传 packaging/export_decoded_pack.py（参数放在 -- 之后）",
+        help="预解码资源包导出（参数可放在 -- 之后）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="预解码资源包导出：本入口是 packaging/export_decoded_pack.py 的\n"
-                    "透传包装器。透传写法：py -m resource_scan decoded-pack -- "
-                    "<export_decoded_pack.py 的参数...>\n"
-                    "看被包装脚本的完整参数：py -m resource_scan decoded-pack --show-help")
-    p.add_argument("--script", help="覆盖被包装脚本路径")
+        description="预解码资源包导出：进程内调用 tools/resource_scan/decoded_export.py，\n"
+                    "零 backend/editor 依赖。写法：py -m resource_scan decoded-pack -- "
+                    "<参数...>\n"
+                    "看完整参数：py -m resource_scan decoded-pack --show-help")
+    p.add_argument("--script", help="覆盖实现脚本路径（逃生口，subprocess 透传）")
     p.add_argument("--show-help", action="store_true",
-                   help="显示被包装脚本的 --help 后退出")
+                   help="显示 decoded-pack 的完整参数后退出")
     p.add_argument("passthrough", nargs=argparse.REMAINDER,
-                   help="原样透传给 export_decoded_pack.py 的参数（置于 -- 之后）")
+                   help="decoded_export 的参数（置于 -- 之后，或直接跟在子命令后）")
     p.set_defaults(func=cmd_decoded_pack)
     return ap
 
