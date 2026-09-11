@@ -621,7 +621,7 @@ class _CloudPageState extends State<CloudPage> {
         ]),
         if(total>0) Padding(padding: const EdgeInsets.only(top:6), child: fluent.ProgressBar(value: total==0? null : (prog/total*100).clamp(0,100))),
         if(last.isNotEmpty) Padding(padding: EdgeInsets.only(top:4), child: Text(last, style: TextStyle(fontSize:10, color: palette.textHint), overflow: TextOverflow.ellipsis)),
-        if(s['error']!=null && (s['error'] as String).isNotEmpty) Padding(padding: const EdgeInsets.only(top:4), child: Text('错误: ${s['error']}', style: const TextStyle(fontSize:10, color: Colors.redAccent))),
+        if((s['error']?.toString() ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top:4), child: Text('错误: ${s['error']}', style: const TextStyle(fontSize:10, color: Colors.redAccent))),
       ]),
     );
   }

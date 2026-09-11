@@ -287,7 +287,7 @@ void main() {
       var covered = 0;
       _schema.forEach((cfg, table) {
         (table as Map<String, dynamic>).forEach((field, type) {
-          if (type == '1D Array') return; // 1D 见下面 KNOWN BUG 用例（同一张表驱动）
+          if (type == '1D Array') return; // 1D 见下方专用用例（同一张表驱动）
           covered++;
           _expectRoundTrip(cfg, field, type as String);
         });
@@ -310,11 +310,10 @@ void main() {
     });
   });
 
-  test('1D 多元素 encode→decode 往返丢结构', () {
-    // encode 明确用 `, ` 连接（与指南 `4015,0.5` 写法一致），decode 却把整段
-    // 文本当成一个元素：normalizeStoryIdList 对 String 入参不拆分隔符。
-    // 后果有两层：往返不闭合；用户在框里敲 `1000001000,1000001001` 按回车，
-    // 存档里会写成 `["1000001000,1000001001"]` —— 游戏侧永远找不到这个跳转目标。
+  test('1D 多元素 encode→decode 往返恒等（回归：曾误用 ID 规范化器）', () {
+    // 历史缺陷：decode 走 normalizeStoryIdList，String 入参不拆分隔符，多元素
+    // 往返丢结构（`1000001000,1000001001` 存成单元素字符串）。现 decode 走
+    // ValueCodec.decode 按逗号切分，本用例锁死往返恒等。
     var checked = 0;
     _schema.forEach((cfg, table) {
       (table as Map<String, dynamic>).forEach((field, type) {

@@ -3634,6 +3634,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                 _section('玩家选项', [
                   for (final optId in opts)
                     _OptionRow(
+                      key: ValueKey<dynamic>(cln(optId)),
                       optId: cln(optId),
                       opt: widget.stageOpts[cln(optId)],
                       onChanged: widget.onChanged,
@@ -3991,6 +3992,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
 /// 玩家选项行（独立 StatefulWidget，避免每次重建创建 controller）。
 class _OptionRow extends StatefulWidget {
   const _OptionRow({
+    super.key,
     required this.optId,
     required this.opt,
     required this.onChanged,
@@ -4025,6 +4027,24 @@ class _OptionRowState extends State<_OptionRow> {
     _contentCtrl.dispose();
     _targetCtrl.dispose();
     super.dispose();
+  }
+
+  /// 选项数据在外部被改写（切换事件、程序化编辑）时同步输入框。
+  /// 仅当 decode 后的语义值与当前文本不一致才回写，避免打断正在输入的内容
+  /// （同 ValueCodec.needsResync 的思路）。
+  @override
+  void didUpdateWidget(covariant _OptionRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final opt = widget.opt;
+    final content = opt is Map ? cln(opt['content']) : '';
+    if (content != _contentCtrl.text) {
+      _contentCtrl.text = content;
+    }
+    final target = opt is Map ? ValueCodec.encode(opt['talkId']) : '';
+    if (ValueCodec.needsResync(_targetCtrl.text, opt is Map ? opt['talkId'] : null,
+        '1D Array')) {
+      _targetCtrl.text = target;
+    }
   }
 
   @override

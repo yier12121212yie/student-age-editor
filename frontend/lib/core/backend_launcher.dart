@@ -7,13 +7,12 @@ import 'api_client.dart';
 
 /// 发行模式后端进程管理。
 ///
-/// 桌面发行版目录内包含一个 PyInstaller 打包的后端可执行文件
-/// （Windows 为 backend.exe，macOS/Linux 为 backend）：
-/// 前端启动时探测本地 API 是否就绪，未就绪则自动拉起该文件，
-/// 前端退出时回收自己拉起的进程。开发模式（flutter run，由 run_dev.py
-/// 启动后端）下同目录不存在后端可执行文件，本类不干预。
-/// Android 上无法运行 PyInstaller 子进程，由 Chaquopy 内嵌后端负责，
-/// 本类轮询等待内嵌后端就绪（内嵌启动由原生侧异步进行，需数秒）。
+/// 桌面发行版目录内包含一个原生 C++ 后端可执行文件（Windows 为 backend.exe，
+/// macOS/Linux 为 backend）：前端启动时探测本地 API 是否就绪，未就绪则自动
+/// 拉起该文件，前端退出时回收自己拉起的进程。开发模式（flutter run，由
+/// run_dev 启动后端）下同目录不存在后端可执行文件，本类不干预。
+/// Android 上无法运行子进程，后端由原生 JNI（libbackend_shared.so）在后台线程
+/// 内嵌启动（见 MainActivity.kt / jni_bridge.cpp），本类轮询等待其就绪。
 class BackendLauncher {
   BackendLauncher._();
   static final BackendLauncher instance = BackendLauncher._();
@@ -24,7 +23,7 @@ class BackendLauncher {
   static String get backendExeName =>
       Platform.isWindows ? 'backend.exe' : 'backend';
 
-  /// Android 上后端由 Chaquopy 内嵌运行（BackendEmbed），不走子进程。
+  /// Android 上后端由原生 JNI 内嵌运行，不走子进程。
   static bool get supportsSpawn => !Platform.isAndroid;
 
   Process? _process; // 由本类拉起的后端进程
@@ -54,9 +53,9 @@ class BackendLauncher {
     try {
       if (await probe()) return true;
       if (!supportsSpawn) {
-        // Android：后端由 Chaquopy 在原生侧后台线程内嵌启动（见 MainActivity
-        // 的 onResume），Python 初始化、资源包解压、模块导入需数秒后端口才就绪，
-        // 单次探测必然失败；此处轮询等待内嵌后端完成启动。
+        // Android：后端由原生 JNI 在后台线程内嵌启动（见 MainActivity.kt /
+        // jni_bridge.cpp），资源配置解压后端口才就绪，单次探测必然失败；
+        // 此处轮询等待内嵌后端完成启动。
         // 耗时：连接拒绝时每轮约 0.5s（约 45s 封顶）；端口已监听但 HTTP 未就绪时
         // 每轮要烧满 1s 探测超时（约 135s 封顶），通常数秒内即成功。
         for (var i = 0; i < 90; i++) {
@@ -76,7 +75,7 @@ class BackendLauncher {
       );
       _process = proc;
 
-      // onefile 首次解压较慢，轮询等待就绪（最多约 30 秒）。
+      // 原生后端启动后首次就绪可能较慢，轮询等待（最多约 90 秒）。
       for (var i = 0; i < 60; i++) {
         if (await probe(timeout: const Duration(seconds: 1))) return true;
         if (await _hasExited(proc)) {

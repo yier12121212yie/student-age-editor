@@ -573,6 +573,47 @@ json test_connection(const std::string& provider_in, const json& settings, const
 }
 
 // ---- encoder detection + wav->ogg ----------------------------------------
+#ifdef _WIN32
+namespace {
+std::wstring utf8_to_wide_tts(std::string_view s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+// Quote one argument for the Win32 command line (CommandLineToArgvW rules):
+// wrap in double quotes and double any backslash run that precedes a quote or
+// the closing quote. Without the backslash doubling, a path whose final
+// component ends in '\' (or an arg containing '"') would parse as extra args.
+std::wstring quote_win_arg(const std::string& arg) {
+    std::wstring a = utf8_to_wide_tts(arg);
+    std::wstring out;
+    out.push_back(L'"');
+    size_t backslashes = 0;
+    for (wchar_t c : a) {
+        if (c == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (c == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');  // escape the quote
+            out.push_back(L'"');
+        } else {
+            out.append(backslashes, L'\\');
+            out.push_back(c);
+        }
+        backslashes = 0;
+    }
+    out.append(backslashes * 2, L'\\');  // double trailing backslashes
+    out.push_back(L'"');
+    return out;
+}
+}  // namespace
+#endif
+
 std::optional<std::string> run_capture(const std::vector<std::string>& argv,
                                        const std::string& input) {
     if (argv.empty()) return std::nullopt;
@@ -596,23 +637,25 @@ std::optional<std::string> run_capture(const std::vector<std::string>& argv,
     SetHandleInformation(c_out_r, HANDLE_FLAG_INHERIT, 0);
     nul_w = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                         OPEN_EXISTING, 0, nullptr);
-    std::string cmdline;
-    auto q = [](const std::string& a) { return "\"" + a + "\""; };
+    std::wstring cmdline;
     for (size_t i = 0; i < argv.size(); ++i) {
-        if (i) cmdline += " ";
-        cmdline += q(argv[i]);
+        if (i) cmdline.push_back(L' ');
+        cmdline += quote_win_arg(argv[i]);
     }
-    STARTUPINFOA si{};
+    STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = c_in_r;
     si.hStdOutput = c_out_w;
     si.hStdError = nul_w ? nul_w : c_out_w;
     PROCESS_INFORMATION pi{};
-    std::vector<char> cbuf(cmdline.begin(), cmdline.end());
-    cbuf.push_back('\0');
-    BOOL ok = CreateProcessA(nullptr, cbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si,
-                             &pi);
+    std::vector<wchar_t> cbuf(cmdline.begin(), cmdline.end());
+    cbuf.push_back(L'\0');
+    // CreateProcessW: the command line is UTF-16, so a temp dir under a CJK
+    // %TEMP% (the oggenc scratch path) is passed intact instead of being
+    // interpreted as ANSI bytes by CreateProcessA.
+    BOOL ok = CreateProcessW(nullptr, cbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
+                             &si, &pi);
     CloseHandle(c_in_r);
     CloseHandle(c_out_w);
     if (!ok) {

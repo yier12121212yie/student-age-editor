@@ -1186,9 +1186,11 @@ class AiPanelState extends State<AiPanel> {
       switch (call.name) {
         case 'list_domains':
           final r = await ApiClient.instance.get('/api/ai/domains');
-          final domains = (r['domains'] as List).map((d) {
-            final m = d as Map<String, dynamic>;
-            final tables = (m['tables'] as Map<String, dynamic>).keys.join('、');
+          final domains = (r['domains'] as List).whereType<Map>().map((d) {
+            final m = Map<String, dynamic>.from(d);
+            final tables = (m['tables'] is Map)
+                ? (m['tables'] as Map).keys.join('、')
+                : '';
             return '${m['id']}（${m['name']}）：${m['desc']}\n  包含表：$tables';
           }).join('\n\n');
           return domains.isEmpty ? '(无领域)' : domains;

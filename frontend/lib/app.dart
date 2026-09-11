@@ -114,8 +114,9 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
         state.workspaceRoot = st['workspace_root'] as String? ?? '';
         state.modRoot = st['mod_root'] as String? ?? '';
         state.modName = st['mod_name'] as String? ?? '';
-        state.mods = (st['mods'] as List? ?? [])
-            .map((e) => ModInfo.fromJson(e as Map<String, dynamic>))
+        state.mods = (st['mods'] as List? ?? const [])
+            .whereType<Map>()
+            .map((e) => ModInfo.fromJson(Map<String, dynamic>.from(e)))
             .toList();
         state.aaStatus = st['aa_status'] as String? ?? 'idle';
         state.gameSchema = (schema['game_schema'] as Map?)?.cast<String, dynamic>() ?? {};

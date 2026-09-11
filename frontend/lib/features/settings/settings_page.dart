@@ -586,7 +586,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 fluent.TextBox(
                   controller: _ttsBaseUrlCtrl,
                   placeholder: _ttsProvider == 'minimax'
-                      ? 'https://api.minimax.chat'
+                      ? 'https://api.minimax.io'
                       : 'https://dashscope.aliyuncs.com/...',
                 ),
                 const SizedBox(height: 12),
@@ -813,7 +813,9 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
       if (_loading) const SizedBox(width:16,height:16, child: CircularProgressIndicator(strokeWidth:2))
       else if (_packs.isEmpty) Text('暂无扩展，可点击“加载 Zip 扩展”', style: TextStyle(fontSize:11, color: palette.textHint))
       else ..._packs.map((p){
-        final id = p['id'] as String; final isActive = id==_active;
+        final id = p['id'] is String ? p['id'] as String : '';
+        if (id.isEmpty) return const SizedBox.shrink();  // 畸形条目不再让 build 抛错
+        final isActive = id==_active;
         return Container(margin: const EdgeInsets.symmetric(vertical:4), padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: isActive? palette.card: palette.bg, borderRadius: BorderRadius.circular(6), border: Border.all(color: isActive? const Color(0xFF6C5CE7): palette.border)), child: Row(children:[
           Icon(isActive? FluentIcons.checkmark_circle_24_filled : FluentIcons.box_24_regular, size:16, color: isActive? const Color(0xFF6C5CE7): palette.textMuted),
           const SizedBox(width:8),

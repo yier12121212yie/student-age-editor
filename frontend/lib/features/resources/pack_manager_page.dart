@@ -93,8 +93,9 @@ class _PackManagerPageState extends State<PackManagerPage> {
     const typeGroup = XTypeGroup(label: 'zip', extensions: ['zip']);
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
     if (file == null) return;
+    Directory? tmpDir;
     try {
-      final tmpDir = await Directory.systemTemp.createTemp('pack_import_');
+      tmpDir = await Directory.systemTemp.createTemp('pack_import_');
       final dest = '${tmpDir.path}${Platform.pathSeparator}${file.name}';
       await File(file.path).copy(dest);
       final r = await ApiClient.instance
@@ -108,6 +109,11 @@ class _PackManagerPageState extends State<PackManagerPage> {
       _refresh();
     } catch (e) {
       if (mounted) _showError(e.toString());
+    } finally {
+      // 后端已读完文件，临时目录不再需要（失败也一并清理）。
+      try {
+        if (tmpDir != null) await tmpDir.delete(recursive: true);
+      } catch (_) {}
     }
   }
 
