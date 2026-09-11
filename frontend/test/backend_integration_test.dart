@@ -1,4 +1,5 @@
-// 端到端集成测试：连接真实 Python 后端（需先在 127.0.0.1:8765 启动 editor.server）。
+// 端到端集成测试：连接真实后端（需先在 127.0.0.1:8765 启动 native backend；
+// W4-5 前为 Python editor.server，现为 native C++ 后端，HTTP 契约不变）。
 // 覆盖前端 bootstrap 流程与核心只读工作流。
 //
 // 后端未启动时整套用例逐条 markTestSkipped（S7）：不再让 12+ 条
@@ -75,7 +76,11 @@ void main() {
     }
     final cfg = await ApiClient.instance.get('/api/cfg/${cfgFiles.first}');
     expect(cfg['data'], isA<Map>());
-    expect(cfg['keys'], isA<List>());
+    // keys 仅在 ?keys=1 时返回（S1 优化 554e729 起的门控；前端不消费该字段）——
+    // 显式带参验证，区别于裸 GET 只断言 data。
+    final withKeys = await ApiClient.instance
+        .get('/api/cfg/${cfgFiles.first}', query: {'keys': '1'});
+    expect(withKeys['keys'], isA<List>());
   });
 
   test('AI 工具只读：list_files / read_file（mod 沙箱）', () async {
