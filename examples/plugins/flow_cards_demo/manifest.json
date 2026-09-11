@@ -3,5 +3,26 @@
   "name": "流程卡片示例",
   "version": "1.0.0",
   "author": "示例作者",
-  "description": "演示插件流程卡片：对白与选项两种卡型，按 match 自动渲染，并可预置新建节点"
+  "description": "声明型插件示例：声明两张流程卡片（对白 / 选项），按 match 自动渲染并可预置新建节点",
+  "ui": {
+    "flow_cards": [
+      {
+        "type_id": "phone",
+        "name": "打电话",
+        "applies_to": "talk",
+        "color": "#3498DB",
+        "match": { "field": "screenEffect", "equals": [4007] },
+        "body_fields": ["content"],
+        "description": "屏幕效果 4007（打电话）模式的对白卡"
+      },
+      {
+        "type_id": "confess",
+        "name": "告白选项",
+        "applies_to": "option",
+        "color": "#E91E63",
+        "match": { "field": "content", "equals": "表白" },
+        "description": "表白类选项卡"
+      }
+    ]
+  }
 }

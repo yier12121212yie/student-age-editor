@@ -3,5 +3,15 @@
   "name": "Hello 插件",
   "version": "1.0.0",
   "author": "示例作者",
-  "description": "插件系统演示：路由 / 面板 / Agent 工具 / CLI 命令"
+  "description": "声明型插件示例：仅声明一个 UI 面板",
+  "ui": {
+    "panels": [
+      {
+        "panel_id": "main",
+        "title": "Hello 面板",
+        "icon": "extension",
+        "description": "声明型面板示例：仅声明 panel_id / title / icon / description，由 GET /api/plugins/ui 聚合"
+      }
+    ]
+  }
 }

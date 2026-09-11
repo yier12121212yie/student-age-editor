@@ -78,6 +78,7 @@ service 自描述拉取/代理仍未实现（规范先行）。
 
 ## 6. 演示与迁移示例
 
-- Python 时代示例 `flow_cards_demo`（register_flow_card 代码贡献）→ 等价声明形态：
-  仅保留其 manifest，把卡片注册调用翻译为 `ui.flow_cards` JSON 数组，字段一一对应。
-  示例目录待波次 4 文档重写时移入 `examples/plugins/flow_cards_demo/`。
+- Python 时代示例 `flow_cards_demo`（register_flow_card 代码贡献）已迁移为等价声明形态
+  （W4-5）：`examples/plugins/flow_cards_demo/` 仅含 `manifest.json`，卡片注册调用已翻译为
+  `ui.flow_cards` JSON 数组，字段一一对应；`hello_plugin` 同样改写为声明型 `ui.panels` 示例。
+  两者都不再含 `.py`（见 `PLUGIN_GUIDE.md` §9）。

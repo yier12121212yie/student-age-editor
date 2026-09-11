@@ -221,9 +221,13 @@ zip -r ../../my_cards.zip manifest.json
 然后用 GUI 插件页安装（或调 `POST /api/plugins/install_path`）即可生效——**没有启用
 步骤，也不会再出现高危确认**。
 
-> **关于 `examples/plugins/`**：仓库内的 `examples/plugins/hello_plugin/` 与
-> `examples/plugins/flow_cards_demo/` 仍是**旧 Python 时代示例**（含 `plugin.py`
-> 与 `ctx.register_*` 代码），在当前声明型后端下不会注册任何贡献，仅可作为
-> 「翻译为 manifest」的素材。按 `native/PLUGIN_SPEC.md` §6，等价的声明形态应把卡片
-> 注册调用翻译为 `ui.flow_cards` JSON 数组（`flow_cards_demo` 计划迁入
-> `examples/plugins/flow_cards_demo/`）。在示例完成迁移前，请以上述内联 manifest 为准。
+> **关于 `examples/plugins/`**：仓库内的两个示例均已改写为**声明型插件**，不再含
+> 任何 `.py` 或 `ctx.register_*` 代码：
+> - `examples/plugins/flow_cards_demo/`：`ui.flow_cards` 声明对白卡 `phone` 与选项卡
+>   `confess`，与上文内联 manifest 同构（可直接对照 §4.1）。
+> - `examples/plugins/hello_plugin/`：`ui.panels` 声明一个面板，演示 `GET /api/plugins/ui`
+>   的聚合形态（见 §4.2）；旧版的路由 / Agent 工具 / CLI 命令 / 面板内容路由在声明型
+>   规范中无对应，已随 `plugin.py` 一并移除。
+>
+> 两者都只是「目录 + `manifest.json`」：拷入插件根即生效，无代码、无启用态。字段语义
+> 以 `native/PLUGIN_SPEC.md` 为唯一真相源。
