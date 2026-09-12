@@ -93,11 +93,14 @@ object BackendHttp {
         return out.toTypedArray()
     }
 
-    /** 阻塞读入 buf，返回字节数或 -1（EOF）。0 不会出现（buf 非空 + 阻塞流）。 */
+    /** 阻塞读入 buf，返回字节数或 -1（EOF）。0 不会出现（buf 非空 + 阻塞流）。
+     *  句柄不存在（重复 close / 句柄错乱）必须抛 IOException，而不是与正常
+     *  EOF 一样返回 -1——否则 C++ 侧会把异常句柄当成“响应读完”，静默接受
+     *  被截断的响应体（契约 (b) 只豁免“提前停止”一种情况）。 */
     @JvmStatic
     @Throws(IOException::class)
     fun httpRead(handle: Long, buf: ByteArray): Int {
-        val holder = conns[handle] ?: return -1
+        val holder = conns[handle] ?: throw IOException("backend http handle vanished: $handle")
         val s = holder.stream ?: return -1
         return s.read(buf)
     }

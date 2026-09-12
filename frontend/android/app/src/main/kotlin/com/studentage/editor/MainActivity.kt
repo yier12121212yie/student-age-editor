@@ -25,7 +25,17 @@ class MainActivity : FlutterActivity() {
     /// （libbackend_shared.so，JNI 线程里跑与桌面完全同一套 sa::run_server）。
     /// 前端仍按 http://127.0.0.1:8765 访问，dart 侧协议不变
     /// （backend_launcher.dart 轮询 /api/ping 等就绪）。
+    /// 资源包拷贝互斥：两个 ensureBackend 线程同时 copyBundledAsset 会对同一
+    /// 目标文件并发写 FileOutputStream，可能写出损坏的 zip（且长度恰好等于
+    /// 源长度时幂等检查也拦不住）。
+    private val copyLock = Any()
+
+    /// 起停互斥：AtomicBoolean 保证 ensureBackend 全程幂等——onResume 每次前台
+    /// 切换都会调用，两个线程同时通过 pingBackend() 的失败窗口会并发起后端。
+    private val backendStarting = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private fun ensureBackend() {
+        if (!backendStarting.compareAndSet(false, true)) return
         thread(name = "native-backend") {
             try {
                 // Activity 重建时后端线程还活着：nativeStart 幂等，但先探一下省一次跳转。
@@ -41,6 +51,8 @@ class MainActivity : FlutterActivity() {
                 Log.i(TAG, "backend started on 127.0.0.1:$port")
             } catch (e: Exception) {
                 Log.e(TAG, "backend failed to start", e)
+            } finally {
+                backendStarting.set(false)
             }
         }
     }
@@ -58,49 +70,64 @@ class MainActivity : FlutterActivity() {
 
     /// 把 assets/bundled/resource_pack.zip 流式拷贝到 filesDir/bundled_resource_pack.zip。
     /// 返回解出后的绝对路径；APK 未内置时返回空字符串（后端按无内置资源运行）。
+    /// 写入走「临时文件 + 原子 rename」，配合 copyLock 保证并发安全与目标文件
+    /// 始终完整（半截 zip 一旦落盘，长度幂等检查也拦不住）。
     private fun copyBundledAsset(): String {
         val target = File(filesDir, bundledZipName)
-        try {
-            // openFd 只能处理未压缩的 asset，可拿到原始长度做“非同尺寸才覆盖”；
-            // Gradle 构建的 APK assets 默认未压缩，走此路径最省。
-            val afd = assets.openFd(bundledAssetPath)
+        synchronized(copyLock) {
             try {
-                if (target.exists() && target.length() == afd.length) {
+                // openFd 只能处理未压缩的 asset，可拿到原始长度做“非同尺寸才覆盖”；
+                // Gradle 构建的 APK assets 默认未压缩，走此路径最省。
+                val afd = assets.openFd(bundledAssetPath)
+                try {
+                    if (target.exists() && target.length() == afd.length) {
+                        return target.absolutePath
+                    }
+                    val tmp = File(filesDir, "$bundledZipName.tmp")
+                    afd.createInputStream().use { input ->
+                        FileOutputStream(tmp).use { out -> input.copyTo(out, 64 * 1024) }
+                    }
+                    if (!tmp.renameTo(target)) {
+                        // rename 失败（极罕见）：回退为直接覆盖写
+                        tmp.copyTo(target, overwrite = true)
+                        tmp.delete()
+                    }
+                    Log.i(TAG, "内置资源包已解出: ${target.absolutePath} (${target.length() / 1048576} MB)")
                     return target.absolutePath
+                } finally {
+                    afd.close()
                 }
-                afd.createInputStream().use { input ->
-                    FileOutputStream(target).use { out -> input.copyTo(out, 64 * 1024) }
-                }
-                Log.i(TAG, "内置资源包已解出: ${target.absolutePath} (${target.length() / 1048576} MB)")
-                return target.absolutePath
-            } finally {
-                afd.close()
-            }
-        } catch (_: FileNotFoundException) {
-            Log.i(TAG, "APK 未内置资源包（assets/$bundledAssetPath 不存在），后端将无内置资源")
-            return ""
-        } catch (_: IOException) {
-            // asset 被压缩存储时 openFd 不可用，退化为流式拷贝（仅在缺失时写一次）
-            if (target.exists() && target.length() > 0L) {
-                return target.absolutePath
-            }
-            try {
-                assets.open(bundledAssetPath).use { input ->
-                    FileOutputStream(target).use { out -> input.copyTo(out, 64 * 1024) }
-                }
-                Log.i(TAG, "内置资源包已解出(流式): ${target.absolutePath} (${target.length() / 1048576} MB)")
             } catch (_: FileNotFoundException) {
                 Log.i(TAG, "APK 未内置资源包（assets/$bundledAssetPath 不存在），后端将无内置资源")
                 return ""
+            } catch (_: IOException) {
+                // asset 被压缩存储时 openFd 不可用，退化为流式拷贝（仅在缺失时写一次）
+                if (target.exists() && target.length() > 0L) {
+                    return target.absolutePath
+                }
+                try {
+                    val tmp = File(filesDir, "$bundledZipName.tmp")
+                    assets.open(bundledAssetPath).use { input ->
+                        FileOutputStream(tmp).use { out -> input.copyTo(out, 64 * 1024) }
+                    }
+                    if (!tmp.renameTo(target)) {
+                        tmp.copyTo(target, overwrite = true)
+                        tmp.delete()
+                    }
+                    Log.i(TAG, "内置资源包已解出(流式): ${target.absolutePath} (${target.length() / 1048576} MB)")
+                } catch (_: FileNotFoundException) {
+                    Log.i(TAG, "APK 未内置资源包（assets/$bundledAssetPath 不存在），后端将无内置资源")
+                    return ""
+                } catch (e: Exception) {
+                    Log.w(TAG, "拷贝内置资源包失败", e)
+                    return ""
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "拷贝内置资源包失败", e)
                 return ""
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "拷贝内置资源包失败", e)
-            return ""
+            return if (target.exists()) target.absolutePath else ""
         }
-        return if (target.exists()) target.absolutePath else ""
     }
 
     private fun pingBackend(): Boolean = try {
