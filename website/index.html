@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学生时代模组编辑器 — 让每个玩家创造自己的学生时代</title>
+<meta name="description" content="为 Steam《学生时代》打造的跨平台 Mod 工作台：AI 对话式改模、剧情图节点编排、多网盘云同步、TTS 配音合成，GUI / CLI / TUI 三端一体，支持 Windows / macOS / Linux / Android。">
+<meta name="keywords" content="学生时代,Mod编辑器,模组编辑器,Steam,创意工坊,学生时代Mod,AI改模,剧情图,游戏编辑器,云同步">
+<!-- og:image / og:url 上线后请改成正式域名的绝对地址；og:image 建议放 assets/og-cover.png（1200×630，占位图，正式宣传图做好后替换即可） -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="学生时代模组编辑器 — 让每个玩家创造自己的学生时代">
+<meta property="og:description" content="AI 对话式改模、剧情图节点编排、多网盘云同步、TTS 配音，GUI / CLI / TUI 三端一体，四平台发行。">
+<meta property="og:url" content="https://github.com/yier12121212yie/student-age-editor/">
+<meta property="og:image" content="assets/og-cover.png">
+<meta property="og:site_name" content="学生时代模组编辑器">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="学生时代模组编辑器">
+<meta name="twitter:description" content="为 Steam《学生时代》打造的跨平台 Mod 工作台。">
+<meta name="twitter:image" content="assets/og-cover.png">
+<meta name="theme-color" content="#0a0814" id="metaTheme">
+<link rel="canonical" href="https://github.com/yier12121212yie/student-age-editor/">
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%236C5CE7"/><path d="M32 15 L53 24.5 L32 34 L11 24.5 Z" fill="white"/><path d="M22 30.5 L22 40 Q22 45.5 27.5 45.5 L36.5 45.5 Q42 45.5 42 40 L42 30.5 L32 34.8 Z" fill="%23F2EFFF"/><path d="M32 25.5 Q44 28.5 51 27" stroke="%23F2C25C" stroke-width="2.4" fill="none" stroke-linecap="round"/><circle cx="51" cy="28" r="2.4" fill="%23F2C25C"/></svg>'>
+<link rel="stylesheet" href="assets/css/style.css">
+<script>
+/* 主题预置：localStorage 记忆 > 系统偏好；默认跟随 prefers-color-scheme，避免首帧闪烁 */
+(function(){
+  var t = null;
+  try { t = localStorage.getItem("same-theme"); } catch(e){}
+  if (t !== "light" && t !== "dark") {
+    t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  }
+  document.documentElement.setAttribute("data-theme", t);
+  var m = document.getElementById("metaTheme");
+  if (m) m.setAttribute("content", t === "light" ? "#f6f3ec" : "#0a0814");
+  document.documentElement.classList.add("js");
+})();
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "学生时代模组编辑器",
+  "alternateName": "Student Age Mod Editor",
+  "operatingSystem": "Windows, macOS, Linux, Android",
+  "applicationCategory": "DeveloperApplication",
+  "softwareVersion": "Alpha-v0.3",
+  "description": "为 Steam 游戏《学生时代》打造的跨平台 Mod 工作台：AI 对话式改模、剧情图节点编排、多网盘云同步、TTS 配音，GUI / CLI / TUI 三端一体。",
+  "url": "https://github.com/yier12121212yie/student-age-editor/",
+  "author": {"@type": "Person", "name": "yier12121212yie"},
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "CNY"}
+}
+</script>
+<script src="assets/js/main.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+<div class="blobs" aria-hidden="true"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+
+<nav id="nav" aria-label="主导航">
+  <div class="container nav-inner">
+    <a class="brand" href="#top" aria-label="学生时代模组编辑器，回到顶部">
+      <img src="assets/img/logo.svg" alt="" width="30" height="30">
+      <span>学生时代模组编辑器<small>StudentAge Mod Editor</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="#workflow">AI 改模</a>
+      <a href="#features">特性</a>
+      <a href="#cloud">云同步</a>
+      <a href="#download">下载</a>
+      <a href="#docs">文档</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="nav-actions">
+      <a class="gh-btn" href="https://github.com/yier12121212yie/student-age-editor" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <button id="themeBtn" class="theme-btn" type="button" aria-label="切换浅色 / 深色主题">
+        <svg class="ico-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="ico-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </button>
+      <button id="burger" class="burger" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="mobilePanel"><i></i><i></i><i></i></button>
+    </div>
+  </div>
+  <div class="m-panel container" id="mobilePanel">
+    <a href="#workflow">AI 改模</a>
+    <a href="#features">特性</a>
+    <a href="#cloud">云同步</a>
+    <a href="#download">下载</a>
+    <a href="#docs">文档</a>
+    <a href="#faq">FAQ</a>
+    <a class="m-gh" href="https://github.com/yier12121212yie/student-age-editor" target="_blank" rel="noopener">GitHub 仓库</a>
+  </div>
+</nav>
+<div id="top" aria-hidden="true"></div>
+
+<main id="main">
+<!-- ================= Hero ================= -->
+<header class="hero">
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <span class="badge"><i class="dot"></i>Alpha v0.3 · 最新公开发行版</span>
+      <h1>让每个玩家<wbr>创造自己的<span class="grad">学生时代</span></h1>
+      <p class="lead">为 Steam《学生时代》打造的开箱即用 Mod 工作台——<b>一句话让 AI 改模</b>，像画流程图一样<b>编排剧情</b>；字段级 diff 审批、自动备份、多网盘云同步与 TTS 配音，GUI / CLI / TUI <b>三端一体</b>，Windows / macOS / Linux / Android <b>四平台发行</b>。</p>
+      <div class="cta-row">
+        <!-- Hero 下载按钮：静态 href 默认指向 Windows；有 JS 时按访问者平台改指向下载区里带 data-hero 的链接 -->
+        <a id="dlBtn" class="btn btn-primary" href="https://cdn.resource.liveint.cloud/student-age-editor-setup-Alpha-v0.3.exe" target="_blank" rel="noopener">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+          <span id="dlLabel">下载 Windows 版</span>
+        </a>
+        <a class="btn btn-ghost" href="#docs">查看文档</a>
+        <span class="cta-sub" id="dlSub">exe 安装包 · 便携 zip</span>
+      </div>
+      <div class="hero-chips">
+        <span class="chip">GUI · CLI · TUI 三端</span>
+        <span class="chip">离线可用</span>
+        <span class="chip">字段级 diff · y/N 审批</span>
+        <span class="chip">写盘自动 .bak 备份</span>
+        <span class="chip">插件系统 · Python 扩展</span>
+      </div>
+    </div>
+    <div class="hero-visual" aria-hidden="true">
+      <img class="hero-ico" src="assets/img/logo.svg" alt="" width="96" height="96">
+      <div class="float-chip fc1">所有修改 · <b>先确认再写入</b></div>
+      <div class="float-chip fc2">CLI / TUI <b>同样可用</b></div>
+      <div class="ai-demo" role="img" aria-label="AI 助手面板：用户下达修改指令，AI 调用工具定位条目，弹出确认框展示字段级 diff，可选择允许修改或拒绝">
+        <div class="win-title"><i></i><i></i><i></i><span>学生时代模组编辑器 — MyFirstMod</span></div>
+        <div class="ap">
+          <div class="ap-head">
+            <svg class="ap-bot" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 8V5M9.5 13.5h.01M14.5 13.5h.01"/></svg>
+            <b>AI 助手</b>
+            <span class="ap-mod">MyFirstMod</span>
+            <span class="ap-icons">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v14M5 11h14"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5.5c0 4.4-3 7.4-7 9-4-1.6-7-4.6-7-9V6z"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 4.5V7M12 17v2.5M4.5 12H7M17 12h2.5M6.7 6.7l1.8 1.8M15.5 15.5l1.8 1.8M17.3 6.7l-1.8 1.8M8.5 15.5l-1.8 1.8"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>
+            </span>
+          </div>
+          <div class="ap-body">
+            <div class="ap-user">把开局事件的标题改成「新的开始」，再给第一句对白配上语音</div>
+            <div class="ap-ai">
+              <div class="tool-card">
+                <svg class="t-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l4 4v14H7z"/><path d="M13 3v5h5"/></svg>
+                <span class="tc-name">get_domain_item</span>
+                <svg class="tc-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <p class="ap-round">已定位开局事件 EvtCfg #320101 与第一句对白，改动如下：</p>
+              <div class="tool-card pending">
+                <svg class="t-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l4.5-1L20 7.5 16.5 4 5 15.5z"/></svg>
+                <span class="tc-name">update_domain_item</span>
+                <svg class="tc-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </div>
+              <div class="ap-meta">10:24
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="ap-input">
+            <p class="ap-hint">对话输入框：向 AI 提问或下达修改模组文件的指令，可附带 docx/txt/md/xlsx/png/jpg 附件</p>
+            <div class="ap-box">询问 AI，或让它修改模组文件…（Enter 发送，Shift+Enter 换行）</div>
+            <div class="ap-row">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11l-7.5 7.5a4 4 0 0 1-6-6L14 5a2.5 2.5 0 0 1 4 4l-7.2 7.2a1.2 1.2 0 0 1-1.7-1.7L15.5 8"/></svg>
+              <span class="ap-model">OpenAI Compatible · gpt-4o</span>
+              <span class="ap-send"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5L20 4l-7 16-2.3-6.7z"/></svg>发送</span>
+            </div>
+          </div>
+          <div class="dlg-scrim">
+            <div class="dlg">
+              <h5>AI 请求修改「EvtCfg」id=320101</h5>
+              <p class="dlg-note">（预览基于原始 patch，实际写入以服务器校验与规整结果为准）</p>
+              <pre class="dlg-diff">  "id": 320101,
+- "title": "开学典礼",
++ "title": "新的开始",
+- "audio": null,
++ "audio": "audio/tts/320101001.ogg",
+  "type": 1,
+  "prev": 320100,</pre>
+              <div class="dlg-actions"><span class="dlg-no">拒绝</span><span class="dlg-yes">允许修改</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ================= 数据条 ================= -->
+<section class="stats" aria-label="数据概览">
+  <div class="container stats-grid">
+    <div class="stat"><b data-count="15">0</b><span>个内置 AI 工具</span></div>
+    <div class="stat"><b data-count="5">0</b><span>类插件扩展点</span></div>
+    <div class="stat"><b data-count="7">0</b><span>种云盘同步驱动</span></div>
+    <div class="stat"><b data-count="4">0</b><span>大平台同步发行</span></div>
+  </div>
+</section>
+
+<!-- ================= AI 工作流 ================= -->
+<section id="workflow" class="container">
+  <span class="eyebrow">HOW IT WORKS</span>
+  <h2>一句话改模，每一步都可控</h2>
+  <p class="sec-desc">AI 不是黑箱：所有写入先给你看字段级 diff，批准才落盘，随时可撤销、可回滚。</p>
+  <ol class="pipe">
+    <li class="pipe-step reveal"><i>1</i><h3>描述需求</h3><p>自然语言即可：「把开局事件的标题改成新的开始，并给第一句对白配音」。信息不足时 AI 会先向你提问。</p></li>
+    <li class="pipe-step reveal" style="--d:80ms"><i>2</i><h3>定位与生成</h3><p><b>15 个内置领域工具</b>跨全部配置表查字典、查记录、生成改动；复杂调研最多派 <b>4 个只读子代理</b>并行处理。</p></li>
+    <li class="pipe-step reveal" style="--d:160ms"><i>3</i><h3>diff 审批</h3><p>字段级新旧对照：GUI 弹窗确认，CLI / TUI 以 <b>y / N</b> 应答；没有你批准的改动不会落盘。</p></li>
+    <li class="pipe-step reveal" style="--d:240ms"><i>4</i><h3>安全落盘</h3><p><b>原子替换</b>写入，上一代自动留 <b>.bak</b>；写错可撤销 / 重做，跨表引用一键校验。</p></li>
+  </ol>
+  <div class="pipe-strip">之后还能 →&nbsp;<b>云同步备份</b> · <b>TTS 配音</b> · <b>打包发布</b>，或继续对话迭代</div>
+</section>
+
+<!-- ================= 特性 ================= -->
+<section id="features" class="container">
+  <span class="eyebrow">FEATURES</span>
+  <h2>为改 Mod 而生的完整工作台</h2>
+  <p class="sec-desc">从查找、编辑到备份、发布——GUI、CLI、TUI 共享同一套工作区与配置，一个入口做完所有事。</p>
+  <div class="bento">
+    <article class="b-card big reveal">
+      <div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.4L22 18l-2.1.6L19 21l-.9-2.4L16 18l2.1-.6z"/></svg></div>
+      <h3>AI 对话式改模</h3>
+      <p>一句话描述需求，AI 用 <b>15 个内置领域工具</b>跨全部配置表定位并生成修改；写盘前先给你<b>字段级 diff</b>，<b>y / N 审批</b>通过才落盘，自动留 <b>.bak</b>、支持撤销重做。信息不足时它会先问你，复杂调研还能派出最多 4 个只读子代理并行。</p>
+      <div class="tags"><span>15 个内置工具</span><span>字段级 diff</span><span>y/N 审批</span><span class="hl">撤销 · 重做</span></div>
+    </article>
+    <article class="b-card reveal" style="--d:60ms">
+      <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+      <h3>三端一体</h3>
+      <p>GUI 图形界面、CLI 脚本批处理、TUI 键盘流，同一工作区、同一份 AI / 云同步配置；CLI 与 TUI 可完全离线使用，适合 SSH、CI 与批处理。</p>
+    </article>
+    <article class="b-card reveal" style="--d:120ms">
+      <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></div>
+      <h3>TTS 配音合成</h3>
+      <p>阿里云 DashScope 百炼 / MiniMax 双引擎，正文一键合成语音，wav 自动转 Ogg 并登记 AudioCfg，配音可直接绑定到对白，三端共享配置。</p>
+      <div class="tags"><span class="new">v0.3 对白绑定</span></div>
+    </article>
+    <article class="b-card big reveal" style="--d:180ms">
+      <div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="2.2"/><circle cx="5" cy="18" r="2.2"/><rect x="15" y="3" width="7" height="7" rx="2"/><rect x="15" y="14" width="7" height="7" rx="2"/><path d="M7.2 6.8 15 6M7.2 17.2 15 18"/></svg></div>
+      <h3>剧情图节点编排</h3>
+      <p>像画流程图一样改剧情：事件 → 对白 → 选项在节点画布上拖拽连线，所见即所得；与表格视图随时切换，节点位置自动保存，插件还能注册专属卡型。</p>
+      <svg class="flow-svg" viewBox="0 0 320 128" fill="none" aria-hidden="true">
+        <path class="edge" d="M82 56 C 104 56 104 34 122 34"/>
+        <path class="edge" d="M82 72 C 104 72 104 96 122 96"/>
+        <path class="edge" d="M196 34 C 216 34 216 56 234 56"/>
+        <path class="edge" d="M196 96 C 216 96 216 72 234 72"/>
+        <g><rect class="nd" x="16" y="48" width="66" height="32" rx="9"/><text class="nd-t" x="49" y="68" text-anchor="middle">事件</text></g>
+        <g><rect class="nd" x="122" y="19" width="74" height="30" rx="9"/><text class="nd-t" x="159" y="38" text-anchor="middle">对白</text></g>
+        <g><rect class="nd" x="122" y="81" width="74" height="30" rx="9"/><text class="nd-t" x="159" y="100" text-anchor="middle">选项</text></g>
+        <g><rect class="nd-gold" x="234" y="48" width="72" height="32" rx="9"/><text class="nd-gold-t" x="270" y="68" text-anchor="middle">TTS 配音</text></g>
+      </svg>
+      <div class="tags"><span class="new">v0.3 新增</span><span>位置自动保存</span><span>插件可扩展卡型</span></div>
+    </article>
+    <article class="b-card reveal" style="--d:240ms">
+      <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 10h-4V6a2 2 0 0 0-4 0v4H6a2 2 0 0 0 0 4h4v4a2 2 0 0 0 4 0v-4h4a2 2 0 0 0 0-4z"/></svg></div>
+      <h3>多网盘云同步</h3>
+      <p>本地文件夹 / WebDAV / OpenList / 百度网盘 / 123 / Google Drive / OneDrive 共 7 种驱动，upload / download / sync 三种方向语义，支持试运行预览。</p>
+    </article>
+    <article class="b-card reveal" style="--d:300ms">
+      <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></div>
+      <h3>安全落盘</h3>
+      <p>保存采用原子替换（避免断电半截文件），每次写盘自动保留上一代 .bak 可回滚；乐观锁检测冲突改动，AI、云盘等敏感配置不随 Mod 分发。</p>
+    </article>
+    <article class="b-card wide reveal" style="--d:360ms">
+      <div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 7v3.5a.5.5 0 0 0 .5.5H18a2 2 0 0 1 0 4h-3.5a.5.5 0 0 0-.5.5V19a2 2 0 0 1-4 0v-3.5a.5.5 0 0 0-.5-.5H6a2 2 0 0 1 0-4h3.5a.5.5 0 0 0 .5-.5V7a2 2 0 0 1 4 0z"/></svg></div>
+      <h3>插件系统</h3>
+      <p>用 Python 扩展编辑器：注册 <b>HTTP 路由 / AI Agent 工具 / 声明式面板 / CLI 命令 / 剧情图卡片</b> 五类贡献；安装默认停用，启用需 <b>高危确认</b>（GUI 对话框 / CLI y/N / TUI 确认框），服务端强制留痕、单个失败相互隔离。</p>
+      <div class="tags"><span>v0.2 新增</span><span>五类扩展点</span><span>安装默认停用</span></div>
+    </article>
+  </div>
+</section>
+
+<!-- ================= 云同步 ================= -->
+<section id="cloud" class="container">
+  <span class="eyebrow">CLOUD SYNC</span>
+  <h2>Mod 随身走，换台电脑接着改</h2>
+  <div class="cloud-grid">
+    <div class="cloud-chips">
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v10M7 7v10M3 12h4M21 7v10M17 7v10M21 12h-4M13 7v10M13 7l5 5-5 5M13 17l-5 5"/></svg></span><span>本地文件夹<small>local · 直连磁盘</small></span></span>
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></span><span>WebDAV<small>兼容坚果云 / Alist / Nextcloud</small></span></span>
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></span><span>OpenList / Alist<small>经代理复用其 40+ 存储</small></span></span>
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg></span><span>百度网盘<small>通过 OpenList 代理</small></span></span>
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></span><span>123 云盘<small>通过 OpenList 代理</small></span></span>
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 3 1.5 4.5 2.6 6 .8 1.1 1.4 2.5 1.4 4h6c0-1.5.6-2.9 1.4-4 1.1-1.5 2.6-3 2.6-6a7 7 0 0 0-7-7z"/><path d="M9 21h6"/></svg></span><span>Google Drive<small>通过 OpenList 代理</small></span></span>
+      <span class="c-chip"><span class="c-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-11.6 1.5A4 4 0 1 0 7 17h10a4.5 4.5 0 1 0 1-8.9z"/></svg></span><span>OneDrive<small>通过 OpenList 代理</small></span></span>
+    </div>
+    <div class="cloud-side">
+      <h3>同步语义与安全</h3>
+      <ul>
+        <li>三种方向：<b>upload</b>（本地 → 远端）、<b>download</b>（远端 → 本地）、<b>sync</b>（双向，以新者为准）</li>
+        <li>支持 <b>--dry-run</b> 试运行预览、<b>--delete-extra</b> 清理远端多余文件</li>
+        <li>GUI 页实时同步；CLI / TUI 由你手动触发，适合脚本与批处理</li>
+      </ul>
+    </div>
+  </div>
+  <p class="cloud-note">提示：阿里云盘、夸克云盘、天翼云盘已停止支持，历史配置在操作时会被引导改用 OpenList 代理；云同步配置存于工作区 <code>.editor_cloud.json</code>，与 GUI 云页共用。</p>
+</section>
+
+<!-- ================= 下载 ================= -->
+<!-- 发行说明：下载链接默认指向 CDN 直链 https://cdn.resource.liveint.cloud/<同名文件>（国内更快）。
+     GitHub Releases 直连为备用：把链接的 CDN 前缀换回
+     releases/download/Alpha-v0.3/ 段即可；切回/更换前先 HEAD 验证目标可下载，更新步骤见 website/README.md。 -->
+<section id="download" class="container">
+  <span class="eyebrow">DOWNLOAD</span>
+  <h2>为你的平台选择发行版</h2>
+  <p class="sec-desc">GUI / CLI / TUI 打包在同一发行版里。以下为 Alpha v0.3 各平台直链（CDN 直链，国内更快；GitHub Releases 见下方备用行），点击卡片即开始下载；历史版本与校验信息见下方 GitHub Releases 备用行。</p>
+  <div class="dl-grid">
+    <div class="dl-card hot">
+      <a class="dico" href="https://cdn.resource.liveint.cloud/student-age-editor-setup-Alpha-v0.3.exe" target="_blank" rel="noopener" aria-label="下载 Windows Setup 安装包"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg></a>
+      <h3><a href="https://cdn.resource.liveint.cloud/student-age-editor-setup-Alpha-v0.3.exe" target="_blank" rel="noopener">Windows</a></h3>
+      <ul>
+        <li><a data-hero="windows" href="https://cdn.resource.liveint.cloud/student-age-editor-setup-Alpha-v0.3.exe" target="_blank" rel="noopener">Setup 安装包（Inno Setup）</a></li>
+        <li><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3.zip" target="_blank" rel="noopener">便携版 zip</a></li>
+      </ul>
+      <small>x64 · 游戏本体亦为 Windows 版</small>
+    </div>
+    <div class="dl-card">
+      <a class="dico" href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-macos.dmg" target="_blank" rel="noopener" aria-label="下载 macOS DMG"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></a>
+      <h3><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-macos.dmg" target="_blank" rel="noopener">macOS</a></h3>
+      <ul>
+        <li><a data-hero="macos" href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-macos.dmg" target="_blank" rel="noopener">DMG 拖拽安装</a></li>
+        <li><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-macos.pkg" target="_blank" rel="noopener">PKG 组件安装</a></li>
+        <li><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-macos.zip" target="_blank" rel="noopener">便携 zip</a></li>
+      </ul>
+      <small>PKG 未签名 · 未做 Apple 公证</small>
+    </div>
+    <div class="dl-card">
+      <a class="dico" href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-linux-amd64.AppImage" target="_blank" rel="noopener" aria-label="下载 Linux AppImage"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20V9"/><path d="M12 20l-5-5M12 20l5-5"/><path d="M4 9h16l-2.5 11h-11z"/></svg></a>
+      <h3><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-linux-amd64.AppImage" target="_blank" rel="noopener">Linux</a></h3>
+      <ul>
+        <li><a data-hero="linux" href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-linux-amd64.AppImage" target="_blank" rel="noopener">AppImage 免安装单文件</a></li>
+        <li><a href="https://cdn.resource.liveint.cloud/student-age-editor_Alpha-v0.3_amd64.deb" target="_blank" rel="noopener">deb 安装包</a></li>
+        <li><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-linux.zip" target="_blank" rel="noopener">便携 zip</a></li>
+      </ul>
+      <small>Debian / Ubuntu 系 · install.sh 向导</small>
+    </div>
+    <div class="dl-card">
+      <a class="dico" href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-android.apk" target="_blank" rel="noopener" aria-label="下载 Android APK"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg></a>
+      <h3><a href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-android.apk" target="_blank" rel="noopener">Android</a></h3>
+      <ul>
+        <li><a data-hero="android" href="https://cdn.resource.liveint.cloud/student-age-editor-Alpha-v0.3-android.apk" target="_blank" rel="noopener">APK（通用，arm64 + x86_64）</a></li>
+      </ul>
+      <small>JSON 编辑 / 资源浏览均可用</small>
+    </div>
+    <div class="dl-card soon">
+      <div class="dico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg></div>
+      <h3>iOS</h3>
+      <ul><li>敬请期待</li></ul>
+      <small>暂未规划发行</small>
+    </div>
+  </div>
+  <a class="dl-gh" href="https://github.com/yier12121212yie/student-age-editor/releases" target="_blank" rel="noopener">GitHub Releases 备用行：所有平台的历史版本、资产与自动生成的发行说明都在这里 →</a>
+</section>
+
+<!-- ================= 快速上手 ================= -->
+<section id="start" class="container">
+  <span class="eyebrow">QUICK START</span>
+  <h2>三步开始你的第一个 Mod</h2>
+  <div class="steps">
+    <div class="step reveal">
+      <h3>下载并安装</h3>
+      <p>点击页面顶部「下载」按钮按平台智能匹配直链，或在本页「下载」区选择你的平台直接下载；历史版本与校验信息见下方 GitHub Releases 备用行。</p>
+    </div>
+    <div class="step reveal" style="--d:80ms">
+      <h3>首次启动（OOBE 向导）</h3>
+      <p>启动编辑器会自动定位游戏工作区；找不到时可在向导里手动指定，Linux 会自动探测 Steam 库与 Wine 前缀内的 Mods 目录。</p>
+    </div>
+    <div class="step reveal" style="--d:160ms">
+      <h3>创建或编辑 Mod</h3>
+      <p>新建 Mod → 查找配置记录 → 直接编辑、剧情图编排或让 AI 对话改模，最后云同步备份、TTS 配音、打包发布一气呵成。</p>
+    </div>
+  </div>
+  <div class="path-box">
+    <span class="pb-t">默认工作区</span>
+    <code>%USERPROFILE%\AppData\LocalLow\PakyiGame\StudentAge\Mods</code>
+    <button class="copy-btn" type="button" data-copy="%USERPROFILE%\AppData\LocalLow\PakyiGame\StudentAge\Mods">复制</button>
+    <small>与图形版一致；可用 <code>workspace set &lt;路径&gt;</code> 或 <code>editor_env.json</code> 自定义（Steam AppID 1991040 / PakyiGame）</small>
+  </div>
+</section>
+
+<!-- ================= 文档 ================= -->
+<section id="docs" class="container">
+  <span class="eyebrow">DOCS</span>
+  <h2>文档与常用命令</h2>
+  <div class="doc-cards">
+    <a class="doc-card reveal" href="https://github.com/yier12121212yie/student-age-editor/blob/main/CLI_TUI_GUIDE.md" target="_blank" rel="noopener">
+      <h3>CLI &amp; TUI 使用指南</h3>
+      <p>全部命令、TUI 快捷键、AI 助手语义、云同步与 TTS 的完整文档，含大量可直接复制的命令示例。</p>
+      <span class="dc-go">阅读指南 →</span>
+    </a>
+    <a class="doc-card reveal" href="https://github.com/yier12121212yie/student-age-editor" target="_blank" rel="noopener" style="--d:70ms">
+      <h3>仓库 README</h3>
+      <p>安装方式、平台支持、源码构建、环境要求与常见问题，开发与贡献入口。</p>
+      <span class="dc-go">打开仓库 →</span>
+    </a>
+    <a class="doc-card reveal" href="https://github.com/yier12121212yie/student-age-editor/releases" target="_blank" rel="noopener" style="--d:140ms">
+      <h3>GitHub Releases</h3>
+      <p>每个版本的发行说明、资产下载与校验信息，支持订阅更新通知。</p>
+      <span class="dc-go">查看发行版 →</span>
+    </a>
+  </div>
+  <div class="cheat">
+    <div class="cheat-h">常用命令速查（复制即用）</div>
+    <div class="cheat-wrap">
+      <table class="cheat">
+        <thead><tr><th scope="col">命令</th><th scope="col">作用</th><th scope="col">操作</th></tr></thead>
+        <tbody>
+          <tr><td class="cmd"><code>python run_cli.py mods list</code></td><td class="desc">列出全部 Mod（含创意工坊，workshop 只读不可删）</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py mods list">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py cfg get EvtCfg --mod test --id 320101</code></td><td class="desc">查看单条记录（大表默认前 30 行）</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py cfg get EvtCfg --mod test --id 320101">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py cfg set EvtCfg --mod test --id 320101 --key title --value "新的开始"</code></td><td class="desc">修改单个字段（写盘前自动保留 .bak）</td><td class="act"><button class="copy-btn" type="button" data-copy='python run_cli.py cfg set EvtCfg --mod test --id 320101 --key title --value "新的开始"'>复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py cfg add TalkCfg --mod test</code></td><td class="desc">新建记录，schema 自动填默认值，ID 取 max+1</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py cfg add TalkCfg --mod test">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py cfg validate --mod test</code></td><td class="desc">校验 schema 与跨表引用（error 阻止 / warn 放行；v0.3 支持悬挂引用一键修复）</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py cfg validate --mod test">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py agent chat -m test 把开局事件的标题改成「新的开始」</code></td><td class="desc">AI 单次任务：工具调用 → 字段级 diff → 你确认 y/N</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py agent chat -m test 把开局事件的标题改成「新的开始」">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py cloud sync 备份 --mod test</code></td><td class="desc">云同步上传（upload 由本地 → 远端）</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py cloud sync 备份 --mod test">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py update</code></td><td class="desc">检查新版本（比对 GitHub Release）</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py update">复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py tts synthesize "新的开始" --bind-talk 320101001</code></td><td class="desc">TTS 合成语音存入模组 audio/tts/，自动转 Ogg 并登记 AudioCfg；--bind-talk 直接绑定到对白（v0.3）</td><td class="act"><button class="copy-btn" type="button" data-copy='python run_cli.py tts synthesize "新的开始" --bind-talk 320101001'>复制</button></td></tr>
+          <tr><td class="cmd"><code>python run_cli.py plugin list</code></td><td class="desc">列出插件；en/disable/install/uninstall/reload 管理（启用需 y/N 高危确认）</td><td class="act"><button class="copy-btn" type="button" data-copy="python run_cli.py plugin list">复制</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 更新日志 ================= -->
+<section id="changelog" class="container">
+  <span class="eyebrow">CHANGELOG</span>
+  <h2>更新日志</h2>
+  <div class="cl-wrap" id="changelogList">
+    <!-- 静态起始条目：页面会尝试从 GitHub Releases API 动态补充新版本，失败时静默保留此内容 -->
+    <article class="rel" data-tag="Alpha-v0.3">
+      <h4>Alpha v0.3 <span>2026-09-05</span></h4>
+      <ul>
+        <li>剧情图模式：GUI 新增第三种工作区——ComfyUI 式节点画布，事件→对白→选项拖拽连线编排，与表格视图随时切换</li>
+        <li>误操作保护：配置表写入收敛 cfg_store（乐观锁冲突检测 + .editor_history 快照），GUI 支持撤销 / 重做</li>
+        <li>引用完整性校验：21 张表 36 条跨表引用规则，悬挂引用扫描与一键修复，接入 validate_cross</li>
+        <li>TTS 配音打通：合成语音可直接绑定到对白记录（写入 TalkCfg.audio），CLI --bind-talk 与 GUI 配音面板支持</li>
+        <li>Agent 增强：新增 ask_user 提问工具（内置工具达 15 个）、会话历史保存 / 恢复；插件新增第五类贡献「剧情图卡片」</li>
+        <li>性能优化：大配置表读写链路提速</li>
+      </ul>
+    </article>
+    <article class="rel" data-tag="Alpha-v0.2">
+      <h4>Alpha v0.2 <span>2026-08-30</span></h4>
+      <ul>
+        <li>插件系统：用 Python 扩展编辑器——注册 HTTP 路由 / AI Agent 工具 / 声明式面板 / CLI 命令四类贡献；安装默认停用，启用需高危确认（GUI 对话框 / CLI y/N / TUI 确认框），服务端强制留痕、单个失败相互隔离；含可运行范例 examples/plugins/hello_plugin</li>
+        <li>AI 配音（TTS）：阿里云 DashScope 百炼 / MiniMax 双引擎，正文一键合成语音，wav 自动转 Ogg 并登记 AudioCfg（GUI 配音面板 + CLI tts 命令）</li>
+        <li>Agent 客户端断线自动重连重试；TUI 功能扩充；GUI / CLI / TUI 三端统一应用图标；修复发行包缺 rich 导致 editor-cli 启动即崩</li>
+      </ul>
+    </article>
+    <article class="rel" data-tag="Alpha-v0.1">
+      <h4>Alpha v0.1 <span>2026-08-29</span></h4>
+      <ul>
+        <li>首个公开发行版：Windows / macOS / Linux / Android 四平台同步发布（exe · dmg+pkg · AppImage+deb · apk）</li>
+        <li>GUI / CLI / TUI 三端一体；CLI、TUI 可完全离线使用（无需启动后端 HTTP 服务）</li>
+        <li>AI 助手上线：13 个内置工具 + 最多 4 个只读并行子代理，写操作先展示字段级 diff 再 y/N 审批，工具循环上限 20 轮</li>
+        <li>云同步支持 7 种驱动；移除阿里云盘 / 夸克 / 天翼（历史配置引导改用 OpenList 代理）</li>
+        <li>配置表可视化编辑上线，schema 驱动校验与自动默认值</li>
+      </ul>
+    </article>
+  </div>
+  <p class="cl-static-note">上方为基础条目；联网时页面会自动拉取 GitHub Releases，把有新内容的版本追加到列表最前（拉取失败则静默保留静态条目）。</p>
+</section>
+
+<!-- ================= FAQ ================= -->
+<section id="faq" class="container">
+  <span class="eyebrow">FAQ</span>
+  <h2>常见问题</h2>
+  <div class="faq">
+    <details>
+      <summary>免费吗？需要买什么？</summary>
+      <div class="fa-b"><p>目前所有平台发行版均可免费下载使用。AI 助手与 TTS 需要你自己准备对应服务商（OpenAI 兼容 / Anthropic / 阿里云百炼 / MiniMax 等）的 API Key，按服务商计费；未配置时编辑器给出引导而不是报错。</p></div>
+    </details>
+    <details>
+      <summary>安全吗？我的 Mod 数据会去哪？</summary>
+      <div class="fa-b"><p>数据默认只在本机处理：后端是本地 <code>127.0.0.1</code> 服务，CLI / TUI 甚至可以不启动 HTTP 服务完全离线运行。写盘采用原子替换并自动保留上一代 <code>.bak</code>，误写可回滚；v0.3 起还有乐观锁冲突检测与撤销 / 重做兜底。AI 密钥、网盘令牌等敏感配置不随 Mod 分发。个别杀毒软件可能对 <code>backend.exe</code> 误报，添加信任即可。</p></div>
+    </details>
+    <details>
+      <summary>我的 Mod 文件放在哪里？</summary>
+      <div class="fa-b"><p>默认工作区是 <code>%USERPROFILE%\AppData\LocalLow\PakyiGame\StudentAge\Mods</code>（与图形版一致）。Linux 会自动探测 Steam 库与 <code>compatdata/1991040/pfx</code> 内的 Mods 目录；也可以用 <code>workspace set &lt;路径&gt;</code> 或 <code>editor_env.json</code> 自定义。</p></div>
+    </details>
+    <details>
+      <summary>支持哪些平台？</summary>
+      <div class="fa-b"><p>Windows / macOS / Linux / Android 四平台均有发行版。注意：游戏本体只有 Windows 版，Mac / Linux / Android 上适合直接编辑 Mod 的 JSON 与资源文件；Android 版暂不支持部分压缩纹理（ASTC / ETC / BC）与 FSB 音频的解码导出，不影响 JSON 编辑等核心功能。</p></div>
+    </details>
+    <details>
+      <summary>和 Steam 创意工坊是什么关系？</summary>
+      <div class="fa-b"><p>编辑器会列出「我的 Mod + 已订阅的创意工坊 Mod」，方便一起查看与编辑。但 workshop 目录在编辑器里是<b>只读</b>的——不能删除，需在 Steam 客户端取消订阅。创建的 Mod 是否发布到创意工坊、以何种形式发布，请以游戏与平台的最新规则为准。</p></div>
+    </details>
+    <details>
+      <summary>AI 助手要用我自己的 Key 吗？</summary>
+      <div class="fa-b"><p>是的，需自备。支持 <code>openai_compatible</code> / <code>openai_responses</code> / <code>anthropic</code> 三种协议与任意 baseUrl；配置存在 <code>.editor_ai.json</code>，GUI / CLI / TUI 三端共享、实时生效，也能在 TUI AI 面板里直接改。</p></div>
+    </details>
+  </div>
+</section>
+</main>
+
+<!-- ================= Footer ================= -->
+<footer>
+  <div class="container f-inner">
+    <div class="f-top">
+      <a class="brand" href="#top">
+        <img src="assets/img/logo.svg" alt="" width="26" height="26">
+        <span>学生时代模组编辑器</span>
+      </a>
+      <div class="f-links">
+        <a href="https://github.com/yier12121212yie/student-age-editor" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a href="https://github.com/yier12121212yie/student-age-editor/blob/main/CLI_TUI_GUIDE.md" target="_blank" rel="noopener">CLI &amp; TUI 指南</a>
+        <a href="https://github.com/yier12121212yie/student-age-editor/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="#faq">FAQ</a>
+      </div>
+    </div>
+    <p class="f-legal">本工具为社区创作，与《学生时代》官方（PakyiGame）及 Steam 创意工坊无隶属关系；AI 助手与 TTS 需自备对应服务商 API Key；请在同步前自行备份工作区。</p>
+    <p class="f-copy">© 2026 yier12121212yie · 学生时代模组编辑器</p>
+  </div>
+</footer>
+
+</body>
+</html>

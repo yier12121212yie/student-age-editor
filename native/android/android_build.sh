@@ -35,17 +35,28 @@ fi
 
 # cmake/ninja: CI (ubuntu) has them on PATH; the Windows build host keeps them
 # under the VS Build Tools tree, which vcvars does NOT export. Explicit env
-# override wins, then the Windows paths, then PATH.
+# override wins, then a vswhere-probed VS installation, then the legacy
+# hardcoded paths as a last-resort fallback, then PATH.
 first_existing() {  # args: candidate paths (may be empty); prints the first real one
     for c in "$@"; do
         if [ -n "$c" ] && { [ -x "$c" ] || [ -f "$c" ]; }; then printf '%s\n' "$c"; return 0; fi
     done
     return 1
 }
+# vswhere 是官方的 VS/BuildTools 发现机制：不依赖任何写死的安装盘符。
+VS_DIR=""
+VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+if [ -f "$VSWHERE" ]; then
+    VS_DIR="$("$VSWHERE" -utf8 -latest -products '*' \
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+        -property installationPath 2>/dev/null | head -1 || true)"
+fi
 CMAKE="${CMAKE_BIN:-$(first_existing \
+    "$VS_DIR/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" \
     /d/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe \
     "$(command -v cmake 2>/dev/null || true)" || true)}"
 NINJA="${NINJA_BIN:-$(first_existing \
+    "$VS_DIR/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe" \
     /d/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe \
     "$(command -v ninja 2>/dev/null || true)" || true)}"
 API="${ANDROID_API:-24}"

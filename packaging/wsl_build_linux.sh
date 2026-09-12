@@ -8,9 +8,11 @@ export APPIMAGETOOL=/opt/appimagetool-x86_64.AppImage
 export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn
 export PUB_HOSTED_URL=https://pub.flutter-io.cn
 cd /root/editorbuild/editor
-# 版本号取 frontend/pubspec.yaml 的 version: x.y.z+n
+# 版本号取 frontend/pubspec.yaml 的 version: x.y.z[-pre]+n（与主脚本
+# read_frontend_version 的正则一致：预发布后缀 alpha/beta 等必须被接受，
+# 否则 VER 为空、版本号静默丢失）。
 VER=$(grep -m1 '^version:' frontend/pubspec.yaml \
-  | sed -E 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3})(\+[0-9]+)?[[:space:]]*$/\1/')
+  | sed -E 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?)(\+[0-9]+)?[[:space:]]*$/\1/')
 EXTRA_ARGS=""
 if [ "${SKIP_INSTALLERS:-0}" = "1" ]; then
   EXTRA_ARGS="--no-installer"

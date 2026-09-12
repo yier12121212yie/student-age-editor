@@ -475,9 +475,12 @@ def _msvc_env(vcvars):
     if not vcvars:
         return env
     # shell=True → cmd.exe /c ""<vcvars64.bat>" && set"（Windows 惯用法，
-    # 避开 list 形式下 cmd 引号解析的坑）
+    # 避开 list 形式下 cmd 引号解析的坑）。显式 utf-8 + errors=replace：
+    # 中文系统上 text=True 默认按 cp936 解码，vcvars 输出含非 ASCII（路径/
+    # 横幅）时会 UnicodeDecodeError 或乱码。
     r = subprocess.run('"%s" && set' % vcvars, shell=True, cwd=ROOT,
-                       capture_output=True, text=True, timeout=300)
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=300)
     if r.returncode != 0:
         raise SystemExit(
             "错误：初始化 MSVC 环境失败（%s）。\n%s" % (vcvars, r.stderr[-800:]))
@@ -814,11 +817,16 @@ def make_zip(out_dir, zip_name):
         os.remove(zip_path)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for root, dirs, files in os.walk(out_dir):
-            # macOS .app 内含符号链接（Frameworks），保留链接本身而非内容
+            # macOS .app 内含符号链接（Frameworks），保留链接本身而非内容。
+            # 目录链接写完条目后必须从 dirs 剔除：否则 os.walk 深入链接目标，
+            # 把链接指向的内容再以真实文件打包一遍（体积翻倍、结构混乱）。
+            skip = set()
             for d in dirs:
                 p = os.path.join(root, d)
                 if os.path.islink(p):
                     _zip_symlink(z, out_dir, p)
+                    skip.add(d)
+            dirs[:] = [d for d in dirs if d not in skip]
             for f in files:
                 p = os.path.join(root, f)
                 if os.path.islink(p):
@@ -865,8 +873,6 @@ def main():
 
     if args.target == "windows" and not _is_windows():
         raise SystemExit("错误：Windows 包必须在 Windows 上构建。")
-    if args.target == "linux" and _is_windows() and not os.environ.get("WSL_DISTRO_NAME"):
-        pass  # 由调用方保证环境（如 WSL 内 sys.platform 也可能是 linux）
     if args.target == "macos" and sys.platform != "darwin":
         raise SystemExit("错误：macOS 包必须在 Mac 上构建。")
 

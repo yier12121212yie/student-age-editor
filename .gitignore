@@ -28,7 +28,6 @@ frontend/android/app/src/main/python/
 # 其他
 backup.zip
 .reasonix/
-友商产品/
 *.log
 
 # 本机配置与缓存（editor_env.json / .editor_ai.json 含敏感信息不入库）
@@ -48,15 +47,11 @@ _cache/
 # Flutter Windows 构建临时目录
 frontend/windows/flutter/ephemeral/
 
-# 第三方参考项目（OpenList 源码，非本项目内容）
-OpenList-main/
-
-# 导出的个人笔记（体积较大）
-《学生时代》Mod指南.note.html
-《学生时代》Mod指南.note_files/
-
-# 空目录占位
-website/
+# 本地参考资料（保存的 API 文档网页 / 第三方源码 / 竞品资料等，统一不入库；
+# 《学生时代》Mod文档 已被跟踪，不受忽略规则影响）
+参考资料/
 
 # AI 会话历史（运行时数据，agent/history_store.py 落盘）
 .editor_ai_history/
+# website/ 有真实内容（静态官网首页），纳入版本控制——此前误标为“空目录
+# 占位”被整体忽略，内容存在丢失风险。

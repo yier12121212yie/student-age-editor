@@ -79,8 +79,14 @@ def main():
         pkg = os.path.join(work, "pkg")
         app_dir = os.path.join(pkg, "opt", PKG_ID)
         shutil.copytree(src, app_dir, symlinks=True)
-        # 安装向导脚本只随 zip/install.sh 分发，不进 /opt（有 /usr/bin 命令即可）
-        shutil.rmtree(os.path.join(app_dir, "install.sh"), ignore_errors=True)
+        # 安装向导脚本只随 zip/install.sh 分发，不进 /opt（有 /usr/bin 命令即可）。
+        # install.sh 是文件而非目录：rmtree(ignore_errors=True) 会把
+        # NotADirectoryError 静默吞掉、文件原样留在包里。
+        install_sh = os.path.join(app_dir, "install.sh")
+        if os.path.isdir(install_sh):
+            shutil.rmtree(install_sh, ignore_errors=True)
+        elif os.path.isfile(install_sh):
+            os.remove(install_sh)
         ensure_exec(os.path.join(app_dir, APP_NAME))
         for backend_bin in ("backend", "backend_cli", "backend_tui", "aa_scan"):
             ensure_exec(os.path.join(app_dir, backend_bin))

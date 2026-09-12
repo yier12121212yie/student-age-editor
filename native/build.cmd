@@ -12,10 +12,21 @@ REM Directory this script lives in (native\), trailing slash trimmed.
 set "NATIVE_DIR=%~dp0"
 if "%NATIVE_DIR:~-1%"=="\" set "NATIVE_DIR=%NATIVE_DIR:~0,-1%"
 
-REM Toolchain locations (verified present on the build hosts; nothing installed).
+REM Toolchain locations: vswhere 动态探测优先（不依赖写死的安装盘符），本机
+REM D:\BuildTools 作为回退。任何一路探到即可用。
 set "VCVARS=D:\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 set "CMAKE_BIN=D:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
 set "NINJA_BIN=D:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
+
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%i in (`"%VSWHERE%" -utf8 -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VS_DIR=%%i"
+)
+if defined VS_DIR (
+    if not exist "%VCVARS%" set "VCVARS=%VS_DIR%\VC\Auxiliary\Build\vcvars64.bat"
+    if not exist "%CMAKE_BIN%\cmake.exe" set "CMAKE_BIN=%VS_DIR%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+    if not exist "%NINJA_BIN%\ninja.exe" set "NINJA_BIN=%VS_DIR%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
+)
 
 set "BUILD_DIR=%NATIVE_DIR%\build"
 

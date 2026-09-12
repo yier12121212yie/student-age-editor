@@ -349,8 +349,9 @@ begin
 
   RegWriteStringValue(RootKey, SubKey, 'StudentAgeEditor_BackupPath', OldPath);
 
-  Paths := ';' + OldPath + ';';
-  if Pos(';' + Dir + ';', Paths) = 0 then
+  // 大小写不敏感去重：PATH 中同一目录大小写不同的写法不应产生重复条目。
+  Paths := ';' + Uppercase(OldPath) + ';';
+  if Pos(';' + Uppercase(Dir) + ';', Paths) = 0 then
   begin
     if (OldPath <> '') and (OldPath[Length(OldPath)] <> ';') then
       NewPath := OldPath + ';' + Dir
@@ -369,24 +370,44 @@ var
   RootKey: Integer;
   SubKey: String;
   CurPath: String;
-  P: Integer;
+  Rest: String;
+  Item: String;
   NewPath: String;
+  P: Integer;
 begin
   RootKey := GetPathRegistryRoot();
   SubKey := GetPathRegistrySubKey();
 
   if RegQueryStringValue(RootKey, SubKey, 'Path', CurPath) then
   begin
-    P := Pos(';' + Dir + ';', ';' + CurPath + ';');
-    if P > 0 then
+    // 逐条按 ';' 拆分、只删除整条目（大小写不敏感）相等的项。旧的
+    // StringChangeEx 子串替换会把 ';C:\app\bin' 从 ';C:\app\bin2' 里截掉，
+    // 把用户的 bin2 条目破坏成 '2'。
+    NewPath := '';
+    Rest := CurPath;
+    while Rest <> '' do
     begin
-      NewPath := CurPath;
-      StringChangeEx(NewPath, ';' + Dir, '', True);
-      StringChangeEx(NewPath, Dir + ';', '', True);
-      StringChangeEx(NewPath, Dir, '', True);
-      RegWriteStringValue(RootKey, SubKey, 'Path', NewPath);
-      BroadcastEnvChange();
+      P := Pos(';', Rest);
+      if P > 0 then
+      begin
+        Item := Copy(Rest, 1, P - 1);
+        Rest := Copy(Rest, P + 1, Length(Rest));
+      end
+      else
+      begin
+        Item := Rest;
+        Rest := '';
+      end;
+      if (Item <> '') and (Uppercase(Item) <> Uppercase(Dir)) then
+      begin
+        if NewPath = '' then
+          NewPath := Item
+        else
+          NewPath := NewPath + ';' + Item;
+      end;
     end;
+    RegWriteStringValue(RootKey, SubKey, 'Path', NewPath);
+    BroadcastEnvChange();
   end;
   RegDeleteValue(RootKey, SubKey, 'StudentAgeEditor_BackupPath');
 end;
