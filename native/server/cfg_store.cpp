@@ -491,16 +491,24 @@ json undo(const std::string& abs_path) {
 
     {
         std::lock_guard<std::mutex> lk(g_reg_mu);
-        StackPair& entry = g_stacks[key];
-        entry.undo.pop_back();  // ...only now the stack moves
-        StackEntry pushed;
-        pushed.snap = std::nullopt;
-        pushed.text = cur_text;
-        pushed.existed = true;
-        pushed.had_bom = restore_bytes && sa_core::starts_with_bom(*restore_bytes);
-        pushed.lossy = false;
-        entry.redo.push_back(std::move(pushed));
-        trim_keep_last(entry.redo, static_cast<size_t>(kHistoryLimit));
+        // find, not operator[]: a concurrent forget() (e.g. cloud sync replacing
+        // the table) may have erased the entry while we were restoring; re-creating
+        // an empty entry here would make pop_back() on an empty vector UB. The
+        // restore has already been applied, so we still report success — only the
+        // redo bookkeeping is lost with the forgotten stack.
+        auto it = g_stacks.find(key);
+        if (it != g_stacks.end() && !it->second.undo.empty()) {
+            StackPair& entry = it->second;
+            entry.undo.pop_back();  // ...only now the stack moves
+            StackEntry pushed;
+            pushed.snap = std::nullopt;
+            pushed.text = cur_text;
+            pushed.existed = true;
+            pushed.had_bom = restore_bytes && sa_core::starts_with_bom(*restore_bytes);
+            pushed.lossy = false;
+            entry.redo.push_back(std::move(pushed));
+            trim_keep_last(entry.redo, static_cast<size_t>(kHistoryLimit));
+        }
     }
     return result_with_data(abs, mtime_ns);
 }
@@ -536,16 +544,20 @@ json redo(const std::string& abs_path) {
 
     {
         std::lock_guard<std::mutex> lk(g_reg_mu);
-        StackPair& entry = g_stacks[key];
-        entry.redo.pop_back();
-        StackEntry pushed;
-        pushed.snap = std::nullopt;
-        pushed.text = cur_text;
-        pushed.existed = true;
-        pushed.had_bom = restore_bytes && sa_core::starts_with_bom(*restore_bytes);
-        pushed.lossy = false;
-        entry.undo.push_back(std::move(pushed));
-        trim_keep_last(entry.undo, static_cast<size_t>(kHistoryLimit));
+        // find + non-empty check: same concurrent-forget() race as undo().
+        auto it = g_stacks.find(key);
+        if (it != g_stacks.end() && !it->second.redo.empty()) {
+            StackPair& entry = it->second;
+            entry.redo.pop_back();
+            StackEntry pushed;
+            pushed.snap = std::nullopt;
+            pushed.text = cur_text;
+            pushed.existed = true;
+            pushed.had_bom = restore_bytes && sa_core::starts_with_bom(*restore_bytes);
+            pushed.lossy = false;
+            entry.undo.push_back(std::move(pushed));
+            trim_keep_last(entry.undo, static_cast<size_t>(kHistoryLimit));
+        }
     }
     return result_with_data(abs, mtime_ns);
 }

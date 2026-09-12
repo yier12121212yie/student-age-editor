@@ -37,6 +37,9 @@ namespace {
 namespace sp = sa_core::str;
 namespace spath = sa_core::paths;
 
+// read_file_or_throw 的单文件上限（1GB）：整文件进内存的上传/下载路径的护栏。
+constexpr long long kCloudMaxFileBytes = 1024ll * 1024 * 1024;
+
 // Python type(e).__name__ for a JSON value (used in AttributeError messages).
 std::string py_type_of(const json& v) {
     if (v.is_null()) return "NoneType";
@@ -209,8 +212,12 @@ HttpResult http_request(const std::string& url, const std::string& method,
     }
     bool has_ua = false, has_accept = false;
     for (const auto& [k, v] : headers) {
-        if (k == "User-Agent" || k == "user-agent") has_ua = true;  // exact dict keys
-        if (k == "Accept") has_accept = true;
+        // 大小写不敏感判断：上面 merged 去重已按小写名合并，这里若只认精确
+        // 大小写，"USER-AGENT" 之类会同时保留并再补一个默认 UA（重复头）。
+        std::string lk;
+        for (char c : k) lk += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lk == "user-agent") has_ua = true;
+        if (lk == "accept") has_accept = true;
     }
     if (!has_ua) {
         headers.emplace_back(
@@ -345,6 +352,12 @@ std::string norm_remote_json(const json& v) {
 }
 
 std::string read_file_or_throw(const std::string& path, const std::string& op) {
+    // 上传/下载都是整文件进内存：拒绝超大文件，避免一个几 GB 的 mod 把进程
+    // 拖进 OOM（与 http_client 的 kMaxTransferBytes 同量级）。
+    if (auto st = spath::stat(path); st && st->size > kCloudMaxFileBytes) {
+        raise_typed("OSError", op + " failed: file too large (" +
+                                   std::to_string(st->size) + " bytes): " + path);
+    }
     auto b = spath::read_bytes(path);
     if (!b.has_value()) raise_typed("OSError", op + " failed: " + path);
     return std::move(*b);

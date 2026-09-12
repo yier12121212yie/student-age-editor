@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <mutex>
 
 #include "sa_core/assets.h"
@@ -294,16 +295,19 @@ std::string value_error_int_repr_quoted(const std::string& s) {
     return "invalid literal for int() with base 10: " + sa_core::py_repr_str(s);
 }
 
-long long digits_to_ll(const std::vector<uint32_t>& cps) {
+std::optional<long long> digits_to_ll(const std::vector<uint32_t>& cps) {
     // Python int() 对 Nd 类数字逐位求值（int("１２")==12）。调用方保证
     // 全部码点满足 is_digit_cp（re.findall(r"\d+") 的产出天然满足）。
+    // 溢出返回 nullopt（与 sa_core::py_int 的保护一致），杜绝有符号溢出 UB。
     long long v = 0;
+    constexpr long long kMax = std::numeric_limits<long long>::max();
     for (uint32_t cp : cps) {
         int d;
         if (cp >= '0' && cp <= '9') d = static_cast<int>(cp - '0');
         else if (cp >= 0xFF10 && cp <= 0xFF19) d = static_cast<int>(cp - 0xFF10);
         else if (cp >= 0x0660 && cp <= 0x0669) d = static_cast<int>(cp - 0x0660);
         else d = static_cast<int>(cp - 0x0966);  // 0966-096F
+        if (v > (kMax - d) / 10) return std::nullopt;
         v = v * 10 + d;
     }
     return v;
@@ -324,13 +328,16 @@ std::optional<long long> int_digits_str(std::string_view s) {
         if (!is_digit_cp(cps[i])) return std::nullopt;
         digits.push_back(cps[i]);
     }
-    long long v = digits_to_ll(digits);
-    return neg ? -v : v;
+    auto v = digits_to_ll(digits);
+    if (!v) return std::nullopt;
+    return neg ? -*v : *v;
 }
 
 std::vector<std::string> findall_digits(const std::string& s, bool allow_sign) {
     std::vector<std::string> out;
     auto cps = to_codepoints(s);
+    // byte_of 与 to_codepoints 的解码规则完全同构（校验续字节、非法序列
+    // 按单字节前进），保证 byte_of[i] <= s.size()，substr 永不越界。
     std::vector<size_t> byte_of(cps.size() + 1);
     {
         size_t b = 0;
@@ -339,13 +346,22 @@ std::vector<std::string> findall_digits(const std::string& s, bool allow_sign) {
             byte_of[i] = b;
             unsigned char c = static_cast<unsigned char>(s[b]);
             size_t w = 1;
-            if ((c & 0xE0) == 0xC0) w = 2;
-            else if ((c & 0xF0) == 0xE0) w = 3;
-            else if ((c & 0xF8) == 0xF0) w = 4;
+            if ((c & 0xE0) == 0xC0 && b + 1 < n &&
+                (static_cast<unsigned char>(s[b + 1]) & 0xC0) == 0x80)
+                w = 2;
+            else if ((c & 0xF0) == 0xE0 && b + 2 < n &&
+                     (static_cast<unsigned char>(s[b + 1]) & 0xC0) == 0x80 &&
+                     (static_cast<unsigned char>(s[b + 2]) & 0xC0) == 0x80)
+                w = 3;
+            else if ((c & 0xF8) == 0xF0 && b + 3 < n &&
+                     (static_cast<unsigned char>(s[b + 1]) & 0xC0) == 0x80 &&
+                     (static_cast<unsigned char>(s[b + 2]) & 0xC0) == 0x80 &&
+                     (static_cast<unsigned char>(s[b + 3]) & 0xC0) == 0x80)
+                w = 4;
             b += w;
+            if (b > n) b = n;
         }
         byte_of[cps.size()] = s.size();
-        (void)n;
     }
     size_t i = 0;
     const size_t n = cps.size();

@@ -980,11 +980,20 @@ long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
     std::string k = safe_key(key);
     std::string path = sa_core::paths::join(cfg_dir, "AudioCfg.json");
     json data = json::object();
+    std::optional<long long> expect;
     if (sa_core::paths::is_file(path)) {
+        if (auto st = sa_core::paths::stat(path)) expect = st->mtime_ns;
         if (auto raw = sa_core::paths::read_bytes(path)) {
-            std::string body = sa_core::str::trim(*raw);
+            // BOM-tolerant decode (matches bind_talk_audio): a BOM-prefixed or
+            // malformed table must NOT fall through as an empty object, or the
+            // write below would wipe every existing voice entry.
+            std::string body = *raw;
+            if (body.size() >= 3 && static_cast<unsigned char>(body[0]) == 0xEF)
+                body = body.substr(3);
             auto parsed = json::parse(body, nullptr, false);
-            if (!parsed.is_discarded() && parsed.is_object()) data = parsed;
+            if (parsed.is_discarded() || !parsed.is_object())
+                throw TtsStoreError("AudioCfg.json 结构异常，无法登记配音（已中止写入以保护现有数据）");
+            data = parsed;
         }
     }
     long long max_id = 0;
@@ -1012,7 +1021,9 @@ long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
     row["disable"] = 0;
     row["uiType"] = 0;
     data[std::to_string(new_id)] = std::move(row);
-    json result = cfg_store::write_cfg(path, data, std::nullopt, nullptr, false, true);
+    json result = cfg_store::write_cfg(path, data, expect, nullptr, false, true);
+    if (result.value("conflict", false))
+        throw TtsStoreError("登记 AudioCfg 冲突：文件在读取后已被其他窗口修改，请重试");
     if (!result.value("ok", false))
         throw TtsStoreError("登记 AudioCfg 失败: " + result.value("error", std::string("未知错误")));
     return new_id;

@@ -87,7 +87,7 @@ bool parse_args(int argc, char** argv, Options& out, std::string& err) {
     }
     if (out.show_help) return true;
     if (out.port < 0) {
-        err = "--port is required";
+        err = "--port must be in 0..65535";
         return false;
     }
     if (out.port > 65535) {

@@ -133,6 +133,12 @@ bool send_all(sa_socket_t sock, const char* data, size_t len) {
     return true;
 }
 
+// Upper bound on the buffered request head (request line + headers). fill()
+// refuses to buffer past it, so a client streaming a never-terminated header
+// line cannot drive the process into bad_alloc (the body has its own cap:
+// kMaxBodyBytes below). Headers beyond this are answered with 431.
+constexpr size_t kMaxHeadBytes = 1024 * 1024;
+
 // Buffered line/exact reader over the connection socket.
 class LineReader {
   public:
@@ -141,30 +147,41 @@ class LineReader {
     bool next_line(std::string& out) {
         out.clear();
         for (;;) {
-            for (size_t i = 0; i < buf_.size(); ++i) {
+            for (size_t i = start_; i < buf_.size(); ++i) {
                 if (buf_[i] == '\n') {
-                    out.assign(buf_.data(), i);
-                    buf_.erase(buf_.begin(), buf_.begin() + i + 1);
+                    out.assign(buf_.data() + start_, i - start_);
+                    start_ = i + 1;
+                    compact();
                     if (!out.empty() && out.back() == '\r') out.pop_back();
                     return true;
                 }
             }
             if (!fill()) {
-                out.assign(buf_.begin(), buf_.end());
+                if (overflow_) {
+                    buf_.clear();
+                    start_ = 0;
+                    out.clear();
+                    return false;
+                }
+                out.assign(buf_.data() + start_, buf_.size() - start_);
                 buf_.clear();
+                start_ = 0;
                 if (!out.empty() && out.back() == '\r') out.pop_back();
                 return !out.empty();
             }
         }
     }
 
+    bool overflowed() const { return overflow_; }
+
     bool read_exact(std::string& out, size_t want) {
         out.clear();
         while (out.size() < want) {
-            size_t avail = std::min(buf_.size(), want - out.size());
+            size_t avail = std::min(buf_.size() - start_, want - out.size());
             if (avail) {
-                out.append(buf_.data(), avail);
-                buf_.erase(buf_.begin(), buf_.begin() + avail);
+                out.append(buf_.data() + start_, avail);
+                start_ += avail;
+                compact();
                 continue;
             }
             char chunk[65536];
@@ -181,8 +198,21 @@ class LineReader {
     }
 
   private:
+    // Drop the consumed prefix so buf_ stays O(live bytes). Only worth an erase
+    // once the dead prefix is large; keeps per-line costs amortized O(1).
+    void compact() {
+        if (start_ >= 8192) {
+            buf_.erase(buf_.begin(), buf_.begin() + static_cast<long>(start_));
+            start_ = 0;
+        }
+    }
+
     bool fill() {
         for (;;) {
+            if (buf_.size() - start_ >= kMaxHeadBytes) {
+                overflow_ = true;
+                return false;
+            }
             char chunk[8192];
             int n = ::recv(sock_, chunk, sizeof(chunk), 0);
             if (n > 0) {
@@ -196,6 +226,8 @@ class LineReader {
 
     sa_socket_t sock_;
     std::vector<char> buf_;
+    size_t start_ = 0;  // consumed prefix of buf_ (avoid O(n^2) erase per line)
+    bool overflow_ = false;
 };
 
 void set_recv_timeout(sa_socket_t sock, int ms) {
@@ -273,6 +305,8 @@ const char* reason_phrase(int status) {
         case 409: return "Conflict";
         case 410: return "Gone";
         case 422: return "Unprocessable Entity";
+        case 413: return "Content Too Large";
+        case 431: return "Request Header Fields Too Large";
         case 500: return "Internal Server Error";
         case 503: return "Service Unavailable";
         default: return "Unknown";
@@ -351,7 +385,15 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
         if (quit_flag.load()) break;
 
         std::string line;
-        if (!reader.next_line(line)) break;  // EOF / idle timeout / dropped
+        if (!reader.next_line(line)) {
+            if (reader.overflowed()) {
+                // Head cap exceeded: answer 431 and drop (the connection framing
+                // is unrecoverable without knowing where the headers end).
+                json env{{"error", "request head too large"}};
+                write_response(sock, 431, sa_core::py_dumps(env), true);
+            }
+            break;  // EOF / idle timeout / dropped / overflow
+        }
         size_t sp1 = line.find(' ');
         size_t sp2 = sp1 == std::string::npos ? std::string::npos : line.find(' ', sp1 + 1);
         if (sp1 == std::string::npos || sp2 == std::string::npos) break;  // malformed
@@ -371,6 +413,11 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 std::string h;
                 if (!reader.next_line(h)) {
                     headers_ok = false;
+                    if (reader.overflowed() && !responded) {
+                        responded = true;
+                        json env{{"error", "request head too large"}};
+                        write_response(sock, 431, sa_core::py_dumps(env), true);
+                    }
                     break;
                 }
                 if (h.empty()) break;

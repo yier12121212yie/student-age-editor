@@ -88,7 +88,7 @@ class DecodedPack {
     // Rebuild the index for `pack_dir` (no-op when unchanged). Scans tex/ +
     // aud/, resolves txt keys from a v3-decoded aa_index.json or Cfgs/zh-cn.
     void refresh(const std::string& pack_dir);
-    bool active() const { return !dir_.empty(); }
+    bool active() const;
 
     long long tex_count() const;
     long long aud_count() const;
@@ -104,6 +104,10 @@ class DecodedPack {
     std::optional<std::pair<std::string, std::string>> read_file(const std::string& path) const;
 
   private:
+    // Instance data is read through shared_ptr copies held across requests
+    // while refresh() may run on another thread (active-pack switch), so every
+    // access to the members below goes through data_mu_.
+    mutable std::mutex data_mu_;
     std::string dir_;
     std::map<std::string, std::string> tex_, aud_;
     std::vector<std::string> txt_;

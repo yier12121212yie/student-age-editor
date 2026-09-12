@@ -375,6 +375,9 @@ bool is_cloud_busy() {
 
 // float(cfg.get(k, dflt)) in the watcher loop — bad values raise like Python
 // (loop-level error handler logs + 2s backoff).
+// 已知偏差：Python float() 保留小数（debounce_ms=2.5 合法），这里经 json_int
+// 截断为整数。现网配置均为整毫秒，行为一致；若未来需要支持小数配置，应改为
+// 真正的 float 解析（含 is_number_float 分支），不要在此处悄悄 clamp。
 double cfg_float(const json& cfg, const char* k, long long dflt) {
     auto it = cfg.find(k);
     if (it == cfg.end() || it->is_null()) {

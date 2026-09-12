@@ -42,6 +42,10 @@ std::string lower_ascii(std::string_view s) {
     return out;
 }
 
+// 传输体上限：请求体超限拒发（>4GB 在 DWORD 处会静默截断成错误长度）；响应体
+// 累计超限视为异常（云同步/普通 API/流式 AI 回复都远小于此）。
+constexpr size_t kMaxTransferBytes = 1024ull * 1024 * 1024;
+
 }  // namespace
 
 bool parse_url(std::string_view url, Url* out) {
@@ -352,6 +356,12 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
         target += to_wide(u.query);
     }
     std::string method = req.method.empty() ? "GET" : req.method;
+    // >4GB bodies would be silently truncated by the DWORD cast below (wrong
+    // Content-Length on the wire) — reject them up front.
+    if (req.body.size() > kMaxTransferBytes) {
+        return fail(Response::Error::BadInput,
+                    "request body too large: " + std::to_string(req.body.size()) + " bytes");
+    }
     Hdl request_handle(WinHttpOpenRequest(
         connect.h, to_wide(method).c_str(), target.c_str(), nullptr, WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES, u.https ? WINHTTP_FLAG_SECURE : 0));
@@ -391,17 +401,30 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
     }
     resp.status = _wtoi(status_buf);
 
-    wchar_t hdr_buf[16384] = {};
-    DWORD hdr_size = sizeof(hdr_buf);
-    if (WinHttpQueryHeaders(request_handle.h, WINHTTP_QUERY_RAW_HEADERS_CRLF, nullptr, hdr_buf,
-                            &hdr_size, nullptr)) {
-        std::string block = to_utf8(hdr_buf);
+    // Query the raw header block. Size-first call (WINHTTP_NO_OUTPUT_BUFFER)
+    // returns the required byte count, so a huge response header set no longer
+    // silently disappears when it does not fit a fixed 16 KiB buffer.
+    std::string block;
+    {
+        DWORD hdr_size = 0;
+        WinHttpQueryHeaders(request_handle.h, WINHTTP_QUERY_RAW_HEADERS_CRLF, nullptr,
+                            WINHTTP_NO_OUTPUT_BUFFER, &hdr_size, nullptr);
+        if (hdr_size > 0) {
+            std::vector<wchar_t> hdr_buf(hdr_size / sizeof(wchar_t) + 1, L'\0');
+            DWORD sz = hdr_size;
+            if (WinHttpQueryHeaders(request_handle.h, WINHTTP_QUERY_RAW_HEADERS_CRLF, nullptr,
+                                    hdr_buf.data(), &sz, nullptr)) {
+                block = to_utf8(hdr_buf.data());
+            }
+        }
+    }
+    {
         size_t pos = 0;
         while (pos < block.size()) {
             size_t eol = block.find("\r\n", pos);
             std::string line =
                 block.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
-            if (!line.empty()) {
+            if (!line.empty() && line.rfind("HTTP/", 0) != 0) {  // skip the status line
                 size_t colon = line.find(':');
                 if (colon != std::string::npos) {
                     std::string name = line.substr(0, colon);
@@ -428,6 +451,9 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
         }
         chunk.resize(read);
         resp.body += chunk;
+        if (resp.body.size() > kMaxTransferBytes) {
+            return fail(Response::Error::Other, "response body too large");
+        }
         if (on_chunk && !(*on_chunk)(std::string_view(chunk))) break;  // early abort
         if (read == 0) break;
     }
@@ -681,12 +707,18 @@ struct Ctx {
     Response* resp = nullptr;
     const ChunkHandler* on_chunk = nullptr;
     bool aborted = false;
+    bool overflow = false;
 };
 
 size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* c = static_cast<Ctx*>(userdata);
     const size_t n = size * nmemb;
     if (!c->resp) return n;
+    if (c->resp->body.size() + n > kMaxTransferBytes) {
+        c->overflow = true;
+        c->aborted = true;
+        return 0;   // CURLE_WRITE_ERROR; translated back below via ctx.overflow
+    }
     c->resp->body.append(ptr, n);
     if (c->on_chunk && !(*c->on_chunk)(std::string_view(ptr, n))) {
         c->aborted = true;
@@ -839,6 +871,9 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
     api.setopt(g.h, kOptHeaderData, &ctx);
 
     CurlCode code = api.perform(g.h);
+    if (ctx.overflow) {
+        return fail(Response::Error::Other, "response body too large");
+    }
     if (code == kCurWriteError && ctx.aborted) {
         // Early abort requested by on_chunk: deliver the partial body + parsed
         // status/headers with Error::None (contract: "partial body is still

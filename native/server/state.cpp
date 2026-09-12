@@ -26,6 +26,8 @@ namespace {
 namespace fs = std::filesystem;
 
 std::string g_editor_root_override;
+// 回调只允许在启动期 build_router() 里写入一次、此后只读（无锁）。若未来
+// 需要运行期重挂，必须先引入同步，否则与 httpd 工作线程构成数据竞争。
 std::function<void()> g_mod_cfgs_invalidator;
 std::function<void()> g_preview_invalidator;
 

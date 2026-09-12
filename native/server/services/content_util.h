@@ -84,8 +84,8 @@ std::string value_error_int_repr_quoted(const std::string& s);  // story_repr �
 // Python int() 对「可选 ± + Nd 数字串」的逐位求值（int("１２")==12）。
 // 数字类同 is_digit_cp 覆盖面；非数字/空数字段 -> nullopt。
 std::optional<long long> int_digits_str(std::string_view s);
-// 纯数字码点序列 -> 数值（调用方保证全是 is_digit_cp）。
-long long digits_to_ll(const std::vector<uint32_t>& cps);
+// 纯数字码点序列 -> 数值（调用方保证全是 is_digit_cp）；溢出 -> nullopt。
+std::optional<long long> digits_to_ll(const std::vector<uint32_t>& cps);
 // re.findall(r"\d+") / r"-?\d+" 的码点版：按字节返回各匹配子串
 //（UTF-8 自同步，字节子串可安全回查）。
 std::vector<std::string> findall_digits(const std::string& s, bool allow_sign);

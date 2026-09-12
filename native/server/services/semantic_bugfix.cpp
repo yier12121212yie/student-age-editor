@@ -600,6 +600,9 @@ bool apply_fix(json& mod_data, const json& bug) {
         if (evt_id.empty()) return false;
         int suffix = next_option_suffix(opt_cfg, evt_id);
         if (suffix > 99) return false;  // B9
+        // 拼接结果必须完整落进 buf：超长 evt_id 会被 snprintf 截断，stoll 解出
+        // 错误的新选项 id（不崩溃，产出错误数据）——超界直接放弃本条修复。
+        if (evt_id.size() + 2 >= 32) return false;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%s%02d", evt_id.c_str(), suffix);
         long long new_opt_id = std::stoll(buf);

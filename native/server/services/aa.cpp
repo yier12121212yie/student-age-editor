@@ -255,7 +255,10 @@ int64_t AaIndex::tex_path_id(std::string key) const {
 
 // ---- DecodedPack ---------------------------------------------------------
 void DecodedPack::refresh(const std::string& pack_dir) {
-    if (pack_dir == dir_) return;
+    {
+        std::lock_guard<std::mutex> lk(data_mu_);
+        if (pack_dir == dir_) return;
+    }
     std::map<std::string, std::string> tex, aud;
     std::vector<std::string> txt;
     const std::string tex_dir = sa_core::paths::join(pack_dir, "tex");
@@ -297,6 +300,7 @@ void DecodedPack::refresh(const std::string& pack_dir) {
             }
         }
     }
+    std::lock_guard<std::mutex> lk(data_mu_);
     tex_ = std::move(tex);
     aud_ = std::move(aud);
     txt_ = std::move(txt);
@@ -304,39 +308,63 @@ void DecodedPack::refresh(const std::string& pack_dir) {
     dir_ = pack_dir;
 }
 
-long long DecodedPack::tex_count() const { return static_cast<long long>(tex_.size()); }
-long long DecodedPack::aud_count() const { return static_cast<long long>(aud_.size()); }
+bool DecodedPack::active() const {
+    std::lock_guard<std::mutex> lk(data_mu_);
+    return !dir_.empty();
+}
+
+long long DecodedPack::tex_count() const {
+    std::lock_guard<std::mutex> lk(data_mu_);
+    return static_cast<long long>(tex_.size());
+}
+long long DecodedPack::aud_count() const {
+    std::lock_guard<std::mutex> lk(data_mu_);
+    return static_cast<long long>(aud_.size());
+}
 std::vector<std::string> DecodedPack::tex_keys() const {
+    std::lock_guard<std::mutex> lk(data_mu_);
     std::vector<std::string> v;
     for (auto& [k, _] : tex_) v.push_back(k);
     std::sort(v.begin(), v.end());
     return v;
 }
 std::vector<std::string> DecodedPack::aud_keys() const {
+    std::lock_guard<std::mutex> lk(data_mu_);
     std::vector<std::string> v;
     for (auto& [k, _] : aud_) v.push_back(k);
     std::sort(v.begin(), v.end());
     return v;
 }
-std::vector<std::string> DecodedPack::txt_keys() const { return txt_; }
+std::vector<std::string> DecodedPack::txt_keys() const {
+    std::lock_guard<std::mutex> lk(data_mu_);
+    return txt_;
+}
 std::string DecodedPack::tex_path(std::string key) const {
+    std::lock_guard<std::mutex> lk(data_mu_);
     auto it = tex_.find(sa_core::str::lower(p4::strip(key)));
     return it == tex_.end() ? std::string() : it->second;
 }
 std::string DecodedPack::aud_path(std::string key) const {
+    std::lock_guard<std::mutex> lk(data_mu_);
     auto it = aud_.find(sa_core::str::lower(p4::strip(key)));
     return it == aud_.end() ? std::string() : it->second;
 }
 std::optional<std::array<int, 2>> DecodedPack::tex_meta(std::string key) const {
     std::string ck = sa_core::str::lower(p4::strip(key));
-    auto cached = texsizes_.find(ck);
-    if (cached != texsizes_.end()) return cached->second;
+    {
+        std::lock_guard<std::mutex> lk(data_mu_);
+        auto cached = texsizes_.find(ck);
+        if (cached != texsizes_.end()) return cached->second;
+    }
     auto path = tex_path(key);
     std::optional<std::array<int, 2>> size;
     if (!path.empty()) {
         auto raw = sa_core::paths::read_bytes(path);
         if (raw) size = image_size(*raw);
     }
+    // Two threads may compute the same entry concurrently; both write the same
+    // value, so no re-check is needed.
+    std::lock_guard<std::mutex> lk(data_mu_);
     texsizes_[ck] = size;
     return size;
 }

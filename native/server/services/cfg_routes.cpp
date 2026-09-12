@@ -368,7 +368,14 @@ void register_cfg_routes(Router& r) {
         } catch (const SandboxError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }
-        if (!result.value("ok", false)) return Resp::Json(400, result);
+        if (!result.value("ok", false)) {
+            // 结构化空栈标记：前端按 code 判定「没有可撤销/重做」，不再依赖
+            // 英文报错文案（文案一改/本地化就会把空栈误报成失败）。
+            const std::string err = result.value("error", std::string());
+            if (err == "nothing to undo" || err == "nothing to redo")
+                result["code"] = "empty";
+            return Resp::Json(400, result);
+        }
         // Success: the mod-wide view is stale after an on-disk revert.
         invalidate_mod_cfgs_cache();
         invalidate_preview_cache();

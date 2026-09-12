@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <initializer_list>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -1630,6 +1631,9 @@ class Exporter {
 json parse_script(const std::string& start_id, const std::string& text, const json& name_to_id) {
     auto base = content::int_digits_str(content::py_strip(start_id));
     if (!base)
+        throw sa::ApiError("ValueError", content::value_error_int_repr_quoted(start_id));
+    // Python 的 *1000 是任意精度；这里超界即视为非法 start_id（避免有符号溢出 UB）。
+    if (*base > (std::numeric_limits<long long>::max() - 999) / 1000)
         throw sa::ApiError("ValueError", content::value_error_int_repr_quoted(start_id));
     Parser parser(*base * 1000, name_to_id);
     return parser.run(text);

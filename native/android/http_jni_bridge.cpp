@@ -92,6 +92,53 @@ std::string jstring_to_utf8(JNIEnv* env, jstring s) {
     return out;
 }
 
+// Outbound jstring via NewString(UTF-16), never NewStringUTF: the latter
+// expects Modified UTF-8, and a 4-byte UTF-8 sequence (emoji, CJK Ext-B in an
+// unencoded WebDAV URL or header value) is illegal input for it — some ART
+// versions mangle the string, others raise. Invalid bytes decode as U+FFFD.
+jstring new_jstring(JNIEnv* env, const std::string& utf8) {
+    std::vector<jchar> u16;
+    u16.reserve(utf8.size());
+    size_t i = 0;
+    const size_t n = utf8.size();
+    auto push_cp = [&](uint32_t cp) {
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            u16.push_back(static_cast<jchar>(0xD800 | (cp >> 10)));
+            u16.push_back(static_cast<jchar>(0xDC00 | (cp & 0x3FF)));
+        } else {
+            u16.push_back(static_cast<jchar>(cp));
+        }
+    };
+    while (i < n) {
+        unsigned char c = static_cast<unsigned char>(utf8[i]);
+        uint32_t cp = 0xFFFD;
+        size_t len = 1;
+        if (c < 0x80) {
+            cp = c;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < n &&
+                   (static_cast<unsigned char>(utf8[i + 1]) & 0xC0) == 0x80) {
+            cp = ((c & 0x1Fu) << 6) | (utf8[i + 1] & 0x3Fu);
+            len = 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < n &&
+                   (static_cast<unsigned char>(utf8[i + 1]) & 0xC0) == 0x80 &&
+                   (static_cast<unsigned char>(utf8[i + 2]) & 0xC0) == 0x80) {
+            cp = ((c & 0x0Fu) << 12) | ((utf8[i + 1] & 0x3Fu) << 6) | (utf8[i + 2] & 0x3Fu);
+            len = 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < n &&
+                   (static_cast<unsigned char>(utf8[i + 1]) & 0xC0) == 0x80 &&
+                   (static_cast<unsigned char>(utf8[i + 2]) & 0xC0) == 0x80 &&
+                   (static_cast<unsigned char>(utf8[i + 3]) & 0xC0) == 0x80) {
+            cp = ((c & 0x07u) << 18) | ((utf8[i + 1] & 0x3Fu) << 12) |
+                 ((utf8[i + 2] & 0x3Fu) << 6) | (utf8[i + 3] & 0x3Fu);
+            len = 4;
+        }
+        push_cp(cp);
+        i += len;
+    }
+    return env->NewString(u16.data(), static_cast<jsize>(u16.size()));
+}
+
 // Consume any pending exception: classify it + build "Class: message".
 // Returns Error::None when nothing is pending.
 sa_core::http::Response::Error take_exception(JNIEnv* env, std::string* msg) {
@@ -223,8 +270,8 @@ sa_core::http::Response do_request(const sa_core::http::Request& req,
     const int ms = static_cast<int>(
         std::llround(std::max(0.5, req.timeout_seconds) * 1000.0));
 
-    jstring jurl = env->NewStringUTF(req.url.c_str());
-    jstring jmethod = env->NewStringUTF(method.c_str());
+    jstring jurl = new_jstring(env, req.url);
+    jstring jmethod = new_jstring(env, method);
     if (env->ExceptionCheck()) {
         std::string em;
         take_exception(env, &em);
@@ -246,7 +293,7 @@ sa_core::http::Response do_request(const sa_core::http::Request& req,
     jobjectArray jheaders =
         env->NewObjectArray((jsize)lines.size(), str_cls, nullptr);
     for (size_t i = 0; i < lines.size(); ++i) {
-        jstring s = env->NewStringUTF(lines[i].c_str());
+        jstring s = new_jstring(env, lines[i]);
         env->SetObjectArrayElement(jheaders, (jsize)i, s);
         env->DeleteLocalRef(s);
     }
