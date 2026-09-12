@@ -25,6 +25,10 @@ using json = content::json;
 // 路由转 500 "%s: %s"）。
 json preview_event(const std::string& evt_id);
 
+// GET /api/preview/meta：只读合并元数据（mod+本体的 roles/bgs/bgKeys/charKeys），
+// 前端背景/立绘选择器做 TalkCfg.bg 反查与当前值缩略图时消费。
+json preview_meta();
+
 // preview_service.invalidate_cache()：三缓存全清。经
 // sa::set_preview_invalidator_hook 在 cfg 写路径 / select_mod 上被调。
 void invalidate_cache();

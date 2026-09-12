@@ -26,6 +26,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/foundation.dart';
@@ -35,6 +36,8 @@ import 'package:flutter/services.dart';
 import '../../core/app_theme.dart';
 import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
+import '../files/file_viewer.dart' show ImagePreview;
+import '../resources/image_asset_picker.dart';
 import 'story_flow_field_codec.dart';
 import 'story_logic.dart';
 
@@ -408,12 +411,13 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       );
     }
     final style = TextStyle(fontSize: 11.5, color: palette.textBody);
+    Widget editor;
     // 效果/条件类与有下拉规则的字段一律走补全框：裸 TextBox 会让全角逗号绕过
     // 校验直接进存档。
     if (meta.effectLike || meta.rule != null) {
       final node = _focusFor(meta);
       _order.add(node);
-      return SuggestionTextField(
+      editor = SuggestionTextField(
         controller: ctl,
         focusNode: node,
         source: widget.suggestFor(widget.cfgName, meta),
@@ -428,17 +432,120 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
         placeholder: _placeholderOf(meta),
         style: style,
       );
+    } else {
+      final node = _focusFor(meta);
+      _order.add(node);
+      editor = _PlainField(
+        controller: ctl,
+        focusNode: node,
+        maxLines: _maxLinesOf(meta),
+        placeholder: _placeholderOf(meta),
+        style: style,
+        onChanged: (v) => widget.onFieldChanged(widget.nodeId, meta.key, v),
+        onTab: () => _advance(node),
+      );
     }
-    final node = _focusFor(meta);
-    _order.add(node);
-    return _PlainField(
-      controller: ctl,
-      focusNode: node,
-      maxLines: _maxLinesOf(meta),
-      placeholder: _placeholderOf(meta),
-      style: style,
-      onChanged: (v) => widget.onFieldChanged(widget.nodeId, meta.key, v),
-      onTab: () => _advance(node),
+    final bgExtras = _bgExtrasFor(meta, ctl);
+    return bgExtras == null
+        ? editor
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [editor, bgExtras],
+          );
+  }
+
+  /// TalkCfg.bg 字段扩展行：当前背景缩略图（单击预览）+「选背景图」入口。
+  Widget? _bgExtrasFor(FieldMeta meta, TextEditingController ctl) {
+    if (widget.cfgName != 'TalkCfg' || meta.key != 'bg') return null;
+    final id = ctl.text.trim();
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        children: [
+          GestureDetector(
+            onTap: (id.isEmpty || id == '0') ? null : () => _previewBgId(id),
+            child: BgIdThumb(id: id, width: 52, height: 39),
+          ),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: _pickBgForTalk,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: palette.panel,
+                  borderRadius: BorderRadius.circular(AppRadius.s),
+                  border: Border.all(color: palette.border),
+                ),
+                child: Text('选背景图',
+                    style:
+                        TextStyle(fontSize: 10.5, color: palette.textBody)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「选背景图」：选中 tex key 后按合并 bgKeys（mod+本体）反查 bg id 写回。
+  Future<void> _pickBgForTalk() async {
+    final picked = await showImageAssetPicker(context, title: '选择背景图片');
+    if (!mounted || picked == null || picked.isEmpty) return;
+    final id = await bgIdForKey(picked.first);
+    if (!mounted) return;
+    if (id == null) {
+      fluent.displayInfoBar(
+        context,
+        builder: (_, close) => const fluent.InfoBar(
+          title: Text('未在 BgCfg（mod + 本体）中找到该图片对应的背景记录'),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+    widget.onFieldChanged(widget.nodeId, 'bg', id);
+    _scheduleEcho();
+  }
+
+  /// 单击 bg 缩略图 → 大图预览；同时惰性拉取 bg 地图供缩略图显示。
+  Future<void> _previewBgId(String id) async {
+    final map = await loadBgIdKeyMap();
+    final key = map?[id];
+    if (!mounted) return;
+    setState(() {}); // 地图就绪后刷新 BgIdThumb
+    if (key == null || key.isEmpty) {
+      fluent.displayInfoBar(
+        context,
+        builder: (_, close) => fluent.InfoBar(
+          title: Text('bg id $id 没有对应的图片资源'),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+    final bytes = await TexBytesCache.loadSmart(key);
+    if (!mounted || bytes == null) return;
+    final screen = MediaQuery.sizeOf(context);
+    await fluent.showDialog<void>(
+      context: context,
+      builder: (_) => fluent.ContentDialog(
+        title: Text(key,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: math.min(860, screen.width - 80),
+          height: math.min(620, screen.height - 120),
+          child: ImagePreview(bytes: bytes, name: key),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
     );
   }
 

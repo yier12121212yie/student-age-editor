@@ -512,6 +512,13 @@ json bg_snapshot(const json* bg_id, const json& meta) {
 
 }  // namespace
 
+// GET /api/preview/meta：暴露合并 mod+本体的 build_meta()（roles/bgs/bgKeys/
+// charKeys），供前端立绘/背景选择器做 TalkCfg.bg 反查与当前值缩略图。
+// 事件预览数据量大（全对白树），选择器只需要 meta，故单独开只读端点。
+json preview_meta() {
+    return *build_meta();
+}
+
 json preview_event(const std::string& evt_id_in) {
     std::string evt_id = content::py_strip(evt_id_in);
     if (evt_id.empty()) throw sa::SandboxError("evt_id 不能为空");

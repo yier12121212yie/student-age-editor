@@ -9,6 +9,8 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../settings/settings_page.dart';
+import '../files/file_viewer.dart' show ImagePreview;
+import '../resources/image_asset_picker.dart';
 import 'effect_hint_field.dart';
 import 'field_meta.dart';
 import 'field_utils.dart';
@@ -1645,6 +1647,26 @@ class _FieldInputState extends State<_FieldInput> {
   // ID 引用候选（异步加载后填充）
   List<(String, String)> _idOpts = const [];
 
+  /// 贴图类字段：cfg:key → 选图写回时的 url 路径前缀（'' = 原样写回）。
+  /// 本体数据 url 均无扩展名（bg/img_keting、role_male、cg/xxx），与 AA 索引
+  /// key 只差路径前缀；选中 key 已带前缀时原样保留。
+  static const Map<String, String> _kTexFieldPrefix = {
+    'PersonCfg:url': '',
+    'PersonCfg:url2': '',
+    'BgCfg:url': 'bg/',
+    'CGCfg:urls': 'cg/',
+    'CGCfg:url': 'cg/',
+  };
+
+  /// 当前字段是否贴图类；是则返回写回前缀。
+  String? get _texFieldPrefix {
+    final key = (widget.fieldKey ?? '').toLowerCase();
+    return _kTexFieldPrefix['${widget.cfgName}:$key'];
+  }
+
+  /// TalkCfg.bg：Number 引用 bg id，选图后按合并 bgKeys 反查 id 写回。
+  bool get _isTalkBg => widget.cfgName == 'TalkCfg' && (widget.fieldKey ?? '') == 'bg';
+
   @override
   void initState() {
     super.initState();
@@ -1802,6 +1824,139 @@ class _FieldInputState extends State<_FieldInput> {
     setState(() {});
   }
 
+  /// 当前值的首个 token（缩略图与选图追加的基准）。
+  String _firstToken() {
+    final tokens = _ctrl.text
+        .split(RegExp(r'[;，、,\n]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    return tokens.isEmpty ? '' : tokens.first;
+  }
+
+  /// 贴图类字段「选图」：打开共享大窗口选择器，确认后按前缀约定写回。
+  Future<void> _pickTexFromAssets() async {
+    final prefix = _texFieldPrefix;
+    if (prefix == null) return;
+    final picked = await showImageAssetPicker(
+      context,
+      title: '选择图片资源',
+      multiSelect: widget.type == '1D Array',
+      initialSelected: [_firstToken()],
+    );
+    if (!mounted || picked == null || picked.isEmpty) return;
+    final values = [
+      for (final k in picked)
+        (prefix.isEmpty || k.startsWith(prefix)) ? k : '$prefix$k',
+    ];
+    String newText;
+    if (widget.type == '1D Array') {
+      final existing = _ctrl.text
+          .split(RegExp(r'[;，、,\n]'))
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty && !values.contains(e))
+          .toList();
+      newText = [...existing, ...values].join(', ');
+    } else {
+      newText = values.first;
+    }
+    _ctrl.text = newText;
+    _ctrl.selection = TextSelection.collapsed(offset: newText.length);
+    try {
+      widget.onChanged(ValueCodec.decode(newText, widget.type));
+    } catch (_) {}
+    setState(() {});
+  }
+
+  /// TalkCfg.bg「选背景图」：选中 tex key 后按合并 bgKeys 反查 bg id 写回。
+  Future<void> _pickBgForTalk() async {
+    final picked = await showImageAssetPicker(context, title: '选择背景图片');
+    if (!mounted || picked == null || picked.isEmpty) return;
+    final id = await bgIdForKey(picked.first);
+    if (!mounted) return;
+    if (id == null) {
+      fluent.displayInfoBar(
+        context,
+        builder: (_, close) => const fluent.InfoBar(
+          title: Text('未在 BgCfg（mod + 本体）中找到该图片对应的背景记录'),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+    widget.onChanged(num.tryParse(id) ?? id);
+    _ctrl.text = id;
+    setState(() {});
+  }
+
+  /// bg id 当前值缩略图的单击预览：反查 key 后复用贴图预览；
+  /// 顺带惰性拉取 bg 地图，供 BgIdThumb 随下次重建显示。
+  Future<void> _previewBgId(String id) async {
+    final map = await loadBgIdKeyMap();
+    final key = id.isEmpty ? null : map?[id];
+    if (!mounted) return;
+    setState(() {});
+    if (key == null || key.isEmpty) {
+      fluent.displayInfoBar(
+        context,
+        builder: (_, close) => fluent.InfoBar(
+          title: Text('bg id $id 没有对应的图片资源'),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+    await _previewTexValue(key);
+  }
+
+  /// 贴图字段当前值缩略图（60×45，单击预览大图；空值显示占位）。
+  Widget _texThumbSlot() {
+    final raw = _firstToken();
+    return GestureDetector(
+      onTap: raw.isEmpty ? null : () => _previewTexValue(raw),
+      child: TexThumb(
+        keyName: raw,
+        width: 60,
+        height: 45,
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  /// 单击字段缩略图 → 大图预览。
+  Future<void> _previewTexValue(String raw) async {    final bytes = await TexBytesCache.loadSmart(raw);
+    if (!mounted) return;
+    if (bytes == null) {
+      fluent.displayInfoBar(
+        context,
+        builder: (_, close) => fluent.InfoBar(
+          title: Text('图片不可用：$raw（资源缺失或索引未就绪）'),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+    final screen = MediaQuery.sizeOf(context);
+    await fluent.showDialog<void>(
+      context: context,
+      builder: (_) => fluent.ContentDialog(
+        title: Text(raw,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: min(860, screen.width - 80),
+          height: min(620, screen.height - 120),
+          child: ImagePreview(bytes: bytes, name: raw),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 2D Array 优先走友商同款效果提示（候选+校验），与友商 SmartTemplateEditor 对齐
@@ -1834,6 +1989,7 @@ class _FieldInputState extends State<_FieldInput> {
     final isSingleArray =
         widget.type == '1D Array' && widget.rule?.singleArray == true;
     final isStringFixed = widget.type == 'String' && widget.rule?.fixed != null;
+    final texPrefix = _texFieldPrefix;
     // Number / 单选 1D Array / String 固定选项 有选项时显示下拉框（旁边保留文本框可自定义输入）。
     if (opts.isNotEmpty &&
         (widget.type == 'Number' || isSingleArray || isStringFixed)) {
@@ -1919,6 +2075,33 @@ class _FieldInputState extends State<_FieldInput> {
               ],
             ),
           ),
+          if (_isTalkBg) ...[
+            const SizedBox(width: 8),
+            // 当前背景缩略图（单击预览大图）
+            GestureDetector(
+              onTap: currentId.isNotEmpty ? () => _previewBgId(currentId) : null,
+              child: BgIdThumb(id: currentId),
+            ),
+            const SizedBox(width: 6),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: fluent.Button(
+                onPressed: _pickBgForTalk,
+                child: const Text('选背景图', style: TextStyle(fontSize: 11)),
+              ),
+            ),
+          ] else if (texPrefix != null && isSingleArray) ...[
+            const SizedBox(width: 8),
+            _texThumbSlot(),
+            const SizedBox(width: 6),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: fluent.Button(
+                onPressed: _pickTexFromAssets,
+                child: const Text('选图', style: TextStyle(fontSize: 11)),
+              ),
+            ),
+          ],
         ],
       );
     }
@@ -1935,6 +2118,13 @@ class _FieldInputState extends State<_FieldInput> {
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (texPrefix != null && _ctrl.text.trim().isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: _texThumbSlot(),
+              ),
+              const SizedBox(width: 8),
+            ],
             Expanded(
               child: fluent.TextBox(
                 controller: _ctrl,
@@ -1954,6 +2144,16 @@ class _FieldInputState extends State<_FieldInput> {
                 child: fluent.Button(
                   onPressed: _pickIdsFromList,
                   child: const Text('从列表选择', style: TextStyle(fontSize: 11)),
+                ),
+              ),
+            ],
+            if (texPrefix != null) ...[
+              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: fluent.Button(
+                  onPressed: _pickTexFromAssets,
+                  child: const Text('选图', style: TextStyle(fontSize: 11)),
                 ),
               ),
             ],

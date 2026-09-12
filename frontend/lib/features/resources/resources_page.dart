@@ -9,6 +9,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../files/file_viewer.dart';
+import 'image_asset_picker.dart' show HoverTexPreview;
 import '../../core/app_theme.dart';
 
 /// Unity 资源侧边栏：AA bundle 索引状态、资源列表（tex/aud/txt）。
@@ -208,15 +209,17 @@ class _ResourcesPageState extends State<ResourcesPage> {
                         itemBuilder: (context, i) {
                           final key = list[i];
                           final selected = _selected == key;
-                          return MouseRegion(
-                            cursor: SystemMouseCursors.click,
-                            child: GestureDetector(
-                              onTap: () => setState(() {
-                                _selected = selected ? null : key;
-                                _exportMsg = null;
-                              }),
-                              onDoubleTap: () => _preview(key),
-                              child: Container(
+                          return HoverTexPreview(
+                            keyName: _tab == 'tex' ? key : '',
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: () => setState(() {
+                                  _selected = selected ? null : key;
+                                  _exportMsg = null;
+                                }),
+                                onDoubleTap: () => _preview(key),
+                                child: Container(
                                 margin: const EdgeInsets.symmetric(
                                     horizontal: 8, vertical: 2),
                                 padding: const EdgeInsets.symmetric(
@@ -250,7 +253,8 @@ class _ResourcesPageState extends State<ResourcesPage> {
                                 ),
                               ),
                             ),
-                          );
+                          ),
+                        );
                         },
                       ),
                     ),

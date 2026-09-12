@@ -13,6 +13,7 @@ import '../../core/history_client.dart';
 import '../../core/models.dart';
 import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
+import '../resources/image_asset_picker.dart' show TexThumb;
 import 'story_flow_clipboard.dart';
 import 'story_flow_field_codec.dart';
 import 'story_flow_graph.dart';
@@ -2277,8 +2278,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       builder: (ctx) => fluent.ContentDialog(
         title: Text('$tableName 匹配到 ${matches.length} 条记录，请选择'),
         content: SizedBox(
-          width: 420,
-          height: math.min(320, matches.length * 44 + 16),
+          width: 620,
+          height: math.min(480, matches.length * 60 + 16),
           child: ListView.builder(
             itemCount: matches.length,
             itemBuilder: (context, i) {
@@ -2299,6 +2300,14 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                   margin: const EdgeInsets.only(bottom: 4),
                   child: Row(
                     children: [
+                      // 候选图直接预览（免双击）
+                      TexThumb(
+                        keyName: url,
+                        width: 64,
+                        height: 48,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      const SizedBox(width: 10),
                       Text(
                         '#${hit.$1}',
                         style: TextStyle(
@@ -2399,7 +2408,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             left: 62,
             top: 48,
             bottom: 16,
-            width: 252,
+            width: 300,
             child: FlowAssetPanel(state: widget.state),
           ),
         // 右侧完整参数面板（仅单选非 missing 节点）。top:48 让开右上操作簇。

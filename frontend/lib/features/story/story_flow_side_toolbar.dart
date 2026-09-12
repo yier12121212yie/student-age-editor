@@ -1,5 +1,4 @@
-import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -8,6 +7,8 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
 import '../../core/motion.dart';
+import '../files/file_viewer.dart' show ImagePreview;
+import '../resources/image_asset_picker.dart';
 
 /// 拖拽中的媒体资产引用（kind: tex | aud）。
 class FlowAssetRef {
@@ -336,9 +337,6 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
   Map<String, List<int>> _meta = {};
   bool _filtered = true;
 
-  /// 贴图缩略图缓存（key → bytes；null=加载中/失败）。
-  final Map<String, Uint8List?> _thumbs = {};
-
   @override
   void initState() {
     super.initState();
@@ -408,29 +406,13 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
     }
   }
 
-  Future<void> _loadThumb(String key) async {
-    if (_thumbs.containsKey(key)) return;
-    _thumbs[key] = null;
-    try {
-      final r = await ApiClient.instance.post(
-        '/api/aa/preview',
-        body: {'kind': 'tex', 'key': key},
-      );
-      final b64 = r['data'] as String?;
-      if (!mounted) return;
-      setState(() => _thumbs[key] = b64 != null ? base64Decode(b64) : null);
-    } catch (_) {
-      if (mounted) setState(() => _thumbs[key] = null);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final list = (_tab == 'tex' ? _tex : _aud)
         .where((k) => _filter.trim().isEmpty || k.contains(_filter.trim()))
         .toList();
     return Container(
-      width: 252,
+      width: 300,
       decoration: BoxDecoration(
         color: palette.card,
         borderRadius: BorderRadius.circular(AppRadius.xl),
@@ -459,6 +441,19 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
                   ),
                 ),
                 const Spacer(),
+                // 大窗口浏览：打开共享图片选择器（网格画廊 + 单击直接预览）
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () => _openLargePicker(),
+                    child: Icon(
+                      Icons.open_in_full,
+                      size: 14,
+                      color: palette.textMuted,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
@@ -576,11 +571,6 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
 
   Widget _item(String key) {
     final isTex = _tab == 'tex';
-    Uint8List? thumb;
-    if (isTex) {
-      _loadThumb(key);
-      thumb = _thumbs[key];
-    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),
       child: Draggable<FlowAssetRef>(
@@ -588,17 +578,61 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
         feedback: _dragFeedback(key, isTex),
         childWhenDragging: Opacity(
           opacity: 0.4,
-          child: _itemBody(key, isTex, thumb),
+          child: _itemBody(key, isTex),
         ),
-        child: MouseRegion(
-          cursor: SystemMouseCursors.grab,
-          child: _itemBody(key, isTex, thumb),
+        child: GestureDetector(
+          // 单击直接预览大图（拖拽语义不受影响）
+          onTap: isTex ? () => _previewAsset(key) : null,
+          child: MouseRegion(
+            cursor: isTex ? SystemMouseCursors.click : SystemMouseCursors.grab,
+            child: _itemBody(key, isTex),
+          ),
         ),
       ),
     );
   }
 
-  Widget _itemBody(String key, bool isTex, Uint8List? thumb) {
+  /// 单击条目 → 大图预览弹窗（免双击）。
+  Future<void> _previewAsset(String key) async {
+    final bytes = await TexBytesCache.load(key);
+    if (!mounted) return;
+    if (bytes == null) {
+      fluent.displayInfoBar(
+        context,
+        builder: (_, close) => const fluent.InfoBar(
+          title: Text('图片不可用：资源缺失或索引未就绪'),
+          severity: fluent.InfoBarSeverity.warning,
+        ),
+      );
+      return;
+    }
+    final screen = MediaQuery.sizeOf(context);
+    await fluent.showDialog<void>(
+      context: context,
+      builder: (_) => fluent.ContentDialog(
+        title: Text(key,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: math.min(860, screen.width - 80),
+          height: math.min(620, screen.height - 120),
+          child: ImagePreview(bytes: bytes, name: key),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 头部「放大」按钮 → 共享大窗口图片选择器。
+  Future<void> _openLargePicker() async {
+    await showImageAssetPicker(context, title: '浏览图片资源');
+  }
+
+  Widget _itemBody(String key, bool isTex) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: AppSpace.xs),
       decoration: BoxDecoration(
@@ -609,23 +643,13 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
       child: Row(
         children: [
           SizedBox(
-            width: 34,
-            height: 30,
+            width: 56,
+            height: 42,
             child: isTex
-                ? (thumb != null
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(AppRadius.xs),
-                          child: Image.memory(
-                            thumb,
-                            fit: BoxFit.cover,
-                            gaplessPlayback: true,
-                          ),
-                        )
-                      : Icon(
-                          Icons.image_outlined,
-                          size: 15,
-                          color: palette.iconDisabled,
-                        ))
+                ? TexThumb(
+                    keyName: key,
+                    borderRadius: BorderRadius.circular(AppRadius.xs),
+                  )
                 : Icon(
                     Icons.music_note,
                     size: 15,

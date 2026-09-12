@@ -363,6 +363,11 @@ void register_content_routes(Router& r) {
 
     // POST /api/preview/event —— api.py:2542-2555（简报写 GET，api.py 实为 POST，
     // 以 api.py 为准）
+    // GET /api/preview/meta —— 合并元数据（mod+本体），背景/立绘选择器消费。
+    r.get(R"(/api/preview/meta)", [](const Req&) -> Resp {
+        return Resp::Json(200, preview::preview_meta());
+    });
+
     r.post(R"(/api/preview/event)", [](const Req& req) -> Resp {
         const json& body = body_obj(req);
         std::string evt_id = content::py_strip(bstr(body, "evt_id"));
