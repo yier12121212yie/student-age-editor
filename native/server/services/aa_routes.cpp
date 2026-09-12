@@ -144,13 +144,22 @@ void register_aa_routes(Router& r) {
     // artifact keeps the guiding-error shape of Python's no-UnityPy branch
     // (api.py:2096-2097).
     r.post(R"(/api/aa/scan)", [](const Req&) -> Resp {
-        reset_aa_singletons_for_test();  // force re-read of _cache/aa_index
+        reset_aa_singletons_for_test();  // force re-read of the probed locations
         auto idx = ensure_aa_index();
         if (!idx) {
+            std::string tried;
+            for (const auto& p : aa_index_candidate_paths()) {
+                tried += "\n  - ";
+                tried += p;
+            }
             return Resp::Json(500, json{{"error", "unityfs unavailable"},
                                         {"detail",
-                                         "请在资源侧用 `py -m resource_scan index --out <dir>` "
-                                         "生成 aa_index.json 后由后端只读消费"}});
+                                         "未找到可用的游戏资源索引 aa_index.json（已搜索：" +
+                                             tried + "）。\n"
+                                             "请在装有《学生时代》的机器上启动一次编辑器生成缓存，"
+                                             "或用 `py -m resource_scan index --aa <游戏 "
+                                             "StreamingAssets\\aa 目录> --out "
+                                             "<编辑器根>\\_cache\\aa_index` 生成后重试。"}});
         }
         std::lock_guard<std::mutex> lk(STATE().mu_);
         return Resp::Json(200, json{{"status", STATE().aa_status}});

@@ -31,6 +31,16 @@ AppState NavState() {
     s.selected_mod = "A";
     return s;
 }
+
+// A browse page seeded with rows and the keyboard on the rows pane.
+AppState RowsState() {
+    AppState s;
+    s.page = Page::Table;
+    s.focus = Focus::Rows;
+    s.table.name = "TalkCfg";
+    s.table.exists = true;
+    return s;
+}
 }  // namespace
 
 // ---------------------------------------------------------------- view model
@@ -45,10 +55,7 @@ TEST_CASE("HandleKey: mods navigation clamps and Enter selects", "[p8]") {
 }
 
 TEST_CASE("HandleKey: table page edit + remove + save intent", "[p8]") {
-    AppState s;
-    s.page = Page::Table;
-    s.table.name = "TalkCfg";
-    s.table.exists = true;
+    AppState s = RowsState();
     s.table.rows = {TableRow{"1", "one", "\"one\""}, TableRow{"2", "two", "\"two\""}};
     // Enter -> editing, buffer seeded with raw JSON text.
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
@@ -72,8 +79,7 @@ TEST_CASE("HandleKey: table page edit + remove + save intent", "[p8]") {
 }
 
 TEST_CASE("HandleKey: table with no changes -> Ctrl-S is a no-op intent", "[p8]") {
-    AppState s;
-    s.page = Page::Table;
+    AppState s = RowsState();
     s.table.rows = {TableRow{"1", "x", "\"x\""}};
     REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::None);
 }
@@ -96,17 +102,151 @@ TEST_CASE("HandleKey: global ctrl page jumps and quit", "[p8]") {
     REQUIRE(s.page == Page::Bugfix);
     REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'a')) == Intent::None);
     REQUIRE(s.page == Page::Agent);
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 't')) == Intent::RefreshTables);
+    REQUIRE(s.page == Page::Table);
     REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'q')) == Intent::Quit);
 }
 
 TEST_CASE("HandleKey: filter typing narrows visible rows", "[p8]") {
-    AppState s;
-    s.page = Page::Table;
+    AppState s = RowsState();
     s.table.rows = {TableRow{"apple", "1", "1"}, TableRow{"banana", "2", "2"}};
     HandleKey(s, K(KeyInput::Char, "app"));
     auto vis = s.VisibleRows();
     REQUIRE(vis.size() == 1);
     REQUIRE(s.table.rows[vis[0]].key == "apple");
+}
+
+TEST_CASE("HandleKey: Tab cycles browse panes and tables Enter loads", "[p8]") {
+    AppState s;
+    s.page = Page::Table;
+    REQUIRE(s.focus == Focus::Tables);  // browse starts on the tables pane
+    s.tables = {"TalkCfg", "ItemCfg"};
+    s.table_filter = "talk";  // only TalkCfg visible
+    // Tab: Tables -> Rows -> Detail -> Tables.
+    REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
+    REQUIRE(s.focus == Focus::Rows);
+    REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
+    REQUIRE(s.focus == Focus::Detail);
+    REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
+    REQUIRE(s.focus == Focus::Tables);
+    // Enter on the tables pane loads the selected (visible) table.
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::LoadTable);
+    REQUIRE(s.table.name == "TalkCfg");
+    REQUIRE(s.focus == Focus::Rows);
+    // Esc on rows goes back to tables, Esc on tables leaves to mods.
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE(s.focus == Focus::Tables);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE(s.page == Page::Mods);
+}
+
+TEST_CASE("HandleKey: n/y append rows, d toggles removal", "[p8]") {
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "a", "\"a\""}, TableRow{"2", "b", "\"b\""}};
+    // n: append {} with the next numeric key and open the editor.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "n")) == Intent::None);
+    REQUIRE(s.table.rows.size() == 3);
+    REQUIRE(s.table.rows.back().key == "3");
+    REQUIRE(s.table.edits.at("3") == "{}");
+    REQUIRE(s.table.adds == std::vector<std::string>{"3"});  // survives the no-op drop
+    REQUIRE(s.editing);
+    HandleKey(s, K(KeyInput::Escape));  // cancel editor; the row stays dirty
+    // y: duplicate row 3 -> key 4 with the same raw.
+    HandleKey(s, K(KeyInput::Char, "y"));
+    REQUIRE(s.table.rows.size() == 4);
+    REQUIRE(s.table.rows.back().key == "4");
+    REQUIRE(s.table.edits.at("4") == "{}");
+    REQUIRE(s.table.adds.size() == 2);
+    // d on an added row drops it outright (it never hit disk, no remove queued).
+    HandleKey(s, K(KeyInput::Char, "d"));
+    REQUIRE(s.table.removes.empty());
+    REQUIRE(s.table.rows.size() == 3);
+    REQUIRE_FALSE(s.table.edits.count("4"));
+    REQUIRE(s.table.adds == std::vector<std::string>{"3"});
+    // d on a base row marks removal, d again un-removes.
+    s.row_sel = 1;  // row "2"
+    HandleKey(s, K(KeyInput::Char, "d"));
+    REQUIRE(s.table.removes.size() == 1);
+    REQUIRE(s.table.removes[0] == "2");
+    HandleKey(s, K(KeyInput::Char, "d"));
+    REQUIRE(s.table.removes.empty());
+}
+
+TEST_CASE("HandleKey: n under an active filter clears it and targets the new row", "[p8]") {
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "apple", "\"apple\""}, TableRow{"2", "banana", "\"banana\""}};
+    HandleKey(s, K(KeyInput::Char, "app"));  // filter -> only row 1 visible
+    REQUIRE(s.VisibleRows().size() == 1);
+    HandleKey(s, K(KeyInput::Char, "n"));    // append row "3"
+    REQUIRE(s.filter.empty());               // filter cleared: selection is unambiguous
+    REQUIRE(s.editing);
+    s.edit_buffer = "{\"hi\":1}";
+    HandleKey(s, K(KeyInput::Enter));        // commit must land on the NEW row
+    REQUIRE(s.table.edits.size() == 1);      // only the new row is dirty
+    REQUIRE(s.table.edits.at("3") == "{\"hi\":1}");
+    REQUIRE_FALSE(s.table.edits.count("1"));  // the filtered base row untouched
+}
+
+TEST_CASE("HandleKey: page jumps drop edit state; Ctrl-S saves from any pane", "[p8]") {
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "a", "\"a\""}};
+    s.table.edits["1"] = "\"b\"";
+    HandleKey(s, K(KeyInput::Enter));  // open the row editor
+    REQUIRE(s.editing);
+    HandleKey(s, K(KeyInput::CtrlChar, "", 'b'));  // switch to Bugfix mid-edit
+    REQUIRE_FALSE(s.editing);
+    REQUIRE(s.page == Page::Bugfix);
+    // Back on the browse page, Ctrl-S works from Tables/Detail focus too.
+    s.page = Page::Table;
+    s.focus = Focus::Tables;
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::SaveTable);
+    s.focus = Focus::Detail;
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::SaveTable);
+    s.table.edits.clear();
+    s.table.adds.clear();
+    s.table.removes.clear();
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::None);
+    REQUIRE(s.status == "无改动");
+}
+
+TEST_CASE("HandleKey: Ctrl-K opens the search overlay and drives it", "[p8]") {
+    AppState s = RowsState();
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'k')) == Intent::None);
+    REQUIRE(s.search.active);
+    HandleKey(s, K(KeyInput::Char, "你"));
+    HandleKey(s, K(KeyInput::Char, "好"));
+    REQUIRE(s.search.input == "你好");
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::SearchTalk);
+    // Esc closes; keys then fall through to the page again.
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE_FALSE(s.search.active);
+}
+
+TEST_CASE("HandleKey: v opens the validate overlay, any key closes", "[p8]") {
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "a", "\"a\""}};
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "v")) == Intent::ValidateTable);
+    REQUIRE(s.validate.active);
+    REQUIRE(s.validate.cfg == "TalkCfg");
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "x")) == Intent::None);
+    REQUIRE_FALSE(s.validate.active);
+}
+
+TEST_CASE("HandleKey: form-mode field edit writes back into the row edit", "[p8]") {
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "x", R"({"id":1,"content":"你好"})"}};
+    // Detail focus via Tab, switch to form, pick the second field, edit it.
+    HandleKey(s, K(KeyInput::Tab));   // Rows -> Detail
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.detail_mode == DetailMode::Form);
+    HandleKey(s, K(KeyInput::Down));  // -> "content"
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.editing_field);
+    REQUIRE(s.field_name == "content");
+    s.field_buffer = "\"再见\"";
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE_FALSE(s.editing_field);
+    REQUIRE(s.table.edits.at("1") == R"({"id":1,"content":"再见"})");
 }
 
 // ---------------------------------------------------------------- cfg diff
@@ -134,6 +274,20 @@ TEST_CASE("BuildSaveBody shapes the patch branch contract", "[p8]") {
     REQUIRE(body.at("expect_mtime_ns") == Json(12345));
 }
 
+TEST_CASE("BuildSaveBody keeps added rows even when their text round-trips", "[p8]") {
+    // n/y seed edits[key] with the row's raw text; OrigMapFromRows then contains
+    // the same text for that key. Without the adds list the patch would drop the
+    // new row as a no-op and the save would silently lose it.
+    std::map<std::string, std::string> orig = {{"1", "\"a\""}, {"2", "{}"}};
+    std::map<std::string, std::string> edits = {{"2", "{}"}};
+    Json set_without = BuildPatchSet(orig, edits);
+    REQUIRE_FALSE(set_without.contains("2"));  // baseline: treated as a no-op
+    Json set_with = BuildPatchSet(orig, edits, {"2"});
+    REQUIRE(set_with.at("2").is_object());     // added rows always survive
+    Json body = BuildSaveBody(orig, edits, {}, 0, {"2"});
+    REQUIRE(body.at("patch").at("set").contains("2"));
+}
+
 TEST_CASE("RowsFromData sorts by key and keeps raw JSON", "[p8]") {
     Json data = Json::object();
     data["b"] = Json(2);
@@ -143,6 +297,42 @@ TEST_CASE("RowsFromData sorts by key and keeps raw JSON", "[p8]") {
     REQUIRE(rows[0].key == "a");
     REQUIRE(rows[0].raw == "\"hello\"");
     REQUIRE(rows[1].key == "b");
+}
+
+// ------------------------------------------------------------- browse helpers
+TEST_CASE("NextRowKey grows numeric tables, falls back to _new scheme", "[p8]") {
+    REQUIRE(NextRowKey({}) == "1");
+    REQUIRE(NextRowKey({TableRow{"1", "", ""}, TableRow{"3", "", ""}}) == "4");
+    REQUIRE(NextRowKey({TableRow{"a", "", ""}}) == "_new");
+    REQUIRE(NextRowKey({TableRow{"a", "", ""}, TableRow{"_new", "", ""}}) == "_new2");
+}
+
+TEST_CASE("FormFields / ApplyFieldEdit round-trip one field", "[p8]") {
+    auto fields = FormFields(R"({"id":1,"content":"你好","flag":true})");
+    REQUIRE(fields.size() == 3);
+    REQUIRE(fields[0].first == "id");
+    REQUIRE(fields[0].second == "1");
+    REQUIRE(fields[1].second == "你好");
+    std::string out;
+    REQUIRE(ApplyFieldEdit(R"({"id":1,"content":"你好"})", "content", "再见", &out));
+    Json back = Json::parse(out, nullptr, false);
+    REQUIRE(back.at("content") == Json("再见"));
+    REQUIRE(back.at("id") == Json(1));
+    // Invalid JSON value text coerces to a plain string (cell-editor parity).
+    REQUIRE(ApplyFieldEdit(R"({"a":1})", "b", "[unclosed", &out));
+    REQUIRE(Json::parse(out, nullptr, false).at("b") == Json("[unclosed"));
+    // Non-object records reject editing.
+    std::string untouched;
+    REQUIRE_FALSE(ApplyFieldEdit("\"scalar\"", "a", "1", &untouched));
+}
+
+TEST_CASE("TableDataForValidate applies edits and drops removed rows", "[p8]") {
+    std::vector<TableRow> rows = {TableRow{"1", "", "\"one\""}, TableRow{"2", "", "\"two\""},
+                                  TableRow{"3", "", "\"three\""}};
+    Json data = TableDataForValidate(rows, {{"1", "\"uno\""}}, {"2"});
+    REQUIRE(data.size() == 2);
+    REQUIRE(data.at("1") == Json("uno"));
+    REQUIRE(data.at("3") == Json("three"));
 }
 
 // ---------------------------------------------------------------- api parsers
@@ -189,6 +379,30 @@ TEST_CASE("ParseBugs reads cfg/id/key/flag/desc", "[p8]") {
     REQUIRE(bugs.size() == 1);
     REQUIRE(bugs[0].flag == "REF");
     REQUIRE(bugs[0].message == "bad");
+}
+
+TEST_CASE("ParseSearch reads the /api/search/talk hit shape", "[p8]") {
+    Json body = Json::parse(
+        R"({"results":[{"src":"Mod","evt_id":"101","evt_title":"开学","talk_id":"101001","content":"你好"}]})");
+    auto hits = BackendApi::ParseSearch(body);
+    REQUIRE(hits.size() == 1);
+    REQUIRE(hits[0].src == "Mod");
+    REQUIRE(hits[0].talk_id == "101001");
+    REQUIRE(hits[0].content == "你好");
+}
+
+TEST_CASE("ParseValidate reads issues and counts", "[p8]") {
+    Json body = Json::parse(
+        R"({"issues":[{"level":"error","rid":"9","msg":"missing"},{"level":"warn","rid":"","msg":"odd"}],)"
+        R"("counts":{"error":1,"warn":1,"info":0}})");
+    ValidateResult r;
+    BackendApi::ParseValidate(body, r);
+    REQUIRE(r.issues.size() == 2);
+    REQUIRE(r.issues[0].level == "error");
+    REQUIRE(r.issues[0].rid == "9");
+    REQUIRE(r.errors == 1);
+    REQUIRE(r.warns == 1);
+    REQUIRE(r.infos == 0);
 }
 
 TEST_CASE("JoinUrl trims trailing slash", "[p8]") {

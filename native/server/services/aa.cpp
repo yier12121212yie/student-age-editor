@@ -397,23 +397,59 @@ std::pair<std::string, std::string> pack_active_info() {
     return {id, id};
 }
 
+// All probed aa_index.json locations (first existing + parseable v3 index
+// wins). Order: explicit env override → canonical _cache/aa_index → installer
+// resource packs (setup.iss extracts the official pack with aa_index.json at
+// its top level) → legacy Python-backend cache → dev dist fallbacks. The scan
+// route renders this list in its error detail, so it stays cheap and pure.
+std::vector<std::string> aa_index_candidate_paths() {
+    std::vector<std::string> out;
+    if (std::string env = sa_core::paths::getenv_utf8("EDITOR_AA_INDEX_FILE"); !env.empty())
+        out.push_back(env);
+    const std::string root = sa::editor_root();
+    const std::string cache = sa_core::paths::join(root, "_cache");
+    out.push_back(sa_core::paths::join(sa_core::paths::join(cache, "aa_index"), "aa_index.json"));
+    std::vector<std::string> packs;
+    std::error_code ec;
+    const auto packs_dir = sa_core::paths::to_path(sa_core::paths::join(cache, "resource_packs"));
+    if (std::filesystem::is_directory(packs_dir, ec)) {
+        for (auto& e : std::filesystem::directory_iterator(packs_dir, ec)) {
+            if (ec) break;
+            if (e.is_directory()) packs.push_back(sa_core::paths::path_to_utf8(e.path()));
+        }
+    }
+    std::sort(packs.begin(), packs.end());
+    for (const auto& d : packs) out.push_back(sa_core::paths::join(d, "aa_index.json"));
+    out.push_back(sa_core::paths::join(
+        sa_core::paths::join(sa_core::paths::join(sa_core::paths::join(root, "backend"), "_cache"),
+                             "aa_index"),
+        "aa_index.json"));
+    out.push_back(sa_core::paths::join(
+        sa_core::paths::join(sa_core::paths::join(root, "dist"), "aa_index_cache"),
+        "aa_index.json"));
+    out.push_back(sa_core::paths::join(
+        sa_core::paths::join(sa_core::paths::join(root, "dist"), "bundled_full"),
+        "aa_index.json"));
+    return out;
+}
+
 std::shared_ptr<AaIndex> ensure_aa_index() {
     std::lock_guard<std::mutex> lk(g_aa_mu);
     if (g_idx) return g_idx;
     if (g_idx_tried) return nullptr;
     g_idx_tried = true;
     // The game index is read-only from the backend cache (C++ never scans).
-    const std::string cache =
-        sa_core::paths::join(sa_core::paths::join(sa_core::paths::join(sa::editor_root(), "_cache"),
-                                                  "aa_index"),
-                             "aa_index.json");
-    auto fresh = std::make_shared<AaIndex>();
-    if (!fresh->load_from_file(cache) || fresh->empty()) return nullptr;
-    g_idx = fresh;
-    // Mirror api.py: a usable cached index flips idle/error -> ready.
-    std::lock_guard<std::mutex> slk(STATE().mu_);
-    if (STATE().aa_status == "idle" || STATE().aa_status == "error") STATE().aa_status = "ready";
-    return g_idx;
+    for (const auto& cache : aa_index_candidate_paths()) {
+        auto fresh = std::make_shared<AaIndex>();
+        if (!fresh->load_from_file(cache) || fresh->empty()) continue;
+        g_idx = fresh;
+        // Mirror api.py: a usable cached index flips idle/error -> ready.
+        std::lock_guard<std::mutex> slk(STATE().mu_);
+        if (STATE().aa_status == "idle" || STATE().aa_status == "error")
+            STATE().aa_status = "ready";
+        return g_idx;
+    }
+    return nullptr;
 }
 
 std::shared_ptr<DecodedPack> ensure_pack_store() {

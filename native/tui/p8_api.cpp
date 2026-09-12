@@ -58,6 +58,45 @@ std::vector<BugEntry> BackendApi::ParseBugs(const Json& body) {
     return out;
 }
 
+std::vector<SearchHit> BackendApi::ParseSearch(const Json& body) {
+    std::vector<SearchHit> out;
+    if (!body.is_object() || !body.contains("results") || !body.at("results").is_array())
+        return out;
+    auto str_field = [](const Json& b, const char* k) -> std::string {
+        if (!b.is_object() || !b.contains(k) || b.at(k).is_null()) return std::string();
+        return b.at(k).is_string() ? b.at(k).get<std::string>() : b.at(k).dump();
+    };
+    for (const auto& r : body.at("results"))
+        out.push_back(SearchHit{str_field(r, "src"), str_field(r, "evt_id"),
+                                str_field(r, "evt_title"), str_field(r, "talk_id"),
+                                str_field(r, "content")});
+    return out;
+}
+
+void BackendApi::ParseValidate(const Json& body, ValidateResult& out) {
+    out = ValidateResult{};
+    if (!body.is_object()) return;
+    out.ok = body.value("ok", true);
+    if (body.contains("issues") && body.at("issues").is_array()) {
+        auto str_field = [](const Json& b, const char* k) -> std::string {
+            if (!b.is_object() || !b.contains(k) || b.at(k).is_null()) return std::string();
+            return b.at(k).is_string() ? b.at(k).get<std::string>() : b.at(k).dump();
+        };
+        for (const auto& it : body.at("issues"))
+            out.issues.push_back(Issue{str_field(it, "level"), str_field(it, "rid"),
+                                       str_field(it, "msg")});
+    }
+    if (body.contains("counts") && body.at("counts").is_object()) {
+        const Json& c = body.at("counts");
+        auto num = [&](const char* k) -> long long {
+            return c.contains(k) && c.at(k).is_number() ? c.at(k).get<long long>() : 0;
+        };
+        out.errors = num("error");
+        out.warns = num("warn");
+        out.infos = num("info");
+    }
+}
+
 SaveResult BackendApi::InterpretSave(int http_status, const Json& body) {
     SaveResult r;
     std::string code =
@@ -155,6 +194,7 @@ bool BackendApi::LoadTable(const std::string& name, Table& out, std::string* err
     ParseTable(body, out.rows, out.mtime_ns, out.exists);
     out.edits.clear();
     out.removes.clear();
+    out.adds.clear();
     return true;
 }
 
@@ -194,6 +234,48 @@ bool BackendApi::FixAllBugs(long long* fixed, std::string* err) {
     if (fixed && body.is_object() && body.contains("fixed") && body.at("fixed").is_number())
         *fixed = body.at("fixed").get<long long>();
     return true;
+}
+
+std::vector<SearchHit> BackendApi::SearchTalk(const std::string& q, std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    // Percent-encode the keyword (Chinese input must survive the query line).
+    Json body = Call("GET", "/api/search/talk?q=" + sa_core::http::quote_component(q) +
+                                "&limit=30",
+                     nullptr, &status, err);
+    if (!err->empty()) return {};
+    if (status != 200) {
+        if (err)
+            *err = "搜索失败: " + body.value("error", std::string("HTTP " + std::to_string(status)));
+        return {};
+    }
+    return ParseSearch(body);
+}
+
+bool BackendApi::ValidateTable(const std::string& cfg, const Json& data, ValidateResult* out,
+                               std::string* err) {
+    if (err) err->clear();
+    Json body = Json::object();
+    body["cfg"] = cfg;
+    body["data"] = data;
+    int status = 0;
+    Json resp = Call("POST", "/api/validate", &body, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        if (err)
+            *err = "校验失败: " + resp.value("error", std::string("HTTP " + std::to_string(status)));
+        return false;
+    }
+    if (out) ParseValidate(resp, *out);
+    return true;
+}
+
+void BackendApi::Shutdown() {
+    // 服务端先响应再退出（httpd 的 shutdown 语义），响应/连接异常都无所谓。
+    Json empty = Json::object();
+    int status = 0;
+    std::string err;
+    Call("POST", "/api/shutdown", &empty, &status, &err);
 }
 
 }  // namespace p8

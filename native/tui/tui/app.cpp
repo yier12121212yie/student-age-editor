@@ -101,7 +101,9 @@ void TuiApp::RunIntent(Intent intent) {
             if (api_.SelectMod(st.selected_mod, &err)) {
                 st.tables = api_.ListTables(&err);
                 st.table_sel = 0;
-                st.page = Page::Tables;
+                st.table = Table{};
+                st.page = Page::Table;
+                st.focus = Focus::Tables;  // browse starts on the tables pane
                 st.status = err.empty() ? ("模组 " + st.selected_mod + " 共 " +
                                            std::to_string(st.tables.size()) + " 张表")
                                         : err;
@@ -126,9 +128,47 @@ void TuiApp::RunIntent(Intent intent) {
             }
             break;
         }
+        case Intent::SearchTalk: {
+            st.search.results = api_.SearchTalk(st.search.input, &err);
+            st.search.busy = false;
+            st.search.sel = 0;
+            if (!err.empty()) {
+                st.search.error = err;
+                st.status = err;
+            } else {
+                st.status = "搜索到 " + std::to_string(st.search.results.size()) + " 条";
+            }
+            break;
+        }
+        case Intent::ValidateTable: {
+            if (st.table.name.empty()) {
+                st.validate.active = false;
+                st.validate.busy = false;
+                st.status = "先打开一张表";
+                break;
+            }
+            Json data = TableDataForValidate(st.table.rows, st.table.edits, st.table.removes);
+            ValidateResult r;
+            if (api_.ValidateTable(st.table.name, data, &r, &err)) {
+                st.validate.busy = false;
+                st.validate.issues = std::move(r.issues);
+                st.validate.errors = r.errors;
+                st.validate.warns = r.warns;
+                st.validate.infos = r.infos;
+                st.status = "校验完成: error=" + std::to_string(r.errors) +
+                            " warn=" + std::to_string(r.warns) +
+                            " info=" + std::to_string(r.infos);
+            } else {
+                st.validate.busy = false;
+                st.validate.error = err;
+                st.status = err;
+            }
+            break;
+        }
         case Intent::SaveTable: {
             auto orig = OrigMapFromRows(st.table.rows);
-            Json body = BuildSaveBody(orig, st.table.edits, st.table.removes, st.table.mtime_ns);
+            Json body = BuildSaveBody(orig, st.table.edits, st.table.removes,
+                                      st.table.mtime_ns, st.table.adds);
             if (force_save_) body["force"] = true;
             SaveResult r = api_.SaveTable(st.table.name, body, &err);
             switch (r.kind) {
@@ -241,6 +281,7 @@ AppState TuiApp::SampleState(Page page) {
     s.table.rows = {TableRow{"1", "你好，同学", "\"你好，同学\""},
                     TableRow{"2", "今天天气不错", "\"今天天气不错\""}};
     s.table.edits["2"] = "\"今天下雨了\"";
+    s.focus = Focus::Rows;
     s.bugs = {BugEntry{"TalkCfg", "5", "roleIds", "REF", "引用了不存在的角色 ID 999"},
               BugEntry{"ItemCfg", "12", "icon", "SCHEMA_HEAL", "字段应为数组 []"} };
     s.bug_scanned = true;

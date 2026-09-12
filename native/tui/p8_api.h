@@ -21,6 +21,13 @@ struct SaveResult {
     Json data;                      // table-level conflict carries disk data
 };
 
+// Outcome of POST /api/validate (the `v` overlay on the browse page).
+struct ValidateResult {
+    bool ok = false;
+    std::vector<Issue> issues;
+    long long errors = 0, warns = 0, infos = 0;
+};
+
 class BackendApi {
 public:
     explicit BackendApi(std::string base_url) : base_(std::move(base_url)) {}
@@ -34,6 +41,10 @@ public:
     static void ParseTable(const Json& body, std::vector<TableRow>& rows, long long& mtime_ns,
                            bool& exists);
     static std::vector<BugEntry> ParseBugs(const Json& body);
+    // GET /api/search/talk response -> hits.
+    static std::vector<SearchHit> ParseSearch(const Json& body);
+    // POST /api/validate response -> {issues, counts}.
+    static void ParseValidate(const Json& body, ValidateResult& out);
     static SaveResult InterpretSave(int http_status, const Json& body);
 
     // ---- transport (never throws; fills *err on failure) ----------------
@@ -46,6 +57,13 @@ public:
     std::vector<BugEntry> ScanBugs(std::string* err);
     // Fix all currently scanned bugs (POST /api/bugfix/fix, empty body).
     bool FixAllBugs(long long* fixed, std::string* err);
+    // GET /api/search/talk?q=<kw> — the Ctrl-K global search.
+    std::vector<SearchHit> SearchTalk(const std::string& q, std::string* err);
+    // POST /api/validate {cfg, data} — the `v` overlay on the browse page.
+    bool ValidateTable(const std::string& cfg, const Json& data, ValidateResult* out,
+                       std::string* err);
+    // POST /api/shutdown — best-effort; used to reap a backend we spawned.
+    void Shutdown();
 
 private:
     Json Call(const std::string& method, const std::string& path, const Json* body,

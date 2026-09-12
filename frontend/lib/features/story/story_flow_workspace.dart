@@ -2096,13 +2096,29 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     }
   }
 
-  FlowSuggestDeps get _suggestDeps => FlowSuggestDeps(
-    state: widget.state,
-    stageTalks: () => _stageRecords.toList(),
-    stageOptions: () => _optRecords.toList(),
-    offStageIds: _offStageIds,
-    modTable: (cfg) => _tablesData[cfg],
-  );
+  /// 补全来源依赖包：必须缓存实例。`FlowSuggestDeps._memo` 的记忆化契约要求
+  /// 同一 deps 生命周期对同字段恒返回同一来源实例——此前这里是 getter，每次
+  /// 访问都 new 一个 deps（_memo 随之全新），`SuggestionTextField.didUpdateWidget`
+  /// 的 `!identical` 判断恒真，每次按键触发的 setState 都会 `clearCandidates()`，
+  /// 候选浮层刚弹出来就被拆掉（自动补全整体失效的根因）。所有注入闭包都
+  /// 懒读当前数据（舞台记录/字典/全量表），缓存实例不会冻结内容；仅当
+  /// state 换实例时才重建。
+  FlowSuggestDeps? _suggestDepsCache;
+  AppState? _suggestDepsState;
+
+  FlowSuggestDeps get _suggestDeps {
+    if (_suggestDepsCache == null || !identical(_suggestDepsState, widget.state)) {
+      _suggestDepsState = widget.state;
+      _suggestDepsCache = FlowSuggestDeps(
+        state: widget.state,
+        stageTalks: () => _stageRecords.toList(),
+        stageOptions: () => _optRecords.toList(),
+        offStageIds: _offStageIds,
+        modTable: (cfg) => _tablesData[cfg],
+      );
+    }
+    return _suggestDepsCache!;
+  }
 
   Iterable<Map<String, dynamic>> get _stageRecords =>
       _stageTalks.values.whereType<Map<String, dynamic>>();

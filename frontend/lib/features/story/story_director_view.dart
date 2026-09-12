@@ -8,6 +8,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../ai/tts_panel.dart';
 import '../editor/field_utils.dart';
+import '../editor/suggestion_text_field.dart';
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
 
@@ -1412,18 +1413,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       flex: 4,
                       child: SizedBox(
                         height: 32,
-                        child: fluent.TextBox(
-                          placeholder: '输入名字检索...',
-                          controller: TextEditingController(
-                            text: roleIds.join(','),
-                          ),
-                          onChanged: (v) {
-                            final list = v
-                                .split(',')
-                                .map((s) => s.trim())
-                                .where((s) => s.isNotEmpty)
-                                .map((s) => int.tryParse(s) ?? s)
-                                .toList();
+                        child: _RolesSearchField(
+                          value: roleIds,
+                          roles: _allRoles(),
+                          onChanged: (list) {
                             talk['roleIds'] = list;
                             _dirty = true;
                           },
@@ -1447,18 +1440,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       flex: 4,
                       child: SizedBox(
                         height: 32,
-                        child: fluent.TextBox(
-                          placeholder: '输入名字检索...',
-                          controller: TextEditingController(
-                            text: highlights.join(','),
-                          ),
-                          onChanged: (v) {
-                            final list = v
-                                .split(',')
-                                .map((s) => s.trim())
-                                .where((s) => s.isNotEmpty)
-                                .map((s) => int.tryParse(s) ?? s)
-                                .toList();
+                        child: _RolesSearchField(
+                          value: highlights,
+                          roles: _allRoles(),
+                          onChanged: (list) {
                             talk['highlights'] = list;
                             _dirty = true;
                           },
@@ -4207,6 +4192,99 @@ class _ActionPill extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 候选上限：与剧情图补全同一取舍——全量塞进浮层既没必要也看不清。
+const int _kRoleCandidateLimit = 50;
+
+/// 说话人/高亮人物输入框：逗号分隔的角色 ID 列表，输入名字或 ID 都出候选，
+/// 接受候选写回对应 ID（「输入名字检索」的兑现）。
+///
+/// controller 与焦点由本组件持有——此前宿主在 build 里内联
+/// `TextEditingController(text: ...)`，父级一次 setState 就重建控制器，
+/// 中文 IME 组合中的文本随时被重置，检索逻辑则从未存在。
+class _RolesSearchField extends StatefulWidget {
+  const _RolesSearchField({
+    required this.value,
+    required this.roles,
+    required this.onChanged,
+  });
+
+  /// 当前值（roleIds / highlights：int ID 与历史字符串混排）。
+  final List<dynamic> value;
+
+  /// 合并后的角色候选：ID → 显示名（原版字典 + MOD PersonCfg，见
+  /// `_allRoles`；哨兵项已被排除）。
+  final Map<String, String> roles;
+
+  /// 解析后的列表写回（逗号分隔 → int.tryParse 优先）。
+  final ValueChanged<List<dynamic>> onChanged;
+
+  @override
+  State<_RolesSearchField> createState() => _RolesSearchFieldState();
+}
+
+class _RolesSearchFieldState extends State<_RolesSearchField> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: _join(widget.value));
+  final FocusNode _focus = FocusNode();
+
+  static String _join(List<dynamic> v) =>
+      v.map((e) => '$e').where((s) => s.trim().isNotEmpty).join(',');
+
+  @override
+  void didUpdateWidget(covariant _RolesSearchField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 仅外部改值（切节点/撤销）且本框未在编辑时同步文本，避免打断输入。
+    final text = _join(widget.value);
+    if (text != _join(oldWidget.value) && !_focus.hasFocus && _ctrl.text != text) {
+      _ctrl.text = text;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _commit(String v) {
+    widget.onChanged(
+      v.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).map((s) {
+        return int.tryParse(s) ?? s;
+      }).toList(),
+    );
+  }
+
+  // 本地字典零请求，与剧情图 dictSource 同一取舍；ID 与名字命中都算。
+  Future<List<Suggestion>> _source(SuggestionQuery q) async {
+    final token = q.token.trim().toLowerCase();
+    final out = <Suggestion>[];
+    for (final e in widget.roles.entries) {
+      if (token.isNotEmpty) {
+        final id = e.key.toLowerCase();
+        final name = e.value.toLowerCase();
+        if (!id.contains(token) && !name.contains(token)) continue;
+      }
+      out.add(Suggestion(e.key, e.value));
+      if (out.length >= _kRoleCandidateLimit) break;
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SuggestionTextField(
+      controller: _ctrl,
+      focusNode: _focus,
+      source: _source,
+      multivalued: true,
+      placeholder: '输入名字检索...',
+      style: const TextStyle(fontSize: 11.5),
+      onChanged: _commit,
     );
   }
 }

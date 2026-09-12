@@ -104,7 +104,8 @@ Name: "path_cli"; Description: "添加 editor-cli 命令到系统/用户 PATH �
 
 [Icons]
 ; 开始菜单快捷方式（native 通道：TUI/CLI 各为独立 exe，不再经 editor_cmd 聚合入口；
-; backend_tui 直接进终端界面（内嵌自起后端）；backend_cli 无参启动展示用法，
+; backend_tui 直接进终端界面，默认端口探测失败时自起同目录 backend（8770）；
+; backend_cli 无参启动展示用法，
 ; 子命令为 mods/cfg/validate/bugfix/story/oobe/env 直挂（无 Python 版的 cli 前缀））
 Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; IconFilename: "{app}\{#AppName}.exe"; Tasks: startmenu; Components: gui
 Name: "{autoprograms}\{#AppName}\{#AppName} (TUI 终端界面)"; Filename: "{app}\backend_tui.exe"; IconFilename: "{app}\backend_tui.exe"; Tasks: startmenu; Components: tui

@@ -115,9 +115,15 @@ class DecodedPack {
 };
 
 // Process-wide, lazily refreshed accessors.
-std::shared_ptr<AaIndex> ensure_aa_index();       // from _cache/aa_index/aa_index.json
+std::shared_ptr<AaIndex> ensure_aa_index();       // first aa_index_candidate_paths() hit
 std::shared_ptr<DecodedPack> ensure_pack_store(); // from active_pack_dir()
 std::string active_pack_dir();                    // "" when no pack configured
+
+// Probed aa_index.json locations, first loadable wins: EDITOR_AA_INDEX_FILE →
+// <root>/_cache/aa_index → <root>/_cache/resource_packs/*/aa_index.json
+// (installer pack layout) → backend/_cache (legacy) → dist dev fallbacks.
+// Rendered by /api/aa/scan's error detail.
+std::vector<std::string> aa_index_candidate_paths();
 
 // Clear the lazy singletons (tests only) so a re-pointed editor root / pack dir
 // is re-read.
