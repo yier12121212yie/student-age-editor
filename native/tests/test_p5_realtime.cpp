@@ -444,17 +444,24 @@ TEST_CASE("P5 rt_start -> watcher syncs a local change end to end -> rt_stop",
     CHECK(st_again["running"] == true);
 
     // mutate the mod: the watcher must auto-upload it to <remote>/mods/m1/...
-    wfile(mod_dir / "Cfgs" / "zh-cn" / "TalkCfg.json", "{\"v\":1}");
+    // The first write can lose a race against the watcher's initial snapshot on
+    // a loaded runner (make_mod creates no files, so a snapshot taken after the
+    // write swallows the change and nothing is ever "added") — rewrite mid-wait
+    // so an already-polling watcher still detects it.
+    fs::path talk = mod_dir / "Cfgs" / "zh-cn" / "TalkCfg.json";
     fs::path expect = remote / "mods" / "m1" / "Cfgs" / "zh-cn" / "TalkCfg.json";
+    std::string sent;
     bool uploaded = false;
-    for (int i = 0; i < 120 && !uploaded; ++i) {  // <= 12s
+    for (int i = 0; i < 240 && !uploaded; ++i) {  // <= 24s
+        if (i == 0) { wfile(talk, "{\"v\":1}"); sent = "{\"v\":1}"; }
+        if (i == 50) { wfile(talk, "{\"v\":2}"); sent = "{\"v\":2}"; }  // ~5s: beat the snapshot race
         uploaded = fs::exists(expect);
         if (!uploaded) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     sa::realtime::rt_stop();
     sa::realtime::wait_thread_done(5000);
     CHECK(uploaded);
-    if (uploaded) CHECK(rfile(expect) == "{\"v\":1}");
+    if (uploaded) CHECK(rfile(expect) == sent);
     auto st2 = sa::realtime::rt_get_status();
     CHECK(st2["running"] == false);
     CHECK(st2["enabled"] == false);

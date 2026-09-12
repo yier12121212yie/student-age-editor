@@ -31,6 +31,7 @@ using sa_socket_t = SOCKET;
 #define sa_shutdown(s) ::shutdown((s), SD_BOTH)
 #else
 #include <arpa/inet.h>
+#include <csignal>
 #include <cerrno>
 #include <netinet/in.h>
 #include <poll.h>
@@ -120,9 +121,16 @@ std::map<std::string, std::string> parse_query_last(std::string_view query) {
 // ---------------------------------------------------------------------------
 
 bool send_all(sa_socket_t sock, const char* data, size_t len) {
+#ifdef _WIN32
+    constexpr int kSendFlags = 0;
+#elif defined(__APPLE__)
+    constexpr int kSendFlags = 0;  // SIGPIPE ignored process-wide at bind time
+#else
+    constexpr int kSendFlags = MSG_NOSIGNAL;  // belt-and-braces with the SIGPIPE ignore
+#endif
     size_t off = 0;
     while (off < len) {
-        int n = ::send(sock, data + off, static_cast<int>(len - off), 0);
+        int n = ::send(sock, data + off, static_cast<int>(len - off), kSendFlags);
         if (n == 0) return false;
         if (n < 0) {
             if (SA_ERRNO == SA_EINTR) continue;
@@ -796,6 +804,11 @@ Httpd::~Httpd() {
 bool Httpd::bind_to(const std::string& host, int port, std::string* err) {
 #ifdef _WIN32
     static WsaInit wsa;
+#else
+    // A client hanging up mid-response raises SIGPIPE on POSIX (Windows has no
+    // such signal, so CI there never exposes this); ignoring it turns the next
+    // send() into a plain EPIPE error that send_all already handles.
+    ::signal(SIGPIPE, SIG_IGN);
 #endif
     sa_socket_t s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == SA_INVALID_SOCKET) {

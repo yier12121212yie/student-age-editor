@@ -3,6 +3,7 @@
 // a temp mod. NO real network: settings.ttsBaseUrl points at the mock. [p4].
 #include <catch_amalgamated.hpp>
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -383,3 +384,28 @@ TEST_CASE("tts_store: save/register/bind/list/read/delete round-trip", "[p4][tts
     CHECK(rel == "audio/tts/greeting.wav");
     CHECK_FALSE(fs::exists(abs_path));
 }
+
+#if defined(_WIN32)
+// The containment check must survive mod_root spellings that weakly_canonical
+// rewrites: an 8.3 short path (GH Actions Windows runners set TMP to
+// C:\Users\RUNNER~1\...) or a different drive-letter case. Regression for the
+// runner-only failure where the lexical pass matched but the canonicalized
+// real path no longer had the short-path prefix.
+TEST_CASE("tts_store: audio containment check tolerates mod_root spelling variants",
+          "[p4][tts][store]") {
+    sat::CfgFixture fx("p4_tts_store_variant");
+    std::string mod_root = sa_core::paths::path_to_utf8(fx.mod_root());
+    auto saved = tts_store::save_audio(mod_root, "WAVDATA", "wav", "greeting", false);
+    CHECK(saved["key"] == "greeting");
+
+    // Drive-letter case flipped: fs::weakly_canonical hands back the proper
+    // case, so a purely lexical containment check would reject this read.
+    std::string variant = mod_root;
+    REQUIRE(variant.size() >= 2);
+    REQUIRE(variant[1] == ':');
+    variant[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(variant[0])));
+    REQUIRE(sa_core::paths::is_dir(variant));
+    auto blob = tts_store::read_audio(variant, "audio/tts/greeting.wav");
+    CHECK(blob == "WAVDATA");
+}
+#endif

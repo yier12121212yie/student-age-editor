@@ -923,10 +923,22 @@ std::string ext_of(const std::string& name) {
 
 void check_abs_in_audio_dir(const std::string& mod_root, const std::string& abs_path,
                             const std::string& verb) {
-    std::string base = sa_core::paths::abs_path(sa_core::paths::join(mod_root, kAudioDir));
-    if (abs_path != base &&
-        !(abs_path.size() > base.size() && abs_path.compare(0, base.size(), base) == 0 &&
-          (abs_path[base.size()] == '/' || abs_path[base.size()] == '\\')))
+    // Both sides go through weakly_canonical: callers may hand us a mod_root
+    // spelled with an 8.3 short path (GH Actions Windows runners set TMP to
+    // C:\Users\RUNNER~1\...) or a different drive-letter case, while
+    // weakly_canonical resolves to the long/proper-cased form -- a purely
+    // lexical comparison would then reject a legitimately-contained path.
+    std::error_code ec;
+    auto canon = [&ec](const std::string& p) {
+        std::string c = sa_core::paths::path_to_utf8(
+            std::filesystem::weakly_canonical(sa_core::paths::to_path(p), ec));
+        return ec || c.empty() ? p : c;
+    };
+    std::string base = canon(sa_core::paths::abs_path(sa_core::paths::join(mod_root, kAudioDir)));
+    std::string cand = canon(abs_path);
+    if (cand != base &&
+        !(cand.size() > base.size() && cand.compare(0, base.size(), base) == 0 &&
+          (cand[base.size()] == '/' || cand[base.size()] == '\\')))
         throw TtsStoreError("仅允许" + verb + " audio/tts/ 内的素材");
 }
 
