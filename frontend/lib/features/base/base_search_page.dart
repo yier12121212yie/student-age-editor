@@ -30,6 +30,8 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
   int _total = 0;
   List<Map<String, dynamic>> _events = [];
   final Set<String> _selected = {};
+  /// 批量提取进行中（防连点重复提交）。
+  bool _extracting = false;
   bool _evtBusy = false;
 
   // 台词搜索
@@ -152,8 +154,16 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
   }
 
   Future<void> _extractSelected() async {
-    for (final id in _selected.toList()) {
-      await _extract(id);
+    // busy 守卫：批量提取逐条 await，连点会重复提交并重复弹 InfoBar。
+    if (_extracting) return;
+    _extracting = true;
+    try {
+      for (final id in _selected.toList()) {
+        await _extract(id);
+      }
+    } finally {
+      _extracting = false;
+      if (mounted) setState(() {});
     }
   }
 
@@ -475,14 +485,16 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
           Padding(
             padding: const EdgeInsets.all(8),
             child: fluent.Button(
-              onPressed: _extractSelected,
+              onPressed: _extracting ? null : _extractSelected,
               style: fluent.ButtonStyle(
                 backgroundColor: WidgetStatePropertyAll(
                   const Color(0xFF6C5CE7),
                 ),
                 foregroundColor: const WidgetStatePropertyAll(Colors.white),
               ),
-              child: Text('提取选中 ${_selected.length} 个事件到 Mod'),
+              child: Text(_extracting
+                  ? '提取中…'
+                  : '提取选中 ${_selected.length} 个事件到 Mod'),
             ),
           ),
       ],

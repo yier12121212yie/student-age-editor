@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
-import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
@@ -143,33 +142,12 @@ class _ClassicShellState extends State<ClassicShell> {
     );
   }
 
-  Future<void> _exportMod() async {
-    if (widget.state.modName.isEmpty) {
-      _showMessage('未加载工作区，无法导出！');
-      return;
-    }
-    _showMessage('正在导出当前模组…');
-    try {
-      await ApiClient.instance.get('/api/tools/list?scope=mod');
-      _showMessage('📤 当前模组 ${widget.state.modName} 文件已就绪');
-    } catch (e) {
-      _showMessage('❌ 导出提示: $e');
-    }
-  }
+  // TODO(导出)：后端目前没有模组导出端点（/api/tools/list 只是列表查询，
+  // 不是打包导出）。此前按钮伪装“文件已就绪”误导用户，故暂时隐藏导出入口，
+  // 待后端提供打包导出 API 后恢复。
 
   Future<void> _importMod() async {
     _showToolModal('📂 加载 / 切换模组', ModsPage(state: widget.state, controller: widget.shell.controller));
-  }
-
-  void _showMessage(String msg) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: fluent.InfoBarSeverity.info,
-      ),
-    );
   }
 
   @override
@@ -214,7 +192,6 @@ class _ClassicShellState extends State<ClassicShell> {
                   '🛠️ 扫描修复',
                   BugfixPanel(state: state),
                 ),
-                onExport: _exportMod,
                 onImport: _importMod,
                 onPlugins: () {
                   shell.selectPane(SidePane.plugins);
@@ -226,6 +203,7 @@ class _ClassicShellState extends State<ClassicShell> {
                   '⚙️ 系统设置',
                   SettingsPage(
                     settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
+                    settingsLoaded: shell.settingsLoaded,
                     onChanged: shell.setAiSettings,
                     uiMode: uiMode,
                     onUiModeChanged: widget.onUiModeChanged,
@@ -246,6 +224,7 @@ class _ClassicShellState extends State<ClassicShell> {
                         '⚙️ 系统设置',
                         SettingsPage(
                           settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
+                          settingsLoaded: shell.settingsLoaded,
                           onChanged: shell.setAiSettings,
                           uiMode: uiMode,
                           onUiModeChanged: widget.onUiModeChanged,
@@ -323,6 +302,7 @@ class _ClassicShellState extends State<ClassicShell> {
                                                           '⚙️ 系统设置',
                                                           SettingsPage(
                                                             settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
+                                                            settingsLoaded: shell.settingsLoaded,
                                                             onChanged: shell.setAiSettings,
                                                             uiMode: uiMode,
                                                             onUiModeChanged: widget.onUiModeChanged,
@@ -370,7 +350,6 @@ class _ClassicHeader extends StatelessWidget {
     required this.onSwitchMod,
     required this.onMountRes,
     required this.onDiagnose,
-    required this.onExport,
     required this.onImport,
     required this.onPlugins,
     required this.onToggleAi,
@@ -385,7 +364,6 @@ class _ClassicHeader extends StatelessWidget {
   final VoidCallback onSwitchMod;
   final VoidCallback onMountRes;
   final VoidCallback onDiagnose;
-  final VoidCallback onExport;
   final VoidCallback onImport;
   final VoidCallback onPlugins;
   final VoidCallback onToggleAi;
@@ -410,7 +388,6 @@ class _ClassicHeader extends StatelessWidget {
       _ToolbarButton(emoji: '📂', label: '加载 / 切换模组', primary: true, onPressed: onSwitchMod, delay: 2),
       _ToolbarButton(emoji: '⚙️', label: '挂载解包资源', onPressed: onMountRes, delay: 3),
       _ToolbarButton(emoji: '🛠️', label: '扫描修复', onPressed: onDiagnose, delay: 4),
-      _ToolbarButton(emoji: '📤', label: '导出', onPressed: onExport, delay: 5),
       _ToolbarButton(emoji: '📥', label: '导入', onPressed: onImport, delay: 6),
       _ToolbarButton(emoji: '🧩', label: '插件', onPressed: onPlugins, delay: 7),
       _ToolbarButton(emoji: '🤖', label: 'AI 助手', onPressed: onToggleAi, delay: 8),

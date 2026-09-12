@@ -68,6 +68,7 @@ class SidePaneView extends StatelessWidget {
         child = SettingsPage(
             key: const ValueKey('settings'),
             settings: aiSettings,
+            settingsLoaded: shell.settingsLoaded,
             onChanged: onAiChanged,
             uiMode: uiMode,
             onUiModeChanged: onUiModeChanged);

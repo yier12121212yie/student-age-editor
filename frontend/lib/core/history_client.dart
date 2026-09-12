@@ -47,7 +47,10 @@ Future<HistoryOpResult> historyOp(
     await ApiClient.instance.post('/api/history/$op', body: {'cfg': cfg});
     return HistoryOpResult.applied;
   } on ApiException catch (e) {
+    // 空栈判定以后端结构化 code 为准（"empty"），文案匹配仅作旧后端兼容：
+    // 否则后端措辞一改/本地化，空栈就会被当成「撤销失败」弹错误框。
     final nothing =
+        e.code == 'empty' ||
         e.message.contains('nothing to undo') ||
         e.message.contains('nothing to redo');
     if (nothing) {

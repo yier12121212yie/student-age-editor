@@ -258,6 +258,11 @@ class AiPanelState extends State<AiPanel> {
   bool _busy = false;
   AiChatMessage? _streamingMsg;
   bool _loaded = false;
+  /// 挂起的审批/提问对话框兜底关闭器（Completer 泄漏防护）：
+  /// 对话框被系统返回键 pop 而非按钮关闭时，局部 Completer 不会完成，
+  /// await 方（onToolCall 等）会永久挂起 → 面板永远“发送中”。
+  /// 列表里存的是“若 Completer 未完成则按拒绝/未回答补完成”的回调。
+  final List<void Function()> _pendingPromptAbort = [];
   /// 聊天列表是否自动跟随最新内容；用户向上翻阅时暂停，点「回到最新」恢复。
   bool _followBottom = true;
   /// 流式输出 UI 刷新定时器（节流）。
@@ -778,23 +783,28 @@ class AiPanelState extends State<AiPanel> {
       return;
     }
     final attachments = List<AiAttachment>.of(_pendingAttachments);
+    // 先做 mod 同步检查，通过后才清空输入框与附件：否则 _ensureModSynced
+    // 失败/超时直接 return，用户输入的文本与附件已不可恢复。
+    if (!await _ensureModSynced()) return;
     _input.clear();
     _followBottom = true;
     _focusInput.requestFocus();
     setState(() {
       _pendingAttachments.clear();
     });
-    await _sendText(text, attachments: attachments);
+    await _sendText(text, attachments: attachments, skipModSync: true);
   }
 
   Future<void> _sendText(String text,
       {bool appendUser = true,
       List<AiAttachment> attachments = const [],
-      AiChatMessage? retryInto}) async {
+      AiChatMessage? retryInto,
+      bool skipModSync = false}) async {
     if (_busy || !_loaded) return;
     // 默认只修改「当前选定的 mod」：未选 mod 时阻止操作；
     // 后端与前端不一致时先同步，避免 AI 改到其他模组。
-    if (!await _ensureModSynced()) return;
+    // （_send 已在清空输入前同步过时传 skipModSync 跳过，避免重复请求。）
+    if (!skipModSync && !await _ensureModSynced()) return;
     final client = AiClient(widget.settings,
         modContext: '当前模组：${widget.state.modName}。默认只修改这个模组，'
             '不要读取或修改其他模组的内容。');
@@ -1023,6 +1033,13 @@ class AiPanelState extends State<AiPanel> {
 
   void _stop() {
     _client?.cancel();
+    // 打断已挂起的审批/提问：否则停止后 Future 仍挂在 onToolCall 上，
+    // _busy 无法恢复；且用户若事后点「允许」，写操作仍会执行。
+    final aborts = List.of(_pendingPromptAbort);
+    _pendingPromptAbort.clear();
+    for (final abort in aborts) {
+      abort();
+    }
     setState(() {
       _busy = false;
       _streamingMsg = null;
@@ -1484,7 +1501,13 @@ class AiPanelState extends State<AiPanel> {
   Future<bool> _confirmPluginTool(String toolName, Map<String, dynamic> args) async {
     if (_fullAccess) return true;
     final completer = Completer<bool>();
-    showDialog<void>(
+    // 兜底：对话框被系统返回键 pop 而非按钮关闭时，按拒绝完成，
+    // 否则 Completer 永远 pending（onToolCall 挂死 → 面板永远“发送中”）。
+    void abort() {
+      if (!completer.isCompleted) completer.complete(false);
+    }
+    _pendingPromptAbort.add(abort);
+    unawaited(showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -1535,14 +1558,14 @@ class AiPanelState extends State<AiPanel> {
           actions: [
             fluent.Button(
               onPressed: () {
-                completer.complete(false);
+                if (!completer.isCompleted) completer.complete(false);
                 Navigator.pop(ctx);
               },
               child: const Text('拒绝'),
             ),
             fluent.FilledButton(
               onPressed: () {
-                completer.complete(true);
+                if (!completer.isCompleted) completer.complete(true);
                 Navigator.pop(ctx);
               },
               child: const Text('允许'),
@@ -1550,7 +1573,10 @@ class AiPanelState extends State<AiPanel> {
           ],
         );
       },
-    );
+    ).whenComplete(() {
+      _pendingPromptAbort.remove(abort);
+      abort();
+    }));
     return completer.future;
   }
 
@@ -1721,7 +1747,12 @@ class AiPanelState extends State<AiPanel> {
   Future<bool> _confirmImageAction(String title, String detailText) async {
     if (_fullAccess) return true;
     final completer = Completer<bool>();
-    showDialog<void>(
+    // 兜底：见 _confirmPluginTool（系统返回键 pop → 按拒绝完成）。
+    void abort() {
+      if (!completer.isCompleted) completer.complete(false);
+    }
+    _pendingPromptAbort.add(abort);
+    unawaited(showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -1768,21 +1799,24 @@ class AiPanelState extends State<AiPanel> {
         actions: [
           fluent.Button(
             onPressed: () {
-              completer.complete(false);
+              if (!completer.isCompleted) completer.complete(false);
               Navigator.pop(ctx);
             },
             child: const Text('拒绝'),
           ),
           fluent.FilledButton(
             onPressed: () {
-              completer.complete(true);
+              if (!completer.isCompleted) completer.complete(true);
               Navigator.pop(ctx);
             },
             child: const Text('允许生成'),
           ),
         ],
       );
-    });
+    }).whenComplete(() {
+      _pendingPromptAbort.remove(abort);
+      abort();
+    }));
     return completer.future;
   }
 
@@ -1812,7 +1846,12 @@ class AiPanelState extends State<AiPanel> {
   Future<bool> _confirmDomainChange(String title, String diffText) async {
     if (_fullAccess) return true;
     final completer = Completer<bool>();
-    showDialog<void>(
+    // 兜底：见 _confirmPluginTool（系统返回键 pop → 按拒绝完成）。
+    void abort() {
+      if (!completer.isCompleted) completer.complete(false);
+    }
+    _pendingPromptAbort.add(abort);
+    unawaited(showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -1851,21 +1890,24 @@ class AiPanelState extends State<AiPanel> {
         actions: [
           fluent.Button(
             onPressed: () {
-              completer.complete(false);
+              if (!completer.isCompleted) completer.complete(false);
               Navigator.pop(ctx);
             },
             child: const Text('拒绝'),
           ),
           fluent.FilledButton(
             onPressed: () {
-              completer.complete(true);
+              if (!completer.isCompleted) completer.complete(true);
               Navigator.pop(ctx);
             },
             child: const Text('允许修改'),
           ),
         ],
       );
-    });
+    }).whenComplete(() {
+      _pendingPromptAbort.remove(abort);
+      abort();
+    }));
     return completer.future;
   }
 
@@ -1876,7 +1918,12 @@ class AiPanelState extends State<AiPanel> {
   Future<String> _askUser(String question, List<String> options) async {
     final completer = Completer<String>();
     final inputCtrl = TextEditingController();
-    showDialog<void>(
+    // 兜底：见 _confirmPluginTool（系统返回键 pop → 按“用户未回答”完成）。
+    void abort() {
+      if (!completer.isCompleted) completer.complete('用户未回答');
+    }
+    _pendingPromptAbort.add(abort);
+    unawaited(showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -1899,7 +1946,7 @@ class AiPanelState extends State<AiPanel> {
                       for (final opt in options)
                         fluent.Button(
                           onPressed: () {
-                            completer.complete(opt);
+                            if (!completer.isCompleted) completer.complete(opt);
                             Navigator.pop(ctx);
                           },
                           child: Text(opt),
@@ -1913,7 +1960,7 @@ class AiPanelState extends State<AiPanel> {
                   placeholder: options.isEmpty ? '输入你的回答…' : '或输入自定义回答…',
                   onSubmitted: (v) {
                     final t = v.trim();
-                    completer.complete(t.isEmpty ? '用户未回答' : t);
+                    if (!completer.isCompleted) completer.complete(t.isEmpty ? '用户未回答' : t);
                     Navigator.pop(ctx);
                   },
                 ),
@@ -1923,7 +1970,7 @@ class AiPanelState extends State<AiPanel> {
           actions: [
             fluent.Button(
               onPressed: () {
-                completer.complete('用户未回答');
+                if (!completer.isCompleted) completer.complete('用户未回答');
                 Navigator.pop(ctx);
               },
               child: const Text('跳过'),
@@ -1931,7 +1978,7 @@ class AiPanelState extends State<AiPanel> {
             fluent.FilledButton(
               onPressed: () {
                 final t = inputCtrl.text.trim();
-                completer.complete(t.isEmpty ? '用户未回答' : t);
+                if (!completer.isCompleted) completer.complete(t.isEmpty ? '用户未回答' : t);
                 Navigator.pop(ctx);
               },
               child: const Text('提交回答'),
@@ -1939,8 +1986,12 @@ class AiPanelState extends State<AiPanel> {
           ],
         );
       },
-    );
-    return completer.future.whenComplete(inputCtrl.dispose);
+    ).whenComplete(() {
+      _pendingPromptAbort.remove(abort);
+      abort();
+      inputCtrl.dispose();
+    }));
+    return completer.future;
   }
 
   /// 两个 JSON 对象的行级 diff（- 删除行 / + 新增行 / 相同行保留）。
@@ -1985,12 +2036,13 @@ class AiPanelState extends State<AiPanel> {
   }
 
   /// 用户手动滚动的方向变化：向上翻阅时暂停自动跟随，向下回到最新位置时恢复。
+  /// 列表非 reverse：reverse 方向 = offset 减小 = 向上翻旧内容。
   bool _handleUserScroll(UserScrollNotification n) {
     switch (n.direction) {
-      case ScrollDirection.forward:
+      case ScrollDirection.reverse:
         if (_followBottom && mounted) setState(() => _followBottom = false);
         break;
-      case ScrollDirection.reverse:
+      case ScrollDirection.forward:
         if (!_followBottom && _isNearBottom() && mounted) {
           setState(() => _followBottom = true);
         }

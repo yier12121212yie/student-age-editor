@@ -666,6 +666,7 @@ class _MobileMorePage extends StatelessWidget {
             '设置',
             SettingsPage(
               settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
+              settingsLoaded: shell.settingsLoaded,
               onChanged: shell.setAiSettings,
               uiMode: uiMode,
               onUiModeChanged: onUiModeChanged,

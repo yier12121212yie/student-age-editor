@@ -108,7 +108,8 @@ class PluginState extends ChangeNotifier {
   /// 卸载插件。声明型插件常开，若需「停用」请直接卸载（enable/disable 后端恒 410）。
   Future<dynamic> uninstall(String id) async {
     try {
-      return await ApiClient.instance.delete('/api/plugins/$id');
+      // 路径段编码：插件 id 来自 zip 内 manifest，可能含中文/空格/斜杠。
+      return await ApiClient.instance.delete('/api/plugins/${Uri.encodeComponent(id)}');
     } finally {
       await refresh();
     }

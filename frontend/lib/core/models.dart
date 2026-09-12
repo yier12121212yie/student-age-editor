@@ -68,4 +68,11 @@ class AppState extends ChangeNotifier {
     modRoot = root;
     notifyListeners();
   }
+
+  /// 更新模组列表并广播：mods 是公开字段，但直接赋值不触发通知，
+  /// 依赖列表的面板（云同步 Mod 下拉等）需要经此方法刷新。
+  void setMods(List<ModInfo> list) {
+    mods = list;
+    notifyListeners();
+  }
 }

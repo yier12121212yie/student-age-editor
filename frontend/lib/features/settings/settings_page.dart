@@ -235,6 +235,7 @@ class SettingsPage extends StatefulWidget {
     required this.onChanged,
     this.uiMode,
     this.onUiModeChanged,
+    this.settingsLoaded = true,
   });
   final AiSettings settings;
   final ValueChanged<AiSettings> onChanged;
@@ -242,6 +243,10 @@ class SettingsPage extends StatefulWidget {
   /// 界面风格（可为空：不展示风格切换区块）。
   final UiMode? uiMode;
   final ValueChanged<UiMode>? onUiModeChanged;
+
+  /// 壳层的设置是否已加载完成。未加载时 widget.settings 是空占位，
+  /// 此刻点保存会把全空配置写穿到三端共享的 .editor_ai.json —— 保存按钮禁用。
+  final bool settingsLoaded;
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
@@ -284,6 +289,34 @@ class _SettingsPageState extends State<SettingsPage> {
     _ttsSpeed = widget.settings.ttsSpeed.clamp(0.5, 2.0);
     _temperature = widget.settings.temperature;
     _permissionMode = widget.settings.permissionMode;
+  }
+
+  @override
+  void didUpdateWidget(covariant SettingsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.settings, widget.settings)) return;
+    // 设置异步加载完成（或被外部修改）后同步控制器；用户正在编辑的字段
+    // （有焦点）不覆盖，避免输入被打断。
+    void sync(TextEditingController c, String v) {
+      if (c.text != v && c.text.isEmpty) c.text = v;
+    }
+    sync(_baseUrlCtrl, widget.settings.baseUrl);
+    sync(_apiKeyCtrl, widget.settings.apiKey);
+    sync(_modelCtrl, widget.settings.model);
+    sync(_imageModelCtrl, widget.settings.imageModel);
+    sync(_imageApiKeyCtrl, widget.settings.imageApiKey);
+    sync(_imageBaseUrlCtrl, widget.settings.imageBaseUrl);
+    sync(_ttsApiKeyCtrl, widget.settings.ttsApiKey);
+    sync(_ttsGroupIdCtrl, widget.settings.ttsGroupId);
+    sync(_ttsModelCtrl, widget.settings.ttsModel);
+    sync(_ttsBaseUrlCtrl, widget.settings.ttsBaseUrl);
+    sync(_ttsVoiceCtrl, widget.settings.ttsVoice);
+    setState(() {
+      _provider = widget.settings.provider;
+      _ttsProvider = widget.settings.ttsProvider;
+      _temperature = widget.settings.temperature;
+      _permissionMode = widget.settings.permissionMode;
+    });
   }
 
   @override
@@ -619,8 +652,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 ]),
                 const SizedBox(height: 16),
                 fluent.FilledButton(
-                  onPressed: _save,
-                  child: const Text('保存配置'),
+                  onPressed: widget.settingsLoaded ? _save : null,
+                  child: Text(widget.settingsLoaded ? '保存配置' : '配置加载中…'),
                 ),
                 if (widget.uiMode != null && widget.onUiModeChanged != null) ...[
                   const SizedBox(height: 24),

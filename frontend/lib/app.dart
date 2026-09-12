@@ -78,6 +78,16 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
     };
     final shell = ShellState(defaultSidebarWidth: sidebar);
     unawaited(shell.loadSettings());
+    // 插件卸载/刷新后，若当前打开的动态面板所属插件已不在列表，清掉选中态：
+    // 否则壳层会一直停留在失效面板的“加载失败 + 重试”页。
+    pluginState.addListener(() {
+      final active = shell.activePluginPanel;
+      if (active == null) return;
+      final pid = active.split('/').first;
+      if (!pluginState.plugins.any((p) => p.id == pid)) {
+        shell.setActivePluginPanel(null);
+      }
+    });
     if (!mounted) return;
     setState(() {
       _uiMode = mode;

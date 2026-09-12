@@ -9,7 +9,7 @@ import 'shell_state.dart';
 import '../../core/app_theme.dart';
 
 // 创作模式窄活动栏（Cursor 风格）—— 真实滑动指示条
-class ActivityBar extends StatelessWidget {
+class ActivityBar extends StatefulWidget {
   const ActivityBar({
     super.key,
     required this.current,
@@ -27,6 +27,30 @@ class ActivityBar extends StatelessWidget {
   final ShellState shell;
   final PluginState pluginState;
 
+  @override
+  State<ActivityBar> createState() => _ActivityBarState();
+}
+
+class _ActivityBarState extends State<ActivityBar> {
+  // 条目区在窗口过矮时可滚动：指示条按布局坐标计算，必须随滚动偏移平移，
+  // 否则滚动后紫条与选中项错位。
+  final ScrollController _scroll = ScrollController();
+  double _scrollOffset = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(() {
+      if (mounted) setState(() => _scrollOffset = _scroll.offset);
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   int _paneIndex(SidePane p) {
     switch (p) {
       case SidePane.mods: return 0;
@@ -43,13 +67,13 @@ class ActivityBar extends StatelessWidget {
 
   /// 固定「插件」条目：切到插件列表（清空已打开的面板）。
   void _openPluginsList() {
-    onSelect(SidePane.plugins);
-    shell.setActivePluginPanel(null);
+    widget.onSelect(SidePane.plugins);
+    widget.shell.setActivePluginPanel(null);
   }
 
   /// 动态插件面板条目：key = `pluginId/panelId`，title 作显示/tooltip。
   Widget _panelItem(int i) {
-    final panel = pluginState.uiPanels[i];
+    final panel = widget.pluginState.uiPanels[i];
     final pluginId = (panel['plugin_id'] as String?) ?? '';
     final panelId = (panel['panel_id'] as String?) ?? '';
     final title = (panel['title'] as String? ?? '').trim();
@@ -58,16 +82,23 @@ class ActivityBar extends StatelessWidget {
       pane: SidePane.plugins,
       icon: pluginPanelIcon(panel['icon'] as String?),
       tip: title.isEmpty ? '插件面板' : title,
-      selected: current == SidePane.plugins && shell.activePluginPanel == key,
+      selected:
+          widget.current == SidePane.plugins && widget.shell.activePluginPanel == key,
       onTap: () {
-        onSelect(SidePane.plugins);
-        shell.setActivePluginPanel(key);
+        widget.onSelect(SidePane.plugins);
+        widget.shell.setActivePluginPanel(key);
       },
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final current = widget.current;
+    final aiOpen = widget.aiOpen;
+    final onSelect = widget.onSelect;
+    final onToggleAi = widget.onToggleAi;
+    final shell = widget.shell;
+    final pluginState = widget.pluginState;
     final active = aiOpen ? const Color(0xFF6C5CE7) : palette.textPrimary;
     return Container(
       width: 48,
@@ -103,11 +134,16 @@ class ActivityBar extends StatelessWidget {
           } else {
             paneTop = 8 + _paneIndex(current) * stride + itemPad;
           }
+          // 滚动后指示条的屏幕位置 = 布局位置 - 滚动偏移。
+          final double indicatorTop = math.max(0.0, paneTop - _scrollOffset);
+          final double aiIndicatorTop =
+              math.max(0.0, layoutH - 8 - 44 - gap - 44 + itemPad + 10 - _scrollOffset);
 
           return Stack(
             children: [
               ClipRect(
                 child: SingleChildScrollView(
+                  controller: _scroll,
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: EdgeInsets.zero,
                   child: ConstrainedBox(
@@ -185,7 +221,7 @@ class ActivityBar extends StatelessWidget {
                 duration: AppMotion.normal,
                 curve: AppMotion.easeOut,
                 left: 0,
-                top: paneTop,
+                top: indicatorTop,
                 child: IgnorePointer(
                   child: Container(
                     width: 2.5,
@@ -204,7 +240,7 @@ class ActivityBar extends StatelessWidget {
                 duration: AppMotion.fast,
                 curve: AppMotion.easeOut,
                 left: 0,
-                top: layoutH - 8 - 44 - gap - 44 + itemPad + 10,
+                top: aiIndicatorTop,
                 child: IgnorePointer(
                   child: AnimatedOpacity(
                     duration: AppMotion.fast,

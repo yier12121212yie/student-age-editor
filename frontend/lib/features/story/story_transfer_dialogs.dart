@@ -229,7 +229,9 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
       final list = <Map<String, dynamic>>[];
       data.forEach((id, v) {
         if (v is Map) {
-          list.add({'id': id, 'title': v['title'] ?? '未命名'});
+          // EvtCfg 的 id/title 可能是数字（游戏配置常见）：统一字符串化，
+          // 避免 build 期硬 cast 抛 TypeError 红屏。
+          list.add({'id': id.toString(), 'title': v['title']?.toString() ?? '未命名'});
         }
       });
       list.sort((a, b) => (a['id'] as String).compareTo(b['id'] as String));
@@ -263,7 +265,8 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
   @override
   Widget build(BuildContext context) {
     final visible = _events
-        .where((e) => (e['title'] as String).contains(_query.text.trim()))
+        .where((e) =>
+            (e['title']?.toString() ?? '').contains(_query.text.trim()))
         .toList();
     return ConstrainedBox(
       constraints: _dialogBodyConstraints(context, 720, 700),

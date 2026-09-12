@@ -37,6 +37,8 @@ class _PluginPaneState extends State<PluginPane> {
 
   /// 表单字段控件状态（按字段 name 索引）。
   final Map<String, TextEditingController> _editControllers = {};
+  /// 各字段最近一次声明/default 值（_syncControllers 判断“用户未改动”用）。
+  final Map<String, String> _lastDefaults = {};
   final Map<String, bool> _checkboxValues = {};
   final Map<String, String> _selectValues = {};
   bool _submitting = false;
@@ -64,13 +66,15 @@ class _PluginPaneState extends State<PluginPane> {
       _error = null;
     });
     try {
-      final r = await ApiClient.instance
-          .get('/api/plugins/${widget.pluginId}/panel/${widget.panelId}');
+      // 路径段编码：pluginId/panelId 来自 manifest，可能含中文、空格或斜杠。
+      final r = await ApiClient.instance.get(
+          '/api/plugins/${Uri.encodeComponent(widget.pluginId)}/panel/${Uri.encodeComponent(widget.panelId)}');
       if (!mounted) return;
       setState(() {
         _data = r is Map ? Map<String, dynamic>.from(r) : <String, dynamic>{};
         _loading = false;
       });
+      _syncControllers();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -367,8 +371,45 @@ class _PluginPaneState extends State<PluginPane> {
     if (c == null) {
       c = TextEditingController(text: def);
       _editControllers[name] = c;
+      _lastDefaults[name] = def;
     }
     return c;
+  }
+
+  /// 刷新后按新面板声明同步表单控件：
+  /// 1) 清理已消失字段的控制器（否则跨刷新累积泄漏，dispose 前不释放）；
+  /// 2) 字段默认值变更且用户未改动过（文本仍等于旧默认）时同步新默认。
+  void _syncControllers() {
+    final valid = <String, String>{};
+    final blocks = (_data?['blocks'] as List? ?? const []);
+    for (final bRaw in blocks) {
+      if (bRaw is! Map) continue;
+      final b = Map<String, dynamic>.from(bRaw);
+      if (b['type'] != 'form') continue;
+      for (final fRaw in (b['fields'] as List? ?? const [])) {
+        if (fRaw is! Map) continue;
+        final f = Map<String, dynamic>.from(fRaw);
+        final name = (f['name'] as String? ?? '').trim();
+        if (name.isEmpty) continue;
+        if (f['type'] == 'select' || f['type'] == 'checkbox') continue;
+        valid[name] = f['default']?.toString() ?? '';
+      }
+    }
+    for (final stale in _editControllers.keys
+        .where((k) => !valid.containsKey(k))
+        .toList()) {
+      _editControllers.remove(stale)?.dispose();
+      _lastDefaults.remove(stale);
+    }
+    valid.forEach((name, def) {
+      final c = _editControllers[name];
+      if (c == null) return;
+      final old = _lastDefaults[name];
+      if (old != null && old != def && c.text == old) {
+        c.text = def;
+      }
+      _lastDefaults[name] = def;
+    });
   }
 
   Widget _formField(Map<String, dynamic> field) {
@@ -622,10 +663,15 @@ class _PluginPaneState extends State<PluginPane> {
 
   /// url 为相对路径：统一拼 `/api/plugins/<pluginId>/` 前缀。
   /// method 缺省 POST；GET 时 body 参数拼入 query。
+  /// pluginId 与 url 路径段均做编码（manifest 里的 id 可能含中文/空格/斜杠）。
   Future<dynamic> _request(String url,
       {String method = 'POST', Map<String, dynamic>? body}) {
-    final full =
-        '/api/plugins/${widget.pluginId}/${url.replaceFirst(RegExp(r'^/+'), '')}';
+    final encodedUrl = url
+        .replaceFirst(RegExp(r'^/+'), '')
+        .split('/')
+        .map(Uri.encodeComponent)
+        .join('/');
+    final full = '/api/plugins/${Uri.encodeComponent(widget.pluginId)}/$encodedUrl';
     switch (method) {
       case 'GET':
         return ApiClient.instance.get(full, query: {

@@ -164,6 +164,17 @@ class AiClient {
     return v.map((k, val) => MapEntry(k.toString(), val));
   }
 
+  /// 流式 SSE data 行的容错解码：返回 null 表示该行不是 JSON 对象
+  /// （网关夹杂的 HTML/文本提示），调用方应跳过而不是让整条流报错。
+  static Map<String, dynamic>? _tryDecodeEvent(String event) {
+    try {
+      final v = jsonDecode(event);
+      return _asStrMap(v);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 把工具定义（JSON schema）转成中文参数速查，逐条列出工具允许携带的参数：
   /// 参数名（类型、必填/可空、可选枚举）：含义。
   static String _describeTools(List<AiToolDef> tools) {
@@ -373,7 +384,10 @@ class AiClient {
 
     await for (final event in resp) {
       if (event.isEmpty || event == '[DONE]') continue;
-      final json = jsonDecode(event) as Map<String, dynamic>;
+      // 网关可能夹杂非 JSON data 行（HTML 错误页/代理提示）：跳过而不是
+      // 让 FormatException 炸掉整条流。
+      final json = _tryDecodeEvent(event);
+      if (json == null) continue;
       final choices = json['choices'] as List?;
       if (choices == null || choices.isEmpty) continue;
       final delta = _asStrMap((choices[0] as Map<String, dynamic>)['delta']) ?? {};
@@ -402,6 +416,13 @@ class AiClient {
       final finish = (choices[0] as Map<String, dynamic>)['finish_reason'];
       if (finish == 'tool_calls') break;
       if (finish == 'stop') break;
+      if (finish == 'length') {
+        // 上下文/输出长度截断：向用户明示，而不是让回复无声缺尾。
+        const tail = '\n\n⚠ 回复因达到长度上限被截断。';
+        textBuf.write(tail);
+        cb.onText?.call(tail);
+        break;
+      }
     }
     return (_parseCalls(calls), textBuf.toString());
   }
@@ -437,7 +458,8 @@ class AiClient {
 
     await for (final event in resp) {
       if (event.isEmpty || event == '[DONE]') continue;
-      final json = jsonDecode(event) as Map<String, dynamic>;
+      final json = _tryDecodeEvent(event);
+      if (json == null) continue;
       final type = json['type'] as String? ?? '';
       if (type == 'response.output_text.delta') {
         final delta = json['delta'] as String? ?? '';
@@ -513,8 +535,25 @@ class AiClient {
 
     await for (final event in resp) {
       if (event.isEmpty) continue;
-      final json = jsonDecode(event) as Map<String, dynamic>;
+      final json = _tryDecodeEvent(event);
+      if (json == null) continue;
       final type = json['type'] as String? ?? '';
+      // 中途错误事件（overloaded / authentication / …）：抛出而不是被当成
+      // “最终回复”静默结束——否则用户看到的是一条空回复。
+      if (type == 'error') {
+        final err = _asStrMap(json['error']) ?? const {};
+        throw AiClientException(
+            'Anthropic 错误: ${err['type'] ?? 'error'} ${err['message'] ?? event}');
+      }
+      if (type == 'message_delta') {
+        // stop_reason: max_tokens => 输出被截断，向用户明示。
+        final stop = json['stop_reason']?.toString();
+        if (stop == 'max_tokens') {
+          const tail = '\n\n⚠ 回复因达到长度上限被截断。';
+          textBuf.write(tail);
+          cb.onText?.call(tail);
+        }
+      }
       if (type == 'content_block_start') {
         final block = _asStrMap(json['content_block']) ?? {};
         if (block['type'] == 'tool_use') {

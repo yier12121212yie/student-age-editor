@@ -193,6 +193,7 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
           settings: widget.shell.settingsLoaded
               ? widget.shell.aiSettings
               : AiSettings(),
+          settingsLoaded: widget.shell.settingsLoaded,
           onChanged: widget.shell.setAiSettings,
           uiMode: widget.uiMode,
           onUiModeChanged: widget.onUiModeChanged,

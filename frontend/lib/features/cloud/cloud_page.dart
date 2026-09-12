@@ -92,7 +92,25 @@ class _CloudPageState extends State<CloudPage> {
 
   void _startRealtimePolling(){
     _rtPollTimer?.cancel();
-    _rtPollTimer = Timer.periodic(const Duration(seconds: 2), (_)=> _loadRealtimeStatus());
+    var tick = 0, failures = 0;
+    _rtPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      tick++;
+      // 未启用实时同步时降频（每 5 跳即 10s 刷一次状态），避免空转轮询；
+      // 连续失败达到上限则停表，防止后端不可达时每 2s 打一次。
+      final enabled = _rtStatus?['enabled'] == true || _rtStatus?['running'] == true;
+      if (!enabled && tick % 5 != 0) return;
+      try {
+        final r = await ApiClient.instance.get('/api/cloud/realtime/status');
+        failures = 0;
+        if (!mounted) return;
+        setState((){
+          _rtStatus = r;
+          _rtConfig = r['config'] as Map<String,dynamic>?;
+        });
+      } catch (_) {
+        if (++failures >= 10) _rtPollTimer?.cancel();
+      }
+    });
   }
 
   Future<void> _toggleRealtime(bool enable) async {
@@ -458,6 +476,11 @@ class _CloudPageState extends State<CloudPage> {
             if (name.isEmpty) { setDlg(()=>errorText='名称不能为空'); return; }
             if (type=='local' && rootLocalCtrl.text.trim().isEmpty) { setDlg(()=>errorText='本地根目录不能为空'); return; }
             if ((type=='webdav' || type=='openlist' || type=='alist') && urlCtrl.text.trim().isEmpty) { setDlg(()=>errorText='地址不能为空'); return; }
+            // 校验必须在 pop 之前：对话框销毁后 setDlg 的错误提示无人可见。
+            if (type=='google_drive' || type=='gdrive') {
+              final openUrlCheck = openUrlCtrl.text.trim();
+              if (openUrlCheck.contains('renewapi') || openUrlCheck.contains('googleui')) { setDlg(()=>errorText='OpenList 地址填写错误：请勿填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口）。直连请留空该字段；走 OpenList 请填你的 OpenList 实例如 http://127.0.0.1:5244'); return; }
+            }
             Navigator.pop(ctx);
             final cfg=<String,dynamic>{};
             if (type=='local') cfg['root']=rootLocalCtrl.text.trim();
@@ -467,8 +490,7 @@ class _CloudPageState extends State<CloudPage> {
             else if (type=='123' || type=='123pan'){ cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/123':mountCtrl.text.trim(); }
             else if (type=='google_drive' || type=='gdrive'){
                 final _openUrl2 = openUrlCtrl.text.trim();
-                if(_openUrl2.contains('renewapi') || _openUrl2.contains('googleui')){ setDlg(()=>errorText='OpenList 地址填写错误：请勿填 api.oplist.org/.../renewapi'); return; }
-                if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim(); 
+                if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim();
                 if(gClientIdCtrl.text.trim().isNotEmpty) cfg['client_id']=gClientIdCtrl.text.trim();
                 if(gClientSecretCtrl.text.isNotEmpty) cfg['client_secret']=gClientSecretCtrl.text.trim();
                 cfg['openlist_url']=_openUrl2; cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
@@ -525,14 +547,19 @@ class _CloudPageState extends State<CloudPage> {
 
   void _startPolling(){
     _pollTimer?.cancel();
+    var failures = 0;
     _pollTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
       try{
         final s = await ApiClient.instance.get('/api/cloud/status');
+        failures = 0;
         if(mounted) setState(()=>_syncStatus = s as Map<String,dynamic>?);
         if(s['running']!=true){
           _pollTimer?.cancel();
         }
-      }catch(_){}
+      }catch(_){
+        // 连续失败（后端不可达）退避停表，避免定时器空转到页面 dispose。
+        if (++failures >= 5) _pollTimer?.cancel();
+      }
     });
   }
 

@@ -31,53 +31,59 @@ class _ModsPageState extends State<ModsPage> {
   Future<void> _create() async {
     final titleCtrl = TextEditingController();
     final descCtrl = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => fluent.ContentDialog(
-        title: const Text('创建新模组'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text('必填：创建后显示在模组列表的名称，建议简洁明了',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => fluent.ContentDialog(
+          title: const Text('创建新模组'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('必填：创建后显示在模组列表的名称，建议简洁明了',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
+              ),
+              const SizedBox(height: 4),
+              fluent.TextBox(controller: titleCtrl, placeholder: '模组标题'),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('可选：一句话描述模组内容与玩法，便于日后区分不同模组',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
+              ),
+              const SizedBox(height: 4),
+              fluent.TextBox(controller: descCtrl, placeholder: '模组简介（可选）', maxLines: 3),
+            ],
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
             ),
-            const SizedBox(height: 4),
-            fluent.TextBox(controller: titleCtrl, placeholder: '模组标题'),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text('可选：一句话描述模组内容与玩法，便于日后区分不同模组',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
+            fluent.FilledButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                try {
+                  final r = await ApiClient.instance.post('/api/mods/create',
+                      body: {'title': titleCtrl.text, 'desc': descCtrl.text});
+                  final m = (r['mod'] as Map).cast<String, dynamic>();
+                  widget.state.setMod(m['name'] as String, m['root'] as String);
+                  await _refresh();
+                } catch (e) {
+                  if (mounted) _showError(e.toString());
+                }
+              },
+              child: const Text('创建'),
             ),
-            const SizedBox(height: 4),
-            fluent.TextBox(controller: descCtrl, placeholder: '模组简介（可选）', maxLines: 3),
           ],
         ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          fluent.FilledButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              try {
-                final r = await ApiClient.instance.post('/api/mods/create',
-                    body: {'title': titleCtrl.text, 'desc': descCtrl.text});
-                final m = (r['mod'] as Map).cast<String, dynamic>();
-                widget.state.setMod(m['name'] as String, m['root'] as String);
-                await _refresh();
-              } catch (e) {
-                if (mounted) _showError(e.toString());
-              }
-            },
-            child: const Text('创建'),
-          ),
-        ],
-      ),
-    );
+      );
+    } finally {
+      // 对话框关闭即释放，无论以取消还是创建路径退出。
+      titleCtrl.dispose();
+      descCtrl.dispose();
+    }
   }
 
   Future<void> _delete(ModInfo mod) async {
@@ -127,11 +133,11 @@ class _ModsPageState extends State<ModsPage> {
   Future<void> _refresh() async {
     final r = await ApiClient.instance.get('/api/mods');
     if (!mounted) return;
-    setState(() {
-      widget.state.mods = (r['mods'] as List)
-          .map((e) => ModInfo.fromJson(e as Map<String, dynamic>))
-          .toList();
-    });
+    // 列表变更经 setMods 广播给所有依赖 state.mods 的面板
+    // （如云同步的 Mod 下拉），否则它们要等下一次无关通知才刷新。
+    widget.state.setMods((r['mods'] as List)
+        .map((e) => ModInfo.fromJson(e as Map<String, dynamic>))
+        .toList());
   }
 
   void _showError(String msg) {

@@ -63,6 +63,8 @@ class _TtsPanelState extends State<TtsPanel> {
   String? _savedPath;
   String? _savedCfgId;
   bool _convertedOgg = false;
+  /// 音色列表请求代际号（防快速切换服务商时旧响应覆盖新列表）。
+  int _voicesReqGen = 0;
 
   List<Map<String, dynamic>> _materials = [];
   bool _materialsLoading = false;
@@ -110,6 +112,8 @@ class _TtsPanelState extends State<TtsPanel> {
   }
 
   Future<void> _loadVoices() async {
+    // 请求代际号：快速切换服务商时，较慢的旧响应不得覆盖新服务商的音色列表。
+    final gen = ++_voicesReqGen;
     setState(() {
       _voicesLoading = true;
       _voicesError = null;
@@ -118,17 +122,17 @@ class _TtsPanelState extends State<TtsPanel> {
       final r = await ApiClient.instance
           .get('/api/tts/voices', query: {'provider': _provider})
           .timeout(const Duration(seconds: 40));
+      if (gen != _voicesReqGen || !mounted) return; // 过期响应，丢弃
       final list = ((r['voices'] as List?) ?? [])
           .whereType<Map<String, dynamic>>()
           .toList();
-      if (!mounted) return;
       setState(() {
         _voices = list;
         _voicesSource = r['source']?.toString() ?? '';
         _voicesLoading = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (gen != _voicesReqGen || !mounted) return;
       setState(() {
         _voices = [];
         _voicesLoading = false;
@@ -408,7 +412,7 @@ class _TtsPanelState extends State<TtsPanel> {
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(_voicesSource == 'live'
-                      ? '· MiniMax 音色在线'
+                      ? '· ${_provider == 'minimax' ? 'MiniMax' : '阿里云'} 音色在线'
                       : '· 内置音色表',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -648,10 +652,12 @@ class _TtsPanelState extends State<TtsPanel> {
         items: [
           for (final v in _voices)
             fluent.ComboBoxItem(
-              value: v['id'] as String,
+              // 音色表来自后端 JSON：id 非字符串（数字等）时不硬 cast，
+              // 否则整个面板 build 抛 TypeError 红屏。
+              value: v['id']?.toString() ?? '',
               child: Text(
                   '${v['name'] ?? v['id']}'
-                  '${(v['gender'] as String? ?? '').isNotEmpty ? '（${v['gender']}）' : ''}',
+                  '${(v['gender']?.toString() ?? '').isNotEmpty ? '（${v['gender']}）' : ''}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis),
             ),

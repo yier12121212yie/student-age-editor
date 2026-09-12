@@ -78,7 +78,16 @@ class ApiClient {
       }
     }
 
-    final payload = jsonDecode(utf8.decode(resp.bodyBytes));
+    if (resp.statusCode >= 400) {
+      // 先判状态码再解码：4xx/5xx 可能返回纯文本/空体/HTML（代理拦截页、
+      // 裸错误页），直接 jsonDecode 会抛 FormatException 掩盖真正的状态码。
+      throw _apiError(resp);
+    }
+
+    final payload = _tryJsonDecode(utf8.decode(resp.bodyBytes));
+    if (payload == null) {
+      throw ApiException(resp.statusCode, 'invalid JSON response');
+    }
 
     // Count rows for tables (approximate by number of top-level keys)
     if (payload is Map && kDebugMode) {
@@ -87,11 +96,38 @@ class ApiClient {
         debugDecodedRows += rowCount;
       }
     }
-
-    if (resp.statusCode >= 400) {
-      throw ApiException(resp.statusCode, payload is Map ? (payload['error'] ?? payload.toString()) : payload.toString());
-    }
     return payload;
+  }
+
+  /// 从错误响应构造 ApiException：JSON 体里的 error 字段优先、code 字段
+  /// 透传（如 history 空栈的 "empty" 标记），失败则用响应原文兜底。
+  static ApiException _apiError(http.Response resp) {
+    try {
+      final payload = jsonDecode(utf8.decode(resp.bodyBytes));
+      if (payload is Map) {
+        final e = payload['error'];
+        return ApiException(
+          resp.statusCode,
+          e?.toString() ?? payload.toString(),
+          code: payload['code']?.toString(),
+        );
+      }
+      return ApiException(resp.statusCode, payload.toString());
+    } catch (_) {
+      try {
+        return ApiException(resp.statusCode, utf8.decode(resp.bodyBytes));
+      } catch (_) {
+        return ApiException(resp.statusCode, 'HTTP ${resp.statusCode}');
+      }
+    }
+  }
+
+  static dynamic _tryJsonDecode(String source) {
+    try {
+      return jsonDecode(source);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 超过 2MB 的响应在后台 isolate 解码（getBig 专用阈值）。
@@ -112,12 +148,8 @@ class ApiClient {
         .get(_uri(path, query))
         .timeout(const Duration(seconds: 120));
     if (resp.statusCode >= 400) {
-      final payload = jsonDecode(utf8.decode(resp.bodyBytes));
-      throw ApiException(
-          resp.statusCode,
-          payload is Map
-              ? (payload['error'] ?? payload.toString())
-              : payload.toString());
+      // 与 _decode 一致：错误体可能不是 JSON，用原文兜底而不是抛 FormatException。
+      throw _apiError(resp);
     }
     final bodyBytes = resp.bodyBytes;
     if (kDebugMode) debugOffIsolateParses++;
@@ -146,9 +178,12 @@ Map<String, dynamic> _decodeTableIsolate(Uint8List bytes) {
 }
 
 class ApiException implements Exception {
-  ApiException(this.statusCode, this.message);
+  ApiException(this.statusCode, this.message, {this.code});
   final int statusCode;
   final String message;
+
+  /// 后端错误体的结构化 code（如 history 空栈的 "empty"）；无则为 null。
+  final String? code;
   @override
   String toString() => 'API $statusCode: $message';
 }
