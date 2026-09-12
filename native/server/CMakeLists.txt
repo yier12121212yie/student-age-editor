@@ -37,5 +37,15 @@ if(WIN32)
     target_link_libraries(backend PRIVATE ws2_32)
 endif()
 
+# p3b_fs_tools.cpp 的 POSIX 分支包含 <iconv.h>（glibc 把 iconv 收进 libc，无
+# 链接依赖），但 macOS 的 iconv 在独立 libiconv.dylib，需显式链接；Android 走
+# android/group.cmake 的 shim（bionic 无 iconv），不经过这里。
+if(APPLE)
+    find_library(SA_LIBICONV iconv)
+    if(SA_LIBICONV)
+        target_link_libraries(sa_server PUBLIC "${SA_LIBICONV}")
+    endif()
+endif()
+
 # HTTP-only: do NOT define CPPHTTPLIB_OPENSSL_SUPPORT. Reserved for a later wave.
 set_target_properties(backend PROPERTIES OUTPUT_NAME "backend")

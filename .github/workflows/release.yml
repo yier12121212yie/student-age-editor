@@ -80,10 +80,18 @@ jobs:
       - name: 构建 native C++ 后端（CMake，VS 生成器免 vcvars）
         shell: bash
         run: |
-          # windows-latest 自带 VS2022 + cmake；与 native-ci.yml 同法用
-          # VS 多配置生成器（无需 Ninja/vcvars），Release 配置构建。
+          # windows-latest 镜像自带 VS + cmake（2026-09 起为 windows-2025-vs2026，
+          # 生成器名随大版本变化）；依次探测 VS 生成器，无需 Ninja/vcvars。
           cmake --version
-          cmake -G "Visual Studio 17 2022" -A x64 -T host=x64 -S native -B build-native
+          GEN_OK=""
+          for GEN in "Visual Studio 18 2026" "Visual Studio 17 2022"; do
+            rm -rf build-native
+            if cmake -G "$GEN" -A x64 -T host=x64 -S native -B build-native; then
+              GEN_OK="$GEN"; break
+            fi
+          done
+          [ -n "$GEN_OK" ] || { echo "错误：未找到可用的 Visual Studio 生成器"; exit 1; }
+          echo "使用生成器：$GEN_OK"
           cmake --build build-native --config Release
           mkdir -p build/native_bin
           for f in backend backend_cli backend_tui; do
