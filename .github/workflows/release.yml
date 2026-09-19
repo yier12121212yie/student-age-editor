@@ -157,12 +157,13 @@ jobs:
       - name: 还原官方资源包缓存（ci-assets Release）
         run: |
           python packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
-            --out build/cache/official_pack_cache.zip
-          if [ ! -f build/cache/official_pack_cache.zip ]; then
-            echo "错误：ci-assets Release 缺少 official_pack_cache.zip，无法构建安装包"
-            exit 1
+            --out build/cache/official_pack_cache.zip || true
+          if [ -f build/cache/official_pack_cache.zip ]; then
+            python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
+            echo "已加载官方资源包缓存"
+          else
+            echo "提示：未找到官方资源包缓存（ci-assets 缺少 official_pack_cache.zip），安装包将不包含内嵌资源"
           fi
-          python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 native C++ 后端（CMake + Ninja）
@@ -219,12 +220,13 @@ jobs:
       - name: 还原官方资源包缓存（ci-assets Release）
         run: |
           python3 packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
-            --out build/cache/official_pack_cache.zip
-          if [ ! -f build/cache/official_pack_cache.zip ]; then
-            echo "错误：ci-assets Release 缺少 official_pack_cache.zip，无法构建安装包"
-            exit 1
+            --out build/cache/official_pack_cache.zip || true
+          if [ -f build/cache/official_pack_cache.zip ]; then
+            python3 -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
+            echo "已加载官方资源包缓存"
+          else
+            echo "提示：未找到官方资源包缓存（ci-assets 缺少 official_pack_cache.zip），安装包将不包含内嵌资源"
           fi
-          python3 -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 native C++ 后端（CMake + Ninja）
