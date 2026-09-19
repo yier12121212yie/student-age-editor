@@ -189,12 +189,12 @@ trap 'exit 143' TERM
 
 echo "[2/4] 拷贝 .app 副本并 ad-hoc 重签（由内向外，不用 --deep）..."
 cp -R "$APP_PATH" "$WORK_DIR/app.app"
-# 使用说明内嵌进 Contents/MacOS（与 Windows 通道对齐）。必须在重签之前放入：
-# 签名封印覆盖 bundle 全部内容，重签后新增文件会使封印失效、Gatekeeper 报
-# 「已损坏」。
+# 使用说明内嵌进 Contents/Resources。必须在重签之前放入：签名封印覆盖 bundle
+# 全部内容，重签后新增文件会使封印失效、Gatekeeper 报「已损坏」。不能放
+# Contents/MacOS——codesign 把 MacOS 下的非 Mach-O 文件也当代码，会直接签失败。
 if [ -f "$(dirname "$APP_PATH")/使用说明.txt" ]; then
     cp "$(dirname "$APP_PATH")/使用说明.txt" \
-       "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt"
+       "$WORK_DIR/app.app/Contents/Resources/使用说明.txt"
 fi
 resign_app "$WORK_DIR/app.app"
 
@@ -222,10 +222,7 @@ cp -R "$WORK_DIR/app.app/Contents/MacOS/backend" \
       "$WORK_DIR/app.app/Contents/MacOS/backend_tui" "$CORE_ROOT/Contents/MacOS/"
 [ -f "$WORK_DIR/app.app/Contents/MacOS/aa_scan" ] && \
     cp "$WORK_DIR/app.app/Contents/MacOS/aa_scan" "$CORE_ROOT/Contents/MacOS/"
-# 使用说明已在上方重签前放入 app.app，随 core payload 落盘
-if [ -f "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt" ]; then
-    cp "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt" "$CORE_ROOT/Contents/MacOS/使用说明.txt"
-fi
+# 使用说明已在上方重签前放入 Contents/Resources，随 core payload 整拷落盘
 # officialpack：仅官方资源扩展包
 OP_ROOT="$WORK_DIR/op_root"
 mkdir -p "$OP_ROOT/Contents/Resources"
