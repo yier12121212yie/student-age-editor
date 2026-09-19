@@ -38,9 +38,10 @@ target_include_directories(sa_third_party INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/httplib"  # -> <httplib.h>
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/catch2"   # -> <catch_amalgamated.hpp>
 )
-# cpp-httplib needs Winsock on Windows; wired here because the server target
-# includes <httplib.h> transitively through nothing (server links it directly),
-# but core pulls nlohmann only. Linking is finalized in server/CMakeLists.txt.
+# cpp-httplib needs Winsock on Windows; it is linked for the TEST SUITE's HTTP
+# client (tests/), not for the server — the production transport is the
+# hand-written socket loop in server/httpd.cpp. Linking is finalized in
+# server/CMakeLists.txt.
 
 if(MSVC)
     # /utf-8 so the vendored UTF-8 sources and our string literals are read as

@@ -15,6 +15,7 @@ import 'effect_hint_field.dart';
 import 'field_meta.dart';
 import 'field_utils.dart';
 import 'section_card.dart';
+import 'suggestion_text_field.dart';
 import '../../core/app_theme.dart';
 
 /// Schema 驱动数据编辑器：左侧条目列表 + 右侧字段表单。
@@ -942,6 +943,10 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     final rec = _selectedRecord;
     final id = _selectedId;
     if (rec == null || id == null) return;
+    
+    // 获取当前条目在列表中的索引，用于返回后保持选中状态
+    final currentIndex = _sortedIds.indexOf(id);
+    
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => _MobileFormPage(
@@ -953,6 +958,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           translator: translator,
           gameDicts: widget.state.gameDicts,
           loadIdCandidates: _loadIdCandidates,
+          currentIndex: currentIndex,
+          totalItems: _sortedIds.length,
           onChanged: () => setState(() => _dirty = true),
           onSave: () => _save(),
         ),
@@ -1215,6 +1222,8 @@ class _MobileFormPage extends StatelessWidget {
     required this.loadIdCandidates,
     required this.onChanged,
     required this.onSave,
+    this.currentIndex = -1,
+    this.totalItems = 0,
   });
 
   final String cfgName;
@@ -1227,6 +1236,8 @@ class _MobileFormPage extends StatelessWidget {
   final Future<List<(String, String)>> Function(String cfg) loadIdCandidates;
   final VoidCallback onChanged;
   final VoidCallback onSave;
+  final int currentIndex;
+  final int totalItems;
 
   @override
   Widget build(BuildContext context) {
@@ -1236,11 +1247,21 @@ class _MobileFormPage extends StatelessWidget {
         backgroundColor: palette.bg,
         elevation: 0,
         leading: BackButton(color: palette.textHigh),
-        title: Text(
-          entryTitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 15, color: palette.textHigh),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              entryTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 15, color: palette.textHigh),
+            ),
+            if (currentIndex >= 0 && totalItems > 0)
+              Text(
+                '第 ${currentIndex + 1} / $totalItems 条',
+                style: TextStyle(fontSize: 11, color: palette.textMuted),
+              ),
+          ],
         ),
         actions: [
           fluent.FilledButton(
@@ -1484,132 +1505,138 @@ class _FieldFormState extends State<_FieldForm> {
   }
 
   /// 经典布局：两列表格（属性名称 | 属性值）。
+  /// ListView.builder：索引 0 = ID 行，1 = 表头，≥2 = 字段行。字段多的表
+  /// 不再一次性构建全部行 widget，只构建视口内的。
   Widget _buildClassicTable(
     List<String> fieldKeys,
     Map<String, dynamic> record,
     Map<String, dynamic> gameDicts,
   ) {
-    return fluent.Scrollbar(
-      controller: _scrollCtrl,
-      child: ListView(
-        controller: _scrollCtrl,
-        padding: EdgeInsets.zero,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  Text(
-                    'ID: ${record['id'] ?? record.keys.first}',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: palette.textHigh,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Text(
-                    widget.cfgName,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: palette.textHint,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          // 表头
-          Container(
-            color: palette.card,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+    Widget buildRow(int index) {
+      if (index == 0) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                Expanded(
-                  flex: 3,
-                  child: Text(
-                    '属性名称',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: palette.textSecondary,
-                      fontWeight: FontWeight.w600,
-                    ),
+                Text(
+                  'ID: ${record['id'] ?? record.keys.first}',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: palette.textHigh,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                Expanded(
-                  flex: 7,
-                  child: Text(
-                    '属性值',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: palette.textSecondary,
-                      fontWeight: FontWeight.w600,
-                    ),
+                const SizedBox(width: 16),
+                Text(
+                  widget.cfgName,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: palette.textHint,
                   ),
                 ),
               ],
             ),
           ),
-          // 字段行
-          for (final key in fieldKeys) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: palette.card, width: 1),
+        );
+      }
+      if (index == 1) {
+        return Container(
+          color: palette.card,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 3,
+                child: Text(
+                  '属性名称',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: palette.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
-              child: Row(
+              Expanded(
+                flex: 7,
+                child: Text(
+                  '属性值',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: palette.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+      final key = fieldKeys[index - 2];
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: palette.card, width: 1),
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              flex: 3,
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    flex: 3,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.translator.translate(key, widget.cfgName),
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            color: palette.textPrimary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          key,
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            color: palette.textFaint,
-                          ),
-                        ),
-                      ],
+                  Text(
+                    widget.translator.translate(key, widget.cfgName),
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: palette.textPrimary,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    flex: 7,
-                    child: _FieldInput(
-                      cfgName: widget.cfgName,
-                      fieldKey: key,
-                      value: record[key],
-                      type: widget.fieldType(key) ?? 'String',
-                      rule: fieldRuleFor(widget.cfgName, key),
-                      gameDicts: gameDicts,
-                      idCandidates: widget.loadIdCandidates,
-                      onChanged: (v) {
-                        record[key] = v;
-                        widget.onChanged();
-                      },
+                  const SizedBox(height: 2),
+                  Text(
+                    key,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: palette.textFaint,
                     ),
                   ),
                 ],
               ),
             ),
+            const SizedBox(width: 10),
+            Expanded(
+              flex: 7,
+              child: _FieldInput(
+                cfgName: widget.cfgName,
+                fieldKey: key,
+                value: record[key],
+                type: widget.fieldType(key) ?? 'String',
+                rule: fieldRuleFor(widget.cfgName, key),
+                gameDicts: gameDicts,
+                idCandidates: widget.loadIdCandidates,
+                onChanged: (v) {
+                  record[key] = v;
+                  widget.onChanged();
+                },
+              ),
+            ),
           ],
-        ],
+        ),
+      );
+    }
+
+    return fluent.Scrollbar(
+      controller: _scrollCtrl,
+      child: ListView.builder(
+        controller: _scrollCtrl,
+        padding: EdgeInsets.zero,
+        itemCount: fieldKeys.length + 2,
+        itemBuilder: (_, index) => buildRow(index),
       ),
     );
   }
@@ -1644,6 +1671,7 @@ class _FieldInput extends StatefulWidget {
 
 class _FieldInputState extends State<_FieldInput> {
   late final TextEditingController _ctrl;
+  late final FocusNode _focusNode = FocusNode();
   // ID 引用候选（异步加载后填充）
   List<(String, String)> _idOpts = const [];
 
@@ -1656,6 +1684,23 @@ class _FieldInputState extends State<_FieldInput> {
     'BgCfg:url': 'bg/',
     'CGCfg:urls': 'cg/',
     'CGCfg:url': 'cg/',
+    // 新纳入编辑页的贴图字段：前缀未对本体数据核实，一律原样写回。
+    'RenshengguanMemoryCfg:url': '',
+    'NewsCfg:img': '',
+    'NewsCfg:big': '',
+    'BirthdayPaintCfg:img': '',
+    'FishCfg:icon': '',
+    'ExploreCfg:icon': '',
+    'ExpoSiteCfg:icon': '',
+    'DIYCfg:icon': '',
+    'DIYRankCfg:bgurl': '',
+    'ClubDailyCfg:icon': '',
+    'HandicraftMiniGameCfg:icon': '',
+    'NegotiationUniqueCardCfg:icon': '',
+    'KZoneAvatarCfg:icon': '',
+    'ModFaceCfg:icon': '',
+    'ModFaceCfg:icon_xx': '',
+    'ModFaceCfg:photobooth': '',
   };
 
   /// 当前字段是否贴图类；是则返回写回前缀。
@@ -1709,8 +1754,30 @@ class _FieldInputState extends State<_FieldInput> {
   @override
   void dispose() {
     _ctrl.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
+
+  /// 字典/ID 引用候选：token 与候选 ID、名称做包含匹配（大小写不敏感），
+  /// 上限 50 与剧情图同一取舍。匹配读 [_optIndexLower]（随 [_options] 同步
+  /// 刷新，小写化已完成），ListView.builder 跨字段复用本 State 时自动跟随
+  /// 当前字段。
+  Future<List<Suggestion>> _suggestCandidates(SuggestionQuery q) async {
+    final token = q.token.trim().toLowerCase();
+    if (token.isEmpty) return const [];
+    final out = <Suggestion>[];
+    for (final (id, idLower, name, nameLower) in _optIndexLower) {
+      if (!idLower.contains(token) && !nameLower.contains(token)) continue;
+      out.add(Suggestion(id, name));
+      if (out.length >= 50) break;
+    }
+    return out;
+  }
+
+  /// 候选源要跨帧同标识：补全框按 identical 比较 source，方法 tear-off 每次
+  /// 求值都是新对象，父级一次 setState 就把用户正开着的候选浮层清掉
+  /// （与 effect_hint_field 的 `_source`、剧情图 deps 缓存同一契约）。
+  late final SuggestionSource _suggestSource = _suggestCandidates;
 
   // C9：_options() 结果缓存 —— build 里它会被调两次（hasDictOptions + opts），
   // 每次都物化并排序整个字典（近千项），随 build 次数线性浪费。key 捕捉全部
@@ -1723,6 +1790,10 @@ class _FieldInputState extends State<_FieldInput> {
   /// 选项 id → 名称索引：_namePreview 按 token 查名由 O(选项数·token 数)
   /// 线性扫降为 O(1)，且不随 build 次数增长。与 [_optCache] 同步更新。
   Map<String, String> _optIndex = const {};
+
+  /// 小写匹配索引：(id, id小写, 名称, 名称小写)，与 [_optIndex] 同步、同序。
+  /// [_suggestCandidates] 键入时零分配匹配，不再对全字典逐项 toLowerCase。
+  List<(String, String, String, String)> _optIndexLower = const [];
 
   /// 下拉选项：(id, 名称)。来自固定选项或 game_dicts 字典。
   /// 结果已缓存：同一 (rule, 候选, 字典) 身份返回同一列表实例，调用方只读。
@@ -1756,6 +1827,9 @@ class _FieldInputState extends State<_FieldInput> {
     _optCacheKey = key;
     _optCache = out;
     _optIndex = {for (final o in out) o.$1: o.$2};
+    _optIndexLower = [
+      for (final (id, name) in out) (id, id.toLowerCase(), name, name.toLowerCase()),
+    ];
     return out;
   }
 
@@ -2108,6 +2182,10 @@ class _FieldInputState extends State<_FieldInput> {
     final isArray = widget.type == '1D Array' || widget.type == '2D Array';
     final multiline = widget.type == 'String' || isArray;
     final preview = _namePreview(_ctrl.text);
+    // 字典/ID 引用且有候选的 String/1D Array 字段：裸文本框升级为输入即补全
+    // （Number/单选/固定选项已由上方 ComboBox 覆盖；2D 指令字段走 EffectHintField）。
+    final useSuggest =
+        opts.isNotEmpty && (widget.type == 'String' || widget.type == '1D Array');
     // ID 引用的多值字段：文本框旁提供「从列表选择」入口
     final canPickIds = widget.type == '1D Array' &&
         widget.rule?.idRefCfg != null &&
@@ -2126,16 +2204,32 @@ class _FieldInputState extends State<_FieldInput> {
               const SizedBox(width: 8),
             ],
             Expanded(
-              child: fluent.TextBox(
-                controller: _ctrl,
-                maxLines: multiline ? 3 : 1,
-                onChanged: (_) {
-                  try {
-                    widget.onChanged(ValueCodec.decode(_ctrl.text, widget.type));
-                  } catch (_) {}
-                  setState(() {});
-                },
-              ),
+              child: useSuggest
+                  ? SuggestionTextField(
+                      controller: _ctrl,
+                      focusNode: _focusNode,
+                      source: _suggestSource,
+                      multivalued: isArray,
+                      maxLines: multiline ? 3 : 1,
+                      onChanged: (_) {
+                        try {
+                          widget.onChanged(
+                              ValueCodec.decode(_ctrl.text, widget.type));
+                        } catch (_) {}
+                        setState(() {});
+                      },
+                    )
+                  : fluent.TextBox(
+                      controller: _ctrl,
+                      maxLines: multiline ? 3 : 1,
+                      onChanged: (_) {
+                        try {
+                          widget.onChanged(
+                              ValueCodec.decode(_ctrl.text, widget.type));
+                        } catch (_) {}
+                        setState(() {});
+                      },
+                    ),
             ),
             if (canPickIds) ...[
               const SizedBox(width: 8),

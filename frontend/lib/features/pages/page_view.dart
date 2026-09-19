@@ -6,6 +6,7 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../editor/schema_editor_view.dart';
 import '../story/story_director_view.dart';
+import '../story/story_list_mobile_page.dart';
 import 'manifest_card.dart';
 import 'classic_page_layouts.dart';
 import 'pages_catalog.dart';
@@ -43,6 +44,16 @@ class _PageViewState extends State<EditorPageView> {
   void initState() {
     super.initState();
     _cfg = widget.page.defaultCfg;
+  }
+
+  @override
+  void didUpdateWidget(covariant EditorPageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 宿主若不带 key 复用本 State（如同位置直接换 page），配置表必须跟随
+    // 页面重置，否则新页面渲染的是上一个页面的表（页面"长得一模一样"）。
+    if (widget.page.id != oldWidget.page.id) {
+      _cfg = widget.page.defaultCfg;
+    }
   }
 
   @override
@@ -130,7 +141,10 @@ class _PageViewState extends State<EditorPageView> {
                 )
               : widget.page.id == 'story'
               ? (isMobileWidth(context)
-                  ? _StoryMobilePlaceholder(onOpenSearch: widget.onOpenSearch)
+                  ? StoryListMobilePage(
+                      key: const ValueKey('story-list-mobile'),
+                      modName: widget.state.mods.firstOrNull?.name ?? '',
+                    )
                   : StoryDirectorView(
                       key: const ValueKey('story-director'),
                       state: widget.state,

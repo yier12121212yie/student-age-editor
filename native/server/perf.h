@@ -11,8 +11,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -31,12 +33,13 @@ class PerfCounters {
     std::vector<std::pair<std::string, long long>> snapshot() const;
 
   private:
-    struct Impl;
-    static PerfCounters& instance();
-
     // Guarded by one mutex: perf.py uses a single Lock for the whole registry.
+    // order_ keeps first-bump order (Python dict insertion order) for
+    // snapshot(); index_ maps key -> order_ position so bump/get are a hash
+    // find instead of a linear scan.
     mutable std::mutex mu_;
-    std::vector<std::pair<std::string, long long>> counters_;
+    std::vector<std::pair<std::string, long long>> order_;
+    std::unordered_map<std::string, std::size_t> index_;
 };
 
 // Process-wide singleton (perf.COUNTERS).

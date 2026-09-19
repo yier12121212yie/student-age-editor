@@ -50,11 +50,20 @@ void main() {
     expect(find.text('加载 / 切换模组'), findsOneWidget);
     expect(find.text('全局搜索 (Ctrl+F)'), findsOneWidget);
     expect(find.text('扫描修复'), findsOneWidget);
-    // 分组导航（基础配置 / 内容创作 / 官方生态）
+    // 分组导航（基础配置 / 内容创作 / 玩法主题 / 官方生态）。
+    // 页面增多后导航超出视口：先断言首屏内容，再滚动验证末组。
     expect(find.text('基础配置'), findsOneWidget);
     expect(find.text('内容创作'), findsOneWidget);
-    expect(find.text('官方生态'), findsOneWidget);
     expect(find.text('人物综合配置'), findsWidgets);
+    await tester.dragUntilVisible(
+      find.text('官方生态'),
+      find.byKey(const ValueKey('classic-nav-list')),
+      const Offset(0, -60),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('玩法主题'), findsOneWidget);
+    expect(find.text('官方生态'), findsOneWidget);
     expect(find.text('系统设置'), findsOneWidget); // 导航底部入口
 
     // 工具栏「设置」按钮：当前实现为弹窗（不再切 SidePane）

@@ -29,6 +29,7 @@
 
 #include "p3b_resource_pack.h"  // p3b::PyValueError: the ValueError -> 400 analogue
 #include "p3b_support.h"        // strict base64, miniz ZipReader, py_strip/py_repr
+#include "plugin_service.h"     // §4 infrastructure: discovery, cache, proxy
 #include "sa_core/atomic_io.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
@@ -36,6 +37,8 @@
 #include "server/state.h"
 
 namespace sa {
+namespace ps = plugin_service;
+
 namespace {
 
 namespace cs = sa_core::paths;
@@ -44,68 +47,15 @@ using p3b::json_str;
 using p3b::json_truthy;
 using p3b::PyValueError;
 
+// §1 discovery primitives moved to plugin_service.cpp (the §4 fetcher needs
+// the exact same rules); aliased here so the call sites read as before.
+using ps::Found;
+using ps::plugins_root;
+using ps::read_manifest;
+using ps::safe_pid;
+using ps::scan_plugins;
+
 constexpr std::size_t kInstallMaxBytes = 100ull * 1024 * 1024;  // api.py:3026
-
-// ---------------------------------------------------------------------------
-// 目录与 manifest（plugin_system.plugins_root / _read_manifest）
-// ---------------------------------------------------------------------------
-
-std::string plugins_root() {
-    // plugin_system.plugins_root: EDITOR_PLUGINS_ROOT or <app_data>/plugins.
-    // getenv_utf8: the override is a path and may contain CJK on Windows.
-    std::string env = cs::getenv_utf8("EDITOR_PLUGINS_ROOT");
-    std::string root = !env.empty() ? env : cs::join(sa::editor_root(), "plugins");
-    cs::create_dirs(root);  // best-effort like Python
-    return root;
-}
-
-// _read_manifest(d) with the §5 "ignore broken plugins" rule: nullopt when
-// manifest.json is absent, not utf-8-sig-decodable, unparsable or not an
-// object (Python falls back to {} and keeps listing the directory).
-std::optional<json> read_manifest(const std::string& dir) {
-    auto raw = cs::read_bytes(cs::join(dir, "manifest.json"));
-    if (!raw) return std::nullopt;
-    auto text = sa_core::decode_utf8_sig_strict(*raw);  // utf-8-sig read
-    if (!text) return std::nullopt;
-    json parsed = json::parse(*text, nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object()) return std::nullopt;
-    return parsed;
-}
-
-// _safe_pid (plugin_system.py:93-96) — the guard every <pid> route runs first,
-// before the id is ever joined onto the root.
-bool safe_pid(const std::string& pid) {
-    if (pid.empty()) return false;
-    for (char c : pid) {
-        if (c == '/' || c == '\\' || c == ':') return false;
-    }
-    return pid.find("..") == std::string::npos;
-}
-
-struct Found {
-    std::string pid;
-    json manifest;
-};
-
-// §1 discovery: every sub-directory of plugins_root(), sorted by name
-// (listdir_sorted == os.listdir + sorted -> UTF-8 byte order == code point
-// order, same as Python's sorted()); __pycache__ excluded as in _reconcile.
-std::vector<Found> scan_plugins() {
-    std::vector<Found> out;
-    const std::string root = plugins_root();
-    bool ok = false;
-    const std::vector<std::string> names = cs::listdir_sorted(root, &ok);
-    if (!ok) return out;
-    for (const auto& pid : names) {
-        if (pid == "__pycache__") continue;
-        const std::string dir = cs::join(root, pid);
-        if (!cs::is_dir(dir)) continue;  // plugins.json and stray files are not plugins
-        auto manifest = read_manifest(dir);
-        if (!manifest) continue;
-        out.push_back(Found{pid, std::move(*manifest)});
-    }
-    return out;
-}
 
 // ---------------------------------------------------------------------------
 // 条目合成（plugin_system._entry_for）
@@ -132,13 +82,21 @@ json plugin_entry(const std::string& pid, const json& manifest) {
     // to load), so there is no error string and no risk-ack time (PLUGIN_SPEC 5).
     e["enabled"] = true;
     e["loaded"] = true;
-    e["error"] = "";
+    // §4: a service plugin's last refresh verdict lands here ("plugin service
+    // unavailable" / "invalid service url: ..."). Read paths never touch the
+    // network, so a declarative-only row — and any service row before the
+    // first refresh — still carries the Python-compatible "".
+    e["error"] = ps::error_of(pid);
     e["risk_ack_at"] = "";
     // §2 manifest passthroughs. Python had no such keys in _entry_for (its
     // ui/service data only surfaced through the aggregation endpoints); kept
     // here so a client can read a plugin's declarations without a second GET.
     if (manifest.contains("ui")) e["ui"] = manifest.at("ui");
-    if (manifest.contains("service")) e["service"] = manifest.at("service");
+    if (manifest.contains("service")) {
+        e["service"] = manifest.at("service");
+        json status = ps::service_status(pid, manifest);
+        if (!status.is_null()) e["service_status"] = std::move(status);
+    }
     return e;
 }
 
@@ -151,6 +109,24 @@ json plugin_entries() {
 // ---------------------------------------------------------------------------
 // 声明型贡献（flow_cards 线格式冻结；panels 同风格聚合）
 // ---------------------------------------------------------------------------
+
+// §3 field whitelist + plugin_id injection — ONE normalization shared by the
+// manifest reader and the §4 service self-descriptions (PLUGIN_SPEC §4: a
+// service's flow_cards carry "与 §3 同字段"). Returns null for a non-object
+// element (caller skips), mirroring the "单元素非对象 → 跳过" rule.
+json normalize_flow_card(const json& c, const std::string& pid) {
+    if (!c.is_object()) return json();
+    json card = json::object();
+    for (const char* k : {"type_id", "name", "icon", "color", "applies_to", "match",
+                          "body_fields", "hidden_ports", "description"}) {
+        card[k] = c.contains(k) ? c.at(k) : json();
+    }
+    card["plugin_id"] = pid;  // setdefault in the engine; inject here
+    if (c.contains("plugin_id") && json_truthy(c.at("plugin_id"))) {
+        card["plugin_id"] = c.at("plugin_id");
+    }
+    return card;
+}
 
 // The retired plugin engine collected cards registered in-process. The C++
 // stub keeps the wire shape ({"flow_cards": [...]}) and serves DECLARATIVE
@@ -179,17 +155,8 @@ json declarative_flow_cards() {
         }
         if (cards == nullptr) continue;
         for (const auto& c : *cards) {
-            if (!c.is_object()) continue;
-            json card = json::object();
-            for (const char* k : {"type_id", "name", "icon", "color", "applies_to", "match",
-                                  "body_fields", "hidden_ports", "description"}) {
-                card[k] = c.contains(k) ? c.at(k) : json();
-            }
-            card["plugin_id"] = pid;  // setdefault in the engine; inject here
-            if (c.contains("plugin_id") && json_truthy(c.at("plugin_id"))) {
-                card["plugin_id"] = c.at("plugin_id");
-            }
-            out.push_back(std::move(card));
+            json card = normalize_flow_card(c, pid);
+            if (!card.is_null()) out.push_back(std::move(card));
         }
     }
     return out;
@@ -207,6 +174,43 @@ json declarative_panels() {
         const json& ui = manifest.at("ui");
         if (!ui.contains("panels") || !ui.at("panels").is_array()) continue;
         for (const auto& p : ui.at("panels")) {
+            if (!p.is_object()) continue;
+            json panel = p;
+            panel["plugin_id"] = f.pid;
+            if (p.contains("plugin_id") && json_truthy(p.at("plugin_id"))) {
+                panel["plugin_id"] = p.at("plugin_id");
+            }
+            out.push_back(std::move(panel));
+        }
+    }
+    return out;
+}
+
+// §4: contributions served from the cached service self-descriptions. These
+// read the cache ONLY (plugin_service::describe never touches the network);
+// the pid order comes from scan_plugins(), so the merge with the declarative
+// halves below stays deterministic (per pid: manifest first, service after).
+json service_flow_cards() {
+    json out = json::array();
+    for (const auto& f : scan_plugins()) {
+        json desc = ps::describe(f.pid);
+        if (desc.is_null()) continue;
+        if (!desc.contains("flow_cards") || !desc.at("flow_cards").is_array()) continue;
+        for (const auto& c : desc.at("flow_cards")) {
+            json card = normalize_flow_card(c, f.pid);
+            if (!card.is_null()) out.push_back(std::move(card));
+        }
+    }
+    return out;
+}
+
+json service_panels() {
+    json out = json::array();
+    for (const auto& f : scan_plugins()) {
+        json desc = ps::describe(f.pid);
+        if (desc.is_null()) continue;
+        if (!desc.contains("panels") || !desc.at("panels").is_array()) continue;
+        for (const auto& p : desc.at("panels")) {
             if (!p.is_object()) continue;
             json panel = p;
             panel["plugin_id"] = f.pid;
@@ -292,7 +296,9 @@ bool plugin_id_valid(const std::string& pid) {
 }
 
 bool reserved_id(const std::string& pid) {
-    for (const char* r : {"agent", "ui", "reload", "install", "install_path"}) {
+    // "service" joins the list with §4: a plugin directory named "service"
+    // would be shadowed by the /api/plugins/service/<pid>/<subpath> proxy.
+    for (const char* r : {"agent", "ui", "reload", "install", "install_path", "service"}) {
         if (pid == r) return true;
     }
     return false;
@@ -425,6 +431,26 @@ void uninstall_plugin(const std::string& pid) {
     cs::remove_tree(d);
 }
 
+// install 后的响应条目：install_zip 在 §4 刷新之前合成了 entry，这里从盘上
+// manifest 重合成一次，让刷新结果（error / service_status）如实出现在安装响应里。
+json fresh_entry(const std::string& pid) {
+    auto manifest = ps::read_manifest(cs::join(ps::plugins_root(), pid));
+    return plugin_entry(pid, manifest ? *manifest : json::object());
+}
+
+// §4 代理 / agent exec 的转发体：raw_body 原样（传输层保留的 wire 副本）；
+// 没有副本时回退到解析视图的再序列化——包括 {"_raw": text} 这个解析失败标记，
+// 其 text 才是真正的请求体。
+std::string forward_body(const Req& req) {
+    if (!req.raw_body.empty()) return req.raw_body;
+    if (req.body.is_null()) return {};
+    if (req.body.is_object() && req.body.size() == 1 && req.body.contains("_raw") &&
+        req.body.at("_raw").is_string()) {
+        return req.body.at("_raw").get<std::string>();
+    }
+    return sa_core::py_dumps(req.body);
+}
+
 // ---------------------------------------------------------------------------
 // body helpers (api.py reads every plugin body as a dict)
 // ---------------------------------------------------------------------------
@@ -461,17 +487,26 @@ void register_plugins_routes(Router& r) {
         return Resp::Json(200, std::move(body));
     });
 
-    // GET /api/plugins/ui — api.py:3059-3061 / ui_panels():665.
+    // GET /api/plugins/ui — api.py:3059-3061 / ui_panels():665, extended with
+    // the §4 service self-description panels (declarative rows first, pid
+    // order preserved; read-only over the refresh cache).
     r.get(R"(/api/plugins/ui)", [](const Req&) -> Resp {
         json body = json::object();
-        body["panels"] = declarative_panels();
+        json panels = declarative_panels();
+        const json served = service_panels();
+        for (const auto& p : served) panels.push_back(p);
+        body["panels"] = std::move(panels);
         return Resp::Json(200, std::move(body));
     });
 
-    // GET /api/plugins/ui/flow_cards — api.py:3063-3065 / flow_cards():676.
+    // GET /api/plugins/ui/flow_cards — api.py:3063-3065 / flow_cards():676,
+    // extended with the §4 service cards run through the same §3 whitelist.
     r.get(R"(/api/plugins/ui/flow_cards)", [](const Req&) -> Resp {
         json body = json::object();
-        body["flow_cards"] = declarative_flow_cards();
+        json cards = declarative_flow_cards();
+        const json served = service_flow_cards();
+        for (const auto& c : served) cards.push_back(c);
+        body["flow_cards"] = std::move(cards);
         return Resp::Json(200, std::move(body));
     });
 
@@ -479,25 +514,60 @@ void register_plugins_routes(Router& r) {
     // The frontend PluginPane requests this per opened panel; declarative
     // manifests only declare (title/icon/description), so the description is
     // served as a markdown block. Registered here (not retired) because the
-    // panel list endpoint advertises these panels as openable.
+    // panel list endpoint advertises these panels as openable. §4: when the
+    // declaration has no such panel but the plugin declares a service, the
+    // panel content is proxied (GET <url>/panel/<panel_id>) — the dynamic
+    // {"title","blocks"} contract the retired engine's panels used to serve.
     r.get(R"(/api/plugins/(?P<pid>[^/]+)/panel/(?P<panel_id>[^/]+))",
           [](const Req& req) -> Resp {
               const std::string pid = req.params.count("pid") ? req.params.at("pid") : "";
               const std::string panel_id =
                   req.params.count("panel_id") ? req.params.at("panel_id") : "";
               auto content = declarative_panel_content(pid, panel_id);
-              if (!content) return Resp::Json(404, json{{"error", "panel not found"}});
-              return Resp::Json(200, std::move(*content));
+              if (content) return Resp::Json(200, std::move(*content));
+              if (safe_pid(pid) && !panel_id.empty()) {
+                  auto manifest = ps::read_manifest(cs::join(ps::plugins_root(), pid));
+                  if (manifest && manifest->contains("service")) {
+                      return ps::proxy(pid, "GET", "panel/" + panel_id, "", "");
+                  }
+              }
+              return Resp::Json(404, json{{"error", "panel not found"}});
           });
 
     // GET /api/plugins/agent/tools — api.py:3067-3069 / agent_tool_defs():600.
-    // Declarative plugins contribute no executable tools, so this stays the
-    // empty aggregate until §4 service self-descriptions land.
+    // Declarative plugins contribute no executable tools; §4 service plugins
+    // do, through their cached self-descriptions (each tool carries plugin_id;
+    // execution goes through POST /api/plugins/agent/exec below).
     r.get(R"(/api/plugins/agent/tools)", [](const Req&) -> Resp {
         json body = json::object();
-        body["tools"] = json::array();
+        body["tools"] = ps::agent_tools();
         return Resp::Json(200, std::move(body));
     });
+
+    // POST /api/plugins/agent/exec — §5 target state: the retired in-process
+    // engine is gone, and an agent tool call is routed THROUGH the §4 service
+    // proxy to the owning plugin's HTTP service. The body ({"name","args"})
+    // is forwarded verbatim; the upstream response passes through untouched
+    // (the AI panel reads {"result": ...}).
+    r.post(R"(/api/plugins/agent/exec)", [](const Req& req) -> Resp {
+        const std::string name = body_str_or(req, "name", "");
+        if (name.empty()) return Resp::Json(400, json{{"error", "name required"}});
+        return ps::exec_tool(name, forward_body(req));
+    });
+
+    // §4 service proxy — ALL verbs on /api/plugins/service/<pid>/<subpath>.
+    // Registered before the /<pid> patterns can ever see "service" (reserved
+    // id since §4, so no plugin directory can shadow these). Errors: 400 bad
+    // pid/subpath/query/declaration, 404 unknown plugin, 502 upstream down.
+    const auto service_proxy = [](const Req& req) -> Resp {
+        const std::string pid = req.params.count("pid") ? req.params.at("pid") : "";
+        const std::string subpath = req.params.count("subpath") ? req.params.at("subpath") : "";
+        return ps::proxy(pid, req.method, subpath, req.raw_query, forward_body(req));
+    };
+    r.get(R"(/api/plugins/service/(?P<pid>[^/]+)/(?P<subpath>.+))", service_proxy);
+    r.post(R"(/api/plugins/service/(?P<pid>[^/]+)/(?P<subpath>.+))", service_proxy);
+    r.put(R"(/api/plugins/service/(?P<pid>[^/]+)/(?P<subpath>.+))", service_proxy);
+    r.del(R"(/api/plugins/service/(?P<pid>[^/]+)/(?P<subpath>.+))", service_proxy);
 
     // POST /api/plugins/install — api.py:3014-3034.
     r.post(R"(/api/plugins/install)", [](const Req& req) -> Resp {
@@ -510,10 +580,12 @@ void register_plugins_routes(Router& r) {
         }
         try {
             json result = install_plugin_bytes(*raw, body_str_or(req, "filename", "plugin.zip"));
+            const std::string pid = result.at("id").get<std::string>();
+            ps::refresh_one(pid);  // §4: a declared service is fetched right away
             json body = json::object();
             body["ok"] = true;
-            body["id"] = result.at("id");
-            body["plugin"] = result.at("plugin");
+            body["id"] = pid;
+            body["plugin"] = fresh_entry(pid);
             return Resp::Json(200, std::move(body));
         } catch (const PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
@@ -527,10 +599,12 @@ void register_plugins_routes(Router& r) {
         const std::string filename = body_str_or(req, "filename", cs::basename(path));
         try {
             json result = install_plugin_from_path(path, filename.empty() ? "plugin.zip" : filename);
+            const std::string pid = result.at("id").get<std::string>();
+            ps::refresh_one(pid);  // §4: a declared service is fetched right away
             json body = json::object();
             body["ok"] = true;
-            body["id"] = result.at("id");
-            body["plugin"] = result.at("plugin");
+            body["id"] = pid;
+            body["plugin"] = fresh_entry(pid);
             return Resp::Json(200, std::move(body));
         } catch (const PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
@@ -539,8 +613,12 @@ void register_plugins_routes(Router& r) {
 
     // POST /api/plugins/reload — api.py:3051-3057. The declarative reader
     // scans the directory on every request, so "reload" is a re-scan by
-    // construction (no cache to clear) and therefore idempotent.
+    // construction (no cache to clear) and therefore idempotent. §4 adds the
+    // one thing that IS cached: the service self-descriptions are re-fetched
+    // synchronously here (4s total budget), so the returned rows carry the
+    // fresh error/service_status verdicts.
     r.post(R"(/api/plugins/reload)", [](const Req&) -> Resp {
+        ps::refresh_all();
         json body = json::object();
         body["ok"] = true;
         body["plugins"] = plugin_entries();
@@ -572,6 +650,7 @@ void register_plugins_routes(Router& r) {
         } catch (const PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }
+        ps::refresh_one(pid);  // §4: a gone directory drops its service verdict
         return Resp::Json(200, json{{"ok", true}});
     });
 }

@@ -82,6 +82,8 @@ Source: "{#BackendDist}\backend.exe"; DestDir: "{app}"; Flags: ignoreversion; Co
 ; 构建机未冻结成功时不存在，skipifsourcedoesntexist 让打包照常通过）
 Source: "{#BackendDist}\aa_scan.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
 Source: "{#SourceDir}\使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme; Components: core; DestName: "使用说明.txt"
+; 后端词典/Schema 资产（dicts.json 缺失时说话人候选与剧本导入角色识别全部失效）
+Source: "{#SourceDir}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: core
 
 ; GUI 组件 (Flutter 前端)
 Source: "{#SourceDir}\{#AppName}.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: gui

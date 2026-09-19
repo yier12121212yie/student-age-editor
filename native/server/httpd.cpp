@@ -34,6 +34,7 @@ using sa_socket_t = SOCKET;
 #include <csignal>
 #include <cerrno>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -119,6 +120,15 @@ std::map<std::string, std::string> parse_query_last(std::string_view query) {
 // ---------------------------------------------------------------------------
 // socket helpers
 // ---------------------------------------------------------------------------
+
+// Request/response over loopback pays a Nagle + delayed-ACK stall on the
+// response write on some platform stacks; every response here is a single
+// flush, so Nagle never helps. Best effort — failure is non-fatal.
+void enable_nodelay(sa_socket_t sock) {
+    int one = 1;
+    ::setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one),
+                 sizeof(one));
+}
 
 bool send_all(sa_socket_t sock, const char* data, size_t len) {
 #ifdef _WIN32
@@ -321,13 +331,29 @@ const char* reason_phrase(int status) {
     }
 }
 
-bool write_response(sa_socket_t sock, int status, const std::string& body, bool close_after) {
+// `content_type` empty == the fixed Python-compatible header; non-empty is a
+// verbatim hand-through (PLUGIN_SPEC §4 service proxy of a non-JSON upstream).
+// A hand-through value containing a control character would let an upstream
+// inject headers into THIS server's response, so it is discarded (default
+// header) rather than truncated.
+bool write_response(sa_socket_t sock, int status, const std::string& body, bool close_after,
+                    const std::string& content_type = {}) {
+    const char* ct = "application/json; charset=utf-8";
+    if (!content_type.empty()) {
+        bool safe = content_type.size() <= 128;
+        for (unsigned char c : content_type) {
+            if (c <= 0x20 || c == 0x7F) safe = false;
+        }
+        if (safe) ct = content_type.c_str();
+    }
     std::string head = "HTTP/1.1 ";
     head += std::to_string(status);
     head += ' ';
     head += reason_phrase(status);
     head += "\r\n";
-    head += "Content-Type: application/json; charset=utf-8\r\n";
+    head += "Content-Type: ";
+    head += ct;
+    head += "\r\n";
     head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     head += "Cache-Control: no-store\r\n";
     head += "Access-Control-Allow-Origin: http://127.0.0.1\r\n";
@@ -385,6 +411,12 @@ constexpr int kKeepAliveIdleMs = 65000;
 // bad_alloc. 256 MiB leaves ample room for the base64 plugin/resource-pack
 // installs (their own limits are 100 MB decoded).
 constexpr long long kMaxBodyBytes = 256ll * 1024 * 1024;
+
+// Ceiling for keeping a second, wire-fidelity copy of the body in Req::raw_body
+// (the §4 service proxy replays it byte-for-byte). Anything above this is a
+// bulk upload (base64 plugin/resource-pack installs reach 100 MB decoded) that
+// no forwarding route ever consumes, and copying it would double the peak.
+constexpr size_t kRawBodyKeepMax = 8ull * 1024 * 1024;
 
 void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<bool>& quit_flag) {
     set_recv_timeout(sock, kKeepAliveIdleMs);
@@ -453,7 +485,10 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
             size_t qpos = target.find('?');
             std::string raw_path = qpos == std::string::npos ? target : target.substr(0, qpos);
             req.path = unquote(raw_path, false);
-            if (qpos != std::string::npos) req.query = parse_query_last(target.substr(qpos + 1));
+            if (qpos != std::string::npos) {
+                req.raw_query = target.substr(qpos + 1);
+                req.query = parse_query_last(req.raw_query);
+            }
 
             if (req.method == "OPTIONS") {
                 // do_OPTIONS: no Content-Length parse, no body (httpd.py:192-211).
@@ -492,6 +527,7 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 if (want > 0 && !reader.read_exact(body_raw, static_cast<size_t>(want))) {
                     break;  // truncated body: connection is no longer framed
                 }
+                if (body_raw.size() <= kRawBodyKeepMax) req.raw_body = body_raw;
                 if (!body_raw.empty()) {
                     // httpd.py:143-147: strict decode + json.loads; failure -> {"_raw":...}
                     auto strict = sa_core::decode_utf8_sig_strict(body_raw);
@@ -523,7 +559,7 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 // Connection: close so this loop exits immediately and the owning
                 // thread can _Exit(0) right after flushing the response.
                 if (g_shutdown_after.load()) close_after = true;
-                if (!write_response(sock, status, body, close_after)) break;
+                if (!write_response(sock, status, body, close_after, resp.content_type)) break;
             }
         } catch (const std::exception&) {
             // httpd.py:121-129: fallback 500 ONLY when nothing was written (B11).
@@ -735,6 +771,7 @@ struct Httpd::Impl {
                 sa_close(conn);
                 continue;
             }
+            enable_nodelay(conn);
             register_conn(conn);
             std::thread([this, conn]() {
                 struct Release {

@@ -566,8 +566,9 @@ class _ClassicNav extends StatelessWidget {
   final VoidCallback onOpenSettings;
 
   static const _groups = <(String, List<(String, String, IconData)>)>[
-    ('基础配置', [('person', '人物综合配置', FluentIcons.person_24_regular), ('resource', '资源综合配置', FluentIcons.box_24_regular), ('function', '功能配置相关', FluentIcons.wrench_24_regular)]),
-    ('内容创作', [('story', '剧情编辑器', FluentIcons.book_letter_24_regular), ('social', '空间手机结局编辑', FluentIcons.chat_24_regular), ('love', '恋爱相关', FluentIcons.heart_24_regular)]),
+    ('基础配置', [('person', '人物综合配置', FluentIcons.person_24_regular), ('resource', '资源综合配置', FluentIcons.box_24_regular), ('function', '功能配置相关', FluentIcons.wrench_24_regular), ('evt', '事件与闲聊', FluentIcons.calendar_24_regular)]),
+    ('内容创作', [('story', '剧情编辑器', FluentIcons.book_letter_24_regular), ('social', '空间手机结局编辑', FluentIcons.chat_24_regular), ('love', '恋爱相关', FluentIcons.heart_24_regular), ('gift', '礼物与纸条', FluentIcons.gift_24_regular)]),
+    ('玩法主题', [('news', '新闻与评论', FluentIcons.news_24_regular), ('fishing', '钓鱼', FluentIcons.food_fish_24_regular), ('travel', '旅游', FluentIcons.globe_24_regular), ('anime', '看番与漫展', FluentIcons.video_24_regular), ('expo', '世博会', FluentIcons.building_24_regular), ('club', '侦探社', FluentIcons.search_24_regular), ('crafts', '手工', FluentIcons.puzzle_piece_24_regular), ('birthday', '生日派对', FluentIcons.food_cake_24_regular), ('negotiation', '辩论交涉', FluentIcons.scales_24_regular)]),
     ('官方生态', [('official', '官方兼容工具', FluentIcons.shield_task_24_regular)]),
   ];
 
@@ -601,6 +602,7 @@ class _ClassicNav extends StatelessWidget {
               children: [
                 Positioned.fill(
                   child: ListView(
+                    key: const ValueKey('classic-nav-list'),
                     padding: EdgeInsets.zero,
                     children: [
                       const SizedBox(height: 6),

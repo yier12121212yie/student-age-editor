@@ -1,8 +1,8 @@
 # 学生时代 模组编辑器 — 插件系统指南
 
 > 插件系统允许第三方以**声明**方式扩展编辑器：贡献**流程卡片**（剧情图模式的
-> 卡型）、**UI 面板**，以及（规范先行、尚未实现）由**独立进程**提供的 **HTTP 服务
-> 插件**。
+> 卡型）、**UI 面板**，以及由**独立进程**提供的 **HTTP 服务插件**（自描述 +
+> 代理，见第 5 节）。
 >
 > 本指南以 [`native/PLUGIN_SPEC.md`](native/PLUGIN_SPEC.md) 为唯一真相源。C++ 后端
 > 废弃了进程内 Python 插件：插件**只是「目录 + `manifest.json`」的静态声明，
@@ -22,8 +22,10 @@
   （常开）；旧版的 `risk_ack_at` 留痕、三端高危确认全部废弃。
 - 单个插件 `manifest.json` 解析失败或非对象时，该插件被**整体忽略且不报错**，
   不影响其它插件。
-- 后端会合成插件的 `enabled` / `loaded` 字段（恒 `true`）、`error`（恒 `""`）与
-  `risk_ack_at`（恒 `""`），以保持与旧响应形状的兼容；它们不再代表任何可切换状态。
+- 后端会合成插件的 `enabled` / `loaded` 字段（恒 `true`）与 `risk_ack_at`（恒 `""`），
+  以保持与旧响应形状的兼容；它们不再代表任何可切换状态。`error` 恒 `""`，**例外**是
+  服务插件（第 5 节）：自描述拉取失败 / 声明不合规时会把原因写进 `error`，并附带
+  `service_status`（`ok` / `url` / `name` / `checked`）。
 
 ## 2. 目录与发现
 
@@ -31,7 +33,7 @@
   （C++ 侧 `plugins_root()` 已对齐，含 best-effort mkdir）。
 - 每个插件一个子目录，**目录名即插件 id**。id 约束沿用旧规则：
   `^[a-z][a-z0-9_-]{0,63}$`（小写字母开头，可含数字 / `_` / `-`，最长 64），
-  且不得为保留名 `agent`、`ui`、`reload`、`install`、`install_path`。
+  且不得为保留名 `agent`、`ui`、`reload`、`install`、`install_path`、`service`。
 - 目录内必有 `manifest.json`（UTF-8，允许 BOM，读取按 `utf-8-sig`）。
 - 扫描排序：目录名升序，跨实现确定；`__pycache__` 目录被排除。
 
@@ -115,27 +117,45 @@ plugins/
 `{"panels":[...]}`，并注入 `plugin_id`（声明里自带 `plugin_id` 时以其为准），按 pid
 升序。面板字段集**保持开放**（不设白名单），以便向前兼容。
 
-> 与旧 Python 版的重要区别：面板不再由插件注册内容路由提供（插件不执行代码）。
+> 与旧 Python 版的重要区别：面板不再由插件注册内容路由提供（声明型插件不执行代码）。
 > 旧版「面板内容由插件自己注册 `GET panel/<id>` 返回 `{"title","blocks"}`」的 UI blocks
-> 协议，以及 `<pid>/<rest>` 服务代理，在 native 后端**均未实现**；面板目前只是声明 +
-> 聚合展示。
+> 协议，由声明型「manifest description → markdown 块」承接；需要**动态**面板内容时走
+> 第 5 节的服务插件：`GET /api/plugins/<pid>/panel/<panel_id>` 在声明查不到该面板且
+> 插件声明了 service 时，代理 `GET <url>/panel/<panel_id>`。`<pid>/<rest>` 式的通用
+> 代理回退**不存在**——代理只走显式的 `/api/plugins/service/<pid>/<subpath>` 形态。
 
-## 5. HTTP 服务插件（规范先行，未实现）
+## 5. HTTP 服务插件（已实现）
 
 面向确需代码贡献的场景（如动态面板内容 / Agent 工具）：插件是一个**独立进程**，
-监听 loopback HTTP；后端只做聚合与代理。
+监听 loopback HTTP；后端只做聚合与代理。可运行示例见
+`examples/plugins/service_demo/`。
 
 - 声明：manifest `"service": {"url": "http://127.0.0.1:<port>", "name": "..."}`。
-  `url` 仅允许 `127.0.0.1` / `localhost`；端口任意（约定 `39xxx` 段）。
+  `url` 仅允许 `http://` + `127.0.0.1` / `localhost`，必须写明端口（约定 `39xxx` 段），
+  可带路径前缀（不得含 `..`）。不合规声明 → 插件行 `error` = `invalid service url: ...`，
+  代理回 400，绝不发请求。
 - 自描述：服务须在 `GET <url>/plugin.json` 返回贡献声明（`flow_cards` 数组，可选
-  `panels`、`agent_tools`）。后端启动 / `reload` 时拉取并缓存；拉取失败记入该插件
-  `error` 字段，不影响其它插件。
-- 代理：`POST /api/plugins/service/<pid>/<subpath>` → 转发到 `<url>/<subpath>`（body
-  原样、超时 10s）；服务未就绪 → 502 `{"error": "plugin service unavailable"}`。
-- 生命周期：后端**不负责**拉起或杀掉服务进程。
-
-> **现状**：本章为规范先行内容，**尚未实现**。当前 `service` 字段仅被识别 / 透传，
-> 不会拉取自描述、也不提供 `/api/plugins/service/...` 代理；`agent_tools` 亦无消费者。
+  `panels`、`agent_tools`）。后端在**启动**（总预算 4s）、`POST /api/plugins/reload`
+  （同步全刷）、安装 / 卸载（单刷该 pid）时拉取并缓存（单次超时 1.5s、上限 2 MiB）；
+  拉取失败记入该插件 `error` 字段，不影响其它插件。**所有 GET 端点只读缓存、不触网**，
+  死服务不会拖慢轮询；`GET /api/plugins` 的行内 `service_status`（ok/url/name/checked）
+  反映最近一次刷新结果。
+- 聚合：`GET /api/plugins/ui/flow_cards`、`GET /api/plugins/ui`、
+  `GET /api/plugins/agent/tools` = 声明型贡献（先）+ 各服务自描述（后），按 pid 升序、
+  注入 `plugin_id`；服务卡片与声明型卡片走同一字段白名单，线格式一致。
+- 代理：`GET/POST/PUT/DELETE /api/plugins/service/<pid>/<subpath>` → 转发到
+  `<url>/<subpath>`（subpath 先 percent-decode 再 re-quote；query 原样；body 原样；
+  超时 10s；附 `X-Plugin-Id` 头，客户端其余请求头不透传），上游 status / body /
+  Content-Type 原样返回（body 上限 32 MiB）；服务未就绪 →
+  502 `{"error": "plugin service unavailable"}`。代理现读 manifest、不依赖缓存。
+- Agent 工具执行：AI 面板对 `POST /api/plugins/agent/exec` `{"name","args"}` 的调用，
+  后端按缓存的 `agent_tools` 找到归属插件，转发到该工具声明的 `path`
+  （缺省 `/agent/exec`），返回体原样透传（前端读 `{"result": ...}`）；未命中 →
+  404 `{"error": "unknown plugin tool: <name>"}`。
+- 出站加固：服务插件相关出站请求一律绕过系统代理（loopback 不被企业代理截胡）且
+  不跟随重定向（3xx 跳到非 loopback 即绕过白名单）。
+- 生命周期：后端**不负责**拉起或杀掉服务进程。服务进程退出后，代理回 502，
+  列表 `error` 在下次刷新时更新。
 
 ## 6. 安装 / 卸载 / 重载
 
@@ -146,7 +166,7 @@ plugins/
 | 安装 zip | `POST /api/plugins/install` | JSON body `{"data": "<zip 的 base64>", "filename": "..."}`，zip ≤ 100MB |
 | 按路径安装 | `POST /api/plugins/install_path` | JSON body `{"path": "...", "filename": "..."}` 指向本地 zip |
 | 卸载 | `DELETE /api/plugins/<pid>` | **纯删目录**，无启用态可清理 |
-| 重载 | `POST /api/plugins/reload` | 重扫目录（声明型每次请求即扫描），返回与 `GET /api/plugins` 同形状 |
+| 重载 | `POST /api/plugins/reload` | 重扫目录 + 同步重拉 §4 服务自描述（总预算 4s），返回与 `GET /api/plugins` 同形状 |
 | 列表 / 详情 | `GET /api/plugins`、`GET /api/plugins/<pid>` | 由目录 + manifest 合成 |
 | 启用 / 停用 | `POST /api/plugins/<pid>/enable\|disable` | **已废弃，恒 410** |
 | Agent 工具执行 | `POST /api/plugins/agent/exec` | **已废弃，未注册（404）** |
@@ -163,17 +183,18 @@ plugins/
 
 | 端点 | 旧 Python 语义 | native C++ 现状 |
 | --- | --- | --- |
-| `GET /api/plugins` | 已加载插件列表 | 枚举目录 + manifest 合成（`enabled`/`loaded`=true，`error`/`risk_ack_at`=""） |
+| `GET /api/plugins` | 已加载插件列表 | 枚举目录 + manifest 合成（`enabled`/`loaded`=true，`risk_ack_at`=""）；服务插件行另带 `error`（刷新失败原因）与 `service_status` |
 | `GET /api/plugins/<pid>` | 单插件详情 | 命中目录 → 详情；否则 404 `{"error":"plugin not found"}` |
-| `GET /api/plugins/ui` | 面板贡献聚合 | manifest `ui.panels` 透传 + `plugin_id` |
-| `GET /api/plugins/ui/flow_cards` | 代码注册聚合 | 声明型 `ui.flow_cards` 聚合 |
-| `GET /api/plugins/agent/tools` | 插件工具定义 | 恒 `{"tools":[]}`（空） |
-| `POST /api/plugins/install` / `install_path` | zip 解压安装、默认停用 | 保留安装面，**默认即可用**；无 entry 检查 |
-| `POST /api/plugins/reload` | 重新 import 全部 | 重扫目录（声明型无需 import） |
+| `GET /api/plugins/ui` | 面板贡献聚合 | manifest `ui.panels` 透传 + §4 服务 `panels`，注入 `plugin_id` |
+| `GET /api/plugins/ui/flow_cards` | 代码注册聚合 | 声明型 `ui.flow_cards` 聚合 + §4 服务 `flow_cards`（同一字段白名单） |
+| `GET /api/plugins/agent/tools` | 插件工具定义 | §4 服务 `agent_tools` 聚合（声明型无工具贡献；缓存只读） |
+| `POST /api/plugins/install` / `install_path` | zip 解压安装、默认停用 | 保留安装面，**默认即可用**；无 entry 检查；装后单刷该 pid 的服务自描述 |
+| `POST /api/plugins/reload` | 重新 import 全部 | 重扫目录 + 重拉 §4 自描述（声明型无需 import） |
 | `POST /api/plugins/<pid>/enable\|disable` | 引擎生命周期 | **恒 410**（常开无启用态） |
-| `DELETE /api/plugins/<pid>` | 卸载 | 纯删目录 |
-| `POST /api/plugins/agent/exec` | 进程内执行插件工具 | **未注册（404）** |
-| `POST /api/plugins/service/<pid>/<subpath>` | —（新增形态） | **未实现** |
+| `DELETE /api/plugins/<pid>` | 卸载 | 纯删目录，并清该 pid 的服务缓存项 |
+| `POST /api/plugins/agent/exec` | 进程内执行插件工具 | **路由到 owning service 代理**（§4；未命中 404 `unknown plugin tool`） |
+| `GET/POST/PUT/DELETE /api/plugins/service/<pid>/<subpath>` | —（新增形态） | **§4 代理**：转发到 `<service.url>/<subpath>`，超时 10s；未就绪 502 |
+| `GET /api/plugins/<pid>/panel/<panel_id>` | 面板内容 | 声明型 → markdown 块；声明查不到且插件有 service → 代理动态内容 |
 
 ## 8. 三端行为差异
 
@@ -228,6 +249,9 @@ zip -r ../../my_cards.zip manifest.json
 > - `examples/plugins/hello_plugin/`：`ui.panels` 声明一个面板，演示 `GET /api/plugins/ui`
 >   的聚合形态（见 §4.2）；旧版的路由 / Agent 工具 / CLI 命令 / 面板内容路由在声明型
 >   规范中无对应，已随 `plugin.py` 一并移除。
+> - `examples/plugins/service_demo/`：**HTTP 服务插件**示例（§5）——`manifest.json`
+>   声明 `service.url`，配套 `service.py`（仅标准库）提供 `/plugin.json` 自描述、
+>   动态面板 `/panel/live` 与 Agent 工具 `/agent/exec`；README 有三步跑通指引。
 >
-> 两者都只是「目录 + `manifest.json`」：拷入插件根即生效，无代码、无启用态。字段语义
-> 以 `native/PLUGIN_SPEC.md` 为唯一真相源。
+> 前两者只是「目录 + `manifest.json`」：拷入插件根即生效，无代码、无启用态；服务插件
+> 另需自行运行其服务进程（后端不代拉）。字段语义以 `native/PLUGIN_SPEC.md` 为唯一真相源。

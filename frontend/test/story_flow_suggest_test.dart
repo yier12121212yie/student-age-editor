@@ -111,7 +111,9 @@ void main() {
   group('本地名称字典（零请求）', () {
     test('Mod 记录覆盖原版同名 id，并补上原版没有的新条目', () async {
       state.gameDicts = {
-        'roles': {'1': '张三', '2': '李四', '0': '无'},
+        // '0' 是主角合法别名（dicts.json: 0=白雨/00=主角/000=你），不是哨兵；
+        // 真正的无角色哨兵只有 '-1'（旁白）。
+        'roles': {'1': '张三', '2': '李四', '0': '白雨', '-1': '旁白'},
       };
       modTables['PersonCfg'] = {
         '1': {'name': '张三（Mod 改名）'},
@@ -124,16 +126,16 @@ void main() {
       );
       expect(src, isNotNull);
       final got = await src!(q(''));
-      expect(codes(got), ['1', '2', '20']);
+      expect(codes(got), ['0', '1', '2', '20']);
       expect(
-        got.first.desc,
+        got.where((s) => s.code == '1').single.desc,
         '张三（Mod 改名）',
         reason: '合并次序先原版后 Mod：Mod 记录赢（同 story_director 的 _allRoles）',
       );
       expect(
         codes(got),
-        isNot(contains('0')),
-        reason: '原版 roles 的「无角色」哨兵不是可选对象',
+        isNot(contains('-1')),
+        reason: 'roles 字典里唯一的无角色哨兵是旁白 -1（主角别名 0/00/000 必须可选）',
       );
       expect(httpCalls, isEmpty, reason: '名称一律读缓存字典，不许为补全发请求');
       expect(offStageCalls, isEmpty);

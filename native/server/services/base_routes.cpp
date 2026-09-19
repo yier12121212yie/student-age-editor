@@ -9,6 +9,7 @@
 #include "server/api_router.h"
 #include "server/cfg_cache.h"
 #include "server/cfg_store.h"
+#include "server/revision_manager.h"
 #include "server/state.h"
 #include "p4_util.h"
 #include "base_store.h"
@@ -116,6 +117,32 @@ void register_base_routes(Router& r) {
         out["evt_id"] = evt_id;
         out["imported"] = std::move(counts);
         return Resp::Json(200, std::move(out));
+    });
+
+    // GET /api/workspace/revision — Compute workspace content fingerprint (SHA-256[:20]).
+    // Used by frontend before save operations to detect external modifications.
+    r.get(R"(/api/workspace/revision)", [](const Req&) -> Resp {
+        std::string mod_root;
+        {
+            std::lock_guard<std::mutex> lk(STATE().mu_);
+            mod_root = STATE().mod_root;
+        }
+        if (mod_root.empty()) {
+            return Resp::Json(400, json{{"error", "no mod selected"}});
+        }
+        
+        revision_manager::set_workspace_root(mod_root);
+        std::string revision = revision_manager::get_current_revision();
+        
+        if (revision.empty()) {
+            return Resp::Json(500, json{{"error", "failed to compute revision"}});
+        }
+        
+        json body;
+        body["revision"] = revision;
+        body["computed_at_ms"] = revision_manager::debug_last_compute_time_ms();
+        body["files_scanned"] = revision_manager::debug_files_scanned_count();
+        return Resp::Json(200, std::move(body));
     });
 }
 

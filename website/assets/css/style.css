@@ -269,6 +269,9 @@ html[data-theme="light"] .stat b{background:linear-gradient(120deg,#5a49d6,#b886
 .dl-card.soon .dico{background:var(--card2);color:var(--faint)}
 .dl-gh{display:block;margin-top:20px;text-align:center;color:var(--muted);font-size:14px;border:1px dashed var(--line2);border-radius:13px;padding:13px;transition:.2s}
 .dl-gh:hover{border-color:var(--pri2);color:var(--txt);background:var(--pri-soft)}
+.dl-note{margin-top:14px;color:var(--muted);font-size:12.5px;line-height:1.75}
+.dl-note code{display:inline-block;margin-top:6px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:var(--card2);color:var(--txt);font-size:12px;word-break:break-all}
+.dl-note code::before{content:'$ ';color:var(--faint)}
 
 /* ================= 快速上手 ================= */
 .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:44px;counter-reset:step}

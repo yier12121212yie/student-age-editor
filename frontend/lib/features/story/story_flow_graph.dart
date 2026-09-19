@@ -21,10 +21,12 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/app_theme.dart';
 import '../../core/history_client.dart';
+import '../../core/save_service.dart';
 import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
 import 'story_flow_models.dart';
 import 'story_flow_snap.dart';
+import 'tombstone_node_widget.dart';
 
 const double kFlowNodeW = 200;
 const double kFlowNodeH = 112;
@@ -1238,6 +1240,21 @@ class _FlowNodeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (kDebugMode) debugNodeCardBuilds++;
+    
+    // P8: Check if this is a tombstone node (deleted but referenced)
+    if (node.isTalk || node.isOption) {
+      final isTombstone = isDeleted(node.id);
+      if (isTombstone) {
+        return TombstoneNodeWidget(
+          id: node.id,
+          onRestore: () async {
+            await deleteRecord(node.node.type.cfgName, node.id);
+            widget.onDeleteNode?.call(node.id);
+          },
+        );
+      }
+    }
+    
     final w = kFlowNodeW;
     // expanded 由画布按 LOD 档传入，低档恒为 false，_h 即折叠足迹高度。
     final hh = _h;

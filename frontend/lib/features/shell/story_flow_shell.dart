@@ -457,6 +457,9 @@ class _StoryFlowPagesViewState extends State<_StoryFlowPagesView> {
           child: page == null
               ? const SizedBox.shrink()
               : EditorPageView(
+                  // key 必须按页面区分：同位置同类型组件若无 key，切页时 State
+                  // 被复用，_cfg 停在首个页面的 defaultCfg，所有页面渲染同一张表。
+                  key: ValueKey(page.id),
                   state: widget.state,
                   page: page,
                   onPreview: widget.onPreview,

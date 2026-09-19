@@ -1,9 +1,10 @@
 # 插件体系规范（C++ 后端）—— 声明型 manifest + 可选 HTTP 服务插件
 
 状态：规范冻结（波次 3，编排者）。§5 的实现改造已于主树重构 R4 落地
-（`server/services/plugins_routes.{h,cpp}` + `[plugins]` 9 例；bare 环境 4 个
+（`server/services/plugins_routes.{h,cpp}` + `[plugins]` 用例；bare 环境 4 个
 api_plugins golden 逐字段一致，enable/disable 按裁决注册且恒 410）。§4 的
-service 自描述拉取/代理仍未实现（规范先行）。
+service 自描述拉取/代理已落地（`server/services/plugin_service.{h,cpp}` +
+`[plugins]` 服务插件用例；bare 环境 golden 不变，因为无插件目录即无网络）。
 决策依据：迁移计划决策 2「废弃进程内 Python 插件」——后端重写为单一 C++ 可执行文件后，
 进程内加载 Python 代码在机制上不成立；插件能力收缩为两种安全形态。
 
@@ -47,17 +48,35 @@ service 自描述拉取/代理仍未实现（规范先行）。
 - `match` 为声明式识别条件（对行数据的谓词描述），由前端剧情图工作区注册表消费；
   后端不解释、不执行——这是「声明型」的含义：插件不运行任何代码。
 
-## 4. HTTP 服务插件（规范先行，未实现）
+## 4. HTTP 服务插件（已实现：plugin_service.{h,cpp} + plugins_routes 扩展）
 
 面向确需代码贡献的场景：插件是**独立进程**，监听 loopback HTTP；后端只做聚合与代理。
 
 - 声明：manifest `"service": {"url": "http://127.0.0.1:<port>", "name": "..."}`。
-  url 仅允许 `127.0.0.1/localhost`；端口任意（约定 39xxx 段）。
+  url 仅允许 `127.0.0.1/localhost`、scheme 仅 http、必须写明端口（约定 39xxx 段）；
+  可带路径前缀（不得含 `..`）。不合规声明 → 该插件 `error` = `invalid service url: <原因>`，
+  代理回 400，绝不发请求（防 SSRF/端口扫描）。
 - 自描述：服务须在 `GET <url>/plugin.json` 返回与 §3 同字段的贡献声明
-  （`flow_cards` 数组），可选 `panels`、`agent_tools`。后端启动/`reload` 时拉取并缓存，
-  拉取失败记入该插件 `error` 字段，不影响其它插件。
-- 代理：`POST /api/plugins/service/<pid>/<subpath>` → 转发到 `<url>/<subpath>`（body 原样、
-  超时 10s），响应原样返回；服务未就绪 → 502 `{"error": "plugin service unavailable"}`。
+  （`flow_cards` 数组），可选 `panels`、`agent_tools`。拉取超时 1.5s、响应上限 2 MiB，
+  失败/坏 JSON 记入该插件 `error` 字段，不影响其它插件。
+- **缓存契约（实现决策）**：缓存只由显式刷新写入——启动（总预算 4s，`run.cpp`）、
+  `POST /api/plugins/reload`（同步全刷）、install/uninstall（单刷该 pid）、
+  agent exec 未命中缓存时的内联兜底刷（预算 2s）。所有 GET 端点**只读缓存、不触网**，
+  因此死服务不会拖慢任何轮询；`error`/`service_status` 反映最近一次刷新结果。
+- 聚合：`ui/flow_cards`、`ui`、`agent/tools` 三个端点 = 声明型贡献（先）+ 各服务
+  自描述贡献（后），按 pid 升序、注入 `plugin_id`，卡片走 §3 同一字段白名单。
+- 代理：`GET/POST/PUT/DELETE /api/plugins/service/<pid>/<subpath>` → 转发到
+  `<url>/<subpath>`（subpath 先按传输层 percent-decode 再 re-quote；query 串原样；
+  body 原样——传输层对 ≤8 MiB 的 body 保留 wire 副本，其余回退再序列化；超时 10s；
+  请求附 `Content-Type: application/json` 与 `X-Plugin-Id`，客户端其余请求头不透传），
+  上游 status/body/Content-Type 原样返回（body 上限 32 MiB）；服务未就绪 →
+  502 `{"error": "plugin service unavailable"}`。代理不依赖缓存（现读 manifest）。
+- agent 工具执行：`POST /api/plugins/agent/exec` `{"name","args"}` → 按缓存的
+  `agent_tools` 找到归属插件后转发到该工具声明的 `path`（缺省 `/agent/exec`）；
+  未命中 → 404 `{"error": "unknown plugin tool: <name>"}`。§5 的「废弃 agent/exec」
+  即此意：进程内执行废弃，执行面收敛为 §4 代理。
+- 出站加固：服务插件的全部出站请求 `bypass_proxy=true`（企业代理不得截胡 loopback）、
+  `follow_redirects=false`（3xx 跳到非 loopback 等于绕过白名单）。
 - 生命周期：后端**不**负责拉起/杀掉服务进程（与旧引擎 enable/disable 语义不同，写进文档避免误解）。
 
 ## 5. /api/plugins* 端点对齐表与待办
@@ -67,11 +86,11 @@ service 自描述拉取/代理仍未实现（规范先行）。
 | GET /api/plugins | 已加载插件列表（entry 形状含 loaded/enabled/error/risk_ack_at） | 恒 `{"plugins": []}` 桩 | 枚举 §1 目录 + manifest 合成条目：`enabled:true`、`loaded:true`、`error:""`、`risk_ack_at:""`（无代码即无风险确认环节），形状逐字段保持 Python |
 | GET /api/plugins/\<pid\> | 单插件详情 | 恒 404 | 命中目录 → 详情；否则 404 `{"error": "plugin not found"}` |
 | GET /api/plugins/ui | 面板贡献聚合 | 恒 `{"panels": []}` | 保持空 + manifest `ui.panels` 数组透传（字段白名单待定） |
-| GET /api/plugins/ui/flow_cards | 代码注册聚合 | 已声明型实现 | 不变；后续并入 service 自描述结果 |
+| GET /api/plugins/ui/flow_cards | 代码注册聚合 | 已声明型实现 | 声明型 + §4 service 自描述结果合并（同一字段白名单） |
 | POST /api/plugins/install、install_path | zip 解压安装（安全校验、补 manifest、默认停用） | 未注册（404） | 保留安装面：zip 校验沿用 Python 条目规则（绝对路径/`..`/盘符拒绝），**默认即可用**（无 enable 态）；无 `entry` 存在性检查 |
 | POST /api/plugins/reload | 重新 import 全部 | 未注册 | 重扫目录 + 重拉 service 自描述，返回与 GET /api/plugins 同形状 |
 | POST /api/plugins/enable、disable、uninstall | 引擎生命周期 | 未注册 | enable/disable 永久废弃（返回 410 不保留，前端本无入口则直接不注册）；uninstall 保留为纯删目录（安全校验同安装） |
-| POST /api/plugins/agent/exec | 进程内执行插件工具 | 未注册 | 废弃；agent 工具贡献走 §4 service 代理 |
+| POST /api/plugins/agent/exec | 进程内执行插件工具 | §4 已落地：路由到 owning service 代理 | 同左（进程内执行废弃，执行面收敛为 §4 代理） |
 
 兼容性红线：以上任何改造不得改动现有 4 个 golden（`api_plugins*.json` 在 bare 环境＝空集合/404，
 目标实现同样在 bare 环境成立）；selftest 中涉及 plugins 的用例保持通过。

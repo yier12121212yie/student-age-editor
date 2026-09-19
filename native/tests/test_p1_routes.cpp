@@ -133,9 +133,10 @@ TEST_CASE("p1 routes: /api/dicts assembly", "[p1][routes]") {
     auto r = fx.call("GET", "/api/dicts");
     REQUIRE(r.status == 200);
     const json& b = r.json_payload;
-    // key_maps 恰 9 表（api.py 手工枚举）
+    // key_maps：原 9 表（api.py 手工枚举）+ 新纳入编辑页的 66 张玩法表标签
+    // （InteractCfg 本在原 9 表内，仅补 npc 字段，不计入新增）
     REQUIRE(b.at("key_maps").is_object());
-    CHECK(b.at("key_maps").size() == 9);
+    CHECK(b.at("key_maps").size() == 75);
     for (const char* k : {"EvtCfg", "TalkCfg", "OptionCfg", "PersonCfg", "PersonGrowCfg",
                           "KZoneContentCfg", "PhoneMsgCfg", "GiftEvtCfg", "InteractCfg"})
         CHECK(b.at("key_maps").contains(k));

@@ -496,14 +496,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     if (gameRoles is Map) {
       for (final e in gameRoles.entries) {
         final k = e.key.toString().trim();
-        if (k.isNotEmpty && k != '-1' && k != '0' && k != '00' && k != '000') {
+        // 只排除旁白 '-1'：'0'/'00'/'000' 是主角的合法别名（白雨/主角/你），
+        // 排除它们会导致主角永远搜不到（说话人识别失效）。
+        if (k.isNotEmpty && k != '-1') {
           map[k] = e.value.toString();
         }
       }
     }
     for (final e in _personCfg.entries) {
       final k = e.key.toString().trim();
-      if (k.isEmpty || k == '-1' || k == '0') continue;
+      if (k.isEmpty || k == '-1') continue;
       final p = e.value;
       if (p is Map && p['name'] != null && p['name'].toString().isNotEmpty) {
         map[k] = p['name'].toString();
@@ -4260,7 +4262,7 @@ class _RolesSearchFieldState extends State<_RolesSearchField> {
   }
 
   // 本地字典零请求，与剧情图 dictSource 同一取舍；ID 与名字命中都算。
-  Future<List<Suggestion>> _source(SuggestionQuery q) async {
+  Future<List<Suggestion>> _searchRoles(SuggestionQuery q) async {
     final token = q.token.trim().toLowerCase();
     final out = <Suggestion>[];
     for (final e in widget.roles.entries) {
@@ -4274,6 +4276,11 @@ class _RolesSearchFieldState extends State<_RolesSearchField> {
     }
     return out;
   }
+
+  /// 候选源要跨帧同标识：补全框按 identical 比较 source，直接传方法 tear-off
+  /// 的话每次 build 都是新对象，父级一次 setState 就把用户正开着的候选浮层
+  /// 清掉（与 effect_hint_field 的 `_source` 同一契约）。
+  late final SuggestionSource _source = _searchRoles;
 
   @override
   Widget build(BuildContext context) {

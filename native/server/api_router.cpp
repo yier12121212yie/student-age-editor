@@ -11,6 +11,7 @@
 #include "server/services/cfg_routes.h"
 #include "server/services/cloud_routes.h"
 #include "server/services/content_routes.h"
+#include "server/services/deleted_routes.h"
 #include "server/services/mods_routes.h"
 #include "server/services/p3b_domain_tools_routes.h"
 #include "server/services/plugins_routes.h"
@@ -46,6 +47,7 @@ Router build_router() {
     register_system_routes(r);
     register_mods_routes(r);
     register_cfg_routes(r);
+    register_deleted_routes(r);  // P8 Tombstone Semantics
     // Wave-2 merge: semantic (P1) first per its report's ordering note, then
     // workspace (P2), content (P3a), AI domain/tools (P3b), media (P4).
     register_semantic_routes(r);      // P1

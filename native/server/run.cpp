@@ -24,6 +24,7 @@
 #include "server/api_router.h"
 #include "server/httpd.h"
 #include "server/run.h"
+#include "server/services/plugin_service.h"
 #include "server/state.h"
 #include "sa_core/paths.h"
 
@@ -128,6 +129,17 @@ int run_server(const ServerConfig& cfg) {
     // Workspace / mod resolution per CONVENTIONS 11: CLI injection wins, then
     // editor_env.json, then the default user mods dir; auto-select first mod.
     sa::init_state(cfg.workspace_root, cfg.mod_root, cfg.mod_name);
+
+    // PLUGIN_SPEC §4: fetch every service plugin's self-description once at
+    // boot so the first request sees a populated cache. Synchronous with a 4s
+    // total budget (per-service 1.5s cap inside): dead loopback services fail
+    // fast (connection refused), and anything past the budget is left to
+    // POST /api/plugins/reload rather than delaying the listen line.
+    try {
+        sa::plugin_service::refresh_all(4000);
+    } catch (...) {
+        // A broken plugins root must not stop the server from starting.
+    }
 
     sa::Router router = sa::build_router();
     if (cfg.extra_routes) cfg.extra_routes(router);  // atelier graft point

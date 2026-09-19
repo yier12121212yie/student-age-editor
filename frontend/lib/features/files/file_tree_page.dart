@@ -121,12 +121,16 @@ class _FileTreePageState extends State<FileTreePage> {
               MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _load,
-                    child: Padding(
-                        padding: EdgeInsets.all(mob ? 12 : 0),
-                        child: Icon(FluentIcons.arrow_sync_24_regular,
-                            size: 14, color: palette.textMuted))),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _load,
+                  child: SizedBox(
+                    width: mob ? 44 : 32,
+                    height: mob ? 44 : 32,
+                    child: Center(
+                      child: Icon(FluentIcons.arrow_sync_24_regular, size: 14, color: palette.textMuted),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),

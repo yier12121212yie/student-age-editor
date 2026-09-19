@@ -1,7 +1,9 @@
 // server/httpd: HTTP transport contract (port of `server/httpd.py`).
 //
-// CONVENTIONS section 2 governs every decision here. Built on cpp-httplib as
-// the socket layer, but with the *semantics* of the Python BaseHTTPRequestHandler:
+// CONVENTIONS section 2 governs every decision here. The transport is the
+// hand-written socket loop in httpd.cpp (Winsock2 / BSD sockets); the vendored
+// cpp-httplib is only ever a *client* here (tests/), never this server's socket
+// layer. It implements the *semantics* of the Python BaseHTTPRequestHandler:
 //   * ordered (method, regex) fullmatch route table, first hit wins (ApiRouter);
 //   * 404 envelope {"error":"no route: GET /x"} for anything unmatched;
 //   * Host/Origin loopback validation (httpd.py:76-115, IPv6 brackets included);
@@ -14,8 +16,7 @@
 //   * keep-alive idle 65s (httpd.py:94 timeout).
 //
 // Known deviations from Python are documented at the point of use and in the
-// wave-1 delivery report (Keep-Alive response header added by cpp-httplib;
-// 501-for-unknown-methods becomes 404 no-route).
+// wave-1 delivery report (501-for-unknown-methods becomes 404 no-route).
 #pragma once
 
 #include <functional>
@@ -41,6 +42,14 @@ struct Req {
     std::map<std::string, std::string> params;  // named regex groups ("kwargs")
     std::string host_header;         // raw Host header value
     std::string origin_header;       // raw Origin header value ("" if absent)
+    // Wire-fidelity copies for forwarding services (PLUGIN_SPEC §4 proxy): the
+    // parsed views above are lossy — `query` drops repeated keys, `body`
+    // reformats JSON — so a proxy that must replay the request byte-for-byte
+    // reads these instead.
+    std::string raw_query;           // text after the first '?', as sent, no '?'
+    // Populated only up to kRawBodyKeepMax (see httpd.cpp): copying every body
+    // would double the peak memory of the 100 MB base64 plugin installs.
+    std::string raw_body;
 };
 
 // Handler result: JSON payload or pre-serialized bytes (bytes 直发, httpd.py:157-160).
@@ -49,6 +58,9 @@ struct Resp {
     json json_payload;               // used when !is_bytes
     std::string bytes;               // used when is_bytes
     bool is_bytes = false;
+    // Empty keeps the transport's fixed `application/json; charset=utf-8`.
+    // Set it only to hand through an upstream type (PLUGIN_SPEC §4 proxy).
+    std::string content_type;
 
     Resp() = default;
     static Resp Json(int status, json payload) {
@@ -62,6 +74,12 @@ struct Resp {
         r.status = status;
         r.bytes = std::move(data);
         r.is_bytes = true;
+        return r;
+    }
+    // bytes 直发 with an explicit Content-Type.
+    static Resp BytesTyped(int status, std::string data, std::string content_type) {
+        Resp r = Bytes(status, std::move(data));
+        r.content_type = std::move(content_type);
         return r;
     }
 };

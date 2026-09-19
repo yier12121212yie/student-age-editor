@@ -19,6 +19,31 @@ bool isDesktop(BuildContext context) => !isMobile(context);
 /// 直接判定宽度数值，方便在非 BuildContext 处或测试中使用。
 bool isMobileForWidth(double width) => width < Breakpoints.mobile;
 
+/// 获取当前是否为移动端的缓存版本，避免在 build 中频繁调用。
+class MobileDetector extends StatefulWidget {
+  const MobileDetector({super.key, required this.builder});
+  
+  final Widget Function(bool isMobile) builder;
+  
+  @override
+  State<MobileDetector> createState() => _MobileDetectorState();
+}
+
+class _MobileDetectorState extends State<MobileDetector> {
+  late bool _isMobile;
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _isMobile = isMobileWidth(context);
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return widget.builder(_isMobile);
+  }
+}
+
 /// 移动端安全边距包裹，避免刘海/手势条遮挡。
 Widget mobileSafeArea({required Widget child}) => SafeArea(child: child);
 

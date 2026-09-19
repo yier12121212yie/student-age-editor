@@ -408,7 +408,7 @@ class _ResourceLayoutState extends State<_ResourceLayout> {
     ('ShopCfg', '商店 (ShopCfg)'),
     ('BookCfg', '书籍 (BookCfg)'),
     ('MovieCfg', '影视 (MovieCfg)'),
-    ('TvCfg', '电视 (TvCfg)'),
+    ('TVCfg', '电视 (TVCfg)'),
   ];
 
   Future<void> _createItem() async {

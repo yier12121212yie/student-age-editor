@@ -202,7 +202,12 @@ void main() {
       addTearDown(() => tester.view.resetPhysicalSize());
 
       final state = AppState();
-      final pagesToTest = ['person', 'resource', 'function', 'story', 'social', 'love', 'official'];
+      // 含 default 分支的通用经典布局页（新增玩法页均走该分支）。
+      final pagesToTest = [
+        'person', 'resource', 'function', 'story', 'social', 'love', 'official',
+        'evt', 'gift', 'news', 'fishing', 'travel', 'anime', 'expo', 'club',
+        'crafts', 'birthday', 'negotiation',
+      ];
 
       for (final pageId in pagesToTest) {
         final pageDef = pageById(pageId) ?? editorPages.first;

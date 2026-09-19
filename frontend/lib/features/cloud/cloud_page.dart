@@ -26,6 +26,7 @@ class _CloudPageState extends State<CloudPage> {
   List<dynamic> _localFiles = [];
   List<dynamic> _remoteFiles = [];
   bool _loadingRemote = false;
+  String? _remoteError;  // 远端列举失败的非阻塞提示（列表空态展示）
   final Set<String> _checked = {};
   String _direction = 'upload';
   bool _busy = false;
@@ -531,17 +532,18 @@ class _CloudPageState extends State<CloudPage> {
 
   Future<void> _loadRemote() async {
     if (!mounted) return;
-    if(_selectedProvider==null || _selectedMod==null) { setState(()=>_remoteFiles=[]); return; }
+    if(_selectedProvider==null || _selectedMod==null) { setState(()=>_remoteFiles=[]); _remoteError=null; return; }
     setState(()=>_loadingRemote=true);
     try{
       final r=await ApiClient.instance.get('/api/cloud/list', query:{'provider_id':_selectedProvider!, 'mod_name':_selectedMod!});
       if (!mounted) return;
       setState(()=>_remoteFiles = (r['objects'] as List?) ?? []);
+      _remoteError=null;
     }catch(e){
       if (!mounted) return;
       setState(()=>_remoteFiles=[]);
-      // 非阻塞提示
-      // _showErr('远端列举失败: $e');
+      _remoteError='$e';
+      // 非阻塞提示：错误文案落在远端列表空态，不弹窗打断
     } finally { if (mounted) setState(()=>_loadingRemote=false); }
   }
 
@@ -897,8 +899,9 @@ class _CloudPageState extends State<CloudPage> {
             Expanded(child: _remoteFiles.isEmpty? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children:[
               Icon(FluentIcons.cloud_24_regular, size:22, color: palette.borderHover),
               const SizedBox(height:6),
-              Text(_selectedProvider==null ? '请选择云盘' : _selectedMod==null ? '请选择 Mod' : '远端为空或未同步', style: TextStyle(fontSize:11, color: palette.textHint)),
-              if(_selectedProvider!=null && _selectedMod!=null) Padding(padding: EdgeInsets.only(top:4), child: Text('点击上传可创建远端目录', style: TextStyle(fontSize:10, color: palette.textMuted))),
+              Text(_remoteError!=null ? '远端列举失败' : _selectedProvider==null ? '请选择云盘' : _selectedMod==null ? '请选择 Mod' : '远端为空或未同步', style: TextStyle(fontSize:11, color: palette.textHint)),
+              if(_remoteError!=null) Padding(padding: const EdgeInsets.only(top:4), child: Text(_remoteError!, maxLines:4, overflow:TextOverflow.ellipsis, textAlign:TextAlign.center, style: TextStyle(fontSize:10, color: palette.danger))),
+              if(_remoteError==null && _selectedProvider!=null && _selectedMod!=null) Padding(padding: EdgeInsets.only(top:4), child: Text('点击上传可创建远端目录', style: TextStyle(fontSize:10, color: palette.textMuted))),
             ])) : ListView.builder(
               itemCount: _remoteFiles.length,
               itemBuilder: (c,i){

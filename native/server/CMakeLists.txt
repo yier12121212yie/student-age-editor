@@ -47,5 +47,9 @@ if(APPLE)
     endif()
 endif()
 
+# Link OpenSSL for SHA-256 (revision_manager uses httplib's EVP implementation)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(sa_server PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+
 # HTTP-only: do NOT define CPPHTTPLIB_OPENSSL_SUPPORT. Reserved for a later wave.
 set_target_properties(backend PROPERTIES OUTPUT_NAME "backend")

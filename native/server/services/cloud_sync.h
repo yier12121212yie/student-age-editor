@@ -17,13 +17,14 @@
 //   * provider config CRUD    1740-1832
 //   * sync engine             1836-2346
 //
-// Degradation note (brief-sanctioned): the four net-disk drivers (baidu /
-// 123 / google_drive / onedrive) fully support their `root` (LocalDriver
-// delegation) and `openlist_url` (OpenListDriver proxy) branches — those are
-// the locally/mocably testable paths. Their *direct* OAuth/REST legs target
-// fixed third-party hosts and answer a deterministic ValueError envelope
-// instead (documented in STATUS.md); routes, fields and error codes stay
-// Python-shaped either way.
+// Direct legs (brief previously sanctioned as degraded stubs; restored in the
+// cloud-sync-repair pass): the four net-disk drivers (baidu / 123 /
+// google_drive / onedrive) fully port their direct OAuth/REST legs from the
+// Python baseline — token refresh, list/upload/download/remove — so providers
+// without `root` or `openlist_url` work exactly like the pre-W4-5 Python
+// backend. Testing seam: a hidden `_direct_base` config key (never in
+// config_schema/UI/provider listings) rewrites the scheme://host of the
+// hardcoded third-party API origins so p5_mock can intercept them.
 #pragma once
 
 #include <exception>

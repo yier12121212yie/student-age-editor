@@ -11,6 +11,7 @@ import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/history_client.dart';
 import '../../core/models.dart';
+import '../../core/save_service.dart';
 import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
 import '../resources/image_asset_picker.dart' show TexThumb;
@@ -1005,8 +1006,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   /// 保存：用 [diffStage] 把舞台相对基线的差异推导成增量补丁，随
   /// `PUT /api/cfg/<t>` 的 `patch` 字段发往后端（S3）。行级 if_match 深比对
   /// 精确保护被改的行（不回传全表、不带回全表）；**不带 expect_mtime_ns、
-  /// 不 force**——表级 mtime 只会给无关行制造假冲突。行级冲突（409）弹
-  /// 三选对话框：采用磁盘值 / 覆盖并重试 / 取消。
+  /// 不 force**——表级 mtime 只会给无关行制造假冲突。**Revision check**：
+  /// 开始前先刷新 _cachedRevision 并使用 SaveService.applyPatch 做乐观锁。
+  /// 行级冲突（409）弹三选对话框：采用磁盘值 / 覆盖并重试 / 取消。
   ///
   /// EvtCfg 舞台从不修改（事件增删自落盘），不参与保存。
   Future<bool> _save({bool retried = false}) async {
@@ -1019,6 +1021,17 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       );
       return false;
     }
+    
+    // P5: Refresh revision before batch save (only on non-retry)
+    if (!retried) {
+      try {
+        await SaveService.instance.refreshRevision();
+      } catch (e) {
+        _toast('无法获取文件指纹，请检查后端服务', fluent.InfoBarSeverity.error);
+        return false;
+      }
+    }
+    
     final talkPatch = diffStage(_talkBaseline, _stageTalks, _prefixes);
     final optPatch = diffStage(
       _optBaseline,
@@ -1042,21 +1055,36 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     bool force = false,
   }) async {
     if (patch.isEmpty && !force) return;
-    final resp = await ApiClient.instance.put(
-      '/api/cfg/$cfg',
-      body: {
-        'patch': {'set': patch.set, 'remove': patch.remove},
-        'if_match': patch.ifMatch,
-        if (force) 'force': true,
-      },
+    
+    // Use SaveService for revision-based optimistic locking
+    final result = await SaveService.instance.applyPatch(
+      cfgName: cfg,
+      patchSet: patch.set,
+      patchRemove: patch.remove,
     );
+    
+    if (result.isConflict) {
+      throw ApiException(409, json.encode({
+        'error': 'conflict',
+        'reason': result.reason,
+        'detail': result.detail,
+        'current_revision': result.currentRevision,
+        'data': result.data ?? {},
+      }));
+    }
+    
+    if (result.isError) {
+      throw ApiException(500, result.message ?? 'Unknown error');
+    }
+    
+    // Update baseline on success
     final baseline = cfg == 'TalkCfg' ? _talkBaseline : _optBaseline;
     final stage = cfg == 'TalkCfg' ? _stageTalks : _stageOpts;
     for (final k in patch.remove) {
       baseline.remove(k);
     }
     patch.set.forEach((k, v) => baseline[k] = copyRecordValue(stage[k] ?? v));
-    _tableMtime[cfg] = _asInt(resp['mtime_ns']) ?? _tableMtime[cfg];
+    _tableMtime[cfg] = _asInt(result.mtimeNs) ?? _tableMtime[cfg];
   }
 
   /// 两表串行发送（Talk → Option），保持原有顺序。单表成功即结算该表基线，

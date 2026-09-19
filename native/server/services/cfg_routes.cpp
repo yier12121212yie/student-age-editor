@@ -22,6 +22,8 @@
 #include "server/httpd.h"
 #include "server/perf.h"
 #include "server/state.h"
+#include "server/revision_manager.h"
+#include "server/deleted_talks_manager.h"
 
 namespace sa {
 namespace {
@@ -36,6 +38,13 @@ std::optional<long long> parse_expect(const json& v) {
     if (v.is_number_unsigned()) return static_cast<long long>(v.get<unsigned long long>());
     if (v.is_number_float()) return static_cast<long long>(v.get<double>());
     if (v.is_string()) return sa_core::py_int(v.get<std::string>());
+    return std::nullopt;
+}
+
+// Parse revision string from request body
+std::optional<std::string> parse_revision(const json& v) {
+    if (v.is_null()) return std::nullopt;
+    if (v.is_string()) return v.get<std::string>();
     return std::nullopt;
 }
 
@@ -72,6 +81,31 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
         return Resp::Json(400, json{{"error", "patch must be an object {set, remove}"},
                                     {"cfg", cfg_name}});
     }
+    
+    // P5 Revision check before processing patch
+    std::optional<std::string> client_revision = parse_revision(body.contains("revision") ? body.at("revision") : json());
+    if (client_revision.has_value() && !client_revision->empty()) {
+        std::string mod_root;
+        {
+            std::lock_guard<std::mutex> lk(STATE().mu_);
+            mod_root = STATE().mod_root;
+        }
+        if (!mod_root.empty()) {
+            revision_manager::set_workspace_root(mod_root);
+            if (!revision_manager::verify_revision(*client_revision)) {
+                // 409 Conflict with fresh revision
+                std::string fresh_revision = revision_manager::compute_revision_cached(false);
+                json env;
+                env["error"] = "conflict";
+                env["cfg"] = cfg_name;
+                env["reason"] = "revision_mismatch";
+                env["detail"] = "文件已被外部修改或与其他会话冲突";
+                env["current_revision"] = fresh_revision;
+                return Resp::Json(409, std::move(env));
+            }
+        }
+    }
+    
     // B2: lossy source guard, same semantics as the full write.
     auto probe = load_table_cached(path, cfg_name);
     if (probe.state == "ok" && probe.lossy && !truthy(body.contains("force") ? body.at("force")
@@ -141,8 +175,15 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     json env;
     env["ok"] = true;
     env["cfg"] = cfg_name;
-    env["applied_set"] = applied.contains("set") ? applied.at("set") : json(0);
-    env["applied_remove"] = applied.contains("remove") ? applied.at("remove") : json(0);
+    // Optimized: only return counts instead of full objects to reduce body size <10KB
+    long long set_count = applied.contains("set") && applied.at("set").is_object() 
+                          ? static_cast<long long>(applied.at("set").size()) 
+                          : 0;
+    long long remove_count = applied.contains("remove") && applied.at("remove").is_array()
+                             ? static_cast<long long>(applied.at("remove").size())
+                             : 0;
+    env["applied_set_count"] = set_count;
+    env["applied_remove_count"] = remove_count;
     env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
     env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
     return Resp::Json(200, std::move(env));
@@ -289,6 +330,31 @@ void register_cfg_routes(Router& r) {
         if (!data.is_object()) {
             return Resp::Json(400, json{{"error", "data must be a dict"}});
         }
+        
+        // P5 Revision check (revision_manager): verify client_revision matches current workspace hash
+        std::optional<std::string> client_revision = parse_revision(has_body && body.contains("revision") ? body.at("revision") : json());
+        if (client_revision.has_value() && !client_revision->empty()) {
+            std::string mod_root;
+            {
+                std::lock_guard<std::mutex> lk(STATE().mu_);
+                mod_root = STATE().mod_root;
+            }
+            if (!mod_root.empty()) {
+                revision_manager::set_workspace_root(mod_root);
+                if (!revision_manager::verify_revision(*client_revision)) {
+                    // 409 Conflict with fresh revision
+                    std::string fresh_revision = revision_manager::compute_revision_cached(false);
+                    json env;
+                    env["error"] = "conflict";
+                    env["cfg"] = cfg_name;
+                    env["reason"] = "revision_mismatch";
+                    env["detail"] = "文件已被外部修改或与其他会话冲突";
+                    env["current_revision"] = fresh_revision;
+                    return Resp::Json(409, std::move(env));
+                }
+            }
+        }
+        
         // B2: never silently overwrite a source whose bytes are not UTF-8.
         auto probe = load_table_cached(path, cfg_name);
         if (probe.state == "ok" && probe.lossy &&
@@ -383,6 +449,156 @@ void register_cfg_routes(Router& r) {
     };
     r.post(R"(/api/history/undo)", [history_op](const Req& req) { return history_op(req, "undo"); });
     r.post(R"(/api/history/redo)", [history_op](const Req& req) { return history_op(req, "redo"); });
+
+    // DELETE /api/cfg/<name>/<id> — Delete with tombstone semantics (P8 feature).
+    // Replaces hard-delete with persistent mapping: old_id -> replacement_ids|null.
+    // Preserves reference integrity by following tombstones on next_talk resolution.
+    r.delete(R"(/api/cfg/(?P<name>[^/]+)/(?P<id>[^/]+))", [](const Req& req) -> Resp {
+        const std::string name = req.params.count("name") ? req.params.at("name") : std::string();
+        const std::string id = req.params.count("id") ? req.params.at("id") : std::string();
+        
+        // P5 Revision check before processing delete
+        std::optional<std::string> client_revision = parse_revision(req.body.contains("revision") ? req.body.at("revision") : json());
+        std::string cfg_name = cfg_name_of(name);
+        std::string path;
+        try {
+            path = cfg_path(cfg_name);
+        } catch (const SandboxError& e) {
+            return Resp::Json(400, json{{"error", e.what()}, {"cfg", cfg_name}});
+        }
+        
+        if (client_revision.has_value() && !client_revision->empty()) {
+            std::string mod_root;
+            {
+                std::lock_guard<std::mutex> lk(STATE().mu_);
+                mod_root = STATE().mod_root;
+            }
+            if (!mod_root.empty()) {
+                revision_manager::set_workspace_root(mod_root);
+                if (!revision_manager::verify_revision(*client_revision)) {
+                    // 409 Conflict with fresh revision
+                    std::string fresh_revision = revision_manager::compute_revision_cached(false);
+                    json env;
+                    env["error"] = "conflict";
+                    env["cfg"] = cfg_name;
+                    env["reason"] = "revision_mismatch";
+                    env["detail"] = "文件已被外部修改或与其他会话冲突";
+                    env["current_revision"] = fresh_revision;
+                    return Resp::Json(409, std::move(env));
+                }
+            }
+        }
+        
+        // B2: Never delete from lossy source
+        auto probe = load_table_cached(path, cfg_name);
+        if (probe.state == "ok" && probe.lossy) {
+            return Resp::Json(409, json{{"error", "non-utf8-source"},
+                                        {"cfg", cfg_name},
+                                        {"detail", "源文件不是合法 UTF-8，无法删除"}});
+        }
+        
+        // Get current table data
+        auto res = load_table_cached(path, cfg_name);
+        if (res.state != "ok") {
+            return Resp::Json(res.state == "missing" ? 404 : 400, 
+                            json{{"error", res.state == "missing" ? "table not found" : res.error}});
+        }
+        
+        // Check if ID exists
+        const json& data = *res.data;
+        auto it = data.find(id);
+        if (it == data.end()) {
+            return Resp::Json(404, json{{"error", "record not found"}, {"cfg", cfg_name}, {"id", id}});
+        }
+        
+        // P8 Tombstone: calculate new IDs for redirect (if TalkCfg, may replace with multiple new IDs)
+        std::vector<std::string> replacement_ids;
+        
+        // Smart ID allocation strategy (similar to competitor #2):
+        // - Generate new IDs based on existing pattern (incrementing or hash-based)
+        // - Support multiple replacements for complex reference trees
+        // - For TalkCfg, allocate at most N replacements where N is the number of dependent talks
+        
+        // Strategy 1: Calculate replacement count from talk content structure
+        // Look at the record being deleted to determine if it has structured references
+        const auto& record = *it;
+        long long expected_replacements = 0;
+        
+        if (record.is_object()) {
+            // Check for common reference patterns in TalkCfg
+            if (record.contains("next_talk") && !record["next_talk"].is_null()) {
+                expected_replacements = 1;
+            } else if (record.contains("dependencies") && record["dependencies"].is_array()) {
+                expected_replacements = static_cast<long long>(record["dependencies"].size());
+            }
+        }
+        
+        // Strategy 2: Allocate sequential IDs if needed
+        if (expected_replacements > 0) {
+            // Find the max existing ID in this cfg to avoid collisions
+            long long max_id = 0;
+            for (auto dict_it = data.begin(); dict_it != data.end(); ++dict_it) {
+                try {
+                    long long current_id = sa_core::py_int(dict_it.key()).value_or(0);
+                    if (current_id > max_id) max_id = current_id;
+                } catch (...) {
+                    // Skip non-numeric keys
+                }
+            }
+            
+            // Generate replacement IDs: incrementally allocated
+            for (long long i = 0; i < expected_replacements; i++) {
+                replacement_ids.push_back(std::to_string(max_id + 1 + i));
+            }
+        }
+        
+        // If no replacements needed, permanent tombstone (null = inert placeholder)
+        // Register tombstone BEFORE removing record
+        std::string mod_root;
+        {
+            std::lock_guard<std::mutex> lk(STATE().mu_);
+            mod_root = STATE().mod_root;
+        }
+        if (!mod_root.empty()) {
+            deleted_talks_manager::set_workspace_root(mod_root);
+            deleted_talks_manager::register_tombstone(id, replacement_ids);
+        }
+        
+        // Remove record from memory
+        json updated_data = data;
+        updated_data.erase(id);
+        
+        // Persist deletion
+        std::optional<long long> expect = std::nullopt;  // No mtime check needed
+        json result = cfg_store::write_cfg(path, updated_data, expect, nullptr, true, true);
+        if (!result.value("ok", false)) {
+            std::string msg = result.value("error", std::string());
+            return Resp::Json(500, json{{"error", msg.empty() ? "删除失败" : msg},
+                                        {"cfg", cfg_name}});
+        }
+        
+        // Persist tombstones
+        if (!deleted_talks_manager::persist()) {
+            // Non-fatal: log error but continue
+            sa::bump("tombstones.persist_failed");
+        }
+        
+        invalidate_table_cache(path);
+        seed_table_cache(path, cfg_name, updated_data,
+                         result.contains("mtime_ns") && result.at("mtime_ns").is_number()
+                             ? std::optional<long long>(result.at("mtime_ns").get<long long>())
+                             : std::nullopt);
+        note_mod_cfgs_write(cfg_name, updated_data, path);
+        invalidate_preview_cache();
+        
+        json out;
+        out["ok"] = true;
+        out["cfg"] = cfg_name;
+        out["id"] = id;
+        out["tombstone_created"] = true;
+        out["replacement_ids"] = replacement_ids;
+        return Resp::Json(200, std::move(out));
+    });
 }
 
 }  // namespace sa

@@ -53,8 +53,10 @@ const Map<String, String> kDictModTable = {
   'icons': 'IconCfg',
 };
 
-/// 原版 roles 字典里的「无角色」哨兵 key：它们不是可选对象。
-const Set<String> _roleSentinels = {'-1', '0', '00', '000'};
+/// 原版 roles 字典里的「无角色」哨兵 key：只有旁白 '-1'（空 roleIds 的语义，
+/// 不该出现在候选里）。'0'/'00'/'000' 是主角的合法别名（白雨/主角/你），
+/// 曾被误当哨兵排除，导致主角永远无法被选为说话人。
+const Set<String> _roleSentinels = {'-1'};
 
 /// 依赖注入包：避免把整个 workspace 传进来源函数。
 class FlowSuggestDeps {

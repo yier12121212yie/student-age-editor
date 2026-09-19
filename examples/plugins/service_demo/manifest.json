@@ -1,0 +1,11 @@
+{
+  "id": "service_demo",
+  "name": "HTTP 服务插件示例",
+  "version": "1.0.0",
+  "author": "示例作者",
+  "description": "HTTP 服务插件示例：本目录的 service.py 以独立进程监听 loopback，后端只做自描述拉取与代理转发（PLUGIN_GUIDE §5）",
+  "service": {
+    "url": "http://127.0.0.1:39211",
+    "name": "service_demo"
+  }
+}

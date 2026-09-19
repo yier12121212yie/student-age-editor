@@ -8,6 +8,9 @@ import '../../core/responsive.dart';
 import '../editor/editor_controller.dart';
 import '../../core/app_theme.dart';
 
+/// 创意工坊 AppID，与 native 的 sa_core::steam_paths::kGameAppid 同源。
+const String _kWorkshopAppid = '1991040';
+
 /// 模组侧边栏：列表 + 新建/删除/选择。
 class ModsPage extends StatefulWidget {
   const ModsPage({super.key, required this.state, required this.controller});
@@ -126,8 +129,9 @@ class _ModsPageState extends State<ModsPage> {
   }
 
   bool _isWorkshop(ModInfo mod) {
+    // 后端返回的路径分隔符约定为正斜杠；这里再归一一次反斜杠，兼容历史数据。
     final p = mod.root.replaceAll('\\', '/').toLowerCase();
-    return p.contains('/steamapps/workshop/content/1991040');
+    return p.contains('/steamapps/workshop/content/$_kWorkshopAppid');
   }
 
   Future<void> _refresh() async {
@@ -245,23 +249,31 @@ class _Header extends StatelessWidget {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: onRefresh,
-                child: Padding(
-                    padding: EdgeInsets.all(mob ? 12 : 0),
-                    child: Icon(FluentIcons.arrow_sync_24_regular,
-                        size: 15, color: palette.textMuted))),
+              behavior: HitTestBehavior.opaque,
+              onTap: onRefresh,
+              child: SizedBox(
+                width: mob ? 44 : 32,
+                height: mob ? 44 : 32,
+                child: Center(
+                  child: Icon(FluentIcons.arrow_sync_24_regular, size: 15, color: palette.textMuted),
+                ),
+              ),
+            ),
           ),
           const SizedBox(width: 4),
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: onCreate,
-                child: Padding(
-                    padding: EdgeInsets.all(mob ? 12 : 0),
-                    child: Icon(FluentIcons.add_24_regular,
-                        size: 16, color: palette.textMuted))),
+              behavior: HitTestBehavior.opaque,
+              onTap: onCreate,
+              child: SizedBox(
+                width: mob ? 44 : 32,
+                height: mob ? 44 : 32,
+                child: Center(
+                  child: Icon(FluentIcons.add_24_regular, size: 16, color: palette.textMuted),
+                ),
+              ),
+            ),
           ),
         ],
       ),

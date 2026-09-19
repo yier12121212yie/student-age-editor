@@ -1,13 +1,12 @@
 // sa_core/http_client: the outbound HTTP client (wave-2 P4, official core file).
 //
 // Why this lives in sa_core: every networking service (TTS providers, OpenAI
-// Images, GitHub update checks — wave 2 P4) and the planned cloud/WebDAV sync
-// services (wave 3 P5) need one shared outbound client. Windows builds use
-// **WinHTTP** (winhttp.dll, in-box on every supported Windows): TLS rides on
-// schannel, so the dependency footprint stays zero-new-third-party.
-// Non-Windows builds compile to a stub that answers every request with
-// Error::Other + "wave-P9 待接 libcurl" (no libcurl import yet, per the
-// wave-2 isolation rule: no new deps).
+// Images, GitHub update checks — wave 2 P4), the cloud/WebDAV sync services
+// (wave 3 P5) and the §4 plugin-service fetches/proxy need one shared outbound
+// client. Windows builds use **WinHTTP** (winhttp.dll, in-box on every
+// supported Windows): TLS rides on schannel, so the dependency footprint stays
+// zero-new-third-party. Non-Windows builds dlopen the system libcurl at
+// runtime (no link-time import, keeping the same zero-new-dependency rule).
 //
 // Wave-3 (P5) reuse notes:
 //   * `request()` is the buffered model — mirrors Python
@@ -70,6 +69,15 @@ struct Request {
     // Per-operation timeout in seconds (mirrors socket-level urlopen timeout:
     // resolve/connect/send/receive each get this budget, not the total).
     double timeout_seconds = 30.0;
+    // Skip the system/IE proxy configuration (WinHTTP NO_PROXY session, curl
+    // PROXY=""). Loopback callers must set it: under WINHTTP_ACCESS_TYPE_
+    // DEFAULT_PROXY a corporate proxy swallows requests to 127.0.0.1, which
+    // would make every PLUGIN_SPEC §4 service plugin look dead.
+    bool bypass_proxy = false;
+    // 3xx handling. Default true keeps urllib/WinHTTP parity; the §4 service
+    // fetches/proxy set false, because following a redirect to a non-loopback
+    // host is exactly the escape its 127.0.0.1-only URL whitelist forbids.
+    bool follow_redirects = true;
 };
 
 struct Response {

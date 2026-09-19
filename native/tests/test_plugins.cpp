@@ -17,6 +17,7 @@
 #include <catch_amalgamated.hpp>
 
 #include "p3b_support.h"
+#include "plugin_service.h"
 #include "plugins_routes.h"
 #include "sa_core/paths.h"
 #include "sa_core/strings.h"
@@ -59,9 +60,11 @@ struct ScopedEnv {
 };
 
 // Full bus (api_router.cpp) => register_plugins_routes is mounted exactly the
-// way the server mounts it.
+// way the server mounts it. The §4 service cache is process-global, so every
+// case starts from an empty one (a leftover verdict from a previous case's
+// root would otherwise bleed into this case's rows).
 struct PluginsFixture : sat::CfgFixture {
-    PluginsFixture() : sat::CfgFixture("plugins") {}
+    PluginsFixture() : sat::CfgFixture("plugins") { sa::plugin_service::reset_for_test(); }
     sa::Resp call(const std::string& method, const std::string& path,
                   std::map<std::string, std::string> query = {},
                   const sa::json& body = sa::json()) {
@@ -257,9 +260,16 @@ TEST_CASE("plugins from manifests: entries, panels, flow_cards, broken ignored",
     CHECK(plugins[0]["id"] == "alpha");
     CHECK(plugins[1]["id"] == "beta");
     // _entry_for key set AND order (ordered_json keeps Python's dict order).
+    // §4: a manifest that declares "service" also carries service_status (the
+    // refresh verdict; checked=false here because nothing has refreshed yet).
     CHECK(keys_of(plugins[0]) ==
-          std::vector<std::string>{"id", "name", "version", "author", "description", "entry",
-                                   "enabled", "loaded", "error", "risk_ack_at", "ui", "service"});
+          std::vector<std::string>{"id",       "name",     "version",     "author",
+                                   "description", "entry", "enabled",     "loaded",
+                                   "error",    "risk_ack_at", "ui",       "service",
+                                   "service_status"});
+    CHECK(plugins[0]["service_status"] ==
+          sa::json{{"ok", false}, {"url", "http://127.0.0.1:39211"}, {"name", "svc"},
+                   {"checked", false}});
     CHECK(plugins[0]["name"] == "阿尔法");
     CHECK(plugins[0]["version"] == "1.2.3");
     CHECK(plugins[0]["author"] == "tester");
@@ -329,10 +339,24 @@ TEST_CASE("plugins from manifests: entries, panels, flow_cards, broken ignored",
     CHECK(fx.call("GET", "/api/plugins/..").status == 404);
     CHECK(fx.call("GET", "/api/plugins/a:b").status == 404);
     CHECK(fx.call("GET", "/api/plugins/a\\b").status == 404);
-    // reload sees the same set (re-scan, idempotent)
+    // reload sees the same set (re-scan, idempotent). §4: reload also re-fetches
+    // the service self-descriptions — alpha declares a service on :39211 where
+    // nothing listens in this suite, so its error/service_status now carry the
+    // failed-fetch verdict; compare everything else.
     auto reload = fx.call("POST", "/api/plugins/reload");
     REQUIRE(reload.status == 200);
-    CHECK(reload.json_payload["plugins"] == plugins);
+    REQUIRE(reload.json_payload["plugins"].size() == 2);
+    const auto& refreshed = reload.json_payload["plugins"][0];
+    CHECK(refreshed["error"] == "plugin service unavailable");
+    CHECK(refreshed["service_status"]["checked"] == true);
+    CHECK(refreshed["service_status"]["ok"] == false);
+    auto strip_service = [](sa::json e) {
+        e.erase("error");
+        e.erase("service_status");
+        return e;
+    };
+    CHECK(strip_service(refreshed) == strip_service(plugins[0]));
+    CHECK(reload.json_payload["plugins"][1] == plugins[1]);  // no service -> untouched
 }
 
 TEST_CASE("plugins panel content route serves declared panels, 404 otherwise", "[plugins]") {

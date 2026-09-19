@@ -61,6 +61,7 @@ DIST_ROOT = os.path.join(ROOT, "dist")
 
 # Windows native（C++）后端通道
 NATIVE_DIR = os.path.join(ROOT, "native")
+NATIVE_ASSETS_DIR = os.path.join(NATIVE_DIR, "assets")
 NATIVE_BUILD_DIR = os.path.join(ROOT, "build", "release", "native_build")
 NATIVE_BUILD_DIR_POSIX = os.path.join(ROOT, "build", "release", "native_build_posix")
 NATIVE_BINS = ("backend.exe", "backend_cli.exe", "backend_tui.exe")
@@ -99,6 +100,10 @@ LINUX_BUILD_DEB = os.path.join(ROOT, "packaging", "linux", "build_deb.py")
 LINUX_MAKE_APPIMAGE = os.path.join(ROOT, "packaging", "linux", "make_appimage.sh")
 MACOS_BUILD_DMG = os.path.join(ROOT, "packaging", "macos", "build_dmg.sh")
 MACOS_BUILD_PKG = os.path.join(ROOT, "packaging", "macos", "build_pkg.sh")
+# 签名 entitlements：.app 内含自行注入的 native 可执行文件，需放开库校验
+# （前端 DebugProfile.entitlements 另有 allow-jit/network.server，仅调试用）。
+MACOS_ENTITLEMENTS = os.path.join(FRONTEND, "macos", "Runner",
+                                  "Release.entitlements")
 APPIMAGETOOL_LOCAL = os.path.join(ROOT, "build", "tools", "appimagetool-x86_64.AppImage")
 
 _TOTAL_STEPS = 4
@@ -358,13 +363,17 @@ def _aa_scan_name():
 
 
 def _copy_native_backend_bundle(dst_dir, bin_subdir=""):
-    """复制 native 后端产物到发行根：三件套 + 可选 aa_scan。
+    """复制 native 后端产物到发行根：三件套 + 可选 aa_scan + assets 词典。
 
     native 可执行文件自带全部依赖（静态/单体），不再有 PyInstaller 的
     _internal/ 共享目录；backend_launcher.dart 探测「与主程序同目录的
     backend」，故三件套必须与前端主程序平铺同目录。bin_subdir 非空时作为
     dst_dir 下的相对子目录（macOS .app 的 Contents/MacOS）。POSIX 上复制后
     补执行位（copy2 一般已保留，显式 chmod 兜底）。
+
+    assets/（dicts.json、schema.json）必须随包：后端按「exe 目录上溯找
+    assets/」解析（native/core/assets.cpp），发行目录里没有 dicts.json 时
+    /api/dicts 返回空字典——说话人候选全空、剧本导入的角色名识别全部退化。
     """
     target = os.path.join(dst_dir, bin_subdir) if bin_subdir else dst_dir
     for name in _native_bins():
@@ -381,6 +390,13 @@ def _copy_native_backend_bundle(dst_dir, bin_subdir=""):
     else:
         print("    提示：本次未随包 %s（AA 资源扫描工具缺失，"
               "不影响编辑器运行；重扫资源请用仓库内 python 工具）。" % aa_name)
+    if os.path.isdir(NATIVE_ASSETS_DIR):
+        shutil.copytree(NATIVE_ASSETS_DIR, os.path.join(target, "assets"),
+                        dirs_exist_ok=True)
+    if not os.path.isfile(os.path.join(target, "assets", "dicts.json")):
+        raise FileNotFoundError(
+            "发行目录缺少 assets/dicts.json（native/assets 不完整？）："
+            "词典缺失会让说话人候选与剧本导入的角色识别全部失效")
 
 
 def _embed_official_pack(base_dir, rel=""):
@@ -768,6 +784,105 @@ def assemble_linux(version):
     return out_dir
 
 
+# ------------------------------------------------------- macOS 代码签名 ----
+# 已知 Mach-O 魔数（含 little/big endian 与 fat 头），用于判断某文件是否可签。
+_MACHO_MAGICS = (0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe,
+                 0xcafebabe, 0xbebafeca)
+
+
+def _is_macho(path):
+    """按魔数判断是否为 Mach-O（可执行/动态库），非 Mach-O 跳过签名。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return False
+    if len(head) < 4:
+        return False
+    return int.from_bytes(head, "big") in _MACHO_MAGICS
+
+
+def _macos_main_executable(app_path):
+    """从 Info.plist 读取 CFBundleExecutable（读不到返回 None）。"""
+    plist = os.path.join(app_path, "Contents", "Info.plist")
+    try:
+        with io.open(plist, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = re.search(r"<key>CFBundleExecutable</key>\s*<string>([^<]+)</string>",
+                  text)
+    return m.group(1).strip() if m else None
+
+
+def _macos_nested_code(app_path):
+    """收集需在 app 本体之前单独签名的嵌套代码（由内向外顺序）。
+
+    含 Frameworks/ 下的 .framework 与 .dylib、Helpers/XPCServices/PlugIns/，
+    以及 Contents/MacOS 下除主程序外的 Mach-O（注入的 backend 三件套等）。
+    """
+    items = []
+    frameworks = os.path.join(app_path, "Contents", "Frameworks")
+    if os.path.isdir(frameworks):
+        for name in sorted(os.listdir(frameworks)):
+            p = os.path.join(frameworks, name)
+            if name.endswith(".framework") or name.endswith(".dylib"):
+                items.append(p)
+    for sub in ("Helpers", "XPCServices", "PlugIns"):
+        d = os.path.join(app_path, "Contents", sub)
+        if os.path.isdir(d):
+            for name in sorted(os.listdir(d)):
+                items.append(os.path.join(d, name))
+    macos_dir = os.path.join(app_path, "Contents", "MacOS")
+    main_exe = _macos_main_executable(app_path)
+    if os.path.isdir(macos_dir):
+        for name in sorted(os.listdir(macos_dir)):
+            p = os.path.join(macos_dir, name)
+            if name == main_exe or not os.path.isfile(p) or os.path.islink(p):
+                continue
+            if _is_macho(p):
+                items.append(p)
+    return items
+
+
+def _run_checked(cmd, what):
+    """执行外部命令，失败时以清晰的中文错误终止（而非抛裸 traceback）。"""
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit("错误：%s 失败（退出码 %d）：%s"
+                         % (what, e.returncode, " ".join(cmd)))
+
+
+def sign_macos_app(app_path):
+    """对 .app 做由内向外 ad-hoc 重签并校验封印。
+
+    assemble_macos 在 Flutter 产物 .app 内注入了 native 三件套与 official_pack，
+    原有内嵌签名封印随之失效——这正是 Gatekeeper 报「已损坏」的直接原因，必须
+    在注入之后重新签名。此处不使用已废弃的 --deep（对 Flutter 的嵌套
+    Frameworks 不可靠），而是先签 Frameworks/Helpers 等嵌套代码，最后签 app
+    本体并附 entitlements；失败即中断，不产出签名损坏的坏包。
+    """
+    if sys.platform != "darwin":
+        raise SystemExit("错误：macOS 签名只能在 Mac 上执行。")
+    codesign = shutil.which("codesign")
+    if codesign is None:
+        raise SystemExit("错误：未找到 codesign，请安装 Xcode 命令行工具"
+                         "（xcode-select --install）。")
+    nested = _macos_nested_code(app_path)
+    for item in nested:
+        _run_checked([codesign, "--force", "--sign", "-", item],
+                     "嵌套组件签名（%s）" % os.path.basename(item))
+    sign_cmd = [codesign, "--force", "--sign", "-"]
+    if os.path.isfile(MACOS_ENTITLEMENTS):
+        sign_cmd += ["--entitlements", MACOS_ENTITLEMENTS]
+    sign_cmd.append(app_path)
+    _run_checked(sign_cmd, "app 本体签名")
+    _run_checked([codesign, "--verify", "--strict", app_path], "签名封印校验")
+    print("    ad-hoc 重签完成：%d 个嵌套组件 + app 本体，封印校验通过。"
+          % len(nested))
+
+
 def assemble_macos(version):
     _TARGET_LABEL = 'macos'
     out_dir = os.path.join(DIST_ROOT, "%s-%s-macos" % (APP_NAME, version))
@@ -783,6 +898,9 @@ def assemble_macos(version):
     # 探测同目录 backend）；不再有 PyInstaller 的 _internal/。
     _copy_native_backend_bundle(dst_app, os.path.join("Contents", "MacOS"))
     _embed_official_pack(dst_app, os.path.join("Contents", "MacOS"))
+    # 注入发生在 Flutter 内嵌签名之后，原封印已失效；必须在打包前重签，
+    # 否则 zip/dmg/pkg 内的 .app 会被 Gatekeeper 判定为「已损坏」。
+    sign_macos_app(dst_app)
     _copy_readme(out_dir, _TARGET_LABEL)
     return out_dir
 
@@ -815,6 +933,14 @@ def make_zip(out_dir, zip_name):
     zip_path = os.path.join(DIST_ROOT, zip_name)
     if os.path.exists(zip_path):
         os.remove(zip_path)
+    # macOS 用 ditto：Apple 自带、正确保留符号链接与扩展属性，是打包已签名
+    # .app 的推荐方式（zipfile 会丢 xattr，可能影响签名校验）。其余平台沿用
+    # zipfile（Windows/Linux 产物无签名，无需 xattr）。
+    if sys.platform == "darwin":
+        _make_zip_ditto(out_dir, zip_path)
+        size_mb = os.path.getsize(zip_path) / 1048576
+        print("完成：%s (%.1f MB)" % (zip_path, size_mb))
+        return
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for root, dirs, files in os.walk(out_dir):
             # macOS .app 内含符号链接（Frameworks），保留链接本身而非内容。
@@ -835,6 +961,19 @@ def make_zip(out_dir, zip_name):
                     z.write(p, os.path.relpath(p, DIST_ROOT))
     size_mb = os.path.getsize(zip_path) / 1048576
     print("完成：%s (%.1f MB)" % (zip_path, size_mb))
+
+
+def _make_zip_ditto(out_dir, zip_path):
+    """用 ditto 打包（--keepParent 保留 out_dir 顶层目录为 zip 根）。
+
+    ditto 保留符号链接、权限与扩展属性，是打包已签名 macOS 应用的标准做法；
+    刻意不用 --sequesterRsrc（会写入 __MACOSX 冗余目录）。
+    """
+    ditto = shutil.which("ditto")
+    if ditto is None:
+        raise SystemExit("错误：未找到 ditto（macOS 自带，不应缺失）。")
+    _run_checked([ditto, "-c", "-k", "--keepParent", out_dir, zip_path],
+                 "ditto 打包 zip")
 
 
 def _zip_symlink(z, dist_root, link_path):

@@ -104,6 +104,9 @@ TEST_CASE("40MB read/write acceptance over HTTP", "[perf][s1][s2][bench][slow]")
         CHECK(d2 - d1 == 0);
         CHECK(rb2 - rb1 == 0);
         CHECK(hot->body == cold->body);         // CONVENTIONS 7 热 GET 三零 + bytes equal
+        
+        // Log the optimized response size for monitoring
+        INFO("Optimized cache hit response size: " << hot->body.size() << " bytes (cold: " << cold->body.size() << ")");
 
         // Single-field patch (S2 shape): one write, tiny response, no stack text.
         long long w0 = perf_counter(cli, "cfg.writes");
@@ -115,9 +118,10 @@ TEST_CASE("40MB read/write acceptance over HTTP", "[perf][s1][s2][bench][slow]")
         REQUIRE(patch->status == 200);
         long long w1 = perf_counter(cli, "cfg.writes");
         CHECK(w1 - w0 == 1);                    // CONVENTIONS 7: 单字段补丁 Δwrites=1
-        CHECK(static_cast<long long>(patch->body.size()) < 2048);  // response < 2KB
+        CHECK(static_cast<long long>(patch->body.size()) < 2048);  // response < 2KB (optimized)
         auto env = nlohmann::ordered_json::parse(patch->body);
-        CHECK(env["applied_set"] == 1);
+        CHECK(env["applied_set_count"] == 1);   // optimized to count only
+        CHECK(env["applied_remove_count"] == 0);
         CHECK(env["ok"] == true);
         CHECK(env.contains("snapshot"));        // overwrite of an existing table -> snapshot
 

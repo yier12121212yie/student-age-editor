@@ -91,6 +91,7 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
   OverlayEntry? _overlayEntry;
   List<Suggestion> _suggestions = const [];
   int _selectedIndex = 0;
+  int? _hoverIndex;
   bool _overlayVisible = false;
   Timer? _debounceSuggest;
 
@@ -164,7 +165,17 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
   void _onFocusChanged() {
     // 失焦 = 放弃这次补全：只藏 overlay 会留下看不见的候选，
     // 再按 Tab 仍会把它们插进去。
-    if (!widget.focusNode.hasFocus) clearCandidates();
+    // 延迟一帧再清：点击候选本身会先触发 TextBox 失焦（桌面端
+    // EditableText 默认点击外部即 unfocus），若当场清掉浮层，
+    // 候选项的 onTap（抬起时触发）就永远收不到；正常插入时
+    // _applyText 会同步抢回焦点，延迟回调看到已重新聚焦就不清。
+    if (widget.focusNode.hasFocus) return;
+    if (!_overlayVisible && _suggestions.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (widget.focusNode.hasFocus) return;
+      clearCandidates();
+    });
   }
 
   void _onControllerChanged() {
@@ -229,6 +240,7 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     setState(() {
       _suggestions = const [];
       _selectedIndex = 0;
+      _hoverIndex = null;
     });
     _hideOverlay();
   }
@@ -302,72 +314,95 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
         link: _layerLink,
         showWhenUnlinked: false,
         offset: Offset(0, offsetY),
-        child: Material(
-          color: Colors.transparent,
-          child: Container(
-            width: width,
-            constraints: const BoxConstraints(maxHeight: overlayMaxH),
-            decoration: BoxDecoration(
-              color: palette.card,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: palette.borderHover),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black38,
-                  blurRadius: 10,
-                  offset: Offset(0, 3),
-                ),
-              ],
-            ),
-            child: ListView.separated(
-              controller: _listCtrl,
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              shrinkWrap: true,
-              itemCount: _suggestions.length,
-              separatorBuilder: (_, _) => Divider(height: 1, color: palette.surface),
-              itemBuilder: (c, i) {
-                final it = _suggestions[i];
-                final isSelected = i == _selectedIndex;
-                return InkWell(
-                  onTap: () {
-                    _selectedIndex = i;
-                    _insert(it);
-                  },
-                  child: Container(
-                    color: isSelected ? palette.tintInfo : Colors.transparent,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 5,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          it.desc,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: palette.textBody,
-                            height: 1.3,
-                          ),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(
-                          it.code,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: palette.textSecondary,
-                            fontFamily: 'Consolas',
-                          ),
-                        ),
-                      ],
-                    ),
+        // TextFieldTapRegion 的默认 groupId 与 EditableText 相同：
+        // 点候选不算"点击文本框外部"，TextBox 不会失焦，onTap 才收得到。
+        child: TextFieldTapRegion(
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: width,
+              constraints: const BoxConstraints(maxHeight: overlayMaxH),
+              decoration: BoxDecoration(
+                color: palette.card,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: palette.borderHover),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black38,
+                    blurRadius: 10,
+                    offset: Offset(0, 3),
                   ),
-                );
-              },
+                ],
+              ),
+              child: ListView.separated(
+                controller: _listCtrl,
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                shrinkWrap: true,
+                itemCount: _suggestions.length,
+                separatorBuilder: (_, _) =>
+                    Divider(height: 1, color: palette.surface),
+                itemBuilder: (c, i) {
+                  final it = _suggestions[i];
+                  final isSelected = i == _selectedIndex;
+                  return MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    onEnter: (_) {
+                      if (_hoverIndex == i) return;
+                      _hoverIndex = i;
+                      _overlayEntry?.markNeedsBuild();
+                    },
+                    onExit: (_) {
+                      if (_hoverIndex == null) return;
+                      _hoverIndex = null;
+                      _overlayEntry?.markNeedsBuild();
+                    },
+                    child: InkWell(
+                      hoverColor: Colors.transparent,
+                      onTap: () {
+                        _selectedIndex = i;
+                        _insert(it);
+                      },
+                      child: Container(
+                        color: isSelected
+                            ? palette.tintInfo
+                            : _hoverIndex == i
+                            ? palette.tintInfo.withValues(alpha: 0.45)
+                            : Colors.transparent,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 5,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              it.desc,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: palette.textBody,
+                                height: 1.3,
+                              ),
+                            ),
+                            const SizedBox(height: 1),
+                            Text(
+                              it.code,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: palette.textSecondary,
+                                fontFamily: 'Consolas',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
           ),
         ),
@@ -500,6 +535,7 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
       setState(() {
         _suggestions = found;
         _selectedIndex = 0;
+        _hoverIndex = null;
       });
       if (found.isEmpty) {
         _hideOverlay();

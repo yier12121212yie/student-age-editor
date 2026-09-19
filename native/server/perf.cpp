@@ -1,37 +1,37 @@
 #include "server/perf.h"
 
-#include <algorithm>
-#include <mutex>
+#include <string_view>
+#include <unordered_map>
 
 namespace sa {
 
 void PerfCounters::bump(const std::string& key, long long amount) {
     std::lock_guard<std::mutex> lk(mu_);
-    for (auto& [k, v] : counters_) {
-        if (k == key) {
-            v += amount;
-            return;
-        }
+    // First bump appends to order_ so snapshot() keeps Python's
+    // dict-insertion-order contract; later bumps are a single hash find.
+    auto [it, inserted] = index_.try_emplace(key, order_.size());
+    if (inserted) {
+        order_.emplace_back(key, amount);
+        return;
     }
-    counters_.emplace_back(key, amount);
+    order_[it->second].second += amount;
 }
 
 long long PerfCounters::get(const std::string& key) const {
     std::lock_guard<std::mutex> lk(mu_);
-    for (const auto& [k, v] : counters_) {
-        if (k == key) return v;
-    }
-    return 0;
+    auto it = index_.find(key);
+    return it == index_.end() ? 0 : order_[it->second].second;
 }
 
 void PerfCounters::reset() {
     std::lock_guard<std::mutex> lk(mu_);
-    counters_.clear();
+    index_.clear();
+    order_.clear();
 }
 
 std::vector<std::pair<std::string, long long>> PerfCounters::snapshot() const {
     std::lock_guard<std::mutex> lk(mu_);
-    return counters_;
+    return order_;
 }
 
 PerfCounters& counters() {

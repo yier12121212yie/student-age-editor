@@ -333,7 +333,11 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
     if (!parse_url(req.url, &u)) {
         return fail(Response::Error::BadInput, "unsupported or malformed URL: " + req.url);
     }
-    Session session(kUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY);
+    // bypass_proxy -> NO_PROXY: loopback endpoints (§4 plugin services) must not
+    // be routed through a system proxy, which would answer them with the
+    // proxy's own error page instead of the plugin's.
+    Session session(kUserAgent, req.bypass_proxy ? WINHTTP_ACCESS_TYPE_NO_PROXY
+                                                 : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY);
     if (!session) return fail(Response::Error::Other, "WinHttpOpen failed");
 
     DWORD t_ms = static_cast<DWORD>(std::max<double>(0.5, req.timeout_seconds) * 1000.0);
@@ -342,8 +346,11 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
                             static_cast<int>(t_ms), static_cast<int>(t_ms))) {
         return error_for_last_win32("WinHttpSetTimeouts");
     }
-    // Follow 3xx like urllib (best effort; option unsupported on older stacks)
-    DWORD redir = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    // Follow 3xx like urllib (best effort; option unsupported on older stacks).
+    // NEVER leaves the 3xx response itself in front of the caller, which is
+    // what the §4 loopback whitelist needs (no off-host hop).
+    DWORD redir = req.follow_redirects ? WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS
+                                       : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     WinHttpSetOption(session.h, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof(redir));
 
     Hdl connect(WinHttpConnect(session.h, to_wide(u.host).c_str(),
@@ -542,6 +549,7 @@ enum : int {
     kOptNosignal = 99,            // NOSIGNAL    (LONG+99)
     kOptWriteFunction = 20011,    // WRITEFUNCTION (FUNCTIONPOINT+11)
     kOptConnectTimeoutMs = 156,   // CONNECTTIMEOUT_MS (LONG+156)
+    kOptProxy = 10004,            // PROXY   (STRINGPOINT+4)
 };
 // CURLINFO_RESPONSE_CODE = CURLINFO_LONG(0x200000) + 2.
 enum : int { kInfoResponseCode = 2097154 };
@@ -808,9 +816,14 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
 
     // Redirect policy ALWAYS, like WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS /
     // urllib. -1 == unbounded, matching WinHTTP's follow-all; a loop is broken
-    // by the server, not by a client cap.
-    api.setopt(g.h, kOptFollowLocation, 1L);
+    // by the server, not by a client cap. follow_redirects=false leaves the 3xx
+    // in front of the caller (§4 loopback whitelist: no off-host hop).
+    api.setopt(g.h, kOptFollowLocation, req.follow_redirects ? 1L : 0L);
     api.setopt(g.h, kOptMaxRedirs, -1L);
+    // PROXY="" disables proxy usage wholesale (curl's WINHTTP_ACCESS_TYPE_
+    // NO_PROXY equivalent), so loopback §4 plugin services stay reachable
+    // through http_proxy/https_proxy.
+    if (req.bypass_proxy) api.setopt(g.h, kOptProxy, "");
 
     // Timeouts: WinHTTP gives resolve/connect/send/receive each the per-op
     // budget `timeout_seconds` (max(0.5, t)). Connect+resolve map cleanly to

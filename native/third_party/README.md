@@ -26,14 +26,18 @@ new pinned version and updating this table.
 ## Usage notes
 
 ### cpp-httplib
-Header-only, HTTP-only build. We compile it **without** OpenSSL, so the server can
-bind and speak plain HTTP on `127.0.0.1` only. The TLS support macro
-`CPPHTTPLIB_OPENSSL_SUPPORT` is intentionally **not** defined; it is reserved for a
-later wave if HTTPS becomes a requirement (that would additionally pull in OpenSSL
-and is out of scope for the vendored strategy above).
+Header-only, HTTP-only build, used exclusively as the **test suite's HTTP client**
+(`tests/test_httpd.cpp`, `tests/test_perf_s1_s2.cpp`; the WebDAV-verb mocks in
+`tests/p4_mock.h` / `tests/p5_mock.h` are hand-rolled socket servers because
+httplib's parser rejects custom verbs). We compile it **without** OpenSSL. The TLS
+support macro `CPPHTTPLIB_OPENSSL_SUPPORT` is intentionally **not** defined; it is
+reserved for a later wave if HTTPS becomes a requirement (that would additionally
+pull in OpenSSL and is out of scope for the vendored strategy above).
 
 `httplib` requires Winsock on Windows; the server target links `ws2_32` (done in
-`native/server/CMakeLists.txt`).
+`native/server/CMakeLists.txt`). The production HTTP transport is NOT cpp-httplib:
+`server/httpd.cpp` is a hand-written Winsock/BSD-socket loop implementing the
+Python `BaseHTTPRequestHandler` semantics.
 
 ### nlohmann/json
 Used for request/response JSON. The HTTP contract requires **insertion-ordered**

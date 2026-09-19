@@ -87,4 +87,11 @@ Linux / macOS `native/build.sh`（构建 `backend` / `backend_cli` / `backend_tu
   导出暂不可用（需改用桌面侧导出的预解码资源包），核心 JSON 编辑与资源浏览不受影响。
 - `aa_scan` 是当前唯一保留的 Python 组件（独立工具，与后端进程无关）：
   `aa_scan index --aa <AA目录> --out <目录>` / `aa_scan base-tables --aa <目录> --out <目录>`。
-- macOS 为 ad hoc 签名，分发前可在 CI 接入签名/公证。
+- macOS 为 ad hoc 签名（未做 Apple 公证）：`assemble_macos` 在注入内置
+  backend 与 official_pack 后统一做由内向外重签（不用 `--deep`），DMG/PKG
+  构建脚本同样重签并校验封印，故 app 签名封印完整；便携 zip 用 `ditto`
+  打包以保留符号链接与扩展属性。用户从浏览器下载后文件带隔离标记，首次打开
+  若提示「已损坏，无法打开」，执行
+  `xattr -dr com.apple.quarantine "/Applications/学生时代模组编辑器.app"`
+  即可，详见 `packaging/notes/使用说明-macos.txt`。需彻底免除此提示，请在 CI
+  配置 Developer ID 证书与公证后再发布。

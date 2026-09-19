@@ -5,10 +5,12 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "server/api_router.h"
 #include "server/cfg_cache.h"
@@ -32,16 +34,35 @@ inline std::filesystem::path make_temp_dir(const std::string& tag) {
 }
 
 // A dispatchable in-process stand-in for Python's MockClient(router.dispatch).
+// `raw_query` is the wire-fidelity query string (PLUGIN_SPEC §4 proxy tests);
+// when omitted it is rendered from `query`. `Req::raw_body` is always derived
+// from `body` the way serve_connection would: a `{"_raw": text}` body means
+// "the client sent these non-JSON bytes", anything else is serialized.
 inline sa::Resp call_router(sa::Router& r, const std::string& method, const std::string& path,
                             std::map<std::string, std::string> query = {},
-                            const sa::json& body = sa::json()) {
+                            const sa::json& body = sa::json(),
+                            const std::string& raw_query = "") {
     sa::Req req;
     req.method = method;
     // Paths in tests are given verbatim (already decoded), matching how
     // router.dispatch is called in the Python tests.
     req.path = path;
-    req.query = std::move(query);
+    req.query = query;
+    if (!raw_query.empty()) {
+        req.raw_query = raw_query;
+    } else {
+        for (const auto& kv : query) {
+            if (!req.raw_query.empty()) req.raw_query += '&';
+            req.raw_query += kv.first + '=' + kv.second;
+        }
+    }
     req.body = body;
+    if (body.is_object() && body.size() == 1 && body.contains("_raw") &&
+        body.at("_raw").is_string()) {
+        req.raw_body = body.at("_raw").get<std::string>();
+    } else if (!body.is_null()) {
+        req.raw_body = sa_core::py_dumps(body);
+    }
     req.host_header = "127.0.0.1:1234";  // origin check passes (loopback host)
     return r.dispatch(req);
 }

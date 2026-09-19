@@ -77,6 +77,32 @@ const kRuleByCfgField = <String, FieldRule>{
   'TalkCfg:highlights': FieldRule(dictName: 'roles'),
   'TalkCfg:miniGame': FieldRule(idRefCfg: 'MinigameCfg'),
   'OptionCfg:miniGame': FieldRule(idRefCfg: 'MinigameCfg'),
+  // 以下为新纳入编辑页的玩法表补充的跨表引用 / 枚举下拉。
+  // 新闻：栏目类型、关联评论
+  'NewsCfg:type': FieldRule(idRefCfg: 'NewsTypeCfg'),
+  'NewsCfg:comments': FieldRule(idRefCfg: 'NewsCommentCfg'),
+  // 钓鱼：鱼种、适用鱼种、对应物品
+  'FishCfg:type': FieldRule(idRefCfg: 'FishTypeCfg'),
+  'FishBaitCfg:fishType': FieldRule(idRefCfg: 'FishTypeCfg'),
+  'FishCfg:item': FieldRule(dictName: 'items', idRefCfg: 'ItemCfg'),
+  // 旅游：景点类型
+  'TripSpotCfg:type': FieldRule(idRefCfg: 'TripTypeCfg'),
+  // 看番：番剧类型
+  'AnimationCfg:type': FieldRule(idRefCfg: 'AnimationTypeCfg'),
+  // 侦探社：所属部门
+  'ClubActivityCfg:department': FieldRule(idRefCfg: 'ClubDepartmentCfg'),
+  // 辩论交涉：牌组 / 状态 / 技能引用
+  'NegotiationPlayerCfg:card': FieldRule(idRefCfg: 'NegotiationMiniGameCardCfg'),
+  'NegotiationPlayerCfg:buff': FieldRule(idRefCfg: 'NegotiationBuffCfg'),
+  'NegotiationPlayerCfg:skill': FieldRule(idRefCfg: 'NegotiationSkillCfg'),
+  'NegotiationTeammateCfg:skills': FieldRule(idRefCfg: 'NegotiationSkillCfg'),
+  'NegotiationTopicCfg:buff1': FieldRule(idRefCfg: 'NegotiationBuffCfg'),
+  'NegotiationTopicCfg:buff2': FieldRule(idRefCfg: 'NegotiationBuffCfg'),
+  // 目标：前置 / 下一目标自引用，奖励物品
+  'IntentCfg:before': FieldRule(idRefCfg: 'IntentCfg'),
+  'IntentCfg:next': FieldRule(idRefCfg: 'IntentCfg'),
+  'IntentCfg:reward': FieldRule(dictName: 'items', idRefCfg: 'ItemCfg'),
+  // 生日派对：连线题目左右列无需引用规则（自由文本）
 };
 
 /// 全局字段 key → 下拉框规则（兜底）。
@@ -102,6 +128,10 @@ const kRuleByField = <String, FieldRule>{
   'attrId': FieldRule(dictName: 'attrs'),
   'disappearTime': FieldRule(dictName: 'turns'), // 消失回合
   'action': FieldRule(dictName: 'actions'),
+  // 新纳入玩法表的通用兜底：成员列表按人物、evt/evtId 按事件表引用
+  'npcIds': FieldRule(dictName: 'roles'), // 队伍成员（可多值）
+  'evtId': FieldRule(idRefCfg: 'EvtCfg'), // 关联事件（漫展/景点/世博）
+  'evt': FieldRule(idRefCfg: 'EvtCfg'), // 关联事件（世博展馆）
 };
 
 /// 取字段对应的下拉框规则：cfg 限定优先，其次全局 key。

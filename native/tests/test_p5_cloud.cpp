@@ -361,7 +361,7 @@ TEST_CASE("P5 DRIVERS registry order + get_driver envelopes", "[p5][cloud][units
     CHECK(env(json(5)) == "AttributeError: 'int' object has no attribute 'lower'");
 }
 
-TEST_CASE("P5 netdisk drivers: root/openlist delegation + degraded direct legs", "[p5][cloud][units]") {
+TEST_CASE("P5 netdisk drivers: root/openlist delegation + direct-leg guards", "[p5][cloud][units]") {
     CloudFixture fx("netdisk");
     // baidu with root delegates to LocalDriver (full parity)
     {
@@ -372,7 +372,8 @@ TEST_CASE("P5 netdisk drivers: root/openlist delegation + degraded direct legs",
         drv->mkdir("a/b");
         REQUIRE(sa::cloud::get_driver(json("baidu_netdisk"), cfg)->stat("a/b")->is_dir);
     }
-    // google_drive direct (no root/openlist) -> deterministic ValueError
+    // Empty-config direct legs now raise the ported token guards (real Python
+    // behavior — the degraded "未移植" envelopes are gone with the port).
     auto direct_env = [](const char* type) {
         try {
             sa::cloud::get_driver(json(type), json::object())->list("x");
@@ -381,10 +382,25 @@ TEST_CASE("P5 netdisk drivers: root/openlist delegation + degraded direct legs",
             return std::string(e.what());
         }
     };
-    CHECK(direct_env("baidu").find("ValueError: baidu 直连需真实外联") == 0);
-    CHECK(direct_env("123").find("ValueError: 123 直连需真实外联") == 0);
+    CHECK(direct_env("baidu").find("ValueError: baidu 直连需真实外联") == std::string::npos);
+    CHECK(direct_env("123").find("ValueError: 123 直连需真实外联") == std::string::npos);
+    // google/onedrive wrap their list failures in the Python envelope; the
+    // inner cause is the token guard, not "未移植".
     CHECK(direct_env("google_drive").find("ValueError: Google Drive 直连列目录失败") == 0);
+    CHECK(direct_env("google_drive").find("未移植") == std::string::npos);
     CHECK(direct_env("onedrive").find("ValueError: OneDrive 直连列目录失败") == 0);
+    CHECK(direct_env("onedrive").find("未移植") == std::string::npos);
+    // 123 直连 list 吞异常返回 []（Python fallback 语义），test() 才上抛守卫。
+    {
+        auto p = sa::cloud::get_driver(json("123"), json::object());
+        CHECK(p->list("anything").empty());
+        try {
+            p->test();
+            FAIL("expected ValueError");
+        } catch (const sa::cloud::PyError& e) {
+            CHECK(std::string(e.what()) == "ValueError: 123 需要 username/password");
+        }
+    }
     // onedrive pure-logic direct branches (no network in Python either)
     {
         auto od = sa::cloud::get_driver(json("onedrive"), json::object());
@@ -405,9 +421,12 @@ TEST_CASE("P5 netdisk drivers: root/openlist delegation + degraded direct legs",
             CHECK(std::string(e.what()) ==
                   "NotImplementedError: onedrive requires openlist_url");
         }
-        // refresh_token without client_id -> the guard message is real behavior
+        // refresh_token without client_id -> the guard message is real behavior.
+        // _direct_base points the oplist renewapi attempts at a dead port so no
+        // real network is touched.
         json cfg;
         cfg["refresh_token"] = "rt";
+        cfg["_direct_base"] = "http://127.0.0.1:1";
         try {
             sa::cloud::get_driver(json("onedrive"), cfg)->test();
             FAIL("expected ValueError");
@@ -419,8 +438,415 @@ TEST_CASE("P5 netdisk drivers: root/openlist delegation + degraded direct legs",
 }
 
 // ---------------------------------------------------------------------------
-// LocalDriver full chain
+// Net-disk DIRECT legs against the local mock (_direct_base seam)
 // ---------------------------------------------------------------------------
+
+namespace {
+struct BaiduDirState {
+    std::mutex mu;
+    std::vector<p5mock::Call> calls;
+};
+}  // namespace
+
+TEST_CASE("P5 baidu direct legs against mock", "[p5][cloud][baidu][mock]") {
+    CloudFixture fx("baidudir");
+    auto st = std::make_shared<BaiduDirState>();
+    p5mock::Server mock;
+    int port = mock.start();
+    REQUIRE(port != 0);
+    // token: no client_id/secret -> the refresh_token doubles as access_token
+    // (the oplist renewapi probe hits this same mock and 404s, as a dead
+    // public instance would).
+    mock.on("GET", "/rest/2.0/xpan/nas", [](const p5mock::Request&, p5mock::Response& res) {
+        res.set_content(R"({"errno":0,"portrait":"u"})", "application/json");
+    });
+    mock.on("GET", "/rest/2.0/xpan/file", [st](const p5mock::Request& req,
+                                               p5mock::Response& res) {
+        {
+            std::lock_guard<std::mutex> lk(st->mu);
+            st->calls.push_back({req.method, req.target, req.body, {}});
+        }
+        if (req.target.find("method=list") != std::string::npos) {
+            res.set_content(R"({"errno":0,"list":[
+                {"server_filename":"a.json","isdir":0,"size":4,"local_mtime":1788251400},
+                {"server_filename":"sub","isdir":1,"size":0,"local_mtime":0}]})",
+                            "application/json");
+            return;
+        }
+        res.set_content(R"({"errno":0})", "application/json");
+    });
+    mock.on("POST", "/rest/2.0/xpan/file", [st](const p5mock::Request& req,
+                                                p5mock::Response& res) {
+        std::lock_guard<std::mutex> lk(st->mu);
+        st->calls.push_back({req.method, req.target, req.body, req.headers});
+        res.set_content(R"({"errno":0,"path":"/mods/x"})", "application/json");
+    });
+    mock.on("GET", "/rest/2.0/xpan/multimedia",
+            [&mock](const p5mock::Request&, p5mock::Response& res) {
+                res.set_content(
+                    std::string(R"({"errno":0,"list":[{"dlink":")") + mock.base() +
+                                R"(/raw/a.json"}]})",
+                    "application/json");
+            });
+    mock.on("GET", "/raw/a.json", [](const p5mock::Request&, p5mock::Response& res) {
+        res.set_content("data", "application/octet-stream");
+    });
+
+    json cfg;
+    cfg["refresh_token"] = "rt123";
+    cfg["_direct_base"] = mock.base();
+    auto drv = sa::cloud::get_driver(json("baidu"), cfg);
+    drv->test();  // uinfo errno 0
+
+    auto objs = drv->list("mods");
+    REQUIRE(objs.size() == 2);
+    CHECK(objs[0].name == "a.json");
+    CHECK(objs[0].path == "mods/a.json");
+    CHECK(objs[0].size == 4);
+    CHECK(objs[0].mtime == 1788251400);
+    CHECK(objs[1].is_dir);
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        REQUIRE(!st->calls.empty());
+        CHECK(st->calls.front().target.find("access_token=rt123") != std::string::npos);
+        CHECK(st->calls.front().target.find("dir=%2Fmods") != std::string::npos);
+    }
+    auto s = drv->stat("mods/a.json");
+    REQUIRE(s.has_value());
+    CHECK(s->size == 4);
+
+    // mkdir posts a create body (JSON tagged form-urlencoded quirk)
+    drv->mkdir("mods/sub");
+    // put: create answers errno 0 + path in repr -> early return
+    fs::path up = fx.root() / "up.json";
+    wfile(up, "data");
+    drv->put(P(up), "mods/a.json");
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        bool saw_create = false;
+        for (const auto& c : st->calls)
+            if (c.method == "POST" && c.target.find("method=create") != std::string::npos) {
+                saw_create = true;
+                CHECK(c.headers.at("user-agent") == "pan.baidu.com");
+            }
+        CHECK(saw_create);
+    }
+
+    // get: filemetas -> dlink -> authenticated download, bytes land on disk
+    fs::path out = fx.root() / "dl.json";
+    drv->get("mods/a.json", P(out));
+    CHECK(rfile(out) == "data");
+}
+
+TEST_CASE("P5 123pan direct legs against mock", "[p5][cloud][pan123][mock]") {
+    CloudFixture fx("p123dir");
+    auto st = std::make_shared<BaiduDirState>();
+    p5mock::Server mock;
+    int port = mock.start();
+    REQUIRE(port != 0);
+    auto record = [st](const p5mock::Request& req) {
+        std::lock_guard<std::mutex> lk(st->mu);
+        st->calls.push_back({req.method, req.target, req.body, req.headers});
+    };
+    mock.on("POST", "/api/user/sign_in", [record](const p5mock::Request& req,
+                                                  p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"code":200,"data":{"token":"TOK9"}})", "application/json");
+    });
+    mock.on("GET", "/b/api/user/info", [record](const p5mock::Request& req,
+                                                p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"code":0,"data":{"uid":1}})", "application/json");
+    });
+    mock.on("GET", "/b/api/file/list/new", [record](const p5mock::Request& req,
+                                                    p5mock::Response& res) {
+        record(req);
+        res.set_content(
+            R"({"code":0,"data":{"InfoList":[
+              {"FileName":"mods","Type":1,"FileId":10,"Etag":"","S3KeyFlag":"","Size":0},
+              {"FileName":"a.json","Type":0,"FileId":11,"Etag":"E1","S3KeyFlag":"K","Size":4}]}})",
+            "application/json");
+    });
+    mock.on("POST", "/b/api/file/download_info", [record, &mock](const p5mock::Request& req,
+                                                                 p5mock::Response& res) {
+        record(req);
+        std::string b64;  // DownloadUrl wraps the real url in params=base64
+        std::string target = mock.base() + "/raw/a.json";
+        b64 = sa_core::http::b64_encode(target);
+        res.set_content(R"({"code":0,"data":{"DownloadUrl":")" + mock.base() +
+                            "/dl?params=" + b64 + R"("}})",
+                        "application/json");
+    });
+    mock.on("GET", "/raw/a.json", [record](const p5mock::Request& req, p5mock::Response& res) {
+        record(req);
+        res.set_content("data", "application/octet-stream");
+    });
+    mock.on("POST", "/b/api/file/upload_request", [record](const p5mock::Request& req,
+                                                           p5mock::Response& res) {
+        record(req);
+        res.set_content(
+            R"({"code":0,"data":{"Bucket":"B","Key":"KEY","UploadId":"U1","StorageNode":"S","FileId":12}})",
+            "application/json");
+    });
+    mock.on("POST", "/b/api/file/s3_upload_object/auth", [record, &mock](
+                                                             const p5mock::Request& req,
+                                                             p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"code":0,"data":{"PreSignedUrls":{"1":")" + mock.base() +
+                            "/s3obj" + R"("}}})",
+                        "application/json");
+    });
+    mock.on("PUT", "/s3obj", [record](const p5mock::Request& req, p5mock::Response& res) {
+        record(req);
+        res.status = 200;
+        res.set_content("", "text/plain");
+    });
+    mock.on("POST", "/b/api/file/upload_complete/v2", [record](const p5mock::Request& req,
+                                                               p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"code":0,"data":{"etag":"E2"}})", "application/json");
+    });
+    mock.on("POST", "/b/api/file/trash", [record](const p5mock::Request& req,
+                                                  p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"code":0})", "application/json");
+    });
+
+    json cfg;
+    cfg["username"] = "user1";  // no '@' -> passport login shape
+    cfg["password"] = "pass1";
+    cfg["_direct_base"] = mock.base();
+    auto drv = sa::cloud::get_driver(json("123pan"), cfg);
+    drv->test();
+
+    // login body: passport form + Bearer + sign= query on subsequent calls
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        REQUIRE(st->calls.size() >= 2);
+        CHECK(st->calls[0].method == "POST");
+        json body = json::parse(st->calls[0].body);
+        CHECK(body["passport"] == "user1");
+        CHECK(body.contains("mail") == false);
+        auto it = st->calls[1].headers.find("authorization");
+        REQUIRE(it != st->calls[1].headers.end());
+        CHECK(it->second == "Bearer TOK9");
+        // sign = "<time_sign>=<ts>-<rand>-<data_sign>"
+        CHECK(std::regex_search(st->calls[1].target,
+                                std::regex("[?&]\\d+=\\d{9,10}-\\d{1,8}-\\d{1,10}")));
+    }
+    st->calls.clear();
+
+    auto objs = drv->list("mods");
+    REQUIRE(objs.size() == 2);
+    CHECK(objs[0].name == "mods");
+    CHECK(objs[0].is_dir);
+    CHECK(objs[1].name == "a.json");
+    CHECK(objs[1].path == "mods/a.json");
+    CHECK(objs[1].size == 4);
+
+    // get via download_info -> base64 params -> GET raw
+    fs::path out = fx.root() / "dl.json";
+    drv->get("mods/a.json", P(out));
+    CHECK(rfile(out) == "data");
+
+    // put: upload_request -> auth -> PUT (body bytes) -> complete
+    fs::path up = fx.root() / "up.json";
+    wfile(up, "data");  // md5("data") as etag
+    drv->put(P(up), "mods/a.json");
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        bool saw_put = false, saw_complete = false;
+        for (const auto& c : st->calls) {
+            if (c.method == "PUT" && c.target == "/s3obj") {
+                saw_put = true;
+                CHECK(c.body == "data");
+                // presigned PUT must NOT carry auth/content-type headers
+                CHECK(c.headers.count("authorization") == 0);
+            }
+            if (c.method == "POST" && c.target.rfind("/b/api/file/upload_complete/v2", 0) == 0) {
+                saw_complete = true;
+                json b = json::parse(c.body);
+                CHECK(b["uploadId"] == "U1");
+                CHECK(b["isMultipart"] == false);
+            }
+        }
+        CHECK(saw_put);
+        CHECK(saw_complete);
+    }
+
+    // delete -> trash with fileId
+    drv->remove("mods/a.json");
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        bool saw_trash = false;
+        for (const auto& c : st->calls)
+            if (c.method == "POST" && c.target.rfind("/b/api/file/trash", 0) == 0) {
+                saw_trash = true;
+                json b = json::parse(c.body);
+                CHECK(b["fileIds"] == json::array({11}));
+            }
+        CHECK(saw_trash);
+    }
+}
+
+TEST_CASE("P5 google_drive direct legs against mock", "[p5][cloud][gdrive][mock]") {
+    CloudFixture fx("gdir");
+    auto st = std::make_shared<BaiduDirState>();
+    p5mock::Server mock;
+    int port = mock.start();
+    REQUIRE(port != 0);
+    auto record = [st](const p5mock::Request& req) {
+        std::lock_guard<std::mutex> lk(st->mu);
+        st->calls.push_back({req.method, req.target, req.body, req.headers});
+    };
+    // oauth2 token (client credentials present -> no oplist probe needed)
+    mock.on("POST", "/token", [](const p5mock::Request&, p5mock::Response& res) {
+        res.set_content(R"({"access_token":"AT1"})", "application/json");
+    });
+    mock.on("GET", "/drive/v3/about", [record](const p5mock::Request& req, p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"user":{"kind":"drive#user"}})", "application/json");
+    });
+    // file id download (registered BEFORE the generic /drive/v3/files route)
+    mock.on("GET", "/drive/v3/files/F1", [](const p5mock::Request&, p5mock::Response& res) {
+        res.set_content("data", "text/plain");  // alt=media
+    });
+    // find child by name via the q= filter
+    mock.on("GET", "/drive/v3/files", [record](const p5mock::Request& req, p5mock::Response& res) {
+        record(req);
+        const std::string& t = req.target;
+        if (t.find("name+%3D+%27mods%27") != std::string::npos)
+            return res.set_content(
+                R"({"files":[{"id":"F-MODS","name":"mods",)"
+                R"("mimeType":"application/vnd.google-apps.folder"}]})",
+                "application/json");
+        if (t.find("in+parents") != std::string::npos)
+            return res.set_content(
+                R"({"files":[{"id":"F1","name":"a.json","mimeType":"text/plain","size":"4",)"
+                R"("modifiedTime":"2026-09-01T08:30:00Z"}]})",
+                "application/json");
+        return res.set_content(R"({"files":[]})", "application/json");
+    });
+    mock.on("PATCH", "/upload/drive/v3/files/", [record](const p5mock::Request& req,
+                                                         p5mock::Response& res) {
+        record(req);
+        res.set_content(R"({"id":"F1"})", "application/json");
+    });
+
+    json cfg;
+    cfg["refresh_token"] = "rt";
+    cfg["client_id"] = "cid";
+    cfg["client_secret"] = "csec";
+    cfg["_direct_base"] = mock.base();
+    auto drv = sa::cloud::get_driver(json("google_drive"), cfg);
+    drv->test();
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        REQUIRE(!st->calls.empty());
+        auto it = st->calls.front().headers.find("authorization");
+        REQUIRE(it != st->calls.front().headers.end());
+        CHECK(it->second == "Bearer AT1");
+    }
+    st->calls.clear();
+
+    auto objs = drv->list("mods");
+    REQUIRE(objs.size() == 1);
+    CHECK(objs[0].name == "a.json");
+    CHECK(objs[0].path == "mods/a.json");
+    CHECK(objs[0].size == 4);
+    CHECK(objs[0].mtime == kEpoch2026Sep01_0830);
+
+    fs::path out = fx.root() / "dl.json";
+    drv->get("mods/a.json", P(out));
+    CHECK(rfile(out) == "data");
+
+    // put: existing name -> single PATCH uploadType=media
+    fs::path up = fx.root() / "up.json";
+    wfile(up, "data");
+    drv->put(P(up), "mods/a.json");
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        bool saw_patch = false;
+        for (const auto& c : st->calls)
+            if (c.method == "PATCH") {
+                saw_patch = true;
+                CHECK(c.target.find("uploadType=media") != std::string::npos);
+                CHECK(c.body == "data");
+                CHECK(c.headers.at("content-type") == "application/json");  // .json guess
+            }
+        CHECK(saw_patch);
+    }
+}
+
+TEST_CASE("P5 onedrive direct legs against mock", "[p5][cloud][onedrive][mock]") {
+    CloudFixture fx("oddir");
+    auto st = std::make_shared<BaiduDirState>();
+    p5mock::Server mock;
+    int port = mock.start();
+    REQUIRE(port != 0);
+    mock.on("POST", "/common/oauth2/v2.0/token",
+            [st](const p5mock::Request& req, p5mock::Response& res) {
+                std::lock_guard<std::mutex> lk(st->mu);
+                st->calls.push_back({req.method, req.target, req.body, req.headers});
+                res.set_content(R"({"access_token":"ATA"})", "application/json");
+            });
+    // registered BEFORE /v1.0/me/drive so the children path routes correctly
+    mock.on("GET", "/v1.0/me/drive/root", [st](const p5mock::Request& req,
+                                               p5mock::Response& res) {
+        std::lock_guard<std::mutex> lk(st->mu);
+        st->calls.push_back({req.method, req.target, req.body, req.headers});
+        res.set_content(R"({"value":[{"name":"a.json","size":4,)"
+                        R"("lastModifiedDateTime":"2026-09-01T08:30:00Z"},)"
+                        R"({"name":"sub","folder":{},"size":0}]})",
+                        "application/json");
+    });
+    mock.on("GET", "/v1.0/me/drive", [st](const p5mock::Request& req, p5mock::Response& res) {
+        std::lock_guard<std::mutex> lk(st->mu);
+        st->calls.push_back({req.method, req.target, req.body, req.headers});
+        res.set_content(R"({"id":"drive1"})", "application/json");
+    });
+
+    json cfg;
+    cfg["refresh_token"] = "rt";
+    cfg["client_id"] = "mycid";  // non-placeholder -> login.microsoft token POST
+    cfg["client_secret"] = "csec";
+    cfg["_direct_base"] = mock.base();
+    auto drv = sa::cloud::get_driver(json("onedrive"), cfg);
+    drv->test();
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        REQUIRE(st->calls.size() >= 2);
+        CHECK(st->calls[0].method == "POST");
+        CHECK(st->calls[0].body.find("grant_type=refresh_token") != std::string::npos);
+        CHECK(st->calls[0].body.find("redirect_uri=https%3A%2F%2Flogin.microsoftonline.com") !=
+              std::string::npos);
+        auto it = st->calls[1].headers.find("authorization");
+        REQUIRE(it != st->calls[1].headers.end());
+        CHECK(it->second == "Bearer ATA");
+    }
+    st->calls.clear();
+
+    auto objs = drv->list("mods");
+    REQUIRE(objs.size() == 2);
+    CHECK(objs[0].name == "a.json");
+    CHECK(objs[0].path == "mods/a.json");
+    CHECK(objs[0].mtime == kEpoch2026Sep01_0830);
+    CHECK(objs[1].is_dir);
+    {
+        std::lock_guard<std::mutex> lk(st->mu);
+        CHECK(st->calls.at(0).target.find("/v1.0/me/drive/root:/mods:/children") !=
+              std::string::npos);
+    }
+    // Direct download stays an error by design (Python parity): only test/list
+    // got the network port.
+    try {
+        drv->get("mods/a.json", "out");
+        FAIL("expected ValueError");
+    } catch (const sa::cloud::PyError& e) {
+        CHECK(std::string(e.what()) ==
+              "ValueError: OneDrive 直连下载需配置 openlist_url，请通过 OpenList 代理");
+    }
+}
 
 TEST_CASE("P5 LocalDriver list/stat/get/put/delete/mkdir + escape refusals", "[p5][cloud][local]") {
     CloudFixture fx("localdrv");

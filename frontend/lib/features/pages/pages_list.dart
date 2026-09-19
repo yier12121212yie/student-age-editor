@@ -7,7 +7,7 @@ import '../editor/editor_controller.dart';
 import 'pages_catalog.dart';
 import '../../core/app_theme.dart';
 
-/// 编辑页面侧边栏：9 个页面入口。
+/// 编辑页面侧边栏：按 [editorPages] 枚举全部页面入口。
 class PagesList extends StatelessWidget {
   const PagesList({super.key, required this.state, required this.controller});
   final AppState state;
@@ -23,6 +23,15 @@ class PagesList extends StatelessWidget {
     'function': FluentIcons.games_24_regular,
     'resource': FluentIcons.image_24_regular,
     'official': FluentIcons.grid_24_regular,
+    'news': FluentIcons.news_24_regular,
+    'fishing': FluentIcons.food_fish_24_regular,
+    'travel': FluentIcons.globe_24_regular,
+    'anime': FluentIcons.video_24_regular,
+    'expo': FluentIcons.building_24_regular,
+    'club': FluentIcons.search_24_regular,
+    'crafts': FluentIcons.puzzle_piece_24_regular,
+    'birthday': FluentIcons.food_cake_24_regular,
+    'negotiation': FluentIcons.scales_24_regular,
   };
 
   @override

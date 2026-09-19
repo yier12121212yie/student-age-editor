@@ -84,6 +84,8 @@ class AppPalette {
     required this.tintWarn,
     required this.tintDanger,
     required this.tintInfo,
+    required this.primaryColor,
+    required this.successColor,
   });
 
   /// 页面主背景。
@@ -191,6 +193,12 @@ class AppPalette {
   /// 信息浅底。
   final Color tintInfo;
 
+  /// 品牌主色。
+  final Color primaryColor;
+
+  /// 成功状态深色（按钮、图标等）。
+  final Color successColor;
+
   /// 暗色调色板（与历史硬编码值一一对应）。
   static const dark = AppPalette(
     bg: Color(0xFF1B1B1F),
@@ -218,6 +226,8 @@ class AppPalette {
     warning: Color(0xFFE08A3C),
     danger: Color(0xFFE5484D),
     statusOk: Color(0xFF5FBE8C),
+    primaryColor: Color(0xFF4F6EF7), // 品牌主色
+    successColor: Color(0xFF0F7B0F), // 成功深绿
     statusWarn: Color(0xFFF2C25C),
     statusTan: Color(0xFFD9A15E),
     statusInfo: Color(0xFF9DB8FF),
@@ -257,6 +267,8 @@ class AppPalette {
     warning: Color(0xFFB9761E),
     danger: Color(0xFFD63A40),
     statusOk: Color(0xFF1F8A4C),
+    primaryColor: Color(0xFF4F6EF7),
+    successColor: Color(0xFF0F7B0F),
     statusWarn: Color(0xFF9A6C0B),
     statusTan: Color(0xFF9C6B33),
     statusInfo: Color(0xFF3A66B8),
@@ -334,6 +346,11 @@ class AppTheme {
   static final ValueNotifier<AppThemeMode> mode =
       ValueNotifier(AppThemeMode.dark);
 
+  /// 当前生效调色板 - 用于兼容旧代码 (AppTheme.palette.xxx)
+  static AppPalette get palette => _currentPalette;
+
+  static AppPalette _currentPalette = AppPalette.dark;
+
   static bool _initialized = false;
 
   /// 启动时加载持久化主题并应用。
@@ -348,8 +365,7 @@ class AppTheme {
     final brightness = m == AppThemeMode.system
         ? WidgetsBinding.instance.platformDispatcher.platformBrightness
         : (m == AppThemeMode.light ? Brightness.light : Brightness.dark);
-    palette =
-        brightness == Brightness.light ? AppPalette.light : AppPalette.dark;
+    _currentPalette = palette = brightness == Brightness.light ? AppPalette.light : AppPalette.dark;
     if (mode.value != m) mode.value = m;
     if (save) await m.save();
   }

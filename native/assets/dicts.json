@@ -110,7 +110,519 @@
       "map": "可能出现的地点",
       "talkId": "触发对话",
       "cond": "触发前提",
-      "effect": "触发效果"
+      "effect": "触发效果",
+      "npc": "指定对象(NPC)"
+    },
+    "RenshengguanMemoryCfg": {
+      "id": "记忆ID",
+      "title": "记忆标题",
+      "type": "记忆类型",
+      "cond": "获得条件",
+      "desc": "记忆描述",
+      "url": "配图",
+      "npcId": "关联人物",
+      "sceneId": "场景ID"
+    },
+    "IntentCfg": {
+      "id": "目标ID",
+      "name": "目标名称",
+      "group": "目标分组",
+      "reward": "达成奖励",
+      "desc": "目标描述",
+      "demand": "达成要求",
+      "npc": "指定对象(NPC)",
+      "finishType": "完成方式",
+      "round": "所需回合",
+      "before": "前置目标",
+      "condition": "接取条件",
+      "fail": "失败效果",
+      "failTalk": "失败对话",
+      "finishTalk": "完成对话",
+      "next": "下一目标",
+      "renshengguan": "关联珍贵记忆",
+      "tag": "标签",
+      "targetRound": "目标回合",
+      "weight": "权重"
+    },
+    "ToggleCfg": {
+      "id": "开关ID",
+      "cond": "开关条件"
+    },
+    "TextCfg": {
+      "icon": "图标",
+      "id": "文本ID",
+      "text": "文本内容"
+    },
+    "EndingDatingCfg": {
+      "age": "年龄",
+      "attrs": "属性要求",
+      "cond": "出现条件",
+      "fix": "固定对象",
+      "gender": "性别要求",
+      "icon": "头像",
+      "id": "相亲ID",
+      "job": "职业要求",
+      "jump": "去向",
+      "momTalk": "母亲台词",
+      "motto": "择偶标语",
+      "name": "姓名",
+      "personal": "自我介绍"
+    },
+    "JobUnlockCfg": {
+      "cond": "解锁条件",
+      "id": "解锁ID",
+      "job": "职业",
+      "tips": "解锁提示"
+    },
+    "NegotiationPlayerCfg": {
+      "attribute": "属性面板",
+      "buff": "开局状态",
+      "card": "牌组",
+      "hp": "血量",
+      "id": "对手ID",
+      "matchLv": "对局等级",
+      "mp": "精力",
+      "name": "名称",
+      "npcId": "对应人物",
+      "pointPlus": "分数加成",
+      "randBuff": "随机状态",
+      "skill": "技能"
+    },
+    "NegotiationTeamCfg": {
+      "grade": "评级",
+      "id": "队伍ID",
+      "name": "队伍名称",
+      "npcIds": "成员列表",
+      "type": "队伍类型"
+    },
+    "NegotiationTeammateCfg": {
+      "id": "队友ID",
+      "roleId": "人物",
+      "skills": "技能列表",
+      "state": "状态"
+    },
+    "NegotiationTopicCfg": {
+      "buff1": "正方状态",
+      "buff2": "反方状态",
+      "id": "话题ID",
+      "name": "话题名称",
+      "negetive": "反方观点",
+      "positive": "正方观点",
+      "state": "状态"
+    },
+    "NegotiationCfg": {
+      "before": "前置交涉",
+      "condition": "触发条件",
+      "condition2": "触发条件2",
+      "difficulty": "难度",
+      "effect1": "效果",
+      "group": "分组",
+      "id": "交涉ID",
+      "lv": "等级",
+      "name": "名称",
+      "name1": "副名称",
+      "tag": "标签",
+      "talks": "交涉对白",
+      "talks2": "交涉对白2",
+      "type": "类型"
+    },
+    "NegotiationTalkCfg": {
+      "id": "对白ID",
+      "name": "名称",
+      "reacts": "回应",
+      "type": "类型"
+    },
+    "NegotiationChatCfg": {
+      "cond": "触发条件",
+      "desc": "描述",
+      "id": "ID"
+    },
+    "NegotiationInvolvedCfg": {
+      "dsc": "描述",
+      "effect": "效果",
+      "id": "ID"
+    },
+    "NegotiationMiniGameCardCfg": {
+      "id": "卡牌ID",
+      "mean": "均值",
+      "standard": "标准差",
+      "value": "卡牌数值",
+      "weights": "权重"
+    },
+    "NegotiationUniqueCardCfg": {
+      "desc": "描述",
+      "icon": "图标",
+      "id": "卡牌ID",
+      "name": "名称",
+      "parms": "参数",
+      "point": "分值",
+      "type": "类型"
+    },
+    "NegotiationMiniGameCardTypeCfg": {
+      "attr": "属性",
+      "beRestraint": "被克制",
+      "color": "颜色",
+      "icon": "图标",
+      "icon2": "图标2",
+      "id": "类型ID",
+      "name": "类型名称",
+      "restraint": "克制"
+    },
+    "NegotiationSkillCfg": {
+      "cost": "消耗",
+      "effect": "效果",
+      "id": "技能ID",
+      "name": "技能名称",
+      "parms": "参数"
+    },
+    "NegotiationBuffCfg": {
+      "dsc": "描述",
+      "effect": "效果",
+      "id": "状态ID",
+      "name": "状态名称",
+      "type": "类型"
+    },
+    "NegotiationMiniGameCfg": {
+      "id": "ID",
+      "value": "数值"
+    },
+    "MomPowerCfg": {
+      "hp": "血量",
+      "id": "ID",
+      "mean": "均值",
+      "standard": "标准差",
+      "weights": "权重"
+    },
+    "FriendRequestCfg": {
+      "appearCond": "出现条件",
+      "cost": "消耗",
+      "desc": "描述",
+      "effect": "效果",
+      "id": "帮助ID",
+      "interactCond": "互动条件",
+      "npc": "求助同学",
+      "resultTxt": "回应文本",
+      "txt": "求助文本",
+      "weight": "权重"
+    },
+    "ExploreCfg": {
+      "appearCond": "出现条件",
+      "btn": "按钮文本",
+      "desc": "描述",
+      "effect": "获得效果",
+      "effectDesc": "效果描述",
+      "icon": "图标",
+      "id": "探索ID",
+      "lv": "探索等级",
+      "need": "需求",
+      "roleId": "人物",
+      "title": "标题",
+      "unlockCond": "解锁条件"
+    },
+    "NewsCfg": {
+      "big": "大图",
+      "comments": "评论列表",
+      "cond": "刊登条件",
+      "content": "新闻正文",
+      "effects": "效果",
+      "id": "新闻ID",
+      "img": "配图",
+      "round": "刊登回合",
+      "type": "新闻栏目"
+    },
+    "NewsCommentCfg": {
+      "content": "评论内容",
+      "id": "评论ID",
+      "thumbs": "点赞数",
+      "username": "评论者"
+    },
+    "NewsTypeCfg": {
+      "effect": "栏目效果",
+      "id": "栏目ID",
+      "title": "栏目名称"
+    },
+    "AnimationCfg": {
+      "effect": "观影效果",
+      "id": "番剧ID",
+      "level": "等级",
+      "name": "番剧名称",
+      "time": "时长",
+      "type": "类型",
+      "weight": "权重"
+    },
+    "AnimeConCfg": {
+      "evtId": "事件ID",
+      "id": "漫展ID",
+      "name": "名称"
+    },
+    "AnimationTypeCfg": {
+      "effect": "类型效果",
+      "id": "类型ID",
+      "name": "类型名称"
+    },
+    "AnimationWifeCfg": {
+      "effect": "本命效果",
+      "id": "ID",
+      "name": "本命名称"
+    },
+    "AnimationRankCfg": {
+      "effect": "段位效果",
+      "id": "段位ID",
+      "target": "目标值"
+    },
+    "AnimationCostCfg": {
+      "cnts": "次数",
+      "costs": "花费",
+      "id": "ID"
+    },
+    "AnimeConExpCfg": {
+      "effect": "经验效果",
+      "id": "ID",
+      "name": "名称",
+      "target": "目标值"
+    },
+    "AnimeKzoneContentCfg": {
+      "comments": "评论",
+      "eqLvl": "装备等级",
+      "id": "动态ID",
+      "thumb": "配图",
+      "thumbCnt": "配图数",
+      "txt": "动态文本",
+      "type": "类型"
+    },
+    "AnimeMarkCntCfg": {
+      "id": "ID",
+      "need": "需要数量"
+    },
+    "TalkAnimeCfg": {
+      "id": "对白ID",
+      "type": "类型"
+    },
+    "FishCfg": {
+      "btn": "按钮文本",
+      "icon": "图标",
+      "id": "鱼类ID",
+      "item": "对应物品",
+      "name": "鱼名称",
+      "type": "鱼种类型",
+      "weight": "权重",
+      "weights": "权重分布"
+    },
+    "FishBaitCfg": {
+      "addWeight": "增重",
+      "desc": "描述",
+      "diff": "难度",
+      "fishType": "适用鱼种",
+      "id": "鱼饵ID",
+      "lv": "等级",
+      "name": "名称",
+      "name2": "副名称",
+      "prize": "奖励"
+    },
+    "FishTypeCfg": {
+      "achivement": "成就",
+      "id": "鱼种ID",
+      "name": "鱼种名称",
+      "prize": "奖励",
+      "tag": "标签",
+      "trust": "信任"
+    },
+    "FishDiffCfg": {
+      "diff": "难度",
+      "freq": "频率",
+      "id": "ID",
+      "progressAddSpeed": "进度增加速度",
+      "progressDelSpeed": "进度减少速度",
+      "sigma": "标准差",
+      "speed": "速度",
+      "time": "时间",
+      "userBackSpeed": "玩家后退速度",
+      "userForwardSpeed": "玩家前进速度",
+      "width": "宽度"
+    },
+    "TripSpotCfg": {
+      "effect": "游览效果",
+      "evtId": "事件ID",
+      "id": "景点ID",
+      "name": "景点名称",
+      "star": "星级",
+      "type": "景点类型"
+    },
+    "TripTypeCfg": {
+      "bgColor": "背景颜色",
+      "id": "类型ID",
+      "name": "类型名称",
+      "outlineColor": "描边颜色"
+    },
+    "TripLevelCfg": {
+      "attr": "属性",
+      "costEnergy": "消耗精力",
+      "costMoney": "消耗金钱",
+      "costTrust": "消耗信任",
+      "exp": "经验",
+      "id": "等级ID",
+      "type": "类型"
+    },
+    "TripEffectCfg": {
+      "desc": "描述",
+      "effect": "效果",
+      "id": "ID",
+      "star": "星级"
+    },
+    "ExpoSiteCfg": {
+      "evt": "游览事件",
+      "hour": "耗时",
+      "icon": "图标",
+      "id": "展馆ID",
+      "name": "展馆名称",
+      "points": "积分"
+    },
+    "ExpoAttrCfg": {
+      "attrId": "属性",
+      "icon": "图标",
+      "id": "ID",
+      "name": "名称",
+      "value": "数值"
+    },
+    "ExpoEvtCfg": {
+      "evtId": "事件ID",
+      "id": "ID"
+    },
+    "ClubActivityCfg": {
+      "cond": "触发条件",
+      "cost": "消耗",
+      "department": "所属部门",
+      "desc": "描述",
+      "effect": "效果",
+      "id": "活动ID",
+      "name": "活动名称"
+    },
+    "ClubMemberCfg": {
+      "attrLv": "属性等级",
+      "headId": "头像ID",
+      "id": "成员ID",
+      "name": "成员名称"
+    },
+    "ClubDepartmentCfg": {
+      "attr": "属性",
+      "desc": "描述",
+      "effect": "效果",
+      "effectTips": "效果提示",
+      "id": "部门ID",
+      "name": "部门名称",
+      "type": "类型"
+    },
+    "ClubDailyCfg": {
+      "attr": "属性",
+      "cond": "条件",
+      "cost": "消耗",
+      "desc": "描述",
+      "doingTxt": "进行中文本",
+      "effect": "效果",
+      "icon": "图标",
+      "id": "ID",
+      "name": "名称"
+    },
+    "ClueRumorCfg": {
+      "cond": "条件",
+      "cost": "消耗",
+      "desc": "描述",
+      "effect": "效果",
+      "id": "线索ID",
+      "txt": "线索文本",
+      "weight": "权重"
+    },
+    "ClubMemeberCntCfg": {
+      "cnt": "成员数量",
+      "id": "ID",
+      "need": "需要数量"
+    },
+    "ClubFundsCfg": {
+      "cost": "消耗",
+      "funds": "经费",
+      "id": "ID",
+      "trustMulCost": "信任倍率消耗"
+    },
+    "DIYCfg": {
+      "cost": "消耗",
+      "demand": "制作前提",
+      "icon": "图标",
+      "id": "作品ID",
+      "lv": "等级",
+      "unlock": "解锁条件"
+    },
+    "DIYRankCfg": {
+      "bgColor": "背景颜色",
+      "bgUrl": "背景图",
+      "cost": "消耗",
+      "effect": "效果",
+      "id": "评级ID",
+      "txtcolor": "文本颜色"
+    },
+    "HandicraftMiniGameCfg": {
+      "children": "子部件",
+      "icon": "图标",
+      "id": "ID",
+      "offset": "偏移",
+      "points": "拼装点",
+      "type": "类型"
+    },
+    "BirthdayPaintCfg": {
+      "answer": "答案",
+      "cond": "条件",
+      "id": "题目ID",
+      "img": "题目图片",
+      "npc": "人物",
+      "tips": "提示",
+      "value": "分值",
+      "wrongs": "错误选项"
+    },
+    "LineMatchMinigameCfg": {
+      "id": "ID",
+      "lefts": "左列",
+      "rights": "右列",
+      "time": "时间",
+      "title": "标题"
+    },
+    "BirthdayPaintGuessCfg": {
+      "guessTxts": "猜测文本",
+      "id": "ID",
+      "rate": "比例",
+      "resultTxts": "结果文本"
+    },
+    "BirthdayRewardCfg": {
+      "id": "ID",
+      "item": "奖励物品"
+    },
+    "BirthdayLvCfg": {
+      "id": "等级ID",
+      "target": "目标值",
+      "txt": "文本"
+    },
+    "BirthdayScoreCfg": {
+      "add": "加分",
+      "id": "ID"
+    },
+    "KZoneAvatarCfg": {
+      "id": "头像ID",
+      "icon": "头像图片",
+      "state": "状态",
+      "type": "类型"
+    },
+    "ModFaceCfg": {
+      "icon": "表情图标",
+      "icon_xx": "表情图标(小)",
+      "id": "表情ID",
+      "name": "表情名称",
+      "photobooth": "拍照机资源"
+    },
+    "PaperCfg": {
+      "alignment": "对齐方式",
+      "content": "纸条内容",
+      "id": "纸条ID",
+      "name": "名称",
+      "scale": "缩放",
+      "type": "纸条类型"
     }
   },
   "game_dicts": {

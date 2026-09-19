@@ -15,13 +15,18 @@
 #
 # 实现：从 assemble_macos 产出的 .app 拆出三份 payload 根（gui / core /
 # officialpack），分别 pkgbuild，再 productbuild 按 distribution.xml 的
-# choice 定义合成带勾选页的安装包；拆包前对 .app 副本做 ad-hoc 重签
-# （与 DMG 一致）。产物文件名固定，供 CI 归档：
+# choice 定义合成带勾选页的安装包；拆包前对 .app 副本做由内向外 ad-hoc 重签
+# （与 DMG 一致，不用 --deep）。产物文件名固定，供 CI 归档：
 #   <输出目录>/student-age-editor-<版本>-macos.pkg
 #
 # 注意：
-# - 完全非交互，供 GitHub Actions macos-14 调用；除 codesign 警告外
-#   任何失败均非 0 退出。
+# - PKG 把 .app 拆成 core/gui/officialpack 三份 payload 分别安装再合并。默认
+#   全选安装时，合并出的文件集合与构建期签名时一致，封印有效；但用户若取消
+#   勾选 officialpack，合并结果会缺少官方资源包、封印随之失效——这属于用户
+#   自选裁剪的已知边界，届时按末尾提示用 xattr 去隔离即可（不做安装后重签：
+#   那需要在用户机上以 root 调用 codesign，未装 Xcode 命令行工具时会弹出
+#   系统安装提示，对普通用户是更差的体验）。
+# - 完全非交互，供 GitHub Actions macos-14 调用；任何失败均非 0 退出。
 # - 本脚本须在 macOS 上运行（依赖 pkgbuild/productbuild/codesign/
 #   PlistBuddy）；仓库 Windows 宿主仅做静态检查。
 # - 本文件必须保持 LF 行尾。
@@ -53,6 +58,69 @@ abs_path() {
         /*) printf '%s\n' "$1" ;;
         *)  printf '%s\n' "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")" ;;
     esac
+}
+
+# Release.entitlements 相对仓库根（脚本位于 packaging/macos/）
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENTITLEMENTS="$REPO_ROOT/frontend/macos/Runner/Release.entitlements"
+
+# 按魔数判断是否为 Mach-O（可执行/动态库）：codesign 对普通文本文件会报错，
+# 故 Contents/MacOS 下仅签 Mach-O（backend 三件套等），跳过使用说明等附属文件。
+is_macho() {
+    local magic
+    magic="$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')"
+    case "$magic" in
+        feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 由内向外 ad-hoc 重签 .app 并校验封印（不用已废弃且对 Flutter 嵌套
+# Frameworks 不可靠的 --deep）。失败即终止构建。
+resign_app() {
+    local app="$1"
+    local macos_dir="$app/Contents/MacOS"
+    local frameworks="$app/Contents/Frameworks"
+    local main_exe item sub entry f
+
+    # PlistBuddy 为 macOS 自带；plutil 作兜底，避免取不到主程序名时把它当
+    # 普通嵌套组件单独签一遍
+    main_exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+                "$app/Contents/Info.plist" 2>/dev/null \
+                || plutil -extract CFBundleExecutable raw \
+                         "$app/Contents/Info.plist" 2>/dev/null || true)"
+
+    if [ -d "$frameworks" ]; then
+        for item in "$frameworks"/*.framework "$frameworks"/*.dylib; do
+            [ -e "$item" ] || continue
+            codesign --force --sign - "$item" || die "嵌套组件签名失败：$item"
+        done
+    fi
+    for sub in Helpers XPCServices PlugIns; do
+        [ -d "$app/Contents/$sub" ] || continue
+        for entry in "$app/Contents/$sub"/*; do
+            [ -e "$entry" ] || continue
+            codesign --force --sign - "$entry" || die "嵌套组件签名失败：$entry"
+        done
+    done
+    if [ -d "$macos_dir" ]; then
+        for f in "$macos_dir"/*; do
+            [ -f "$f" ] || continue
+            [ -L "$f" ] && continue
+            [ "$(basename "$f")" = "$main_exe" ] && continue
+            is_macho "$f" || continue
+            codesign --force --sign - "$f" || die "Contents/MacOS 组件签名失败：$f"
+        done
+    fi
+
+    # 分开写而非数组拼接：macOS 自带 bash 3.2 在 set -u 下展开空数组会报错
+    if [ -f "$ENTITLEMENTS" ]; then
+        codesign --force --sign - --entitlements "$ENTITLEMENTS" "$app" \
+            || die "app 本体签名失败：$app"
+    else
+        codesign --force --sign - "$app" || die "app 本体签名失败：$app"
+    fi
+    codesign --verify --strict "$app" || die "签名封印校验失败：$app"
 }
 
 # ----------------------------- [1/4] 参数解析与校验 -----------------------------
@@ -118,11 +186,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-echo "[2/4] 拷贝 .app 副本并 ad-hoc 重签 ..."
+echo "[2/4] 拷贝 .app 副本并 ad-hoc 重签（由内向外，不用 --deep）..."
 cp -R "$APP_PATH" "$WORK_DIR/app.app"
-if ! codesign --force --deep --sign - "$WORK_DIR/app.app"; then
-    echo "[警告] ad-hoc 重签失败，继续打包；安装后首次打开可能被拦（右键 -> 打开）。" >&2
+# 使用说明内嵌进 Contents/MacOS（与 Windows 通道对齐）。必须在重签之前放入：
+# 签名封印覆盖 bundle 全部内容，重签后新增文件会使封印失效、Gatekeeper 报
+# 「已损坏」。
+if [ -f "$(dirname "$APP_PATH")/使用说明.txt" ]; then
+    cp "$(dirname "$APP_PATH")/使用说明.txt" \
+       "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt"
 fi
+resign_app "$WORK_DIR/app.app"
 
 # 拆出三个 payload 根（dist 版 .app 的完整内容由 gui + core + officialpack 合并还原）
 # gui：整个 .app 去掉 native 三件套/official_pack（aa_scan 可选）
@@ -146,8 +219,9 @@ cp -R "$WORK_DIR/app.app/Contents/MacOS/backend" \
       "$WORK_DIR/app.app/Contents/MacOS/backend_tui" "$CORE_ROOT/Contents/MacOS/"
 [ -f "$WORK_DIR/app.app/Contents/MacOS/aa_scan" ] && \
     cp "$WORK_DIR/app.app/Contents/MacOS/aa_scan" "$CORE_ROOT/Contents/MacOS/"
-if [ -f "$(dirname "$APP_PATH")/使用说明.txt" ]; then
-    cp "$(dirname "$APP_PATH")/使用说明.txt" "$CORE_ROOT/Contents/MacOS/使用说明.txt"
+# 使用说明已在上方重签前放入 app.app，随 core payload 落盘
+if [ -f "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt" ]; then
+    cp "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt" "$CORE_ROOT/Contents/MacOS/使用说明.txt"
 fi
 # officialpack：仅官方资源扩展包
 OP_ROOT="$WORK_DIR/op_root"
@@ -213,6 +287,8 @@ productbuild --distribution "$DIST_FILE" --package-path "$WORK_DIR/pkgs" \
 
 SIZE="$(du -h "$PKG_OUT" | cut -f1)"
 echo "完成：$PKG_OUT ($SIZE)"
-echo "提示：PKG 未签名，首次打开请右键 -> 打开；"
-echo "      或在\"系统设置 -> 隐私与安全性\"中允许。"
+echo "提示：PKG 未签名（含内部 .app 为 ad-hoc 签名，未做 Apple 公证）。"
+echo "      首次打开若提示「无法验证开发者」或「已损坏，无法打开」，请在"
+echo "      终端执行下面一行，再双击打开："
+echo "        xattr -dr com.apple.quarantine \"/Applications/$APP_NAME.app\""
 exit 0
