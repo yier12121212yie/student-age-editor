@@ -392,10 +392,14 @@ def _copy_native_backend_bundle(dst_dir, bin_subdir=""):
     else:
         print("    提示：本次未随包 %s（AA 资源扫描工具缺失，"
               "不影响编辑器运行；重扫资源请用仓库内 python 工具）。" % aa_name)
+    # macOS .app：数据目录必须放 Contents/Resources（codesign 把 Contents/MacOS
+    # 下的子目录当嵌套代码，assets/ 目录会导致签名失败）。后端 assets.cpp 的
+    # 逐级上探含 <dir>/Resources/assets 候选，能自动发现。
+    assets_target = (os.path.join(dst_dir, "Contents", "Resources", "assets")
+                     if bin_subdir else os.path.join(target, "assets"))
     if os.path.isdir(NATIVE_ASSETS_DIR):
-        shutil.copytree(NATIVE_ASSETS_DIR, os.path.join(target, "assets"),
-                        dirs_exist_ok=True)
-    if not os.path.isfile(os.path.join(target, "assets", "dicts.json")):
+        shutil.copytree(NATIVE_ASSETS_DIR, assets_target, dirs_exist_ok=True)
+    if not os.path.isfile(os.path.join(assets_target, "dicts.json")):
         raise FileNotFoundError(
             "发行目录缺少 assets/dicts.json（native/assets 不完整？）："
             "词典缺失会让说话人候选与剧本导入的角色识别全部失效")

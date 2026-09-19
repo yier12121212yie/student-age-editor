@@ -34,9 +34,13 @@ std::vector<std::string> candidate_paths(const std::string& filename) {
     if (!exe.empty()) {
         std::string dir = exe;
         // Walk up from build[-group]/bin looking for a sibling native/assets
-        // (repo layout) or assets dir.
+        // (repo layout) or assets dir. The Resources/assets probe covers the
+        // macOS .app bundle: the exe lives in Contents/MacOS while data dirs
+        // must be sealed under Contents/Resources (codesign rejects data
+        // directories inside MacOS).
         for (int i = 0; i < 7 && !dir.empty(); ++i) {
             dirs.push_back(paths::join(dir, "assets"));
+            dirs.push_back(paths::join(paths::join(dir, "Resources"), "assets"));
             dirs.push_back(paths::join(paths::join(dir, "native"), "assets"));
             std::string parent = paths::dirname(dir);
             if (parent == dir) break;

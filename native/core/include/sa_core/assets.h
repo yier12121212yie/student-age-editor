@@ -23,8 +23,9 @@ namespace assets {
 //   2. $EDITOR_ASSETS_ROOT/<filename>
 //   3. $SA_NATIVE_SOURCE_DIR/assets (plus parent/assets — the var may point
 //      at native/tests)
-//   4. exe_dir and up to 7 walk-up levels, each probing <dir>/assets then
-//      <dir>/native/assets (covers build-<group>/bin repo layouts)
+//   4. exe_dir and up to 7 walk-up levels, each probing <dir>/assets,
+//      <dir>/Resources/assets (macOS .app bundle) then <dir>/native/assets
+//      (covers build-<group>/bin repo layouts)
 //   5. cwd-relative assets/ and native/assets/
 // Exposed so each loader keeps its own per-file parse/fallback behaviour.
 std::vector<std::string> candidate_paths(const std::string& filename);
