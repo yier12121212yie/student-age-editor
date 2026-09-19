@@ -95,3 +95,4 @@ Linux / macOS `native/build.sh`（构建 `backend` / `backend_cli` / `backend_tu
   `xattr -dr com.apple.quarantine "/Applications/学生时代模组编辑器.app"`
   即可，详见 `packaging/notes/使用说明-macos.txt`。需彻底免除此提示，请在 CI
   配置 Developer ID 证书与公证后再发布。
+# Bug Hunt Test
