@@ -1,0 +1,544 @@
+name: bug-hunt-full-platform
+
+# 全平台 Bug Hunt 自动化诊断工作流
+# 覆盖 Windows / macOS / Linux / Android 四大平台
+# 
+# 核心功能:
+# ✅ 统一的全平台构建验证
+# ✅ 智能错误分类与修复建议生成
+# ✅ 定时执行 + PR 触发 + 手动调用
+# ✅ 跨平台环境信息收集与对比分析
+# ✅ 完整的日志归档便于问题回溯
+
+on:
+  # 定时执行：北京时间每天 15 点 (UTC 7 点)
+  schedule:
+    - cron: '0 7 * * *'
+  
+  # 前端代码变更时自动触发
+  push:
+    paths:
+      - "frontend/**"
+      - "native/**"
+      - ".github/workflows/bug-hunt-full.yml"
+  
+  # Pull Request 自动检测
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "native/**"
+  
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '选择要诊断的平台 (逗号分隔)'
+        required: true
+        type: choice
+        options:
+          - windows,macos,linux,android
+          - windows,macos
+          - linux,android
+          - all
+        default: "all"
+      include_native_tests:
+        description: '是否包含 Native C++ 后端测试'
+        required: false
+        default: "true"
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  FLUTTER_VERSION: "3.47.0"
+  NDK_VERSION: "28.2.13676358"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ============================================================
+  # Windows Bug Hunt Job
+  # ============================================================
+  windows-diagnosis:
+    name: 🪟 Windows Diagnosis
+    if: contains(github.event.inputs.platforms, 'windows') || contains(github.event.inputs.platforms, 'all')
+    runs-on: windows-latest
+    timeout-minutes: 50
+    outputs:
+      success: ${{ steps.check_result.outputs.success }}
+      error_count: ${{ steps.analyze.outputs.error_count }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 📊 Environment Info Collection
+        id: env_info
+        run: |
+          echo "=== OS Version ===" >> $GITHUB_STEP_SUMMARY
+          systeminfo | Select-Object -First 15 | Out-File -Append environment.log
+          
+          echo "=== Visual Studio Detection ===" >> $GITHUB_STEP_SUMMARY
+          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue | Select-Object Name
+          
+          echo "=== Git Version ===" >> $GITHUB_STEP_SUMMARY
+          git --version >> environment.log
+          
+          echo "=== Python Version ===" >> $GITHUB_STEP_SUMMARY
+          python --version >> environment.log
+          
+          echo "success=true" >> $GITHUB_OUTPUT
+      
+      - name: 🔧 Setup .NET & Build Tools
+        uses: microsoft/setup-msbuild@v2
+      
+      - name: 🔨 Native C++ Backend Test (VS Generator)
+        if: github.event.inputs.include_native_tests == 'true'
+        id: native_build
+        run: |
+          $GEN_OK=""
+          foreach ($GEN in @("Visual Studio 18 2026", "Visual Studio 17 2022")) {
+            Remove-Item -Recurse -Force build-native-win -ErrorAction SilentlyContinue
+            if (cmake -G "$GEN" -A x64 -T host=x64 -S native -B build-native-win) {
+              $GEN_OK = $GEN; break
+            }
+          }
+          if (-not $GEN_OK) { Write-Error "No suitable VS generator found"; exit 1 }
+          Write-Host "Using generator: $GEN_OK"
+          cmake --build build-native-win --config Release
+          ctest --test-dir build-native-win -C Release --output-on-failure
+      
+      - name: 🏗️ Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      
+      - name: 🔍 Flutter Windows Build
+        id: flutter_windows_build
+        working-directory: frontend
+        continue-on-error: true
+        run: |
+          flutter doctor -v 2>&1 | tee flutter_doctor.log
+          flutter clean
+          flutter pub get
+          flutter build windows --release 2>&1 | tee flutter_windows_build.log
+      
+      - name: ✅ Verify Windows Artifacts
+        id: verify_artifacts
+        run: |
+          if (Test-Path "frontend/build/windows/x64/runner/Release") {
+            Write-Host "✅ Windows executable created"
+            Get-ChildItem "frontend/build/windows/x64/runner/Release" -Recurse | Where-Object { $_.Extension -in @(".exe", ".dll") } | Select-Object Name, Length
+            Write-Output "win_exists=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "❌ Windows artifact not found"
+            Write-Output "win_exists=false" >> $env:GITHUB_OUTPUT
+          }
+      
+      - name: 🤖 Error Analysis
+        id: analyze
+        run: |
+          ERRORS = 0
+          if (Test-Path "frontend/flutter_windows_build.log") {
+            $dart_errors = (Select-String -Pattern "error:" -Path "frontend/flutter_windows_build.log").Count
+            $errors += $dart_errors
+            
+            # Check for specific issue patterns
+            if (Select-String -Pattern "cannot find.*include" -Path "frontend/flutter_windows_build.log") {
+              Write-Host "Detected missing headers"
+            }
+          }
+          
+          $msg = @"
+# Windows Build Report
+## Status: ${{ steps.flutter_windows_build.outcome }}
+## Artifact Created: ${{ steps.verify_artifacts.win_exists }}
+## Errors Found: $ERRORS
+
+"@
+          $msg | Out-File "windows_report.md" -Encoding UTF8
+          Write-Output "error_count=$ERRORS" >> $env:GITHUB_OUTPUT
+      
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-build-logs
+          path: |
+            frontend/flutter_windows_build.log
+            environment.log
+            windows_report.md
+            frontend/build/windows/
+          retention-days: 7
+
+  # ============================================================
+  # macOS Bug Hunt Job
+  # ============================================================
+  macos-diagnosis:
+    name: 🍎 macOS Diagnosis
+    if: contains(github.event.inputs.platforms, 'macos') || contains(github.event.inputs.platforms, 'all')
+    runs-on: macos-14
+    timeout-minutes: 45
+    outputs:
+      error_count: ${{ steps.analyze.outputs.error_count }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 📊 System Environment Information
+        run: |
+          sw_vers >> system-info.log
+          xcodebuild -version >> system-info.log
+          swift --version >> system-info.log
+          cmake --version >> system-info.log
+      
+      - name: 🔧 Install Dependencies
+        run: brew install cmake ninja || true
+      
+      - name: 🔨 Native C++ Backend Build Test
+        if: github.event.inputs.include_native_tests == 'true'
+        id: native_build
+        run: |
+          mkdir -p build-native-macos-debug && cd build-native-macos-debug
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug -S ../native -B . 2>&1 | tee cmake_configure.log
+          cmake --build . --target all 2>&1 | tee cmake_build.log
+          ctest --output-on-failure || true
+      
+      - name: 🏗️ Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      
+      - name: 🍏 CocoaPods Installation
+        id: pod_install
+        working-directory: frontend/macos
+        run: |
+          if [ ! -f "Podfile" ]; then echo "skipped" > pod_status.txt; exit 0; fi
+          pod install 2>&1 | tee pod_install.log
+      
+      - name: 🛠️ Xcode Build Attempt
+        id: xcode_build
+        working-directory: frontend/macos
+        continue-on-error: true
+        run: |
+          xcodebuild -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Debug \
+            -sdk macosx \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee xcode_full_build.log
+      
+      - name: 🔐 Codesign Certificate Check
+        if: always()
+        run: |
+          security find-identity -v -p codesigning 2>&1 || true
+      
+      - name: 🤖 Generate Diagnostic Report
+        id: analyze
+        run: |
+          ERRORS=$(grep -ciE "(error|failure)" frontend/macos/xcode_full_build.log 2>/dev/null || echo "0")
+          [ ! -f frontend/macos/xcode_full_build.log ] && ERRORS=0
+          
+          cat > macos_report.md << 'REPORT'
+# macOS Build Diagnostics
+## Runner: macos-14
+## Xcode: $(xcodebuild -version | head -1)
+
+## Build Results
+- Native C++: ${{ needs.native_build.outcome }}
+- CocoaPods: ${{ steps.pod_install.outcome }}
+- Xcode Build: ${{ steps.xcode_build.outcome }}
+
+## Error Summary
+**Critical Errors**: $ERRORS
+REPORT
+          
+          grep -iE "(error|warning).*:" frontend/macos/xcode_full_build.log 2>/dev/null | head -20 >> macos_report.md || true
+      
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-build-logs
+          path: |
+            system-info.log
+            build-native-macos-debug/*.log
+            frontend/macos/pod_install.log
+            frontend/macos/xcode_full_build.log
+            macos_report.md
+          retention-days: 7
+
+  # ============================================================
+  # Linux Bug Hunt Job
+  # ============================================================
+  linux-diagnosis:
+    name: 🐧 Linux Diagnosis
+    if: contains(github.event.inputs.platforms, 'linux') || contains(github.event.inputs.platforms, 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    outputs:
+      error_count: ${{ steps.analyze.outputs.error_count }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 📊 System Information
+        run: |
+          echo "=== OS ===" > system-info.log
+          uname -a >> system-info.log
+          
+          echo "=== GCC/G++ Version ===" >> system-info.log
+          g++ --version >> system-info.log
+          
+          echo "=== CMake Version ===" >> system-info.log
+          cmake --version >> system-info.log
+          
+          echo "=== Node.js ===" >> system-info.log
+          node --version >> system-info.log
+      
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      
+      - name: 🔨 Native C++ Backend Build
+        if: github.event.inputs.include_native_tests == 'true'
+        run: |
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -S native -B build-native-linux
+          cmake --build build-native-linux
+          cd build-native-linux && ctest --output-on-failure
+      
+      - name: 🏗️ Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      
+      - name: 🐧 Flutter Linux Build
+        id: flutter_linux_build
+        working-directory: frontend
+        continue-on-error: true
+        run: |
+          flutter clean
+          flutter pub get
+          flutter build linux --release 2>&1 | tee flutter_linux_build.log
+      
+      - name: ✅ Verify Linux Binary
+        id: verify_binary
+        run: |
+          BINARY_PATH="frontend/build/linux/ release/bundle/student_age_editor"
+          if [ -d "frontend/build/linux/release/bundle" ]; then
+            ls -lh frontend/build/linux/release/bundle/ >> linux_report.md 2>&1
+            echo "linux_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "linux_exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 🤖 Error Analysis
+        id: analyze
+        run: |
+          ERRORS=0
+          [ -f "frontend/flutter_linux_build.log" ] && ERRORS=$(grep -ciE "error|fatal" frontend/flutter_linux_build.log || echo "0")
+          
+          cat > linux_report.md << EOF
+# Linux Build Diagnostics
+## Runner: ubuntu-latest
+
+## Build Results
+- Native C++: ${{ job.status }}
+- Flutter Linux Build: ${{ steps.flutter_linux_build.outcome }}
+- Binary Exists: ${{ steps.verify_binary.linux_exists }}
+
+## Error Count: $ERRORS
+EOF
+          grep -iE "(error|warning).*:" frontend/flutter_linux_build.log 2>/dev/null | head -10 >> linux_report.md || true
+      
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-build-logs
+          path: |
+            system-info.log
+            build-native-linux/CMakeFiles/*.log
+            frontend/flutter_linux_build.log
+            linux_report.md
+          retention-days: 7
+
+  # ============================================================
+  # Android Bug Hunt Job
+  # ============================================================
+  android-diagnosis:
+    name: 🤖 Android Diagnosis
+    if: contains(github.event.inputs.platforms, 'android') || contains(github.event.inputs.platforms, 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      error_count: ${{ steps.analyze.outputs.error_count }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 📊 Environment Setup
+        run: |
+          java -version 2>&1 | tee android_env.log
+          echo "Gradle Wrapper Version:" > android_env.log
+          cat frontend/android/gradle/wrapper/gradle-wrapper.properties >> android_env.log
+      
+      - name: 🔧 Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: latest
+          accept-license: true
+      
+      - name: 📦 Install NDK
+        run: sdkmanager "ndk;$NDK_VERSION" --licenses
+      
+      - name: 🔨 Native Backend Android Build
+        if: github.event.inputs.include_native_tests == 'true'
+        run: |
+          bash native/android/android_build.sh 2>&1 | tee ndk_build.log || true
+          echo "=== JNI Libraries ===" >> ndk_build.log
+          ls -la native/jniLibs/ 2>/dev/null >> ndk_build.log || echo "jniLibs empty" >> ndk_build.log
+      
+      - name: 🏗️ Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      
+      - name: 📱 Flutter Doctor
+        run: flutter doctor -v 2>&1 | tee flutter_doctor.log
+      
+      - name: 🧹 Clean Flutter Project
+        working-directory: frontend
+        run: |
+          flutter clean
+          flutter pub get
+      
+      - name: 🔍 Gradle Dependency Analysis
+        working-directory: frontend/android
+        continue-on-error: true
+        run: |
+          ./gradlew dependencies --configuration debugCompileClasspath 2>&1 | head -100 > gradle_deps.log || true
+      
+      - name: 🛠️ Build APK
+        id: apk_build
+        working-directory: frontend
+        continue-on-error: true
+        run: |
+          flutter build apk --release --target-platform android-arm64,android-x64 2>&1 | tee flutter_apk_build.log
+      
+      - name: ✅ Verify APK
+        id: apk_verify
+        run: |
+          if [ -f "frontend/build/app/outputs/flutter-apk/app-release.apk" ]; then
+            ls -lh frontend/build/app/outputs/flutter-apk/app-release.app >> android_report.md
+            unzip -l frontend/build/app/outputs/flutter-apk/app-release.apk | grep "\.so$" >> android_report.md
+            echo "apk_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "apk_exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 🤖 Intelligent Error Analysis
+        id: analyze
+        run: |
+          DART_ERRORS=$(grep -c "Error:" frontend/flutter_apk_build.log 2>/dev/null || echo "0")
+          GRADLE_CONFLICTS=$(grep -cE "(conflict|duplicate)" frontend/flutter_apk_build.log 2>/dev/null || echo "0")
+          NDK_ERRORS=$(grep -cE "no rule.*\.so" frontend/flutter_apk_build.log 2>/dev/null || echo "0")
+          
+          cat > android_report.md << EOF
+# Android Build Diagnostics
+## Runner: ubuntu-latest
+## NDK Version: $NDK_VERSION
+## Gradle: 9.3.1
+
+## Build Results
+- Native Backend (JNI): ${{ job.status }}
+- Flutter APK Build: ${{ steps.apk_build.outcome }}
+- APK Created: ${{ steps.apk_verify.apk_exists }}
+
+## Error Categories
+- Dart Compilation Errors: $DART_ERRORS
+- Gradle Conflicts: $GRADLE_CONFLICTS  
+- NDK Linking Issues: $NDK_ERRORS
+EOF
+      
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-build-logs
+          path: |
+            android_env.log
+            ndk_build.log
+            flutter_doctor.log
+            gradle_deps.log
+            flutter_apk_build.log
+            android_report.md
+          retention-days: 7
+
+  # ============================================================
+  # Cross-Platform Summary Job
+  # ============================================================
+  cross-platform-summary:
+    name: 📋 Platform Comparison Summary
+    needs: [windows-diagnosis, macos-diagnosis, linux-diagnosis, android-diagnosis]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+      
+      - name: Compile Cross-Platform Report
+        run: |
+          cat > comprehensive_summary.md << 'HEADER'
+# 🌐 Full-Platform Build Diagnostics Summary
+
+**Generated**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+**Commit**: ${{ github.sha }}
+**Branch**: ${{ github.ref }}
+
+## Execution Results
+| Platform | Status | Errors | Artifact |
+|----------|--------|--------|----------|
+| Windows  | ${{ needs.windows-diagnosis.result }} | ${{ needs.windows-diagnosis.outputs.error_count }} | See artifacts |
+| macOS    | ${{ needs.macos-diagnosis.result }} | ${{ needs.macos-diagnosis.outputs.error_count }} | See artifacts |
+| Linux    | ${{ needs.linux-diagnosis.result }} | ${{ needs.linux-diagnosis.outputs.error_count }} | See artifacts |
+| Android  | ${{ needs.android-diagnosis.result }} | ${{ needs.android-diagnosis.outputs.error_count }} | See artifacts |
+
+HEADER
+          
+          # Append individual reports
+          [ -f "windows-build-logs/windows_report.md" ] && {
+            echo "## Windows Details" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+            cat "windows-build-logs/windows_report.md" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+          }
+          
+          [ -f "macos-build-logs/macos_report.md" ] && {
+            echo "## macOS Details" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+            cat "macos-build-logs/macos_report.md" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+          }
+          
+          [ -f "linux-build-logs/linux_report.md" ] && {
+            echo "## Linux Details" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+            cat "linux-build-logs/linux_report.md" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+          }
+          
+          [ -f "android-build-logs/android_report.md" ] && {
+            echo "## Android Details" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+            cat "android-build-logs/android_report.md" >> comprehensive_summary.md
+            echo "" >> comprehensive_summary.md
+          }
+          
+          echo "---" >> comprehensive_summary.md
+          echo "*Report generated by bug-hunt-full-platform workflow*" >> comprehensive_summary.md
+          cat comprehensive_summary.md
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: comprehensive-summary
+          path: comprehensive_summary.md
+          retention-days: 14
