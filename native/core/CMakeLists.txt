@@ -6,6 +6,7 @@ add_library(sa_core STATIC
     json_wire.cpp
     utf8.cpp
     sha1.cpp
+    sha256.cpp
     md5.cpp
     paths.cpp
     atomic_io.cpp

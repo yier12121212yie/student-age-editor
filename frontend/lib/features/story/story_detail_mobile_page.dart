@@ -746,7 +746,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
         Row(
           children: [
             Icon(
-              FluentIcons.split_group_24_regular,
+              FluentIcons.arrow_split_24_regular,
               size: 16,
               color: AppTheme.palette.textSecondary,
             ),
@@ -978,7 +978,6 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
             color: AppTheme.palette.border,
             strokeAlign: BorderSide.strokeAlignCenter,
           ),
-          border: Border.all(color: AppTheme.palette.border, width: 1.5),
         ),
         child: Row(
           children: [
@@ -1090,30 +1089,75 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
     return roles.isNotEmpty ? roles.join('、') : (talk.roleName.isNotEmpty ? talk.roleName : 'NPC');
   }
 
+  // 常用占位符快捷按钮的候选项（点击后插入到光标所在对白内容末尾）。
+  static const List<String> _placeholderSuggestions = [
+    '\${speaker}',
+    '\${name}',
+    '\${role}',
+    '\${time}',
+  ];
+
+  // 「后续跳转」小芯片：展示 nextTalk/nextTalk2 指向的目标 ID。
+  Widget _jumpChip(String targetId, String tooltip, {bool isError = false}) {
+    final color = isError
+        ? AppTheme.palette.danger
+        : AppTheme.palette.statusOk;
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.arrow_forward, size: 10, color: color),
+            const SizedBox(width: 3),
+            Text(
+              targetId,
+              style: TextStyle(
+                fontSize: 10,
+                color: color,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _addNewTalk([int? insertIndex]) async {
     await MobileHaptic.mediumImpact();
-    
-    final newId = insertTalkId(
-      _talks.isEmpty ? null : _talks.last.id,
-      _event!.id,
-      {...for (var t in _talks) t.id: t}.map((k, v) => k: v.toJson()),
-    );
-    
+
+    // 锚点：插入时为前驱节点，追加时为尾节点；列表为空则以事件 ID 为基准。
+    final anchorIdx = insertIndex != null ? insertIndex - 1 : _talks.length - 1;
+    final anchorId = anchorIdx >= 0 ? _talks[anchorIdx].id : _event!.id;
+    final newId = insertTalkId(anchorId, {for (var t in _talks) t.id: t});
+
     if (newId.isEmpty) return;
-    
+
     setState(() {
       final newTalk = MobileTalkCfg(
         id: newId,
         roleIds: [],
         roleName: '',
         content: '【新插入的对话】',
-        nextTalk: insertIndex != null && insertIndex > 0 
-            ? [newTalk] 
-            : (_talks.isNotEmpty ? [_talks.first.id] : []),
+        nextTalk: [],
         nextTalk2: [],
         options: [],
       );
-      
+
+      // 新节点继承前驱的 nextTalk 链，前驱改指新节点（insertTalkId 文档语义）。
+      if (anchorIdx >= 0) {
+        final prev = _talks[anchorIdx];
+        newTalk.nextTalk = List<dynamic>.from(prev.nextTalk);
+        prev.nextTalk = [newId];
+      }
+
       if (insertIndex != null) {
         _talks.insert(insertIndex, newTalk);
       } else {
@@ -1416,51 +1460,3 @@ List<dynamic> ensureList(dynamic v) {
   if (v is List) return v.map((e) => e.toString()).toList();
   return [v.toString()];
 }
-
-  // 添加空白选项行占位符
-  Widget _buildAddOptionRow(int? insertIndex) {
-    return InkWell(
-      onTap: () => _addNewOption(insertIndex),
-      borderRadius: BorderRadius.circular(8),
-      splashColor: AppTheme.palette.hover.withValues(alpha: 0.3),
-      highlightColor: AppTheme.palette.hover.withValues(alpha: 0.5),
-      child: Container(
-        height: 44,
-        padding: EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          color: AppTheme.palette.bgDeep.withValues(alpha: 0.3),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppTheme.palette.border),
-        ),
-        child: Row(
-          children: [
-            Icon(FluentIcons.add_24_regular, size: 16, color: AppTheme.palette.textMuted),
-            SizedBox(width: 12),
-            Text('添加空白选项', style: TextStyle(fontSize: 12, color: AppTheme.palette.textMuted)),
-          ],
-        ),
-      ),
-    );
-  }
-  
-  Future<void> _addNewOption([int? insertIndex]) async {
-    await MobileHaptic.lightImpact();
-    
-    final prefix = _event!.id;
-    final newOptId = allocOptionId(prefix, {_options.map((o) => o.id)});
-    
-    if (newOptId == null) {
-      showDialog(context: context, builder: (c) => AlertDialog(
-        title: Text('已达上限'),
-        content: Text('一个事件最多支持 99 个选项'),
-        actions: [fluent.Button(onPressed: () => Navigator.pop(c), child: Text('确定'))],
-      ));
-      return;
-    }
-    
-    setState(() {
-      final opt = MobileOptionCfg(id: newOptId, text: '');
-      if (insertIndex != null) _options.insert(insertIndex, opt);
-      else _options.add(opt);
-    });
-  }

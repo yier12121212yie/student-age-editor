@@ -43,20 +43,19 @@ class TombstoneNodeWidget extends StatelessWidget {
       height: height,
       child: Container(
         decoration: BoxDecoration(
-          color: fluent.Theme.of(context).brightness == brightMode.light
+          color: Theme.of(context).brightness == Brightness.light
               ? const Color(0xFFE0E0E0) // Light gray for light mode
               : const Color(0xFF424242), // Dark gray for dark mode
           borderRadius: BorderRadius.circular(4.0),
           border: Border.all(
             color: Colors.grey.shade500.withOpacity(0.3),
             width: 1.0,
-            style: BorderSideStyle.strokeAlignCenter,
           ),
         ),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            onTap: onRestore ?? _handleDelete,
+            onTap: onRestore ?? (() => _handleDelete(context)),
             borderRadius: BorderRadius.circular(4.0),
             hoverColor: Colors.grey.shade300.withOpacity(0.2),
             child: Padding(
@@ -104,30 +103,33 @@ class TombstoneNodeWidget extends StatelessWidget {
   }
 
   /// Handle deletion click with confirmation dialog
-  Future<void> _handleDelete() async {
+  Future<void> _handleDelete(BuildContext context) async {
     try {
       final success = await SaveService.instance.deleteRecord(
         cfgName: 'TalkCfg', // TODO: Make configurable
         id: id!,
       );
 
-      if (success && mounted) {
-        fluent.dialog.Dialogbox.basic(
-          title: const Text('恢复删除'),
-          content: const Text('确定要恢复这个被删除的对话节点吗？'),
-          actions: [
-            fluent.Button(
-              onPressed: () => Navigator.pop(fluent.dialog.Context.getDialogContext!),
-              child: const Text('取消'),
-            ),
-            fluent.Button(
-              onPressed: () {
-                Navigator.pop(fluent.dialog.Context.getDialogContext!);
-                // TODO: Implement restoration logic here
-              },
-              child: const Text('确定'),
-            ),
-          ],
+      if (success && context.mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('恢复删除'),
+            content: const Text('确定要恢复这个被删除的对话节点吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  onRestore?.call();
+                },
+                child: const Text('确定'),
+              ),
+            ],
+          ),
         );
       }
     } catch (e) {

@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 
@@ -78,15 +81,18 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
       await _loadCatalog();
       
       if (mounted) {
-        fluent.dialog.Dialogbox.basic(
-          title: const Text('扫描完成'),
-          content: Text('发现 ${_scanResult?['bundles_found'] ?? 0} 个 bundle，提取 ${_scanResult?['assets_extracted'] ?? 0} 个资源'),
-          actions: [
-            fluent.Button(
-              onPressed: () => Navigator.pop(fluent.dialog.Context.getDialogContext!),
-              child: const Text('确定'),
-            ),
-          ],
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('扫描完成'),
+            content: Text('发现 ${_scanResult?['bundles_found'] ?? 0} 个 bundle，提取 ${_scanResult?['assets_extracted'] ?? 0} 个资源'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
         );
       }
     } catch (e) {
@@ -94,15 +100,18 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
       setState(() => _isScanning = false);
       
       if (mounted) {
-        fluent.dialog.Dialogbox.basic(
-          title: const Text('扫描失败'),
-          content: Text('错误：${e.toString()}'),
-          actions: [
-            fluent.Button(
-              onPressed: () => Navigator.pop(fluent.dialog.Context.getDialogContext!),
-              child: const Text('关闭'),
-            ),
-          ],
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('扫描失败'),
+            content: Text('错误：${e.toString()}'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('关闭'),
+              ),
+            ],
+          ),
         );
       }
     }
@@ -165,7 +174,6 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
           fluent.Button(
             child: const Text('扫描游戏包'),
             onPressed: _isScanning ? null : _scanBundles,
-            loading: _isScanning,
           ),
         ],
       ),
@@ -193,11 +201,11 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
         iconColor = const Color(0xFF00B294); // Teal for background
         break;
       case 'audio':
-        icon = FluentIcons.music_note_24_regular;
+        icon = FluentIcons.music_note_2_24_regular;
         iconColor = const Color(0xFFF25460); // Red for audio
         break;
       default:
-        icon = FluentIcons.attachment_24_regular;
+        icon = FluentIcons.attach_24_regular;
         iconColor = Colors.grey;
     }
     
@@ -207,7 +215,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
         child: InkWell(
           onTap: () => _showAssetPreview(asset),
           borderRadius: BorderRadius.circular(8),
-          hoverColor: Theme.of(context).brightness == brightMode.light
+          hoverColor: Theme.of(context).brightness == Brightness.light
               ? Colors.grey.shade100
               : Colors.white.withOpacity(0.05),
           child: Column(
@@ -219,7 +227,11 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      name.substring(0, min(name.indexOf('_'), 15)),
+                      name.substring(
+                        0,
+                        math.min(
+                            name.contains('_') ? name.indexOf('_') : name.length,
+                            15)),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w500),
@@ -272,25 +284,29 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
   void _showAssetPreview(Map<String, dynamic> asset) {
     showDialog(
       context: context,
-      builder: (context) => fluent.dialog.Dialogbox(
+      builder: (context) => AlertDialog(
         title: Text(asset['original_name'] as String),
-        content: FutureBuilder(
-          future: _loadAssetImage(asset),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snapshot.hasError) {
-              return Text('加载失败：${snapshot.error}');
-            }
-            return Image.memory(
-              snapshot.data as List<int>,
-              fit: BoxFit.contain,
-            );
-          },
+        content: SizedBox(
+          width: 480,
+          height: 360,
+          child: FutureBuilder<List<int>>(
+            future: _loadAssetImage(asset),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                return Text('加载失败：${snapshot.error}');
+              }
+              return Image.memory(
+                Uint8List.fromList(snapshot.data ?? const <int>[]),
+                fit: BoxFit.contain,
+              );
+            },
+          ),
         ),
         actions: [
-          fluent.Button(
+          TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('关闭'),
           ),
@@ -310,17 +326,17 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
     return Column(
       children: [
         // Header toolbar
-        fluent.SegmentedButton<int>(
+        SegmentedButton<int>(
           segments: const [
-            fluent.ButtonSegment<int>(
+            ButtonSegment<int>(
               value: 0,
               label: Text('库'),
-              icon: Icon(FluentIcons.collection_24_regular),
+              icon: Icon(FluentIcons.collections_24_regular),
             ),
-            fluent.ButtonSegment<int>(
+            ButtonSegment<int>(
               value: 1,
               label: Text('扫描'),
-              icon: Icon(FluentIcons.download_24_regular),
+              icon: Icon(FluentIcons.arrow_download_24_regular),
             ),
           ],
           selected: {_selectedTabIndex},
@@ -340,25 +356,29 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                 child: Row(
                   children: [
                     Expanded(
-                      child: fluent.TextField(
-                        hint: '搜索资源...',
-                        prefix: const Icon(FluentIcons.search_24_regular),
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          hintText: '搜索资源...',
+                          prefixIcon: Icon(FluentIcons.search_24_regular),
+                          isDense: true,
+                        ),
                         onChanged: _filterResources,
                       ),
                     ),
                     const SizedBox(width: 8),
                     SizedBox(
                       width: 120,
-                      child: fluent.ComboBox<String>.readOnly(
-                        hint: '类型',
+                      child: DropdownButton<String>(
+                        value: _selectedKind,
+                        isExpanded: true,
+                        hint: const Text('类型'),
                         items: _kindOptions.map((opt) => 
-                          fluent.ComboBoxItem<String>(
+                          DropdownMenuItem<String>(
                             value: opt['value'],
-                            child: Text(opt['label']),
+                            child: Text(opt['label']!),
                           )
                         ).toList(),
-                        selected: _selectedKind,
-                        onChanged: _selectKind,
+                        onChanged: (v) { if (v != null) _selectKind(v); },
                       ),
                     ),
                   ],

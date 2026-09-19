@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/mobile_widgets.dart';
 import 'story_editor_mobile.dart';
@@ -150,7 +151,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
           ),
           // 刷新按钮
           IconButton(
-            icon: const Icon(FluentIcons.refresh_24_regular, color: Colors.white),
+            icon: const Icon(FluentIcons.arrow_sync_24_regular, color: Colors.white),
             onPressed: _loadData,
             tooltip: '刷新',
           ),
@@ -174,7 +175,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
                     setState(() => _searchQuery = value);
                     _applyFilter();
                   },
-                  autofocus: true,
+                  autoFocus: true,
                 ),
               ),
             ),
@@ -193,7 +194,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
             child: Row(
               children: [
                 Icon(
-                  FluentIcons.event_request_24_regular,
+                  FluentIcons.calendar_ltr_24_regular,
                   size: 12,
                   color: AppTheme.palette.textSecondary,
                 ),
@@ -302,7 +303,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
             Row(
               children: [
                 Icon(
-                  FluentIcons.event_request_24_regular,
+                  FluentIcons.calendar_ltr_24_regular,
                   size: 16,
                   color: AppTheme.palette.textSecondary,
                 ),
@@ -474,12 +475,8 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
   }
 
   void _toggleSearch() {
+    // 搜索框随 _showSearch 新建，MobileTextField 的 autoFocus 负责聚焦。
     setState(() => _showSearch = !_showSearch);
-    if (_showSearch) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _searchController.requestFocus();
-      });
-    }
   }
 
   void _onEventTap(MobileEvtCfg event) async {

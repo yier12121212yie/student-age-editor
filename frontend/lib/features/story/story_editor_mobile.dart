@@ -19,12 +19,14 @@ class MobileEvtCfg {
   String title; // 改为可写
   int type;
   List<dynamic> talkId;
+  String? note;
 
   MobileEvtCfg({
     required this.id,
     this.title = '',
     this.type = 0,
     this.talkId = const [],
+    this.note,
   });
 
   factory MobileEvtCfg.fromJson(Map<String, dynamic> json) {
@@ -33,6 +35,7 @@ class MobileEvtCfg {
       title: json['title']?.toString() ?? '新事件',
       type: json['type'] is int ? json['type'] : int.tryParse(json['type']?.toString() ?? '0') ?? 0,
       talkId: _normalizeList(json['talkId']),
+      note: json['note']?.toString(),
     );
   }
 
@@ -42,6 +45,7 @@ class MobileEvtCfg {
       'title': title,
       'type': type,
       'talkId': talkId.isNotEmpty ? talkId : null,
+      if (note != null && note!.isNotEmpty) 'note': note,
     };
   }
 
@@ -88,7 +92,7 @@ class MobileTalkCfg {
       nextTalk: _normalizeList(json['nextTalk']),
       nextTalk2: _normalizeList(json['nextTalk2']),
       options: (json['option'] as List?)?.map((o) {
-        if (o is Map) return MobileOptionCfg.fromJson(o);
+        if (o is Map) return MobileOptionCfg.fromJson(o.cast<String, dynamic>());
         return null;
       }).whereType<MobileOptionCfg>().toList() ?? [],
     );
@@ -175,9 +179,9 @@ class StoryDataAccess {
   /// 加载指定 Mod 的全部剧情数据
   /// 返回所有事件的列表（不含 Talk/Option 详情）
   Future<List<MobileEvtCfg>> loadEvents(String modName) async {
-    if (_isLoading) return _cacheEvents.values.toList();
+    if (_isLoading) return cacheEvents.values.toList();
 
-    setState(() => _isLoading = true);
+    _isLoading = true;
     try {
       final response = await _api.get('/api/cfg/EvtCfg');
       final data = response['data'] as Map? ?? {};
@@ -188,15 +192,13 @@ class StoryDataAccess {
         return MobileEvtCfg.fromJson(value)..id = id;
       }).toList();
 
-      setState(() {
-        _cacheEvents = {for (var evt in events) evt.id: evt};
-      });
+      cacheEvents = {for (var evt in events) evt.id: evt};
 
       return events;
     } catch (e) {
       rethrow;
     } finally {
-      setState(() => _isLoading = false);
+      _isLoading = false;
     }
   }
 
@@ -206,11 +208,11 @@ class StoryDataAccess {
     required String eventId,
   }) async {
     // 先检查缓存
-    if (_cacheTalks.isNotEmpty && _cacheTalks.any((k, v) => k.startsWith(eventId))) {
+    if (cacheTalks.isNotEmpty && cacheTalks.keys.any((k) => k.startsWith(eventId))) {
       return _buildEventDetailsFromCache(modName, eventId);
     }
 
-    setState(() => _isLoading = true);
+    _isLoading = true;
     try {
       // 获取所有 TalkCfg 和 OptionCfg（整个表，但仅过滤当前事件的数据）
       final [talksResponse, optsResponse] = await Future.wait([
@@ -227,7 +229,7 @@ class StoryDataAccess {
 
       for (final entry in talksData.entries) {
         final id = entry.key;
-        final value = entry.value is Map ? entry.value as Map<String, dynamic> : {};
+        final value = entry.value is Map ? entry.value as Map<String, dynamic> : <String, dynamic>{};
         
         // 判断是否属于该事件（ID 前缀匹配）
         if (id.toLowerCase().startsWith(prefix.toLowerCase())) {
@@ -238,7 +240,7 @@ class StoryDataAccess {
       final relatedOpts = <String, MobileOptionCfg>{};
       for (final entry in optsData.entries) {
         final id = entry.key;
-        final value = entry.value is Map ? entry.value as Map<String, dynamic> : {};
+        final value = entry.value is Map ? entry.value as Map<String, dynamic> : <String, dynamic>{};
         
         // Option ID 去后 2 位作为前缀
         if (id.length > 2 && id.substring(0, id.length - 2).toLowerCase().startsWith(prefix.toLowerCase())) {
@@ -248,25 +250,25 @@ class StoryDataAccess {
 
       // 构建详情对象
       return _StoryEventDetails(
-        event: _cacheEvents[eventId],
+        event: cacheEvents[eventId],
         talks: relatedTalks.values.toList(),
         options: relatedOpts.values.toList(),
       );
     } finally {
-      setState(() => _isLoading = false);
+      _isLoading = false;
     }
   }
 
   /// 从缓存构建详情对象（当已部分加载过）
   _StoryEventDetails _buildEventDetailsFromCache(String modName, String eventId) {
-    final event = _cacheEvents[eventId];
+    final event = cacheEvents[eventId];
     final prefix = eventId.toLowerCase();
     
-    final relatedTalks = _cacheTalks.values
+    final relatedTalks = cacheTalks.values
         .where((t) => t.id.toLowerCase().startsWith(prefix))
         .toList();
     
-    final relatedOpts = _cacheOptions.values
+    final relatedOpts = cacheOptions.values
         .where((o) => o.id.length > 2 && o.id.substring(0, o.id.length - 2).toLowerCase().startsWith(prefix))
         .toList();
 

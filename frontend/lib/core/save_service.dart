@@ -1,7 +1,3 @@
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'core/api_client.dart';
-
 /// 保存服务（S3）：封装 PUT/PATCH /api/cfg/<name>的 revision 验证与 conflict 处理。
 ///
 /// 实现 P5 Revision Mechanism:
@@ -10,13 +6,23 @@ import 'core/api_client.dart';
 /// - 前端收到 409 后刷新 revision 并提示用户冲突详情
 library;
 
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'api_client.dart';
+
 class SaveResult {
+  // 每个命名构造都要初始化全部 final 字段：不适用的字段给默认值。
   SaveResult.success({
     required this.cfg,
     required this.mtimeNs,
     required this.snapshot,
     this.appliedSet = const {},
     this.appliedRemove = const [],
+    this.reason,
+    this.detail,
+    this.currentRevision,
+    this.data,
+    this.message,
   });
 
   SaveResult.conflict({
@@ -26,11 +32,23 @@ class SaveResult {
     required this.currentRevision,
     this.mtimeNs,
     this.data,
+    this.appliedSet = const {},
+    this.appliedRemove = const [],
+    this.snapshot,
+    this.message,
   });
 
   SaveResult.error({
     required this.cfg,
     required this.message,
+    this.mtimeNs,
+    this.snapshot,
+    this.appliedSet = const {},
+    this.appliedRemove = const [],
+    this.reason,
+    this.detail,
+    this.currentRevision,
+    this.data,
   });
 
   final String? cfg;
@@ -116,7 +134,7 @@ class SaveService {
       );
     } on ApiException catch (e) {
       if (e.statusCode == 409 && e.code == 'conflict') {
-        final payload = e.message contains('current_revision')
+        final payload = e.message.contains('current_revision')
             ? jsonDecode(e.message)
             : null;
 
@@ -169,7 +187,7 @@ class SaveService {
       );
     } on ApiException catch (e) {
       if (e.statusCode == 409 && e.code == 'conflict') {
-        final payload = e.message contains('current_revision')
+        final payload = e.message.contains('current_revision')
             ? jsonDecode(e.message)
             : null;
 

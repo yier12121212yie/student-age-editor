@@ -47,9 +47,7 @@ if(APPLE)
     endif()
 endif()
 
-# Link OpenSSL for SHA-256 (revision_manager uses httplib's EVP implementation)
-find_package(OpenSSL REQUIRED)
-target_link_libraries(sa_server PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-
+# No OpenSSL: SHA-256 (revision_manager) goes through sa_core's self-contained
+# implementation, so the Android NDK cross-build configures without it too.
 # HTTP-only: do NOT define CPPHTTPLIB_OPENSSL_SUPPORT. Reserved for a later wave.
 set_target_properties(backend PROPERTIES OUTPUT_NAME "backend")

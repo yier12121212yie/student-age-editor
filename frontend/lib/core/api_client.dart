@@ -57,9 +57,14 @@ class ApiClient {
     return _decode(resp);
   }
 
-  Future<dynamic> delete(String path, {Map<String, String>? query}) async {
+  Future<dynamic> delete(String path,
+      {Map<String, String>? query, Object? body}) async {
     final resp = await client
-        .delete(_uri(path, query))
+        .delete(
+            _uri(path, query),
+            headers:
+                body == null ? null : {'Content-Type': 'application/json'},
+            body: body == null ? null : jsonEncode(body))
         .timeout(const Duration(seconds: 120));
     return _decode(resp);
   }

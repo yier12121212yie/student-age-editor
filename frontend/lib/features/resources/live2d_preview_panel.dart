@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 
@@ -90,7 +91,7 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(
-              FluentIcons.face_24_regular,
+              FluentIcons.person_24_regular,
               size: 64,
               color: Colors.grey,
             ),
@@ -117,15 +118,18 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
         final model = _models[index];
         final isSelected = _selectedModel?['id'] == model['id'];
         
-        return fluent.Card(
-          isSelected: isSelected,
-          onPressed: () => _selectModel(model),
-          selectedColor: Theme.of(context).brightness == brightMode.light
-              ? Colors.blue.shade50
-              : Colors.blue.withOpacity(0.1),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
+        return Card(
+          color: isSelected
+              ? (Theme.of(context).brightness == Brightness.light
+                  ? Colors.blue.shade50
+                  : Colors.blue.withOpacity(0.1))
+              : null,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => _selectModel(model),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
@@ -148,9 +152,18 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
                         Positioned(
                           right: 8,
                           top: 8,
-                          child: fluent.Badge.count(
-                            count: model['expressions']?.length ?? 0,
-                            smallBadgeStyle: fluent.BadgeStyle.outline,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.black26,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '${model['expressions']?.length ?? 0}',
+                              style: const TextStyle(
+                                  fontSize: 10, color: Colors.white),
+                            ),
                           ),
                         ),
                         Center(
@@ -177,6 +190,7 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
                 ),
               ],
             ),
+          ),
           ),
         );
       },
@@ -272,22 +286,18 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
                 children: expressions.map((expr) {
                   final isSelected = _selectedExpression == expr;
                   
-                  return fluent.Button(
+                  return ElevatedButton(
                     key: ValueKey(expr),
                     onPressed: () {
                       setState(() => _selectedExpression = expr);
                       // Trigger actual rendering here
                     },
-                    style: ButtonStyle(
-                      backgroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.selected)) {
-                          return Theme.of(context).primaryColor;
-                        }
-                        return Colors.grey.shade200;
-                      }),
-                      foregroundColor: WidgetStateProperty.all(
-                        isSelected ? Colors.white : Colors.black87,
-                      ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isSelected
+                          ? Theme.of(context).primaryColor
+                          : Colors.grey.shade200,
+                      foregroundColor:
+                          isSelected ? Colors.white : Colors.black87,
                     ),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -306,7 +316,7 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Theme.of(context).brightness == brightMode.light
+              color: Theme.of(context).brightness == Brightness.light
                   ? Colors.grey.shade50
                   : Colors.grey.shade900,
               borderRadius: const BorderRadius.only(
@@ -363,10 +373,10 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               const Spacer(),
-              fluent.Button(
-                child: const Text('刷新列表'),
+              ElevatedButton.icon(
                 onPressed: _loadModels,
-                icon: const Icon(FluentIcons.refresh_24_regular),
+                icon: const Icon(FluentIcons.arrow_sync_24_regular),
+                label: const Text('刷新列表'),
               ),
             ],
           ),

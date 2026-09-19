@@ -1240,21 +1240,32 @@ class _FlowNodeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (kDebugMode) debugNodeCardBuilds++;
-    
-    // P8: Check if this is a tombstone node (deleted but referenced)
-    if (node.isTalk || node.isOption) {
-      final isTombstone = isDeleted(node.id);
-      if (isTombstone) {
-        return TombstoneNodeWidget(
-          id: node.id,
-          onRestore: () async {
-            await deleteRecord(node.node.type.cfgName, node.id);
-            widget.onDeleteNode?.call(node.id);
-          },
-        );
-      }
+
+    final card = _buildCard(context);
+
+    // P8: 墓碑节点（已删除但仍被引用）渲染为占位方块。
+    if (node.kind == FlowNodeKind.talk || node.isOption) {
+      return FutureBuilder<bool>(
+        future: isDeleted(node.id),
+        builder: (context, snap) {
+          if (snap.data != true) return card;
+          return TombstoneNodeWidget(
+            id: node.id,
+            onRestore: () async {
+              await deleteRecord(
+                cfgName: node.isOption ? 'OptionCfg' : 'TalkCfg',
+                id: node.id,
+              );
+              onDeleteNode(node.id);
+            },
+          );
+        },
+      );
     }
-    
+    return card;
+  }
+
+  Widget _buildCard(BuildContext context) {
     final w = kFlowNodeW;
     // expanded 由画布按 LOD 档传入，低档恒为 false，_h 即折叠足迹高度。
     final hh = _h;

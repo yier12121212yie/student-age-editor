@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../resources/asset_explorer_panel.dart';
@@ -98,52 +99,51 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
 
     final offline = _pluginStatus == null || _pluginStatus!['status'] == 'offline';
 
-    return Column(
+    return Row(
       children: [
-        // Tab bar
-        fluent.NavigationView(
-          paneDisplayMode: fluent.NavigationPaneDisplayMode.compact,
-          paneTitle: const Text('插件面板'),
-          paneContent: SizedBox(
-            width: 60,
-            child: Column(
-              children: _tabs.asMap().entries.map((entry) {
-                final index = entry.key;
-                final tab = entry.value;
-                final isSelected = _selectedTab == index;
-                
-                return fluent.Button(
-                  key: ValueKey(tab['value']),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
-                        Icon(FluentIcons.app_branding_24_regular, size: 20),
-                        SizedBox(height: 4),
-                        Text(
-                          '',
-                          style: TextStyle(fontSize: 10),
-                        ),
-                      ],
-                    ),
+        // 60px 图标 Tab 栏
+        SizedBox(
+          width: 60,
+          child: Column(
+            children: _tabs.asMap().entries.map((entry) {
+              final index = entry.key;
+              final tab = entry.value;
+              final isSelected = _selectedTab == index;
+
+              return InkWell(
+                key: ValueKey(tab['value']),
+                onTap: () => setState(() => _selectedTab = index),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  color: isSelected
+                      ? AppTheme.palette.hover
+                      : Colors.transparent,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(FluentIcons.apps_24_regular, size: 20),
+                      const SizedBox(height: 4),
+                      Text(
+                        tab['label'] ?? '',
+                        style: const TextStyle(fontSize: 10),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                   ),
-                  onPressed: () => setState(() => _selectedTab = index),
-                  selected: isSelected,
-                );
-              }).toList(),
-            ),
+                ),
+              );
+            }).toList(),
           ),
-          content: Column(
+        ),
+        // 选中内容
+        Expanded(
+          child: Column(
             children: [
-              // Content header
               const SizedBox(height: 8),
               if (offline) _buildOfflineBanner(),
-              
-              // Selected content
               Expanded(
                 child: _selectedTab == 0
-                    ? AssetExplorerPanel()
+                    ? const AssetExplorerPanel()
                     : _buildLive2DPreviewPanel(),
               ),
             ],
@@ -159,7 +159,7 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const Icon(
-            FluentIcons.face_24_regular,
+            FluentIcons.person_24_regular,
             size: 64,
             color: Colors.grey,
           ),

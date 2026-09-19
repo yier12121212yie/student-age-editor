@@ -285,6 +285,10 @@ class AppPalette {
 /// 当前生效调色板（应用启动与主题切换时由 [AppTheme] 整体替换）。
 AppPalette palette = AppPalette.dark;
 
+/// 同步顶层 [palette] 全局并回传（AppTheme 类内 `palette` 被静态 getter
+/// 遮蔽，赋值必须经这里）。
+AppPalette syncGlobalPalette(AppPalette p) => palette = p;
+
 /// 圆角阶梯：卡片/浮层/芯片共用，避免同一层级在不同文件里取不同值。
 class AppRadius {
   AppRadius._();
@@ -365,7 +369,8 @@ class AppTheme {
     final brightness = m == AppThemeMode.system
         ? WidgetsBinding.instance.platformDispatcher.platformBrightness
         : (m == AppThemeMode.light ? Brightness.light : Brightness.dark);
-    _currentPalette = palette = brightness == Brightness.light ? AppPalette.light : AppPalette.dark;
+    _currentPalette = syncGlobalPalette(
+        brightness == Brightness.light ? AppPalette.light : AppPalette.dark);
     if (mode.value != m) mode.value = m;
     if (save) await m.save();
   }

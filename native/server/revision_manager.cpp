@@ -15,31 +15,18 @@
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/sha1.h"
+#include "sa_core/sha256.h"
 #include "sa_core/util.h"
 #include "server/state.h"
-
-// Use httplib's EVP-based SHA256 implementation
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include <httplib.h>
 
 namespace sa {
 namespace revision_manager {
 namespace {
 
-// Compute SHA-256 using httplib's EVP implementation
+// SHA-256 via sa_core's self-contained implementation (no OpenSSL: the
+// Android NDK cross-build has none, and it was pulled in solely for this).
 std::string sha256_hex(const std::string& data) {
-    unsigned char hash[EVP_MAX_MD_SIZE];
-    unsigned int hash_len = 0;
-    EVP_Digest(data.data(), data.size(), hash, &hash_len, EVP_sha256(), nullptr);
-    
-    std::string hex_out;
-    hex_out.reserve(hash_len * 2);
-    for (unsigned int i = 0; i < hash_len; ++i) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02x", hash[i]);
-        hex_out += buf;
-    }
-    return hex_out;
+    return sa_core::sha256_hex(data);
 }
 
 std::string g_workspace_root;
