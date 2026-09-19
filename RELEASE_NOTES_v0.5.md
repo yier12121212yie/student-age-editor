@@ -1,8 +1,8 @@
-# 学生时代模组编辑器 v0.5 发布说明
+# 学生时代模组编辑器 Alpha-v0.5 发布说明
 
 ## 📦 发行版信息
 
-- **版本号**: v0.5
+- **版本号**: Alpha-v0.5
 - **发布日期**: 2026-09-19
 - **构建平台**: Windows / Linux / macOS / Android
 
@@ -45,7 +45,7 @@ else
 fi
 ```
 
-## 🚀 v0.5 功能更新
+## 🚀 Alpha-v0.5 功能更新
 
 ### P9 前端功能增强
 
@@ -164,28 +164,28 @@ fi
 ## 🎯 构建产物
 
 ### Windows (windows-latest)
-- 📦 `student-age-editor-v0.5.zip` - 便携版
-- 🛠️ `student-age-editor-setup-v0.5.exe` - 安装程序（Inno Setup）
+- 📦 `student-age-editor-Alpha-v0.5.zip` - 便携版
+- 🛠️ `student-age-editor-setup-Alpha-v0.5.exe` - 安装程序（Inno Setup）
 - 🔧 backend.exe / backend_cli.exe / backend_tui.exe - Native 后端三件套
 
 ### Linux (ubuntu-latest)
-- 📦 `student-age-editor-v0.5-linux.zip` - 便携版
-- 📦 `student-age-editor_v0.5_amd64.deb` - DEB 包
-- 🐧 `student-age-editor-v0.5-linux-amd64.AppImage` - AppImage
+- 📦 `student-age-editor-Alpha-v0.5-linux.zip` - 便携版
+- 📦 `student-age-editor_Alpha-v0.5_amd64.deb` - DEB 包
+- 🐧 `student-age-editor-Alpha-v0.5-linux-amd64.AppImage` - AppImage
 
 ### macOS (macos-14)
-- 📦 `student-age-editor-v0.5-macos.zip` - 便携版
-- 💿 `student-age-editor-v0.5-macos.dmg` - 拖拽安装包
-- 📦 `student-age-editor-v0.5-macos.pkg` - 向导安装包
+- 📦 `student-age-editor-Alpha-v0.5-macos.zip` - 便携版
+- 💿 `student-age-editor-Alpha-v0.5-macos.dmg` - 拖拽安装包
+- 📦 `student-age-editor-Alpha-v0.5-macos.pkg` - 向导安装包
 - 🔒 含代码签名和 Gatekeeper 验证
 
 ### Android (ubuntu-latest)
-- 📱 `student-age-editor-v0.5-android.apk` - APK（arm64-v8a + x86_64）
+- 📱 `student-age-editor-Alpha-v0.5-android.apk` - APK（arm64-v8a + x86_64）
 
 ## 🔍 已知限制
 
 ### 官方资源包
-⚠️ **由于 CI 环境缺少游戏资源缓存，v0.5 的安装包可能不包含内嵌的官方资源扩展包**。
+⚠️ **由于 CI 环境缺少游戏资源缓存，Alpha-v0.5 的安装包可能不包含内嵌的官方资源扩展包**。
 
 如需完整功能的安装包，请在安装了《学生时代》的游戏机器上本地构建：
 
@@ -194,7 +194,7 @@ fi
 # 1. 启动一次编辑器以生成 _cache 缓存
 # 2. 或运行 native 的 backend_tui 扫描游戏资源
 
-python build_release.py --target windows --version v0.5 --installer
+python build_release.py --target windows --version Alpha-v0.5 --installer
 ```
 
 ### 备选方案

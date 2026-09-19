@@ -1,6 +1,6 @@
-# 学生时代模组编辑器 v0.5 更新日志
+# 学生时代模组编辑器 Alpha-v0.5 更新日志
 
-## 🚀 v0.5 版本亮点
+## 🚀 Alpha-v0.5 版本亮点
 
 ### ✅ CI/CD 关键修复（本次主要更新）
 
@@ -22,7 +22,7 @@
 - **macOS**: `.zip` 便携包 + `.dmg` 拖拽包 + `.pkg` 向导安装器
 - **Android**: `.apk` 安装文件 (arm64-v8a + x86_64)
 
-**GitHub Releases**: https://github.com/yier12121212yie/student-age-editor/releases/tag/v0.5
+**GitHub Releases**: https://github.com/yier12121212yie/student-age-editor/releases/tag/Alpha-v0.5
 
 ---
 
@@ -66,7 +66,7 @@
 ## ⚠️ 已知限制
 
 ### 官方资源包缺失
-由于 CI 环境无法访问游戏资源缓存，v0.5 的安装包可能不包含内嵌的官方资源扩展包。
+由于 CI 环境无法访问游戏资源缓存，Alpha-v0.5 的安装包可能不包含内嵌的官方资源扩展包。
 
 **影响范围**:
 - ✅ 便携版：完全可用，不影响基本功能
@@ -91,9 +91,9 @@
 
 ## 📊 GitHub Actions 工作流状态
 
-**Workflow**: Release v0.5  
+**Workflow**: Release Alpha-v0.5  
 **Status**: ✅ 成功（已修复）  
-**Trigger**: Git Tag `v0.5`  
+**Trigger**: Git Tag `Alpha-v0.5`  
 **Run URL**: https://github.com/yier12121212yie/student-age-editor/actions
 
 ---
@@ -101,12 +101,12 @@
 ## 📝 详细日志
 
 完整更新说明请查看：
-- [RELEASE_NOTES_v0.5.md](RELEASE_NOTES_v0.5.md) - 详细发布说明
-- Git Commit: `b0b22d3` - 新增 v0.5 详细发布说明文档
+- [RELEASE_NOTES_Alpha-v0.5.md](RELEASE_NOTES_Alpha-v0.5.md) - 详细发布说明
+- Git Commit: `b0b22d3` - 新增 Alpha-v0.5 详细发布说明文档
 - Git Commit: `9d70c53` - 修复 CI：官方资源包缓存步骤设为可选
 
 ---
 
 **发布日期**: 2026-09-19  
-**版本号**: v0.5  
+**版本号**: Alpha-v0.5  
 **构建服务器**: GitHub Actions (windows-latest / ubuntu-latest / macos-14)
