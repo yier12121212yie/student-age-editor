@@ -79,22 +79,22 @@ std::vector<Moc3Reference> list_models() {
         std::string subpath = l2d_dir + "/" + subdir;
         if (!paths::is_directory(subpath)) continue;
         
-        Moc3Reference ref;
-        ref.path = subpath;
+        Moc3Reference ref_wrapper;
+        ref_wrapper.path = subpath;
         
         // Scan for .moc3 and profile.json
         auto files = paths::listdir_sorted(subpath, &ok);
         if (ok) {
             for (const auto& f : files) {
                 if (f.size() > 5 && f.substr(f.size() - 5) == ".moc3") {
-                    ref.expressions.push_back(f.substr(0, f.size() - 5));
+                    ref_wrapper.expressions.push_back(f.substr(0, f.size() - 5));
                 } else if (f == "profile.json") {
                     // Parse profile.json for additional metadata here
                 }
             }
         }
         
-        models.push_back(std::move(ref));
+        models.push_back(std::move(ref_wrapper));
     }
     
     return models;
