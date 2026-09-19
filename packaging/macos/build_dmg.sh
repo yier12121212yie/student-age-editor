@@ -9,7 +9,7 @@
 # 输入 .app 由 build_release.py --target macos 的 assemble_macos 产出
 # （dist/学生时代模组编辑器-<版本>-macos/学生时代模组编辑器.app，Flutter 产物
 # 骨架 + Contents/MacOS 下的 native 三件套 backend/backend_cli/backend_tui、
-# official_pack/）。
+# Contents/Resources 下的 official_pack/）。
 # 产出（文件名固定，供 CI 归档）：
 #   student-age-editor-<版本>-macos.dmg
 # 卷内布局为拖拽安装式：.app + /Applications 软链。

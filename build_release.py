@@ -91,7 +91,9 @@ ISCC_FALLBACKS = (
 
 # --------------------------- Linux/macOS 安装包 ---------------------------
 # 官方资源扩展包在 Linux/macOS 产物中的只读系统根布局：
-#   <程序目录>/official_pack/official-bundled/（resource_pack.system_packs_root 自动发现）
+#   <程序目录>/official_pack/official-bundled/
+# macOS 例外：数据目录放 Contents/Resources/official_pack/——codesign 会把
+# Contents/MacOS 下的子目录当嵌套代码，非 Mach-O 内容会导致签名失败。
 OFFICIAL_PACK_ID = "official-bundled"
 ICON_SOURCE = os.path.join(FRONTEND, "macos", "Runner", "Assets.xcassets",
                            "AppIcon.appiconset", "app_icon_512.png")
@@ -402,8 +404,8 @@ def _copy_native_backend_bundle(dst_dir, bin_subdir=""):
 def _embed_official_pack(base_dir, rel=""):
     """把官方资源包以 official_pack/official-bundled 布局放入发行目录。
 
-    base_dir/rel 即 backend 可执行文件所在目录（后端 resource_pack 的
-    system_packs_root 会自动发现并只读注册，无需拷贝到用户数据目录）。
+    base_dir/rel 即期望的系统包根（Windows/Linux 为可执行文件目录；macOS 为
+    Contents/Resources，因 codesign 会把 Contents/MacOS 下子目录当嵌套代码）。
     缓存缺失时跳过并提示（便携 zip 不受影响）；安装包构建另有硬性校验。
     """
     target = os.path.join(base_dir, rel) if rel else base_dir
@@ -897,7 +899,7 @@ def assemble_macos(version):
     # native 三件套放进 .app/Contents/MacOS/，与前端主程序同目录（launcher
     # 探测同目录 backend）；不再有 PyInstaller 的 _internal/。
     _copy_native_backend_bundle(dst_app, os.path.join("Contents", "MacOS"))
-    _embed_official_pack(dst_app, os.path.join("Contents", "MacOS"))
+    _embed_official_pack(dst_app, os.path.join("Contents", "Resources"))
     # 注入发生在 Flutter 内嵌签名之后，原封印已失效；必须在打包前重签，
     # 否则 zip/dmg/pkg 内的 .app 会被 Gatekeeper 判定为「已损坏」。
     sign_macos_app(dst_app)

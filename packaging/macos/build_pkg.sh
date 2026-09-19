@@ -11,7 +11,8 @@
 #                 backend/backend_cli/backend_tui），固定必选
 #   gui           图形界面（GUI 主程序；postinstall 创建 editor-gui 命令）
 #   tui / cli     终端/命令行界面（nopayload 脚本包；创建 editor-tui/editor-cli 命令）
-#   officialpack  官方资源扩展包（.app/Contents/MacOS/official_pack）
+#   officialpack  官方资源扩展包（.app/Contents/Resources/official_pack；
+#                 codesign 会把 Contents/MacOS 下子目录当嵌套代码，数据只能放 Resources）
 #
 # 实现：从 assemble_macos 产出的 .app 拆出三份 payload 根（gui / core /
 # officialpack），分别 pkgbuild，再 productbuild 按 distribution.xml 的
@@ -168,7 +169,7 @@ MACOS_DIR="$APP_PATH/Contents/MacOS"
 [ -f "$MACOS_DIR/backend" ] || die ".app 内缺少内嵌 backend（请先运行 build_release.py --target macos）"
 [ -f "$MACOS_DIR/backend_cli" ] || die ".app 内缺少内嵌 backend_cli（请先运行 build_release.py --target macos）"
 [ -f "$MACOS_DIR/backend_tui" ] || die ".app 内缺少内嵌 backend_tui（请先运行 build_release.py --target macos）"
-[ -d "$MACOS_DIR/official_pack" ] || die ".app 内缺少 official_pack/（官方资源扩展包未内嵌，安装包前置条件不满足）"
+[ -d "$APP_PATH/Contents/Resources/official_pack" ] || die ".app 内缺少 Contents/Resources/official_pack/（官方资源扩展包未内嵌，安装包前置条件不满足）"
 
 GUIBIN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST" 2>/dev/null \
           || /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST")"
@@ -206,7 +207,7 @@ rm -rf "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/backend" \
        "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/backend_cli" \
        "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/backend_tui" \
        "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/aa_scan" \
-       "$GUI_ROOT/$APP_NAME.app/Contents/MacOS/official_pack"
+       "$GUI_ROOT/$APP_NAME.app/Contents/Resources/official_pack"
 # core：.app 骨架 + native 三件套（含随包说明文档）
 CORE_ROOT="$WORK_DIR/core_root"
 mkdir -p "$CORE_ROOT/Contents/MacOS"
@@ -214,6 +215,8 @@ cp -R "$WORK_DIR/app.app/Contents/Info.plist" "$WORK_DIR/app.app/Contents/PkgInf
 for d in Frameworks Resources; do
     [ -d "$WORK_DIR/app.app/Contents/$d" ] && cp -R "$WORK_DIR/app.app/Contents/$d" "$CORE_ROOT/Contents/"
 done
+# official_pack 属于可选 officialpack choice，不随 core 必选包分发
+rm -rf "$CORE_ROOT/Contents/Resources/official_pack"
 cp -R "$WORK_DIR/app.app/Contents/MacOS/backend" \
       "$WORK_DIR/app.app/Contents/MacOS/backend_cli" \
       "$WORK_DIR/app.app/Contents/MacOS/backend_tui" "$CORE_ROOT/Contents/MacOS/"
@@ -225,8 +228,8 @@ if [ -f "$WORK_DIR/app.app/Contents/MacOS/使用说明.txt" ]; then
 fi
 # officialpack：仅官方资源扩展包
 OP_ROOT="$WORK_DIR/op_root"
-mkdir -p "$OP_ROOT/Contents/MacOS"
-cp -R "$WORK_DIR/app.app/Contents/MacOS/official_pack" "$OP_ROOT/Contents/MacOS/"
+mkdir -p "$OP_ROOT/Contents/Resources"
+cp -R "$WORK_DIR/app.app/Contents/Resources/official_pack" "$OP_ROOT/Contents/Resources/"
 
 # ----------------------------- [3/4] 子包（pkgbuild） -----------------------------
 mkdir -p "$WORK_DIR/pkgs" "$WORK_DIR/scripts_gui" "$WORK_DIR/scripts_tui" "$WORK_DIR/scripts_cli"

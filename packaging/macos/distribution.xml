@@ -18,7 +18,7 @@
     gui           图形界面（GUI 主程序；postinstall 创建 editor-gui 包装）
     tui           终端界面（nopayload 脚本包；postinstall 创建 editor-tui 包装）
     cli           命令行接口（nopayload 脚本包；postinstall 创建 editor-cli 包装）
-    officialpack  官方资源扩展包（.app/Contents/MacOS/official_pack）
+    officialpack  官方资源扩展包（.app/Contents/Resources/official_pack）
 
   “至少选择一种界面（GUI/TUI/CLI）”实现说明：
     gui/tui/cli 三个 choice 的 start_selected 相互引用（循环 OR）：Installer
@@ -83,7 +83,7 @@
     <!-- 官方资源扩展包：默认勾选（对齐 Inno full 类型） -->
     <choice id="officialpack"
             title="官方资源扩展包（适用于未安装游戏的创作者）"
-            description="随应用内嵌官方资源扩展包（只读系统包，位于 .app/Contents/MacOS/official_pack），未安装《学生时代》游戏也可直接创作与导出。"
+            description="随应用内嵌官方资源扩展包（只读系统包，位于 .app/Contents/Resources/official_pack），未安装《学生时代》游戏也可直接创作与导出。"
             start_selected="true">
         <pkg-ref id="com.pakyigame.studentageeditor.officialpack"/>
     </choice>
