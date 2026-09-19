@@ -81,14 +81,14 @@ std::vector<std::string> collect_target_files(const std::string& mod_root) {
 
     // 3. Scan all Cfgs/*.json files
     std::string cfgs_dir = mod_root + "/Cfgs";
-    if (sa_core::paths::is_directory(cfgs_dir)) {
+    if (sa_core::paths::is_dir(cfgs_dir)) {
         bool ok = false;
         auto dirs = sa_core::paths::listdir_sorted(cfgs_dir, &ok);
         if (ok) {
             for (const auto& lang_dir : dirs) {
                 if (lang_dir == "zh-cn") {
                     std::string lang_path = cfgs_dir + "/" + lang_dir;
-                    if (sa_core::paths::is_directory(lang_path)) {
+                    if (sa_core::paths::is_dir(lang_path)) {
                         auto files = sa_core::paths::listdir_sorted(lang_path, &ok);
                         if (ok) {
                             for (const auto& f : files) {
@@ -124,7 +124,7 @@ std::string compute_revision() {
     std::vector<std::string> files;
     {
         std::lock_guard<std::mutex> lk(g_revision_mu);
-        files = ::collect_target_files(g_workspace_root);
+        files = collect_target_files(g_workspace_root);
     }
 
     std::string combined_hash;

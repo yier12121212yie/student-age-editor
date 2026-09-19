@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 
+#include "sa_core/atomic_io.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "server/state.h"
@@ -15,7 +16,7 @@ namespace sa {
 namespace deleted_talks_manager {
 namespace {
 
-using sa_core::paths;
+namespace paths = sa_core::paths;
 
 std::string g_workspace_root;
 std::mutex g_mutex;
@@ -146,13 +147,13 @@ bool persist() {
 
     // Ensure parent directory exists
     std::string dir = paths::dirname(tombstone_file_path());
-    paths::make_dirs(dir);
+    paths::create_dirs(dir);
 
     // Write atomically
     std::string json_str = data.dump(4);  // Pretty-print with indent=2
 
     try {
-        paths::write_bytes_atomic(tombstone_file_path(), json_str);
+        sa_core::write_bytes_atomic(tombstone_file_path(), json_str);
         g_has_pending_changes = false;
         return true;
     } catch (...) {

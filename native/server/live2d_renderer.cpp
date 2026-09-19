@@ -24,6 +24,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "sa_core/atomic_io.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "server/httpd.h"
@@ -38,17 +39,11 @@ namespace sa {
 namespace live2d_renderer {
 namespace {
 
-using sa_core::paths;
+namespace paths = sa_core::paths;
 
 std::string g_game_root;
 std::mutex g_mutex;
 std::unordered_map<std::string, std::string> g_cached_pngs;  // key → png_path
-
-// Structure for cubism model reference
-struct Moc3Reference {
-    std::string path;
-    std::vector<std::string> expressions;  // list of expr file names
-};
 
 }  // namespace
 
@@ -66,7 +61,7 @@ std::vector<Moc3Reference> list_models() {
     
     // Search for .moc3 files in DLC_L2DModels directory
     std::string l2d_dir = g_game_root + "/DLC/DLC_L2DModels";
-    if (!paths::is_directory(l2d_dir)) {
+    if (!paths::is_dir(l2d_dir)) {
         return models;  // Empty = no models found
     }
     
@@ -77,7 +72,7 @@ std::vector<Moc3Reference> list_models() {
     
     for (const auto& subdir : dirs) {
         std::string subpath = l2d_dir + "/" + subdir;
-        if (!paths::is_directory(subpath)) continue;
+        if (!paths::is_dir(subpath)) continue;
         
         Moc3Reference ref_wrapper;
         ref_wrapper.path = subpath;
@@ -142,8 +137,8 @@ bool persist_cache(const std::string& dir) {
     std::string cache_file = dir + "/live2d_cache.json";
     
     try {
-        paths::write_bytes_atomic(cache_file, 
-                                  cache_data.dump(4));
+        sa_core::write_bytes_atomic(cache_file,
+                                    cache_data.dump(4));
         return true;
     } catch (...) {
         return false;

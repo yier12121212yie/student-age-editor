@@ -12,7 +12,6 @@
 #include "server/deleted_talks_manager.h"
 
 namespace sa {
-namespace {
 
 void register_deleted_routes(Router& r) {
     // GET /api/cfg/deleted_talks — Return all tombstone entries for UI rendering.
@@ -52,9 +51,5 @@ void register_deleted_routes(Router& r) {
         return Resp::Json(200, std::move(body));
     });
 }
-
-}  // namespace
-
-void register_deleted_routes(Router& r) { ::register_deleted_routes(r); }
 
 }  // namespace sa

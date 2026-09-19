@@ -453,7 +453,7 @@ void register_cfg_routes(Router& r) {
     // DELETE /api/cfg/<name>/<id> — Delete with tombstone semantics (P8 feature).
     // Replaces hard-delete with persistent mapping: old_id -> replacement_ids|null.
     // Preserves reference integrity by following tombstones on next_talk resolution.
-    r.delete(R"(/api/cfg/(?P<name>[^/]+)/(?P<id>[^/]+))", [](const Req& req) -> Resp {
+    r.del(R"(/api/cfg/(?P<name>[^/]+)/(?P<id>[^/]+))", [](const Req& req) -> Resp {
         const std::string name = req.params.count("name") ? req.params.at("name") : std::string();
         const std::string id = req.params.count("id") ? req.params.at("id") : std::string();
         
