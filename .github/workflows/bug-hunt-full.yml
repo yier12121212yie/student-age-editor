@@ -66,7 +66,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 50
     outputs:
-      success: ${{ steps.check_result.outputs.success }}
+      success: ${{ steps.native_build.outcome == 'success' && steps.flutter_windows_build.outcome == 'success' }}
       error_count: ${{ steps.analyze.outputs.error_count }}
     steps:
       - uses: actions/checkout@v4
@@ -74,18 +74,10 @@ jobs:
       - name: 📊 Environment Info Collection
         id: env_info
         run: |
-          echo "=== OS Version ===" >> $GITHUB_STEP_SUMMARY
-          systeminfo | Select-Object -First 15 | Out-File -Append environment.log
-          
-          echo "=== Visual Studio Detection ===" >> $GITHUB_STEP_SUMMARY
-          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Directory -ErrorAction SilentlyContinue | Select-Object Name
-          
-          echo "=== Git Version ===" >> $GITHUB_STEP_SUMMARY
-          git --version >> environment.log
-          
-          echo "=== Python Version ===" >> $GITHUB_STEP_SUMMARY
-          python --version >> environment.log
-          
+          echo "OSVersion=$(systeminfo | findstr /C:"OS Name" | findstr /C:"OS Version")" >> $GITHUB_OUTPUT
+          echo "visualStudioInstalled=Yes" >> $GITHUB_OUTPUT
+          echo "gitVersion=$(git --version)" >> $GITHUB_OUTPUT
+          echo "pythonVersion=$(python --version)" >> $GITHUB_OUTPUT
           echo "success=true" >> $GITHUB_OUTPUT
       
       - name: 🔧 Setup .NET & Build Tools
@@ -106,6 +98,8 @@ jobs:
           Write-Host "Using generator: $GEN_OK"
           cmake --build build-native-win --config Release
           ctest --test-dir build-native-win -C Release --output-on-failure
+          echo "success=true" >> $env:GITHUB_OUTPUT
+        continue-on-error: false
       
       - name: 🏗️ Setup Flutter
         uses: subosito/flutter-action@v2
@@ -122,6 +116,11 @@ jobs:
           flutter clean
           flutter pub get
           flutter build windows --release 2>&1 | tee flutter_windows_build.log
+          if [ $? -eq 0 ]; then
+            echo "status=succeeded" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
       
       - name: ✅ Verify Windows Artifacts
         id: verify_artifacts
@@ -138,15 +137,10 @@ jobs:
       - name: 🤖 Error Analysis
         id: analyze
         run: |
-          ERRORS = 0
+          $ERRORS = 0
           if (Test-Path "frontend/flutter_windows_build.log") {
             $dart_errors = (Select-String -Pattern "error:" -Path "frontend/flutter_windows_build.log").Count
-            $errors += $dart_errors
-            
-            # Check for specific issue patterns
-            if (Select-String -Pattern "cannot find.*include" -Path "frontend/flutter_windows_build.log") {
-              Write-Host "Detected missing headers"
-            }
+            if ($dart_errors) { $ERRORS += $dart_errors }
           }
           
           $msg = @"
@@ -179,6 +173,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     outputs:
+      success: ${{ steps.native_build.outcome == 'success' && steps.xcode_build.outcome == 'success' }}
       error_count: ${{ steps.analyze.outputs.error_count }}
     steps:
       - uses: actions/checkout@v4
@@ -201,6 +196,8 @@ jobs:
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug -S ../native -B . 2>&1 | tee cmake_configure.log
           cmake --build . --target all 2>&1 | tee cmake_build.log
           ctest --output-on-failure || true
+          echo "success=true" >> $GITHUB_OUTPUT
+        continue-on-error: false
       
       - name: 🏗️ Setup Flutter
         uses: subosito/flutter-action@v2
@@ -212,14 +209,27 @@ jobs:
         id: pod_install
         working-directory: frontend/macos
         run: |
-          if [ ! -f "Podfile" ]; then echo "skipped" > pod_status.txt; exit 0; fi
+          if [ ! -f "Podfile" ]; then 
+            echo "skipped" > pod_status.txt
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           pod install 2>&1 | tee pod_install.log
+          if grep -qi "error:" pod_install.log; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+          else
+            echo "status=succeeded" >> $GITHUB_OUTPUT
+          fi
       
       - name: 🛠️ Xcode Build Attempt
         id: xcode_build
         working-directory: frontend/macos
         continue-on-error: true
         run: |
+          if [ ! -f "Runner.xcworkspace" ]; then
+            echo "❌ Runner.xcworkspace not found"
+            exit 1
+          fi
           xcodebuild -workspace Runner.xcworkspace \
             -scheme Runner \
             -configuration Debug \
@@ -227,6 +237,12 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee xcode_full_build.log
+          
+          if [ $? -eq 0 ]; then
+            echo "status=succeeded" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
       
       - name: 🔐 Codesign Certificate Check
         if: always()
@@ -236,22 +252,27 @@ jobs:
       - name: 🤖 Generate Diagnostic Report
         id: analyze
         run: |
-          ERRORS=$(grep -ciE "(error|failure)" frontend/macos/xcode_full_build.log 2>/dev/null || echo "0")
-          [ ! -f frontend/macos/xcode_full_build.log ] && ERRORS=0
+          ERRORS=0
+          if [ -f "frontend/macos/xcode_full_build.log" ]; then
+            ERRORS=$(grep -ciE "(error|failure)" frontend/macos/xcode_full_build.log || echo "0")
+          fi
           
-          cat > macos_report.md << 'REPORT'
+          NATIVE_BUILD="${{ steps.native_build.outcome }}"
+          [ -z "$NATIVE_BUILD" ] && NATIVE_BUILD="skipped"
+          
+          cat > macos_report.md << EOF
 # macOS Build Diagnostics
 ## Runner: macos-14
 ## Xcode: $(xcodebuild -version | head -1)
 
 ## Build Results
-- Native C++: ${{ needs.native_build.outcome }}
+- Native C++: $NATIVE_BUILD
 - CocoaPods: ${{ steps.pod_install.outcome }}
 - Xcode Build: ${{ steps.xcode_build.outcome }}
 
 ## Error Summary
 **Critical Errors**: $ERRORS
-REPORT
+EOF
           
           grep -iE "(error|warning).*:" frontend/macos/xcode_full_build.log 2>/dev/null | head -20 >> macos_report.md || true
       
@@ -276,6 +297,7 @@ REPORT
     runs-on: ubuntu-latest
     timeout-minutes: 50
     outputs:
+      success: ${{ steps.native_build.outcome == 'success' && steps.flutter_linux_build.outcome == 'success' }}
       error_count: ${{ steps.analyze.outputs.error_count }}
     steps:
       - uses: actions/checkout@v4
@@ -301,10 +323,13 @@ REPORT
       
       - name: 🔨 Native C++ Backend Build
         if: github.event.inputs.include_native_tests == 'true'
+        id: native_build
         run: |
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -S native -B build-native-linux
           cmake --build build-native-linux
           cd build-native-linux && ctest --output-on-failure
+          echo "success=true" >> $GITHUB_OUTPUT
+        continue-on-error: false
       
       - name: 🏗️ Setup Flutter
         uses: subosito/flutter-action@v2
@@ -325,7 +350,7 @@ REPORT
       - name: ✅ Verify Linux Binary
         id: verify_binary
         run: |
-          BINARY_PATH="frontend/build/linux/ release/bundle/student_age_editor"
+          BINARY_PATH="frontend/build/linux/release/bundle/student_age_editor"
           if [ -d "frontend/build/linux/release/bundle" ]; then
             ls -lh frontend/build/linux/release/bundle/ >> linux_report.md 2>&1
             echo "linux_exists=true" >> $GITHUB_OUTPUT
@@ -372,6 +397,7 @@ EOF
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
+      success: ${{ steps.native_android_build.outcome == 'success' && steps.apk_build.outcome == 'success' }}
       error_count: ${{ steps.analyze.outputs.error_count }}
     steps:
       - uses: actions/checkout@v4
@@ -393,8 +419,10 @@ EOF
       
       - name: 🔨 Native Backend Android Build
         if: github.event.inputs.include_native_tests == 'true'
+        id: native_android_build
         run: |
-          bash native/android/android_build.sh 2>&1 | tee ndk_build.log || true
+          bash native/android/android_build.sh 2>&1 | tee ndk_build.log || { echo "Status: Failed" >> $GITHUB_OUTPUT; exit 1; }
+          echo "Status: Success" >> $GITHUB_OUTPUT
           echo "=== JNI Libraries ===" >> ndk_build.log
           ls -la native/jniLibs/ 2>/dev/null >> ndk_build.log || echo "jniLibs empty" >> ndk_build.log
       
@@ -425,12 +453,17 @@ EOF
         continue-on-error: true
         run: |
           flutter build apk --release --target-platform android-arm64,android-x64 2>&1 | tee flutter_apk_build.log
+          if [ $? -eq 0 ]; then
+            echo "status=succeeded" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
       
       - name: ✅ Verify APK
         id: apk_verify
         run: |
           if [ -f "frontend/build/app/outputs/flutter-apk/app-release.apk" ]; then
-            ls -lh frontend/build/app/outputs/flutter-apk/app-release.app >> android_report.md
+            ls -lh frontend/build/app/outputs/flutter-apk/app-release.apk >> android_report.md
             unzip -l frontend/build/app/outputs/flutter-apk/app-release.apk | grep "\.so$" >> android_report.md
             echo "apk_exists=true" >> $GITHUB_OUTPUT
           else
