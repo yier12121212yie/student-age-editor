@@ -61,7 +61,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     outputs:
-      success: ${{ steps.check_result.outputs.success }}
+      success: ${{ steps.native_build.outcome == 'success' && steps.xcode_build.outcome == 'success' }}
       error_count: ${{ steps.analyze.outputs.error_count }}
       error_types: ${{ steps.analyze.outputs.error_types }}
     
@@ -72,29 +72,17 @@ jobs:
       - name: 📊 System Environment Information
         id: env_info
         run: |
-          echo "=== OS Information ===" >> $GITHUB_OUTPUT
-          sw_vers >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== Xcode Version ===" >> $GITHUB_OUTPUT
-          xcodebuild -version >> $GITHUB_OUTPUT || echo "Xcode not found" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== Swift Version ===" >> $GITHUB_OUTPUT
-          swift --version >> $GITHUB_OUTPUT || echo "Swift not installed" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== Git Version ===" >> $GITHUB_OUTPUT
-          git --version >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== CMake Version ===" >> $GITHUB_OUTPUT
-          cmake --version >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== Ninja Version (if exists) ===" >> $GITHUB_OUTPUT
-          ninja --version >> $GITHUB_OUTPUT || echo "Ninja not installed" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
+          echo "macOS=$(sw_vers | grep 'Product Version' | awk '{print $3}')" >> $GITHUB_OUTPUT
+          echo "xcodeVersion=$(xcodebuild -version 2>&1 | head -1)" >> $GITHUB_OUTPUT
+          echo "swiftVersion=$(swift --version 2>&1 | head -1)" >> $GITHUB_OUTPUT
+          echo "gitVersion=$(git --version)" >> $GITHUB_OUTPUT
+          echo "cmakeVersion=$(cmake --version 2>&1 | head -1)" >> $GITHUB_OUTPUT
+          if command -v ninja &> /dev/null; then
+            echo "ninjaInstalled=true" >> $GITHUB_OUTPUT
+            echo "ninjaVersion=$(ninja --version)" >> $GITHUB_OUTPUT
+          else
+            echo "ninjaInstalled=false" >> $GITHUB_OUTPUT
+          fi
       
       - name: 🔧 Install Dependencies (Homebrew)
         run: |
@@ -126,6 +114,7 @@ jobs:
           ctest --output-on-failure || echo "⚠️ Some tests may have failed"
           
           echo "success=true" >> $GITHUB_OUTPUT
+        continue-on-error: false
       
       - name: 🏗️ Setup Flutter
         uses: subosito/flutter-action@v2
@@ -313,7 +302,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
-      success: ${{ steps.check_result.outputs.success }}
+      success: ${{ steps.native_android_build.outcome == 'success' && steps.apk_build.outcome == 'success' }}
       error_count: ${{ steps.analyze.outputs.error_count }}
       error_types: ${{ steps.analyze.outputs.error_types }}
     
@@ -324,17 +313,9 @@ jobs:
       - name: 📊 System Environment Information
         id: env_info
         run: |
-          echo "=== OS Version ===" >> $GITHUB_OUTPUT
-          uname -a >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== Java Version ===" >> $GITHUB_OUTPUT
-          java -version 2>&1 | tee java_version.log || echo "Java not found" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          
-          echo "=== Gradle Wrapper ===" >> $GITHUB_OUTPUT
-          cat frontend/android/gradle/wrapper/gradle-wrapper.properties >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
+          echo "javaVersion=$(java -version 2>&1 | head -1)" >> $GITHUB_OUTPUT
+          echo "gradleVersion=$(cat frontend/android/gradle/wrapper/gradle-wrapper.properties | grep 'distributionUrl' | awk -F'[=:]' '{print $3}' | head -1)" >> $GITHUB_OUTPUT
+          echo "ndkVersion=$NDK_VERSION" >> $GITHUB_OUTPUT
       
       - name: 🔧 Setup Android SDK
         uses: android-actions/setup-android@v4
@@ -372,11 +353,15 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "=== ABI Filters Verification ==="
             ls -la native/jniLibs/ 2>/dev/null || echo "jniLibs directory empty or missing"
+            
+            echo "success=true" >> $GITHUB_OUTPUT
           else
             echo "❌ Native backend build FAILED" >> $GITHUB_STEP_SUMMARY
             tail -50 ndk_build.log >> $GITHUB_STEP_SUMMARY
             echo "Status: Failed" >> $GITHUB_OUTPUT
+            exit 1
           fi
+        continue-on-error: false
       
       - name: 🏗️ Setup Flutter
         uses: subosito/flutter-action@v2
