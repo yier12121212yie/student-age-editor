@@ -37,18 +37,29 @@ android {
     }
     }
 
+    // 正式签名用的 keystore 不入库（.gitignore: *.keystore），CI 上不存在。
+    // 本地放好 frontend/android/keystore/release.keystore 即自动启用正式签名；
+    // 缺失时回落到 debug 签名（与 Alpha-v0.5 的出厂行为一致），保证 release 通道能出包。
+    val releaseKeystore = file("${project.projectDir}/../keystore/release.keystore")
+
     signingConfigs {
-        create("release") {
-            storeFile = file("${project.projectDir}/../keystore/release.keystore")
-            storePassword = "studentage2024"
-            keyAlias = "studentage"
-            keyPassword = "studentage2024"
+        if (releaseKeystore.exists()) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = "studentage2024"
+                keyAlias = "studentage"
+                keyPassword = "studentage2024"
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (releaseKeystore.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
