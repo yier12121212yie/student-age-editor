@@ -384,7 +384,7 @@ jobs:
           else
             echo "❌ Native backend build FAILED" >> $GITHUB_STEP_SUMMARY
             tail -50 ndk_build.log >> $GITHUB_STEP_SUMMARY
-            echo "Status: Failed" >> $GITHUB_OUTPUT
+            echo "Status: Failed" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
         continue-on-error: false

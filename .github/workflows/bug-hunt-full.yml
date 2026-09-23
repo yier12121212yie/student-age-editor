@@ -454,8 +454,10 @@ jobs:
           # pipefail: `cmd | tee || handler` tested tee's status, so this guard
           # could never fire.
           set -o pipefail
-          bash native/android/android_build.sh 2>&1 | tee ndk_build.log || { echo "Status: Failed" >> $GITHUB_OUTPUT; exit 1; }
-          echo "Status: Success" >> $GITHUB_OUTPUT
+          # $GITHUB_OUTPUT accepts only key=value lines. "Status: Success" is not
+          # one, so the runner failed this step even though the .so built fine.
+          bash native/android/android_build.sh 2>&1 | tee ndk_build.log || { echo "Status: Failed" >> $GITHUB_STEP_SUMMARY; exit 1; }
+          echo "Status: Success" >> $GITHUB_STEP_SUMMARY
           echo "=== JNI Libraries ===" >> ndk_build.log
           ls -la native/jniLibs/ 2>/dev/null >> ndk_build.log || echo "jniLibs empty" >> ndk_build.log
       
@@ -542,8 +544,8 @@ jobs:
             android_env.log
             ndk_build.log
             flutter_doctor.log
-            gradle_deps.log
-            flutter_apk_build.log
+            frontend/android/gradle_deps.log
+            frontend/flutter_apk_build.log
             android_report.md
           retention-days: 7
 
