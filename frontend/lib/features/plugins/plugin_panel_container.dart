@@ -16,8 +16,11 @@ class PluginPanelContainer extends StatefulWidget {
 
 class _PluginPanelContainerState extends State<PluginPanelContainer> {
   int _selectedTab = 0;
-  Map<String, dynamic>? _pluginStatus;
+  /// 声明了 service 的插件行内 service_status（{ok,url,name,checked}，
+  /// 见 PLUGIN_GUIDE §5）。GET /api/plugins 只读缓存、不触网。
+  List<Map<String, dynamic>> _services = const [];
   bool _loading = true;
+  bool _bannerDismissed = false;
 
   final List<Map<String, String>> _tabs = [
     {'label': '资源浏览器', 'value': 'asset'},
@@ -32,22 +35,39 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
 
   Future<void> _checkServiceStatus() async {
     try {
-      // Check if asset extractor service is running
-      final res = await ApiClient.instance.get('/plugin/assets/plugin.json');
+      final res = await ApiClient.instance.get('/api/plugins');
+      final list = res is Map ? (res['plugins'] as List? ?? const []) : const [];
       setState(() {
-        _pluginStatus = res;
+        _services = [
+          for (final e in list)
+            if (e is Map && e['service'] != null)
+              Map<String, dynamic>.from(
+                  e['service_status'] as Map? ?? const <String, dynamic>{}),
+        ];
         _loading = false;
       });
     } catch (e) {
       print('[PluginPanel] Service check failed: $e');
-      setState(() {
-        _pluginStatus = {'status': 'offline'};
-        _loading = false;
-      });
+      setState(() => _loading = false);
     }
   }
 
+  /// 声明了 service 但最近一次刷新未通过：ok=false，或 checked=false（尚无结论）。
+  bool get _serviceDown => _services.any((s) => s['ok'] != true);
+
+  List<Map<String, dynamic>> get _downServices =>
+      [for (final s in _services) if (s['ok'] != true) s];
+
   Widget _buildOfflineBanner() {
+    final detail = _downServices
+        .map((s) {
+          final name = s['name'] as String? ?? '';
+          final url = s['url'] as String? ?? '';
+          if (name.isEmpty) return url;
+          return url.isEmpty ? name : '$name（$url）';
+        })
+        .where((t) => t.isNotEmpty)
+        .join('、');
     return Container(
       margin: const EdgeInsets.all(8),
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
@@ -65,7 +85,7 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '服务未启动',
+                  '插件服务未就绪',
                   style: TextStyle(
                     fontWeight: FontWeight.w600,
                     color: Colors.orange.shade900,
@@ -73,9 +93,17 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '请运行 python3 native/server/services/asset_extractor.py --port 39251',
+                  detail.isEmpty ? '未检测到已声明的服务插件' : detail,
                   style: TextStyle(
                     fontSize: 12,
+                    color: Colors.orange.shade700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '服务进程需手动启动；状态未刷新时请重载插件（PLUGIN_GUIDE §5）',
+                  style: TextStyle(
+                    fontSize: 11,
                     color: Colors.orange.shade700,
                   ),
                 ),
@@ -84,7 +112,7 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 18),
-            onPressed: () {},
+            onPressed: () => setState(() => _bannerDismissed = true),
           ),
         ],
       ),
@@ -97,7 +125,7 @@ class _PluginPanelContainerState extends State<PluginPanelContainer> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final offline = _pluginStatus == null || _pluginStatus!['status'] == 'offline';
+    final offline = _serviceDown && !_bannerDismissed;
 
     return Row(
       children: [

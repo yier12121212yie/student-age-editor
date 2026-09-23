@@ -46,6 +46,23 @@ enum class Kind {
     OobeStatus,
     OobeDone,
     OobeSetup,
+    PluginList,     // GET  /api/plugins
+    PluginInstall,  // POST /api/plugins/install_path (local zip, no base64)
+    PluginUninstall,// DELETE /api/plugins/<pid>
+    PluginReload,   // POST /api/plugins/reload
+    PluginTools,    // GET  /api/plugins/agent/tools
+    CloudProviders, // GET  /api/cloud/providers
+    CloudAdd,       // POST /api/cloud/providers
+    CloudUpdate,    // PUT  /api/cloud/providers/<pid>
+    CloudRemove,    // DELETE /api/cloud/providers/<pid>
+    CloudTest,      // POST /api/cloud/test
+    CloudSync,      // POST /api/cloud/sync
+    CloudStatus,    // GET  /api/cloud/status
+    CloudDrivers,   // GET  /api/cloud/drivers
+    CloudLocal,     // GET  /api/cloud/local_files
+    CloudRemote,    // GET  /api/cloud/list
+    AiSettings,     // GET  /api/ai/settings
+    AiSet,          // PUT  /api/ai/settings
     EnvGet,         // local editor_env.json (no HTTP route exists)
     EnvSet,
     None,
@@ -93,6 +110,29 @@ struct Command {
     bool has_opts = false;
     json bugs;                 // bugfix fix --from-file (array or scan payload)
     bool has_bugs = false;
+
+    // plugins ---------------------------------------------------------------
+    std::string plugin_id;     // plugin uninstall/tools target
+    std::string plugin_name;   // plugin install --name (filename for id fallback)
+
+    // cloud -----------------------------------------------------------------
+    std::string provider_id;   // cloud update/remove/test/sync/remote
+    std::string provider_name; // cloud add/update --name
+    std::string provider_type; // cloud add/update --type (webdav|local|openlist|...)
+    std::string remote_root;   // cloud add/update --remote-root (default "mods" server-side)
+    json provider_config;      // cloud add/update --config / --config-file
+    bool has_provider_config = false;
+    std::string direction;     // cloud sync --direction (upload|download|sync|...)
+    std::string files_txt;     // cloud sync --files rel[,rel...]
+    bool dry_run = false;      // cloud sync --dry-run
+    bool delete_extra = false; // cloud sync --delete-extra
+    bool folder = false;       // cloud sync --folder/--all (whole-mod sync)
+
+    // ai / oobe extras ------------------------------------------------------
+    json ai_settings;          // ai set --data / oobe setup --ai
+    bool has_ai_settings = false;
+    json cloud_provider;       // oobe setup --cloud-provider (client-side composed)
+    bool has_cloud_provider = false;
 
     long long expect_mtime = 0;
     bool has_expect_mtime = false;

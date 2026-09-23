@@ -22,6 +22,13 @@ const char* kSystemPrompt =
     "你是「学生时代模组编辑器」的 AI 助手。用简体中文回答，简洁清晰。"
     "本终端版为纯对话（不含自动改表工具），需要改动时请给出手动操作步骤。";
 
+std::string Trim(const std::string& s) {
+    size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return {};
+    size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
 // A single top-level component: it renders the panel and translates keys.
 class TuiComponent : public ftxui::ComponentBase {
 public:
@@ -77,6 +84,12 @@ void TuiApp::Run() {
         st.status = "后端未连接: " + err + "  (" + api_.base_url() + ")";
     }
     LoadMods();
+    // The permission mode gates every mutating action, so it is seeded from the
+    // same .editor_ai.json the desktop frontend reads (GET /api/ai/settings).
+    {
+        std::string ac_err;
+        st.permission_mode = api_.LoadPermissionMode(&ac_err);
+    }
 
     screen.Loop(component);
 }
@@ -223,6 +236,122 @@ void TuiApp::RunIntent(Intent intent) {
             }
             break;
         }
+        case Intent::RefreshPlugins:
+            st.plugins = api_.ListPlugins(&err);
+            st.plugins_loaded = true;
+            st.plugin_sel = st.ClampSel(st.plugin_sel, static_cast<int>(st.plugins.size()));
+            st.status = err.empty() ? ("插件 " + std::to_string(st.plugins.size()) + " 个") : err;
+            break;
+        case Intent::InstallPlugin: {
+            // The path lives in plugin_input (the state machine cleared only the
+            // input *mode*); trim it again so a stray space never reaches the FS.
+            const std::string path = Trim(st.plugin_input);
+            if (path.empty()) {
+                st.status = "输入插件 zip 路径";
+                break;
+            }
+            std::string id;
+            if (api_.InstallPlugin(path, &id, &err)) {
+                st.plugins = api_.ListPlugins(&err);
+                st.plugins_loaded = true;
+                st.plugin_sel = st.ClampSel(st.plugin_sel, static_cast<int>(st.plugins.size()));
+                st.status = "已安装 " + (id.empty() ? path : id);
+            } else {
+                st.status = err;
+            }
+            break;
+        }
+        case Intent::UninstallPlugin: {
+            if (st.plugins.empty()) {
+                st.status = "没有可卸载的插件";
+                break;
+            }
+            const int pi = st.ClampSel(st.plugin_sel, static_cast<int>(st.plugins.size()));
+            const std::string id = st.plugins[pi].id;
+            if (api_.UninstallPlugin(id, &err)) {
+                st.plugins = api_.ListPlugins(&err);
+                st.plugins_loaded = true;
+                st.plugin_sel = st.ClampSel(st.plugin_sel, static_cast<int>(st.plugins.size()));
+                st.status = "已卸载 " + id;
+            } else {
+                st.status = err;
+            }
+            break;
+        }
+        case Intent::ReloadPlugins: {
+            std::vector<PluginEntry> list;
+            if (api_.ReloadPlugins(&list, &err)) {
+                st.plugins = std::move(list);
+                st.plugins_loaded = true;
+                st.plugin_sel = st.ClampSel(st.plugin_sel, static_cast<int>(st.plugins.size()));
+                st.status = "已重载 " + std::to_string(st.plugins.size()) + " 个插件";
+            } else {
+                st.status = err;
+            }
+            break;
+        }
+        case Intent::RefreshCloudProviders:
+            st.providers = api_.ListCloudProviders(&err);
+            st.providers_loaded = true;
+            st.provider_sel = st.ClampSel(st.provider_sel, static_cast<int>(st.providers.size()));
+            st.status =
+                err.empty() ? ("Provider " + std::to_string(st.providers.size()) + " 个") : err;
+            break;
+        case Intent::LoadCloudFiles: {
+            st.cloud_error.clear();
+            std::string e_local, e_remote;
+            st.cloud_local = api_.CloudLocalFiles(st.selected_mod, &e_local);
+            st.cloud_remote.clear();
+            if (!st.providers.empty()) {
+                const int pi = st.ClampSel(st.provider_sel, static_cast<int>(st.providers.size()));
+                st.cloud_remote = api_.CloudRemoteFiles(st.providers[pi].id, st.selected_mod,
+                                                       &e_remote);
+            }
+            st.cloud_files_loaded = true;
+            // The local failure is fatal-ish; a dead remote is informational
+            // (the desktop page shows it as a non-blocking empty state too).
+            st.cloud_error = !e_local.empty() ? e_local : e_remote;
+            st.status = "本地 " + std::to_string(st.cloud_local.size()) + " 个 / 远端 " +
+                        std::to_string(st.cloud_remote.size()) + " 个";
+            break;
+        }
+        case Intent::CloudTest: {
+            if (st.providers.empty()) {
+                st.status = "没有可选 Provider";
+                break;
+            }
+            const int pi = st.ClampSel(st.provider_sel, static_cast<int>(st.providers.size()));
+            st.status = api_.CloudTest(st.providers[pi].id, &err) ? "连接测试通过" : err;
+            break;
+        }
+        case Intent::CloudSync: {
+            if (st.providers.empty()) {
+                st.status = "没有可选 Provider";
+                break;
+            }
+            const int pi = st.ClampSel(st.provider_sel, static_cast<int>(st.providers.size()));
+            CloudSyncSummary sum =
+                api_.CloudSync(st.providers[pi].id, st.cloud_direction, st.selected_mod,
+                               st.cloud_dry_run, st.cloud_delete_extra, /*full=*/true, &err);
+            st.cloud_error = err;
+            st.cloud_sync_summary = std::string(sum.dry_run ? "DRY-RUN " : "") + "方向 " +
+                                    sum.direction + "  共 " + std::to_string(sum.total) +
+                                    "  上传 " + std::to_string(sum.uploaded) + "  下载 " +
+                                    std::to_string(sum.downloaded) + "  跳过 " +
+                                    std::to_string(sum.skipped) + "  失败 " +
+                                    std::to_string(sum.failed);
+            if (!sum.message.empty()) st.cloud_sync_summary += "  (" + sum.message + ")";
+            st.status = st.cloud_sync_summary;
+            break;
+        }
+        case Intent::LoadAiSettings:
+            st.permission_mode = api_.LoadPermissionMode(&err);
+            break;
+        case Intent::SetPermissionMode: {
+            std::string e2;
+            if (!api_.SavePermissionMode(st.permission_mode, &e2)) st.status = e2;
+            break;
+        }
         case Intent::Quit:
         case Intent::None:
             break;
@@ -287,6 +416,17 @@ AppState TuiApp::SampleState(Page page) {
     s.bug_scanned = true;
     s.chat = {ChatMsg{"user", "帮我看看 TalkCfg 的第一句"},
               ChatMsg{"assistant", "第一句对白内容为「你好，同学」，说话人角色已配置。"}};
+    s.plugins = {PluginEntry{"demo", "Demo Plugin", "1.2.3", "me", "示例插件", "", true},
+                 PluginEntry{"broken", "Broken", "", "", "", "manifest 解析失败", false}};
+    s.plugins_loaded = true;
+    s.providers = {CloudProvider{"p_1", "我的网盘", "webdav", "mods"},
+                   CloudProvider{"p_2", "本地目录", "local", "mods"}};
+    s.providers_loaded = true;
+    s.cloud_local = {CloudFile{"Cfgs/zh-cn/TalkCfg.json", false, 128},
+                     CloudFile{"Cfgs/zh-cn/EvtCfg.json", false, 256}};
+    s.cloud_remote = {CloudFile{"mods/DemoMod/Cfgs/zh-cn/TalkCfg.json", false, 128}};
+    s.cloud_files_loaded = true;
+    s.cloud_sync_summary = "DRY-RUN 方向 upload  共 2  上传 1  下载 0  跳过 1  失败 0";
     s.status = "示例数据（--render-check）";
     if (page == Page::Table) s.editing = false;
     return s;

@@ -1387,6 +1387,21 @@ class _FieldFormState extends State<_FieldForm> {
     super.dispose();
   }
 
+
+  /// 获取友好的帮助文本。
+  ///
+  /// 注意传的是**字段键**（key）而不是 [label]：label 是 KeyTranslator 翻出来的
+  /// 中文显示名（如 name → "名称"），拿它去查英文键表永远不会命中。
+  String _getHelpText(String cfgName, String key, String label, String type) {
+    final friendlyHint = getGameFriendlyHint(cfgName, key);
+    if (friendlyHint != null) {
+      return friendlyHint;
+    }
+
+    return '「$label」字段的值：类型为 [$type]，按编码格式输入';
+  }
+
+
   @override
   Widget build(BuildContext context) {
     final fieldKeys = widget.fieldKeys;
@@ -1476,7 +1491,7 @@ class _FieldFormState extends State<_FieldForm> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '「$label」字段的值：类型为 [$type]，按编码格式输入',
+                  _getHelpText(widget.cfgName, key, label, type),
                   style: TextStyle(
                     fontSize: 11,
                     color: palette.textMuted,

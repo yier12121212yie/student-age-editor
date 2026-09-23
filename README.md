@@ -21,8 +21,10 @@ HTTP API 契约与旧 Python 版保持兼容（104 端点），Flutter 前端零
 - **云同步**：GUI 提供 WebDAV / OpenList / 百度网盘等 7 种驱动，手动或实时同步
   Mod；CLI/TUI 的云同步命令尚未移植（见 `CLI_TUI_GUIDE.md`）。
 - **插件系统**：**声明型**插件——插件是「目录 + `manifest.json`」的静态声明，
-  不执行任何代码；可声明流程卡片（flow card）与 UI 面板（外部 HTTP 服务插件
-  为规范先行、尚未实现）。**无启用 / 停用状态（安装即可用，常开）**。详见
+  编辑器不加载插件代码；可声明流程卡片（flow card）与 UI 面板。需要代码贡献时
+  用 **HTTP 服务插件**（已实现）：插件作为独立进程监听 loopback，后端只做聚合
+  与代理，服务进程需自行启动（见 `PLUGIN_GUIDE.md` §5）。
+  **无启用 / 停用状态（安装即可用，常开）**。详见
   [`PLUGIN_GUIDE.md`](PLUGIN_GUIDE.md)，规范以
   [`native/PLUGIN_SPEC.md`](native/PLUGIN_SPEC.md) 为唯一真相源。
 

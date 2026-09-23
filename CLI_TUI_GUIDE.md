@@ -29,6 +29,10 @@ backend_cli oobe status
 # 设置工作区、可选顺手建一个模组（默认同时标记 OOBE 完成）
 backend_cli oobe setup --workspace D:\MyMods --mod FirstMod --desc "第一个模组"
 
+# 顺带配置 AI 与云盘（后端 /api/oobe/setup 本身忽略这两项，
+# CLI 会在 setup 之后追加真正的 PUT /api/ai/settings 与 POST /api/cloud/providers）
+backend_cli oobe setup --workspace D:\MyMods --ai '{"permissionMode":"confirm","provider":"openai_compatible"}' --cloud-provider '{"name":"我的网盘","type":"webdav","config":{"url":"https://dav.example.com"}}'
+
 # 只标记完成
 backend_cli oobe done
 ```
@@ -166,6 +170,63 @@ backend_cli story import --start-id 101 --file .\story.txt --write  # 落库
 backend_cli story import --start-id 101 --text "【甲】你好" --write --append
 ```
 
+`bugfix scan` 的输出按 `flag` 逐行列出，并在末尾给出 `count` 与
+`by_flag: LOGIC=n ERROR=n ...` 分类统计；`bugfix fix` 除 `fixed` / `remaining` 计数外，
+还会逐条列出**无法自动修复**的遗留缺陷（LOGIC / ERROR 类后端不会自动改）。
+
+### 插件管理
+
+```powershell
+backend_cli plugin list                      # 已安装插件（id / 名称 / 版本 / 加载状态）
+backend_cli plugin install .\my-plugin.zip   # 安装（--name 可指定 zip 文件名，用于推导 id）
+backend_cli plugin uninstall my-plugin       # 卸载（删除插件目录，无启用态）
+backend_cli plugin reload                    # 重新扫描全部插件
+backend_cli plugin tools                     # 插件提供给 AI 的工具
+```
+
+插件系统为**声明型**：目录 + `manifest.json`，不执行代码、无启用/停用态，
+因此**没有** `enable` / `disable`（后端对这些请求返回 410）。安装走
+`POST /api/plugins/install_path`（本地路径），不做 base64 包装，不受体积上限限制。
+卸载是立即删除，不弹确认——与 `mods remove` 的既有约定一致。
+
+### 云同步
+
+```powershell
+backend_cli cloud providers                  # Provider 列表 + 可用驱动
+backend_cli cloud add --name 我的网盘 --type webdav --config '{"url":"https://dav.x","username":"u","password":"p"}'
+backend_cli cloud add --type webdav --config-file .\drv.json --remote-root mods
+backend_cli cloud update p_1 --name 新名字 --config '{"password":"p2"}'
+backend_cli cloud remove p_1
+backend_cli cloud test p_1                   # 已保存 Provider
+backend_cli cloud test --type local --config '{"root":"D:\mods"}'
+backend_cli cloud drivers                    # 各驱动的配置 schema（字段名）
+backend_cli cloud status                     # 进度 + 历史
+backend_cli cloud local --mod MyMod          # Mod 本地文件列表
+backend_cli cloud remote p_1 --mod MyMod     # 远端文件列表
+
+# 同步：默认整文件夹；--files 走选中文件模式
+backend_cli cloud sync p_1 --direction upload --dry-run      # 只预览
+backend_cli cloud sync p_1 --direction sync                  # 双向（mtime 新者胜）
+backend_cli cloud sync p_1 --direction upload --delete-extra
+backend_cli cloud sync p_1 --direction download --files Cfgs/zh-cn/TalkCfg.json
+```
+
+`--direction` 取 `upload|download|sync|delete_remote|delete_local`（必填）。
+`--dry-run` 只预览不写入。输出逐行 `[ok|!!] <action> <rel>` 并给出
+`summary: upload=n download=n skip=n failed=n`。
+
+### AI 设置（权限模式）
+
+```powershell
+backend_cli ai settings                      # 查看（含 permissionMode）
+backend_cli ai set --mode confirm            # 变更前确认（默认）
+backend_cli ai set --mode full               # 不再确认，AI 直接修改
+backend_cli ai set --data '{"model":"gpt-4o-mini","temperature":0.3}'
+backend_cli ai set --file .\ai.json
+```
+
+`ai set` 写 `PUT /api/ai/settings`，与 GUI 设置页写的是同一份 `.editor_ai.json`。
+
 ### 环境变量文件（本地，非 HTTP）
 
 ```powershell
@@ -218,7 +279,7 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Header: 学生时代·编辑器 TUI   [模组 D][表格 T][Bug B][助手 A]          │
+│ Header: 学生时代·编辑器 TUI  [模组D][表格T][BugB][助手A][插件P][云L]  [权限:confirm] │
 ├──────────┬──────────────────────────────┬───────────────────────────┤
 │ 表列表    │  记录（当前表的行 + 过滤）     │  详情（选中行）             │
 │ （过滤）  │  n 新增 / y 复制 / d 删除     │  [JSON] ⇄ [表单]（m 切换） │
@@ -229,7 +290,20 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-覆盖层：`Ctrl-K` 全局搜索对白（TalkCfg/EvtCfg 跨表）、`v` 校验当前表、`?` 帮助。
+插件页（`Ctrl-P`）为单栏清单；云同步页（`Ctrl-L`）为三栏——Provider 轨 +
+本地 / 远端双栏对比（对齐 GUI 云同步页）：
+
+```
+┌───────────────┬─────────────────────────┬──────────────────────────┐
+│ Provider      │  本地 Mod 文件           │  远端文件                 │
+│ （↑↓ 选择）    │  Cfgs/zh-cn/*.json      │  <remote_root>/...       │
+│ 模组 / 方向    │                          │                          │
+│ DryRun / 清理  │                          │                          │
+├───────────────┴─────────────────────────┴──────────────────────────┤
+```
+
+覆盖层：`Ctrl-K` 全局搜索对白（TalkCfg/EvtCfg 跨表）、`v` 校验当前表、`?` 帮助，
+以及 `confirm` 权限模式下的**审批框**。
 
 ### 快捷键
 
@@ -237,18 +311,45 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 |------|------|
 | `Ctrl-Q` | 退出 |
 | `Ctrl-D` / `Ctrl-T` / `Ctrl-B` / `Ctrl-A` | 切换 模组 / 表格 / Bug / AI 助手 页 |
+| `Ctrl-P` / `Ctrl-L` | 切换 插件管理 / 云同步 页 |
+| `Ctrl-M` | 切换权限模式 `confirm`（变更前确认）⇄ `full`（直接执行） |
 | `?` | 开关帮助覆盖层（任意键先行关闭） |
 | `Tab` | 浏览页切换焦点：表列表 → 记录 → 详情 → 表列表 |
 | `↑↓` | 列表 / 行 / 表单字段移动 |
-| `Enter` | 表列表打开表 / 行进入 JSON 编辑 / 表单模式编辑字段 / 助手发送 |
+| `Enter` | 表列表打开表 / 行进入 JSON 编辑 / 表单模式编辑字段 / 助手发送 / 云页读取文件列表 |
 | `m` | 详情面板 JSON ⇄ 表单 切换（详情焦点时） |
 | `n` / `y` | 新增行 / 复制当前行（自动分配键，Ctrl-S 保存落盘） |
 | `d` | 标记删除当前行（再按一次取消） |
 | `Ctrl-K` | 全局搜索对白（跨 TalkCfg/EvtCfg，含本体） |
 | `v` | 校验当前打开的表（issues + counts 覆盖层） |
-| `r` | 刷新（模组 / 表列表 / 当前表）；Bug 页重扫 |
+| `r` | 刷新（模组 / 表列表 / 当前表 / 插件清单 / Provider） |
 | `Ctrl-R` / `Ctrl-S` | Bug 页重扫 / 保存（表页补丁、Bug 页应用修复） |
 | 直接输入 | 表列表 / 记录页按字符过滤 |
+
+插件页：`r` 刷新、`R` 重载全部、`i` 安装（弹出单行 zip 路径输入，`Enter` 确认、
+`Esc` 取消）、`u` 卸载选中项。
+
+云同步页：`↑↓` 选 Provider、`Enter` 读取本地/远端列表、`u`/`d`/`b` 选
+upload / download / sync 方向、`y` 切 DryRun、`x` 切「清理远端多余」、
+`s` 执行同步、`t` 测试连接、`r` 刷新 Provider。
+
+### 权限模式与审批框
+
+`permission_mode`（默认 `confirm`，与后端 `.editor_ai.json` 的默认值一致）决定
+**写操作是否先弹审批框**：
+
+| 操作 | 类型 | confirm 模式 |
+|------|------|--------------|
+| 保存补丁（`Ctrl-S`） | 写 | 弹框 |
+| 应用修复（Bug 页 `f` / `Ctrl-S`） | 写 | 弹框 |
+| 插件安装（`i`） | 写 | 弹框 |
+| 插件卸载（`u`） | 写 | 弹框 |
+| 云同步（`s`，DryRun 关） | 写 | 弹框 |
+| 云同步 DryRun / 扫描 / 校验 / 读表 / 搜索 / 测试连接 | 读 | 不弹 |
+
+审批框 `y`/`Enter` 允许、`n`/`Esc` 拒绝（拒绝只记状态行，不执行）。启动时 TUI 用
+`GET /api/ai/settings` 读入当前模式，`Ctrl-M` 切换后用 `PUT /api/ai/settings` 写回，
+与 GUI 的「变更前确认 / 完全访问」是同一份设置。
 
 ### 操作流
 
@@ -261,9 +362,13 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 5. `v` 校验当前表，`Ctrl-K` 全局搜索对白（`↑↓` 选结果，`Esc` 关闭）。
 6. Bug 页 `Ctrl-R` 扫描，`↑↓` 选择，`Ctrl-S` 应用修复。
 7. 助手页 `Ctrl-A`，直接输入后 `Enter` 发送；`Esc` 返回。
+8. 插件页 `Ctrl-P`，`r` 读清单，`i` 输入 zip 路径安装，`↑↓` 选中后 `u` 卸载，
+   `R` 重载全部。
+9. 云同步页 `Ctrl-L`，`↑↓` 选 Provider，`Enter` 读本地/远端对比；`u`/`d`/`b` 选方向、
+   `y`/`x` 切 DryRun / 清理远端，`s` 执行（先 `y` 打开 DryRun 可安全预览）。
 
 数据安全：保存通过后端写管线（原子替换 + 快照），TUI 不直接写文件；与图形版同时
-编辑同一 cfg 可能互相覆盖，保存前 `r` 刷新。
+编辑同一 cfg 可能互相覆盖，保存前 `r` 刷新。`confirm` 权限模式下所有写操作先弹审批框。
 
 ---
 
@@ -288,7 +393,7 @@ native/
   与桌面同一组 route handler），再经 `sa_core::http` 走 loopback HTTP 自调自；
   `--json` 时原样透传后端字节。`--url` 时退化为纯客户端。
 - **TUI**：纯客户端，用 `BackendApi` 调后端 HTTP API（mods / cfg / bugfix /
-  history），agent 页用 `AgentClient` 直连模型服务。
+  history / plugins / cloud / ai settings），agent 页用 `AgentClient` 直连模型服务。
 - 二者都不再离线直接读写文件（旧 Python CLI/TUI 的「离线文件模式」已随迁移取消）；
   所有读写经后端，语义与 GUI 一致。
 
@@ -336,22 +441,32 @@ python build_release.py --target macos   --version Alpha-v0.1
   `--agent-config <json>`（`{provider, baseUrl, model, temperature, apiKey}`）或环境变量
   `P8_AI_PROVIDER` / `P8_AI_BASE` / `P8_AI_MODEL` / `P8_AI_KEY`。会话历史以单文件
   JSON 落盘于 `<data_root>/.p8_ai_history/`。
-- **CLI 没有 agent 子命令**（旧 Python 版的 `agent chat/config/history` 未移植）。
+- **CLI 有 `ai` 子命令**（`ai settings` / `ai set`），覆盖 `.editor_ai.json` 的设置
+  读写（含 `permissionMode`）；工具调用与工具级 diff 审批仍未移植
+  （旧 Python 版的 `agent chat/config/history` 不在其中）。
+- **权限模式**：`permissionMode` 取 `confirm`（默认，写操作先弹审批框）或 `full`
+  （直接执行）。TUI 用 `Ctrl-M` 切换并写回后端，CLI 用 `ai set --mode`，GUI 用设置页
+  与 AI 面板快捷键——三端同一份 `.editor_ai.json`。TUI 的审批框覆盖保存 / 修复 /
+  装插件 / 卸载 / 真实云同步。
 - GUI 的完整 AI 侧栏（工具调用、字段级 diff 审批、多协议、并行子代理、自动重连）
   仍由 Flutter 前端直连后端 AI 路由提供；配置三端共享 `.editor_ai.json`。
 
 > 与旧 Python 版的差异：native TUI 的 agent 是大幅简化的「纯对话」实现（无 14 个领域
-> 工具、无审批回调、无 `spawn_subagents`、无自动重连退避/取消、无多协议）。
+> 工具、无审批回调、无 `spawn_subagents`、无自动重连退避/取消、无多协议）；它复用了
+> 后端的 `permissionMode` 设置，但审批的对象是 TUI 自身的写操作，而非工具调用。
 
 ---
 
 ## 8. 云同步
 
-- **CLI / TUI 未移植云同步命令**（旧 Python 版的 `cloud providers/add/test/show/remove/sync`
-  不存在）。
-- 后端 `/api/cloud/*` 路由与同步引擎仍在，由 GUI 云同步页消费（7 种驱动：local /
-  webdav / openlist / 百度 / 123 / Google Drive / OneDrive；配置存
-  `<workspace>/.editor_cloud.json`）。实时自动同步为 GUI 专属。
+- **CLI 有完整 `cloud` 子命令**（`providers` / `add` / `update` / `remove` / `test` /
+  `sync` / `status` / `drivers` / `local` / `remote`），见 §2「云同步」。
+- **TUI 有云同步页**（`Ctrl-L`）：Provider 轨 + 本地/远端双栏对比 + 方向/DryRun/
+  清理远端 开关 + 同步与连接测试，对齐 GUI 云同步页的布局与语义。
+- 后端 `/api/cloud/*` 路由与同步引擎为三端共用（11 种驱动别名：local / webdav /
+  openlist / alist / 百度 / 123 / Google Drive / OneDrive 等；配置存
+  `<workspace>/.editor_cloud.json`）。**实时自动同步仍为 GUI 专属**（CLI/TUI 未移植
+  `/api/cloud/realtime/*` 的交互）。
 
 ---
 
@@ -366,8 +481,10 @@ python build_release.py --target macos   --version Alpha-v0.1
 
 ## 10. 插件管理
 
-- **CLI / TUI 没有 plugin 子命令**（旧 Python 版的 `plugin list/info/install/enable/...`
-  未移植）；插件系统已改为**声明型**（目录 + `manifest.json`，不执行代码、无启用/停用态），
-  不存在旧版的「启用高危确认」「启用的插件注册 CLI 命令」等机制。
-- GUI 插件页可查看插件与流程卡片贡献；插件作者指南见 `PLUGIN_GUIDE.md`，规范以
-  `native/PLUGIN_SPEC.md` 为唯一真相源。
+- **CLI 有 `plugin` 子命令**（`list` / `install` / `uninstall` / `reload` / `tools`），
+  **TUI 有插件页**（`Ctrl-P`：清单 + `i` 安装 / `u` 卸载 / `R` 重载），与 GUI 插件页
+  对齐，见 §2「插件管理」。
+- 插件系统为**声明型**（目录 + `manifest.json`，不执行代码、无启用/停用态），因此
+  三端都**没有** `enable` / `disable`（后端返回 410），也不存在旧版的「启用高危确认」
+  「启用的插件注册 CLI 命令」等机制。插件的 UI 面板 / 流程卡片贡献仍由 GUI 渲染。
+- 插件作者指南见 `PLUGIN_GUIDE.md`，规范以 `native/PLUGIN_SPEC.md` 为唯一真相源。

@@ -476,6 +476,10 @@ int real_main(int argc, char** argv) {
     // derives its POST from the plan[0] GET response.
     const bool is_import = c.kind == Kind::ModsAddPath || c.kind == Kind::ModsAddZip;
     const bool validate_auto = c.kind == Kind::Validate && !c.has_data;
+    // A plan with more than one step where step 0 IS the command's answer
+    // (oobe setup --ai/--cloud-provider): execute the primary first, then run
+    // the extras as best-effort follow-ups.
+    const bool multi_step = plan.size() > 1 && !is_import && !validate_auto;
     auto bail = [](const Executed& ex) {
         if (!ex.transport_ok) {
             print_utf8_err("error: transport: " + ex.transport_error + "\n");
@@ -529,6 +533,20 @@ int real_main(int argc, char** argv) {
     }
     Executed last = exec(final_spec);
 
+    // Follow-up steps carry side effects only (their responses are not the
+    // command's answer): a failure is a warning, never a hard error.
+    if (multi_step) {
+        for (size_t i = 1; i < plan.size(); ++i) {
+            Executed extra = exec(plan[i]);
+            if (!extra.transport_ok) {
+                print_utf8_err("warning: follow-up " + plan[i].method + " " + plan[i].path +
+                               " failed: " + extra.transport_error + "\n");
+            } else if (extra.status < 200 || extra.status > 299) {
+                print_utf8_err("warning: follow-up " + plan[i].method + " " + plan[i].path +
+                               ": " + error_text(extra.body) + "\n");
+            }
+        }
+    }
     // Persist explicit selection choices so the next one-shot run re-selects
     // the same mod. Only when the data root is known (embedded run or an
     // explicit --data-root): never scribble editor_env.json next to the exe.

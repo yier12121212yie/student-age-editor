@@ -394,3 +394,113 @@ List<FieldMeta> flowInlineMetas(AppState state, String cfg, bool isOption) {
       if (metas[key] != null) metas[key]!,
   ];
 }
+
+/// 游戏友好型字段描述映射 (cfgName → key → friendly description)
+/// 
+/// 用于替代默认的技术化提示文本 "类型为 [String]，按编码格式输入"
+/// 提供更直观、更贴合游戏内容的说明
+const kGameFriendlyHints = <String, Map<String, String>>{
+  // FishCfg - 鱼类配置
+  'FishCfg': {
+    'btn': '触发言语\n（例如："太棒了！"）',
+    'name': '鱼的中文名\n（例如："鲫鱼"、"鲤鱼"）',
+    'weight': '出现概率\n（数字越大越容易被钓起）',
+    'item': '获得道具编号\n（如果没有奖励就填 0）',
+    'weights': '重量范围 [最小 g, 最大 g]\n（例如：[200.0, 400.0]）',
+    'type': '鱼种分类\n（1=淡水鱼，2=海水鱼，3=未知）',
+    'icon': '图标图片路径\n（留空使用默认图标）',
+  },
+  
+  // BookCfg - 书籍配置
+  'BookCfg': {
+    'name': '书名',
+    'themes': '书籍主题标签\n（逗号分隔的数组，如：科学，文学，历史）',
+    'type': '书籍分类\n（1=教材，2=小说，3=科普）',
+    'capacity': '阅读容量/页数',
+    'value': '购买价格',
+    'sellPrice': '出售价格',
+    'description': '书籍简介',
+    'talkReaction': '谈论此书时他人的反应',
+  },
+  
+  // JobCfg - 职业路径
+  'JobCfg': {
+    'id': '职业编号',
+    'name': '职业名称\n（企业家、医生、教师等）',
+    'unlock': '解锁条件\n（需要先达到什么等级或属性）',
+    'weight': '选择概率',
+    'scoreRate': '评分标准倍数',
+    'needAttrs': '需要的属性要求',
+  },
+  
+  // PersonAttrCfg - 主角属性
+  'PersonAttrCfg': {
+    'mood': '心情值',
+    'intelligence': '智商',
+    'trust': '信任度/EQ',
+    'physique': '体质',
+    'energy': '精力值',
+    'experience': '经验值',
+    'allowance': '零花钱',
+  },
+  
+  // RelationCfg - 人际关系
+  'RelationCfg': {
+    'name': '关系等级名称\n（路人、朋友、好友、密友、恋人）',
+    'condition': '升级所需的亲密度阈值',
+    'socialCapacity': '此等级能拥有的最大人数',
+    'upgradeCost': '升级所需消耗的积分',
+  },
+  
+  // MinigameCfg - 小游戏定义
+  'MinigameCfg': {
+    'id': '小游戏编号',
+    'name': '小游戏名称\n（钓鱼、篮球、答题等）',
+    'bgm': '背景音乐编号',
+    'tips': '玩法说明\n（告诉玩家怎么操作）',
+  },
+  
+  // AchievementCfg - 成就系统
+  'AchievementCfg': {
+    'id': '成就编号',
+    'name': '成就名称',
+    'cost': '达成所需的时间或次数',
+    'group': '所属成就组别',
+    'lv': '成就等级',
+    'attrId': '关联的属性 ID',
+  },
+  
+  // SkillCfg - 技能配置
+  'SkillCfg': {
+    'id': '技能编号',
+    'name': '技能名称\n（篮球、钓鱼、手工等）',
+    'desc': '技能详细描述',
+    'action': '关联的行动 ID',
+  },
+  
+  // MapCfg - 地图地点
+  'MapCfg': {
+    'id': '地点编号',
+    'name': '地点名称\n（教学楼、操场、图书馆）',
+    'shortName': '简称\n（可选，如"操场"）',
+    'floorName': '楼层名称',
+    'type': '区域类型\n（室内/室外/半开放）',
+  },
+};
+
+/// 取游戏友好型字段描述。
+///
+/// [fieldKey] 必须是**字段键**（schema 里的原始 key，如 `sellPrice`），不是
+/// 翻译后的中文显示名——调用方曾传显示名导致整张表基本查不中。查表先精确、
+/// 再忽略大小写，兼容 schema 里的大小写差异。
+String? getGameFriendlyHint(String cfgName, String fieldKey) {
+  final hints = kGameFriendlyHints[cfgName];
+  if (hints == null) return null;
+  final direct = hints[fieldKey];
+  if (direct != null) return direct;
+  final lower = fieldKey.toLowerCase();
+  for (final entry in hints.entries) {
+    if (entry.key.toLowerCase() == lower) return entry.value;
+  }
+  return null;
+}

@@ -1,0 +1,43 @@
+# 换行与文本规范化（仓库级唯一真相源）
+#
+# 背景：历史提交里出现过「整篇重写」的假 diff——Windows 编辑器把工作区文件从 LF
+# 改成 CRLF，git diff 于是显示上万行改动，真实改动被淹没。根因是仓库缺少
+# .gitattributes，git 无法在入库时规范化换行。
+#
+# 规则：仓库内一律存 LF（本仓库跨 Windows/Linux/macOS 三平台构建，LF 是唯一安全
+# 选择）；检出到工作区时按平台与文件类型决定。
+* text=auto
+
+# 脚本必须始终 LF：CI 在 Linux/macOS 上用 bash 直接执行，CRLF 会破坏 shebang，
+# 也会让 set -e / 行尾 \r 参与匹配。
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.py    text eol=lf
+
+# Windows 原生脚本必须 CRLF，否则 cmd.exe / PowerShell 解析异常。
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制：禁止任何换行/编码转换（text=auto 已按内容识别，此处显式兜底）。
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
+*.jar   binary
+*.apk   binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.dylib binary
+*.a     binary
+*.lib   binary
+*.moc3  binary
+*.pdf   binary

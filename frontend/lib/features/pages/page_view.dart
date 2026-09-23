@@ -163,35 +163,4 @@ class _PageViewState extends State<EditorPageView> {
   }
 }
 
-/// 移动端剧情导演占位：三栏编排视图仅桌面可用。
-class _StoryMobilePlaceholder extends StatelessWidget {
-  const _StoryMobilePlaceholder({required this.onOpenSearch});
 
-  final VoidCallback? onOpenSearch;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(FluentIcons.chat_24_regular, size: 40, color: palette.accentLight),
-            const SizedBox(height: 14),
-            Text('剧情导演请在桌面端使用',
-                style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            Text('三栏编排视图更适合大屏；移动端可用事件预览与剧情库查看剧情',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: palette.textSecondary)),
-            if (onOpenSearch != null) ...[
-              const SizedBox(height: 16),
-              fluent.FilledButton(onPressed: onOpenSearch, child: const Text('前往剧情库')),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}

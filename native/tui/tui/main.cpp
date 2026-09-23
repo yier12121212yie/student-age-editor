@@ -136,6 +136,8 @@ bool ParsePage(const std::string& name, p8::Page& out) {
     else if (name == "tables" || name == "table") out = p8::Page::Table;
     else if (name == "bugfix") out = p8::Page::Bugfix;
     else if (name == "agent") out = p8::Page::Agent;
+    else if (name == "plugins" || name == "plugin") out = p8::Page::Plugins;
+    else if (name == "cloud") out = p8::Page::Cloud;
     else return false;
     return true;
 }
@@ -214,7 +216,7 @@ int main(int argc, char** argv) {
 
     if (!render_page.empty()) {
         if (render_page == "all") {
-            for (const char* p : {"mods", "table", "bugfix", "agent"}) {
+            for (const char* p : {"mods", "table", "bugfix", "agent", "plugins", "cloud"}) {
                 p8::Page page;
                 if (!ParsePage(p, page)) continue;
                 std::cout << "==== render-check: " << p << " ====\n";

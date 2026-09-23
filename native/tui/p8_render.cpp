@@ -68,10 +68,9 @@ Element TabBar(const AppState& s) {
         const char* key;
     };
     static const Tab tabs[] = {
-        {Page::Mods, "模组", "D"},
-        {Page::Table, "表格", "T"},
-        {Page::Bugfix, "Bug", "B"},
-        {Page::Agent, "助手", "A"},
+        {Page::Mods, "模组", "D"},  {Page::Table, "表格", "T"},
+        {Page::Bugfix, "Bug", "B"}, {Page::Agent, "助手", "A"},
+        {Page::Plugins, "插件", "P"}, {Page::Cloud, "云", "L"},
     };
     Elements cells;
     for (const auto& t : tabs) {
@@ -85,8 +84,13 @@ Element TabBar(const AppState& s) {
 }
 
 Element Header(const AppState& s) {
-    return hbox({text("学生时代·编辑器 TUI") | bold, text(" "), TabBar(s), filler(),
-                 text("[?] 帮助  [Ctrl-Q] 退出") | dim});
+    // The permission mode is global chrome: it gates every mutating action, so
+    // it stays visible on every page (Ctrl-M toggles it). The header budget is
+    // tight at 80 columns, so the help/quit cue lives in the hint bar instead.
+    const bool confirming = s.permission_mode == "confirm";
+    Element badge = confirming ? (text("[权限:confirm]") | dim)
+                               : (text("[权限:full]") | bold | color(Color::Yellow));
+    return hbox({text("学生时代·编辑器 TUI") | bold, text(" "), TabBar(s), filler(), badge});
 }
 
 Element StatusLine(const AppState& s) {
@@ -115,10 +119,18 @@ Element HintBar(const AppState& s) {
             hint = "↑↓ 选择  r 重扫  f 修复全部  Esc 返回";
             break;
         case Page::Agent:
-            hint = "Enter 发送  Esc 返回";
+            hint = "Enter 发送  Esc 返回  Ctrl-M 权限模式";
+            break;
+        case Page::Plugins:
+            hint = s.plugin_input_active
+                       ? "Enter 安装  Esc 取消"
+                       : "↑↓ 选择  r 刷新  R 重载全部  i 安装 zip  u 卸载  Esc 返回";
+            break;
+        case Page::Cloud:
+            hint = "↑↓ 选 Provider  Enter 读取文件  u/d/b 方向  y DryRun  x 清理远端  s 同步  t 测试  r 刷新";
             break;
     }
-    return text(" " + hint) | dim;
+    return text(" [?] 帮助  " + hint) | dim;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,8 +294,9 @@ Element BugfixBody(const AppState& s, int width, int lh) {
 }
 
 Element AgentBody(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("AI 助手 (openai_compatible, 纯对话)") | bold, filler()}),
-                 text("Enter 发送  Esc 返回") | dim,
+    Elements out{hbox({text("AI 助手 (openai_compatible, 纯对话)") | bold, filler(),
+                       text(std::string("权限: ") + s.permission_mode) | dim}),
+                 text("Enter 发送  Esc 返回  Ctrl-M 切换 confirm/full") | dim,
                  separator()};
     int n = static_cast<int>(s.chat.size());
     int start = std::max(0, n - lh);
@@ -300,6 +313,95 @@ Element AgentBody(const AppState& s, int width, int lh) {
         out.push_back(hbox({text("输入> ") | bold, text(s.chat_input + "▏") | inverted}));
     }
     return vbox(std::move(out));
+}
+
+// Plugins page: the declarative inventory plus the two mutating actions
+// (install a zip by path, uninstall the selected id) that the desktop plugins
+// page offers.
+Element PluginsBody(const AppState& s, int width, int lh) {
+    Elements out{hbox({text("插件管理（声明型：常开，无启用态）") | bold, filler(),
+                       text(std::to_string(s.plugins.size()) + " 个") | dim}),
+                 text("↑↓ 选择  r 刷新  R 重载全部  i 安装 zip  u 卸载") | dim,
+                 separator()};
+    int lines = std::max(1, lh - (s.plugin_input_active ? 2 : 0));
+    Slice w = Window(static_cast<int>(s.plugins.size()), s.plugin_sel, lines);
+    for (int i = w.start; i < w.end; ++i) {
+        const auto& p = s.plugins[i];
+        std::string label = p.id + "  " + (p.name.empty() ? p.id : p.name);
+        if (!p.version.empty()) label += " v" + p.version;
+        label += p.loaded ? "  已加载" : "  未加载";
+        if (!p.error.empty())
+            label += "  ! " + p.error;
+        else if (!p.author.empty())
+            label += "  作者:" + p.author;
+        out.push_back(Row(label, i == s.plugin_sel, true, width));
+    }
+    if (s.plugins.empty())
+        out.push_back(text(s.plugins_loaded ? "  （未安装插件）" : "  （按 r 读取插件列表）") | dim);
+    if (s.plugin_input_active) {
+        out.push_back(separator());
+        out.push_back(hbox({text("zip 路径> ") | bold, text(s.plugin_input + "▏") | inverted}));
+    }
+    return vbox(std::move(out));
+}
+
+// Cloud page: provider rail + the desktop page's dual local/remote comparison,
+// with the direction/DryRun state that the sync button acts on.
+Element CloudBody(const AppState& s, int width, int lh) {
+    int rail = std::clamp(width / 4, 18, 32);
+    int side = std::max(16, (width - rail - 2) / 2);
+
+    Elements pv{hbox({PaneTitle("Provider", true), filler(),
+                      text(std::to_string(s.providers.size())) | dim}),
+                separator()};
+    int pv_lines = std::max(1, lh - 5);
+    Slice pw = Window(static_cast<int>(s.providers.size()), s.provider_sel, pv_lines);
+    for (int i = pw.start; i < pw.end; ++i) {
+        const auto& p = s.providers[i];
+        pv.push_back(Row(p.name.empty() ? p.id : p.name, i == s.provider_sel, true, rail - 1));
+    }
+    if (s.providers.empty())
+        pv.push_back(text(s.providers_loaded ? "  （无 Provider）" : "  （按 r 读取）") | dim);
+    pv.push_back(separator());
+    pv.push_back(text(std::string("  模组: ") + (s.selected_mod.empty() ? "-" : s.selected_mod)) |
+                 dim);
+    pv.push_back(text(std::string("  方向: ") + s.cloud_direction) | dim);
+    pv.push_back(text(std::string("  DryRun: ") + (s.cloud_dry_run ? "开" : "关")) |
+                 (s.cloud_dry_run ? dim : color(Color::Yellow)));
+    if (s.cloud_delete_extra) pv.push_back(text("  清理远端多余: 开") | color(Color::Yellow));
+
+    auto file_panel = [&](const char* title, const std::vector<CloudFile>& files) {
+        Elements out{hbox({PaneTitle(title, false), filler(),
+                           text(std::to_string(files.size())) | dim}),
+                     separator()};
+        int lines = std::max(1, lh - 2);
+        for (size_t i = 0; i < files.size() && static_cast<int>(i) < lines; ++i) {
+            const auto& f = files[i];
+            std::string line = f.name + (f.is_dir ? "/" : "");
+            out.push_back(text("  " + Cut(line, static_cast<size_t>(std::max(4, side - 2)))));
+        }
+        if (files.empty())
+            out.push_back(text(s.cloud_files_loaded ? "  （空）" : "  （Enter 读取）") | dim);
+        return vbox(std::move(out));
+    };
+
+    Elements body{hbox({vbox(std::move(pv)), separator(),
+                        file_panel("本地 Mod 文件", s.cloud_local), separator(),
+                        file_panel("远端文件", s.cloud_remote)})};
+    if (!s.cloud_sync_summary.empty()) body.push_back(text("  " + s.cloud_sync_summary) | dim);
+    if (!s.cloud_error.empty())
+        body.push_back(text("  错误: " + Cut(s.cloud_error, static_cast<size_t>(width - 8))) |
+                       color(Color::Red));
+    return vbox(std::move(body));
+}
+
+// The permissionMode=="confirm" approval box (topmost modal).
+Element ConfirmOverlayEl(const AppState& s, int width) {
+    return vbox({text(s.confirm.title) | bold, separator(),
+                 text("  " + Cut(s.confirm.detail, static_cast<size_t>(std::max(20, width - 8)))),
+                 separator(),
+                 text("  [y / Enter] 允许    [n / Esc] 拒绝") | bold}) |
+           border;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,23 +460,27 @@ Element ValidateOverlayEl(const AppState& s, int width, int lh) {
 }
 
 Element HelpBody() {
+    // Kept to <=18 lines: that is all the body gets at 80x24 (height - chrome),
+    // and anything longer is silently clipped at the bottom.
     return vbox({text("键位") | bold,
                  separator(),
-                 text("Ctrl-D/T/B/A  切换 模组/表格/Bug/助手 页"),
-                 text("Tab          浏览页切换焦点：表列表 → 记录 → 详情"),
-                 text("↑/↓          列表 / 行 / 字段移动"),
-                 text("Enter        选择表 / 编辑行 JSON / 编辑字段 / 发送"),
-                 text("m            详情面板 表单/JSON 切换"),
-                 text("n / y        新增行 / 复制当前行"),
-                 text("d            标记删除当前行（再按取消）"),
-                 text("Ctrl-S       保存补丁 / 应用修复"),
-                 text("Ctrl-K       全局搜索对白"),
-                 text("v            校验当前打开的表"),
-                 text("r            刷新（模组/表列表/当前表/Bug 重扫）"),
-                 text("直接输入      表列表 / 记录页按字符过滤"),
-                 text("Esc          返回上层 / 关闭覆盖层"),
-                 text("Ctrl-Q       退出"),
-                 text("?            开关本帮助")});
+                 text("Ctrl-D/T/B/A     模组 / 表格 / Bug / 助手"),
+                 text("Ctrl-P / Ctrl-L  插件管理 / 云同步"),
+                 text("Ctrl-M           权限模式 confirm ↔ full"),
+                 text("Ctrl-K           全局搜索对白"),
+                 text("Ctrl-S           保存补丁 / 应用修复"),
+                 text("Tab/↑↓/Enter     切焦点 / 移动 / 打开·编辑·发送"),
+                 text("m / n / y / d    表单↔JSON / 新增 / 复制 / 标记删除"),
+                 text("v                校验当前打开的表"),
+                 text("r                刷新（表·列表·Bug·插件·Provider）"),
+                 text("Esc / Ctrl-Q     返回上层 / 退出"),
+                 text("?                开关本帮助"),
+                 text("直接输入          表列表 / 记录页过滤"),
+                 separator(),
+                 text("插件页: r 刷新  R 重载  i 安装zip  u 卸载"),
+                 text("云同步页: Enter 读取  u/d/b 方向  y DryRun  x 清理远端  s 同步  t 测试"),
+                 text("confirm 模式：保存/修复/装插件/卸载/云同步先弹审批框；dry-run 与只读不弹。") |
+                     dim});
 }
 
 std::string StripAnsi(const std::string& s) {
@@ -386,7 +492,9 @@ std::string StripAnsi(const std::string& s) {
 
 ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
     Element body;
-    if (s.search.active) {
+    if (s.confirm.active) {
+        body = ConfirmOverlayEl(s, std::max(30, width - 8));
+    } else if (s.search.active) {
         body = SearchOverlayEl(s, std::max(30, width - 8), list_height);
     } else if (s.validate.active) {
         body = ValidateOverlayEl(s, std::max(30, width - 8), list_height);
@@ -398,6 +506,8 @@ ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
             case Page::Table: body = BrowseBody(s, width, list_height); break;
             case Page::Bugfix: body = BugfixBody(s, width, list_height); break;
             case Page::Agent: body = AgentBody(s, width, list_height); break;
+            case Page::Plugins: body = PluginsBody(s, width, list_height); break;
+            case Page::Cloud: body = CloudBody(s, width, list_height); break;
         }
     }
     return vbox({Header(s), separator(), body | flex, HintBar(s), StatusLine(s)}) | border;

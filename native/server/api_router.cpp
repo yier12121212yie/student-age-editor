@@ -7,6 +7,7 @@
 #include "server/ai_dicts_route.h"
 #include "server/services/aa.h"
 #include "server/services/ai_image.h"
+#include "server/services/assets_routes.h"
 #include "server/services/base_routes.h"
 #include "server/services/cfg_routes.h"
 #include "server/services/cloud_routes.h"
@@ -62,6 +63,9 @@ Router build_router() {
     register_plugins_routes(r);
     register_base_routes(r);          // P4 — installs the base_store seam
     register_aa_routes(r);
+    // 只读派生视图 /api/assets/{catalog,tags}：复用 aa 索引 + 解码包单例，
+    // 标签现算，不新增产物（additive，不进 golden）。
+    register_assets_routes(r);
     register_tts_routes(r);
     register_ai_image_routes(r);
     register_update_routes(r);

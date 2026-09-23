@@ -17,8 +17,9 @@ namespace p8 {
 using Json = nlohmann::ordered_json;
 
 // Table is the three-pane browser (表列表 / 记录 / 详情) — the old separate
-// "Tables" page was absorbed into its left pane (Python TUI parity).
-enum class Page { Mods, Table, Bugfix, Agent };
+// "Tables" page was absorbed into its left pane (Python TUI parity). Plugins and
+// Cloud mirror the desktop frontend's plugins/cloud pages.
+enum class Page { Mods, Table, Bugfix, Agent, Plugins, Cloud };
 
 // Which pane of the browse page owns the keyboard.
 enum class Focus { Tables, Rows, Detail };
@@ -41,6 +42,16 @@ enum class Intent {
     SendChat,      // agent round-trip
     SearchTalk,    // GET /api/search/talk?q=<search.input> (Ctrl-K overlay)
     ValidateTable, // POST /api/validate {cfg, data} (v on the browse page)
+    RefreshPlugins,// GET /api/plugins
+    InstallPlugin, // POST /api/plugins/install_path {path}
+    UninstallPlugin,// DELETE /api/plugins/<id>
+    ReloadPlugins, // POST /api/plugins/reload
+    RefreshCloudProviders, // GET /api/cloud/providers
+    LoadCloudFiles,// GET /api/cloud/local_files + /api/cloud/list
+    CloudSync,     // POST /api/cloud/sync
+    CloudTest,     // POST /api/cloud/test
+    LoadAiSettings,// GET /api/ai/settings (seeds permission_mode)
+    SetPermissionMode, // PUT /api/ai/settings {permissionMode}
     Quit,
 };
 
@@ -55,6 +66,43 @@ struct BugEntry {
     std::string key;
     std::string flag;
     std::string message;  // human-readable detail for the TUI row
+};
+
+// One installed plugin (GET /api/plugins). Declarative plugins are always-on:
+// there is no enable/disable state, only "loaded" plus an optional load error.
+struct PluginEntry {
+    std::string id;
+    std::string name;
+    std::string version;
+    std::string author;
+    std::string description;
+    std::string error;
+    bool loaded = false;
+};
+
+// One cloud provider (GET /api/cloud/providers; secrets are already masked).
+struct CloudProvider {
+    std::string id;
+    std::string name;
+    std::string type;
+    std::string remote_root;
+};
+
+// One row of either side of the cloud comparison: a mod-relative path (local)
+// or a provider-relative path (remote).
+struct CloudFile {
+    std::string name;
+    bool is_dir = false;
+    long long size = 0;
+};
+
+// The permissionMode=="confirm" approval dialog (desktop parity: every mutating
+// action pops a confirm box first). `pending` is the intent to run on approval.
+struct ConfirmOverlay {
+    bool active = false;
+    std::string title;
+    std::string detail;
+    Intent pending = Intent::None;
 };
 
 struct ChatMsg {
@@ -166,6 +214,30 @@ struct AppState {
     std::vector<ChatMsg> chat;
     std::string chat_input;
     bool chat_busy = false;
+
+    // plugins page
+    std::vector<PluginEntry> plugins;
+    int plugin_sel = 0;
+    bool plugins_loaded = false;
+    bool plugin_input_active = false;  // typing a zip path for `i`
+    std::string plugin_input;
+
+    // cloud page
+    std::vector<CloudProvider> providers;
+    int provider_sel = 0;
+    bool providers_loaded = false;
+    std::vector<CloudFile> cloud_local;
+    std::vector<CloudFile> cloud_remote;
+    bool cloud_files_loaded = false;
+    std::string cloud_error;
+    std::string cloud_direction = "upload";  // u/d/b select upload/download/both
+    bool cloud_dry_run = false;              // desktop default: DryRun off
+    bool cloud_delete_extra = false;         // desktop "清理远端多余" checkbox
+    std::string cloud_sync_summary;          // last sync result, one line
+
+    // permission mode + the confirm dialog it drives
+    std::string permission_mode = "confirm";  // "confirm" | "full"
+    ConfirmOverlay confirm;
 
     // overlays
     SearchOverlay search;      // Ctrl-K global talk search

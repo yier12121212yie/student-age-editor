@@ -350,7 +350,7 @@ void main() {
     expect(find.text('保存'), findsWidgets, reason: '表单页 AppBar 应有保存按钮');
   });
 
-  testWidgets('EditorPageView story 页在移动端显示桌面端占位（390x844）', (tester) async {
+  testWidgets('EditorPageView story 页在移动端渲染剧情列表（390x844）', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() => tester.view.resetPhysicalSize());
@@ -365,7 +365,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
     expect(tester.takeException(), isNull);
-    expect(find.text('剧情导演请在桌面端使用'), findsOneWidget);
+    // 移动端 story 页渲染的是剧情列表页（page_view.dart 的 isMobileWidth 分支）；
+    // 旧的「剧情导演请在桌面端使用」占位类已随该分支一起删除。
+    expect(find.byKey(const ValueKey('story-list-mobile')), findsOneWidget);
   });
 
   testWidgets('PackManagerPage 在移动端 390x844 下无像素溢出', (tester) async {

@@ -136,6 +136,7 @@ struct AppParts {
 
     // inline JSON option texts (materialized after parse)
     std::string data_txt, set_txt, remove_txt, if_match_txt, opts_txt;
+    std::string provider_cfg_txt, ai_txt, cloud_provider_txt;
     bool no_mark_done = false;
 
     CLI::App *mods_list = nullptr, *mods_create = nullptr, *mods_add = nullptr,
@@ -144,7 +145,13 @@ struct AppParts {
              *cfg_history = nullptr, *validate = nullptr, *bugfix_scan = nullptr,
              *bugfix_fix = nullptr, *story_export = nullptr, *story_import = nullptr,
              *oobe_status = nullptr, *oobe_done = nullptr, *oobe_setup = nullptr,
-             *env_get = nullptr, *env_set = nullptr;
+             *env_get = nullptr, *env_set = nullptr, *plugin_list = nullptr,
+             *plugin_install = nullptr, *plugin_uninstall = nullptr,
+             *plugin_reload = nullptr, *plugin_tools = nullptr, *cloud_providers = nullptr,
+             *cloud_add = nullptr, *cloud_update = nullptr, *cloud_remove = nullptr,
+             *cloud_test = nullptr, *cloud_sync = nullptr, *cloud_status = nullptr,
+             *cloud_drivers = nullptr, *cloud_local = nullptr, *cloud_remote = nullptr,
+             *ai_settings = nullptr, *ai_set = nullptr;
 };
 
 void wire_app(AppParts& P) {
@@ -252,6 +259,12 @@ void wire_app(AppParts& P) {
     P.oobe_setup->add_option("--mod", c.title, "顺手新建的模组名");
     P.oobe_setup->add_option("--desc", c.desc, "模组描述");
     P.oobe_setup->add_flag("--no-mark-done", P.no_mark_done, "不标记 OOBE 完成");
+    // The backend's /api/oobe/setup ignores ai_settings/cloud_provider (the
+    // Python port swallows that step), so the CLI composes them client-side as
+    // follow-up requests — see make_plan.
+    P.oobe_setup->add_option("--ai", P.ai_txt, "AI 设置 JSON（等价 ai set --data）");
+    P.oobe_setup->add_option("--cloud-provider", P.cloud_provider_txt,
+                             "云盘 Provider JSON（等价 cloud add）");
     CLI::App* env = app.add_subcommand("env", "editor_env.json 键值（本地文件，非 HTTP）");
     env->require_subcommand(1);
     P.env_get = env->add_subcommand("get", "读一个键");
@@ -261,17 +274,86 @@ void wire_app(AppParts& P) {
     P.env_set->add_option("value", c.env_value, "值（默认按字符串存）")->required();
     P.env_set->add_flag("--json-value", c.json_value, "值按 JSON 解析后存");
 
+    // ---- plugin ----
+    CLI::App* plugin = app.add_subcommand("plugin", "插件管理（声明型，常开无启用态）");
+    plugin->require_subcommand(1);
+    P.plugin_list = plugin->add_subcommand("list", "列出已安装插件");
+    P.plugin_install = plugin->add_subcommand("install", "安装插件 zip");
+    P.plugin_install->add_option("zip", c.zip, "插件 zip 路径")->required();
+    P.plugin_install->add_option("--name", c.plugin_name,
+                                 "zip 文件名（缺 manifest.id 时用于推导插件 id）");
+    P.plugin_uninstall = plugin->add_subcommand("uninstall", "卸载插件（删除插件目录）");
+    P.plugin_uninstall->add_option("id", c.plugin_id, "插件 id")->required();
+    P.plugin_reload = plugin->add_subcommand("reload", "重新扫描全部插件");
+    P.plugin_tools = plugin->add_subcommand("tools", "列出插件提供给 AI 的工具");
+
+    // ---- cloud ----
+    CLI::App* cloud = app.add_subcommand("cloud", "云同步（providers + 增量同步）");
+    cloud->require_subcommand(1);
+    P.cloud_providers = cloud->add_subcommand("providers", "列出云盘 Provider 与可用驱动");
+    P.cloud_add = cloud->add_subcommand("add", "新增 Provider");
+    P.cloud_add->add_option("--name", c.provider_name, "Provider 名称");
+    P.cloud_add->add_option("--type", c.provider_type, "驱动类型（webdav/local/openlist/...）");
+    P.cloud_add->add_option("--config", P.provider_cfg_txt, "驱动配置 JSON（如 {\"url\":...}）");
+    P.cloud_add->add_option("--config-file", c.path, "驱动配置 JSON 文件");
+    P.cloud_add->add_option("--remote-root", c.remote_root, "远端根目录（默认 mods）");
+    P.cloud_update = cloud->add_subcommand("update", "修改 Provider");
+    P.cloud_update->add_option("id", c.provider_id, "Provider id")->required();
+    P.cloud_update->add_option("--name", c.provider_name, "新名称");
+    P.cloud_update->add_option("--type", c.provider_type, "新驱动类型");
+    P.cloud_update->add_option("--config", P.provider_cfg_txt, "驱动配置补丁 JSON");
+    P.cloud_update->add_option("--config-file", c.path, "驱动配置补丁 JSON 文件");
+    P.cloud_update->add_option("--remote-root", c.remote_root, "新远端根目录");
+    P.cloud_remove = cloud->add_subcommand("remove", "删除 Provider");
+    P.cloud_remove->add_option("id", c.provider_id, "Provider id")->required();
+    P.cloud_test = cloud->add_subcommand("test", "测试连接（已保存 Provider 或临时 type+config）");
+    P.cloud_test->add_option("provider_id", c.provider_id, "Provider id（与 --type 二选一）");
+    P.cloud_test->add_option("--type", c.provider_type, "临时驱动类型");
+    P.cloud_test->add_option("--config", P.provider_cfg_txt, "临时驱动配置 JSON");
+    P.cloud_sync = cloud->add_subcommand("sync", "增量同步（默认整 Mod 文件夹）");
+    P.cloud_sync->add_option("provider_id", c.provider_id, "Provider id")->required();
+    P.cloud_sync->add_option("--direction", c.direction,
+                             "upload|download|delete_remote|delete_local|sync")->capture_default_str();
+    P.cloud_sync->add_option("--mod", c.mod_name, "模组名（默认当前选中模组）");
+    P.cloud_sync->add_option("--files", c.files_txt, "只同步这些相对路径（逗号分隔）");
+    P.cloud_sync->add_flag("--folder", c.folder, "整文件夹同步（默认）");
+    P.cloud_sync->add_flag("--dry-run", c.dry_run, "只预览不写入");
+    P.cloud_sync->add_flag("--delete-extra", c.delete_extra, "清理对端多余文件");
+    P.cloud_status = cloud->add_subcommand("status", "查看同步进度与历史");
+    P.cloud_drivers = cloud->add_subcommand("drivers", "列出驱动的配置 schema");
+    P.cloud_local = cloud->add_subcommand("local", "列出 Mod 的本地文件");
+    P.cloud_local->add_option("--mod", c.mod_name, "模组名（默认当前选中模组）");
+    P.cloud_remote = cloud->add_subcommand("remote", "列出 Provider 上的远端文件");
+    P.cloud_remote->add_option("provider_id", c.provider_id, "Provider id")->required();
+    P.cloud_remote->add_option("--mod", c.mod_name, "模组名（默认当前选中模组）");
+    P.cloud_remote->add_option("--path", c.remote_root, "远端子目录");
+
+    // ---- ai ----
+    CLI::App* ai = app.add_subcommand("ai", "AI 设置（.editor_ai.json）");
+    ai->require_subcommand(1);
+    P.ai_settings = ai->add_subcommand("settings", "查看 AI 设置（含 permissionMode）");
+    P.ai_set = ai->add_subcommand("set", "修改 AI 设置");
+    P.ai_set->add_option("--mode", c.direction, "permissionMode: confirm|full");
+    P.ai_set->add_option("--data", P.ai_txt, "设置补丁 JSON（与 --mode 合并）");
+    P.ai_set->add_option("--file", c.path, "设置补丁 JSON 文件");
+
     // Let global options (--json etc.) appear after the subcommand too
     // (Python parity): every non-root app falls unrecognized options through
     // to its parent. get_subcommands() only lists *parsed* apps pre-parse, so
     // the list is built explicitly here.
-    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env,
+    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env, plugin, cloud, ai,
                         P.mods_list, P.mods_create, P.mods_add, P.mods_select, P.mods_remove,
                         P.cfg_list, P.cfg_get, P.cfg_set, P.cfg_patch, P.cfg_history,
                         P.validate, P.bugfix_scan, P.bugfix_fix,
                         P.story_export, P.story_import,
                         P.oobe_status, P.oobe_done, P.oobe_setup,
-                        P.env_get, P.env_set}) {
+                        P.env_get, P.env_set,
+                        P.plugin_list, P.plugin_install, P.plugin_uninstall, P.plugin_reload,
+                        P.plugin_tools,
+                        P.cloud_providers, P.cloud_add, P.cloud_update, P.cloud_remove,
+                        P.cloud_test, P.cloud_sync, P.cloud_status, P.cloud_drivers,
+                        P.cloud_local, P.cloud_remote,
+                        P.ai_settings, P.ai_set}) {
         s->fallthrough();
     }
 }
@@ -357,9 +439,58 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
     else if (hit(P.oobe_setup)) c.kind = Kind::OobeSetup;
     else if (hit(P.env_get)) c.kind = Kind::EnvGet;
     else if (hit(P.env_set)) c.kind = Kind::EnvSet;
+    else if (hit(P.plugin_list)) c.kind = Kind::PluginList;
+    else if (hit(P.plugin_install)) c.kind = Kind::PluginInstall;
+    else if (hit(P.plugin_uninstall)) c.kind = Kind::PluginUninstall;
+    else if (hit(P.plugin_reload)) c.kind = Kind::PluginReload;
+    else if (hit(P.plugin_tools)) c.kind = Kind::PluginTools;
+    else if (hit(P.cloud_providers)) c.kind = Kind::CloudProviders;
+    else if (hit(P.cloud_add)) c.kind = Kind::CloudAdd;
+    else if (hit(P.cloud_update)) c.kind = Kind::CloudUpdate;
+    else if (hit(P.cloud_remove)) c.kind = Kind::CloudRemove;
+    else if (hit(P.cloud_test)) c.kind = Kind::CloudTest;
+    else if (hit(P.cloud_sync)) c.kind = Kind::CloudSync;
+    else if (hit(P.cloud_status)) c.kind = Kind::CloudStatus;
+    else if (hit(P.cloud_drivers)) c.kind = Kind::CloudDrivers;
+    else if (hit(P.cloud_local)) c.kind = Kind::CloudLocal;
+    else if (hit(P.cloud_remote)) c.kind = Kind::CloudRemote;
+    else if (hit(P.ai_settings)) c.kind = Kind::AiSettings;
+    else if (hit(P.ai_set)) c.kind = Kind::AiSet;
     else {
         err_msg = "缺少子命令";
         return ParseResult::UsageError;
+    }
+
+    if (c.kind == Kind::CloudTest && c.provider_id.empty() && c.provider_type.empty()) {
+        err_msg = "cloud test 需要 PROVIDER_ID 或 --type";
+        return ParseResult::UsageError;
+    }
+    if (c.kind == Kind::CloudSync) {
+        if (c.direction.empty()) {
+            err_msg = "cloud sync 需要 --direction upload|download|sync|delete_remote|delete_local";
+            return ParseResult::UsageError;
+        }
+        const std::string dir = lower_ascii(c.direction);
+        if (dir != "upload" && dir != "download" && dir != "delete_remote" &&
+            dir != "delete_local" && dir != "sync") {
+            err_msg = "cloud sync --direction 非法: " + c.direction;
+            return ParseResult::UsageError;
+        }
+        c.direction = dir;
+    }
+    if (c.kind == Kind::AiSet) {
+        if (c.direction.empty() && P.ai_txt.empty() && c.path.empty()) {
+            err_msg = "ai set 需要 --mode、--data 或 --file";
+            return ParseResult::UsageError;
+        }
+        if (!c.direction.empty()) {
+            const std::string mode = lower_ascii(c.direction);
+            if (mode != "confirm" && mode != "full") {
+                err_msg = "ai set --mode 只能是 confirm 或 full";
+                return ParseResult::UsageError;
+            }
+            c.direction = mode;
+        }
     }
 
     // expect-mtime supplied? CLI11 leaves 0 when unset; treat non-zero as set.
@@ -370,7 +501,22 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
     if (!bind_json(P.data_txt, c.data, c.has_data, err_msg) ||
         !bind_json(P.set_txt, c.set_obj, c.has_set, err_msg) ||
         !bind_json(P.if_match_txt, c.if_match, c.has_if_match, err_msg) ||
-        !bind_json(P.opts_txt, c.opts, c.has_opts, err_msg)) {
+        !bind_json(P.opts_txt, c.opts, c.has_opts, err_msg) ||
+        !bind_json(P.provider_cfg_txt, c.provider_config, c.has_provider_config, err_msg) ||
+        !bind_json(P.ai_txt, c.ai_settings, c.has_ai_settings, err_msg) ||
+        !bind_json(P.cloud_provider_txt, c.cloud_provider, c.has_cloud_provider, err_msg)) {
+        return ParseResult::UsageError;
+    }
+    if (c.has_provider_config && !c.provider_config.is_object()) {
+        err_msg = "cloud --config 必须是 JSON object";
+        return ParseResult::UsageError;
+    }
+    if (c.has_ai_settings && !c.ai_settings.is_object()) {
+        err_msg = "ai --data/--ai 必须是 JSON object";
+        return ParseResult::UsageError;
+    }
+    if (c.has_cloud_provider && !c.cloud_provider.is_object()) {
+        err_msg = "oobe setup --cloud-provider 必须是 JSON object";
         return ParseResult::UsageError;
     }
     if (!P.remove_txt.empty()) {
@@ -484,6 +630,29 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
         std::string text;
         if (!read_text_file(c.path, text, err_msg)) return false;
         c.text = std::move(text);
+    }
+    // --config-file / ai set --file: JSON objects merged over any inline --config/--data.
+    if ((c.kind == Kind::CloudAdd || c.kind == Kind::CloudUpdate) && !c.path.empty()) {
+        json from_file;
+        if (!read_json_file(c.path, from_file, err_msg)) return false;
+        if (!from_file.is_object()) {
+            err_msg = "--config-file 必须是 JSON object";
+            return false;
+        }
+        for (auto it = from_file.begin(); it != from_file.end(); ++it)
+            c.provider_config[it.key()] = it.value();
+        c.has_provider_config = true;
+    }
+    if (c.kind == Kind::AiSet && !c.path.empty()) {
+        json from_file;
+        if (!read_json_file(c.path, from_file, err_msg)) return false;
+        if (!from_file.is_object()) {
+            err_msg = "ai set --file 必须是 JSON object";
+            return false;
+        }
+        for (auto it = from_file.begin(); it != from_file.end(); ++it)
+            c.ai_settings[it.key()] = it.value();
+        c.has_ai_settings = true;
     }
 
     auto put_data = [&](json& body) {
@@ -663,6 +832,143 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
             if (!c.desc.empty()) body["mod_desc"] = c.desc;
             body["mark_done"] = c.mark_done;
             out.push_back({"POST", "/api/oobe/setup", {}, std::move(body)});
+            // Follow-up steps the backend's /api/oobe/setup does not perform
+            // itself (it drops ai_settings/cloud_provider on the floor): the
+            // CLI applies them as real requests right after the setup call.
+            if (c.has_ai_settings) {
+                json ai_body = json::object();
+                ai_body["settings"] = c.ai_settings;
+                out.push_back({"PUT", "/api/ai/settings", {}, std::move(ai_body)});
+            }
+            if (c.has_cloud_provider) {
+                // cloud.add_provider(body) reads name/type/config/remote_root
+                // straight off the top-level body — the provider object IS the body.
+                out.push_back({"POST", "/api/cloud/providers", {}, c.cloud_provider});
+            }
+            return true;
+        }
+        case Kind::PluginList:
+            out.push_back({"GET", "/api/plugins", {}, json()});
+            return true;
+        case Kind::PluginInstall: {
+            if (c.zip.empty()) {
+                err_msg = "plugin install 需要插件 zip 路径";
+                return false;
+            }
+            json body;
+            body["path"] = c.zip;
+            if (!c.plugin_name.empty()) body["filename"] = c.plugin_name;
+            out.push_back({"POST", "/api/plugins/install_path", {}, std::move(body)});
+            return true;
+        }
+        case Kind::PluginUninstall:
+            out.push_back({"DELETE", "/api/plugins/" + c.plugin_id, {}, json()});
+            return true;
+        case Kind::PluginReload:
+            out.push_back({"POST", "/api/plugins/reload", {}, json()});
+            return true;
+        case Kind::PluginTools:
+            out.push_back({"GET", "/api/plugins/agent/tools", {}, json()});
+            return true;
+        case Kind::CloudProviders:
+            out.push_back({"GET", "/api/cloud/providers", {}, json()});
+            return true;
+        case Kind::CloudAdd: {
+            if (!c.has_provider_config && c.provider_type.empty() && c.provider_name.empty()) {
+                err_msg = "cloud add 至少需要 --type / --name / --config 之一";
+                return false;
+            }
+            // The route wraps everything but the config: cloud.add_provider(body)
+            // reads name/type/config/remote_root off the top level.
+            json body = json::object();
+            if (!c.provider_name.empty()) body["name"] = c.provider_name;
+            if (!c.provider_type.empty()) body["type"] = c.provider_type;
+            if (c.has_provider_config) body["config"] = c.provider_config;
+            if (!c.remote_root.empty()) body["remote_root"] = c.remote_root;
+            out.push_back({"POST", "/api/cloud/providers", {}, std::move(body)});
+            return true;
+        }
+        case Kind::CloudUpdate: {
+            json body = json::object();
+            if (!c.provider_name.empty()) body["name"] = c.provider_name;
+            if (!c.provider_type.empty()) body["type"] = c.provider_type;
+            if (c.has_provider_config) body["config"] = c.provider_config;
+            if (!c.remote_root.empty()) body["remote_root"] = c.remote_root;
+            if (body.empty()) {
+                err_msg = "cloud update 需要 --name/--type/--config/--remote-root 之一";
+                return false;
+            }
+            out.push_back({"PUT", "/api/cloud/providers/" + c.provider_id, {}, std::move(body)});
+            return true;
+        }
+        case Kind::CloudRemove:
+            out.push_back({"DELETE", "/api/cloud/providers/" + c.provider_id, {}, json()});
+            return true;
+        case Kind::CloudTest: {
+            json body = json::object();
+            if (!c.provider_id.empty()) {
+                body["provider_id"] = c.provider_id;
+            } else {
+                body["type"] = c.provider_type;
+                body["config"] = c.has_provider_config ? c.provider_config : json::object();
+            }
+            out.push_back({"POST", "/api/cloud/test", {}, std::move(body)});
+            return true;
+        }
+        case Kind::CloudSync: {
+            json body = json::object();
+            body["provider_id"] = c.provider_id;
+            body["direction"] = c.direction;
+            if (!c.mod_name.empty()) body["mod_name"] = c.mod_name;
+            auto files = split_csv(c.files_txt);
+            if (!files.empty()) {
+                json arr = json::array();
+                for (auto& f : files) arr.push_back(f);
+                body["files"] = std::move(arr);
+            }
+            if (c.folder || files.empty()) body["folder"] = true;
+            if (c.dry_run) body["dry_run"] = true;
+            if (c.delete_extra) body["delete_extra"] = true;
+            out.push_back({"POST", "/api/cloud/sync", {}, std::move(body)});
+            return true;
+        }
+        case Kind::CloudStatus:
+            out.push_back({"GET", "/api/cloud/status", {}, json()});
+            return true;
+        case Kind::CloudDrivers:
+            out.push_back({"GET", "/api/cloud/drivers", {}, json()});
+            return true;
+        case Kind::CloudLocal: {
+            HttpRequestSpec spec{"GET", "/api/cloud/local_files", {}, json()};
+            if (!c.mod_name.empty()) spec.query.emplace_back("mod_name", c.mod_name);
+            out.push_back(std::move(spec));
+            return true;
+        }
+        case Kind::CloudRemote: {
+            HttpRequestSpec spec{"GET", "/api/cloud/list", {}, json()};
+            spec.query.emplace_back("provider_id", c.provider_id);
+            if (!c.mod_name.empty()) spec.query.emplace_back("mod_name", c.mod_name);
+            if (!c.remote_root.empty()) spec.query.emplace_back("path", c.remote_root);
+            out.push_back(std::move(spec));
+            return true;
+        }
+        case Kind::AiSettings:
+            out.push_back({"GET", "/api/ai/settings", {}, json()});
+            return true;
+        case Kind::AiSet: {
+            json patch = json::object();
+            if (!c.direction.empty()) patch["permissionMode"] = c.direction;
+            if (c.has_ai_settings) {
+                for (auto it = c.ai_settings.begin(); it != c.ai_settings.end(); ++it)
+                    patch[it.key()] = it.value();
+            }
+            if (patch.empty()) {
+                err_msg = "ai set 需要 --mode、--data 或 --file";
+                return false;
+            }
+            // PUT /api/ai/settings accepts either {"settings": {...}} or a flat
+            // body; the flat form keeps the patch minimal and obvious.
+            out.push_back({"PUT", "/api/ai/settings", {}, std::move(patch)});
             return true;
         }
         case Kind::EnvGet:
@@ -717,6 +1023,66 @@ std::string error_text(const json& body) {
 }
 
 namespace {
+
+// Python bool(x) over JSON: null/false/0/""/[]/{} are falsy.
+bool json_truthy(const json& v) {
+    if (v.is_null()) return false;
+    if (v.is_boolean()) return v.get<bool>();
+    if (v.is_number()) return v.get<double>() != 0.0;
+    if (v.is_string()) return !v.get_ref<const std::string&>().empty();
+    return !v.empty();
+}
+
+// obj[key] when it is a string, else "" (never throws on a type mismatch).
+std::string jstr(const json& o, const char* k) {
+    if (!o.is_object()) return {};
+    auto it = o.find(k);
+    if (it == o.end() || !it->is_string()) return {};
+    return it->get<std::string>();
+}
+
+bool jbool(const json& o, const char* k) {
+    if (!o.is_object()) return false;
+    auto it = o.find(k);
+    return it != o.end() && json_truthy(*it);
+}
+
+long long jint(const json& o, const char* k, long long def) {
+    if (!o.is_object()) return def;
+    auto it = o.find(k);
+    if (it == o.end()) return def;
+    if (it->is_number_integer()) return it->get<long long>();
+    if (it->is_number_unsigned()) return static_cast<long long>(it->get<unsigned long long>());
+    if (it->is_number_float()) return static_cast<long long>(it->get<double>());
+    return def;
+}
+
+// One "id  name vX  已加载" row shared by the plugin list/reload renderers.
+void append_plugin_row(std::ostringstream& os, const json& p) {
+    const std::string id = jstr(p, "id");
+    std::string name = jstr(p, "name");
+    if (name.empty()) name = id;
+    os << "    " << id << "  " << name;
+    const std::string version = jstr(p, "version");
+    if (!version.empty()) os << " v" << version;
+    os << "  " << (jbool(p, "loaded") ? "已加载" : "未加载");
+    const std::string err = jstr(p, "error");
+    if (!err.empty()) os << "  error=" << utf8_prefix(oneline(err), 80);
+    const std::string author = jstr(p, "author");
+    if (!author.empty()) os << "  author=" << author;
+    const std::string desc = jstr(p, "description");
+    if (!desc.empty()) os << "  " << utf8_prefix(oneline(desc), 60);
+    os << "\n";
+}
+
+// Bug rows appear in both the scan list and the fix "remaining" list.
+void append_bug_row(std::ostringstream& os, const std::string& prefix, const json& b) {
+    std::string desc = jstr(b, "desc");
+    if (desc.empty()) desc = scalar_or_dump(b.contains("val") ? b.at("val") : json());
+    os << prefix << "[" << jstr(b, "flag") << "] " << jstr(b, "cfg") << "#"
+       << sa_core::py_str(b.contains("id") ? b.at("id") : json()) << "." << jstr(b, "key")
+       << ": " << utf8_prefix(oneline(desc), 80) << "\n";
+}
 
 void append_records(std::ostringstream& os, const Command& c, const json& data) {
     static const char* preferred[] = {"title", "content", "showTxt", "desc", "type"};
@@ -884,21 +1250,234 @@ std::string format_text(const Command& c, const json& body) {
             break;
         }
         case Kind::BugfixScan: {
+            // Per-flag tally, first-seen order (the GUI groups by flag too).
+            std::vector<std::pair<std::string, long long>> by_flag;
             if (body.contains("bugs") && body["bugs"].is_array()) {
                 for (const auto& b : body["bugs"]) {
-                    std::string desc = b.value("desc", "");
-                    if (desc.empty()) desc = scalar_or_dump(b.contains("val") ? b.at("val") : json());
-                    os << "[" << b.value("flag", "?") << "] " << b.value("cfg", "") << "#"
-                       << sa_core::py_str(b.contains("id") ? b.at("id") : json()) << "."
-                       << b.value("key", "") << ": " << utf8_prefix(oneline(desc), 80) << "\n";
+                    const std::string flag = jstr(b, "flag");
+                    bool seen = false;
+                    for (auto& [f, n] : by_flag) {
+                        if (f == flag) {
+                            ++n;
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) by_flag.emplace_back(flag, 1);
+                    append_bug_row(os, "", b);
                 }
             }
             os << "count: " << body.value("count", 0) << "\n";
+            if (!by_flag.empty()) {
+                os << "by_flag:";
+                for (const auto& [f, n] : by_flag) os << " " << f << "=" << n;
+                os << "\n";
+            }
             break;
         }
         case Kind::BugfixFix: {
+            // The unfixable leftovers are the actionable part of the answer
+            // (LOGIC/ERROR rows never auto-heal) — list them, not just the count.
             os << "fixed: " << body.value("fixed", 0)
                << "  remaining: " << body.value("remaining_count", 0) << "\n";
+            if (body.contains("remaining") && body["remaining"].is_array()) {
+                for (const auto& b : body["remaining"]) append_bug_row(os, "remaining ", b);
+            }
+            break;
+        }
+        case Kind::PluginList: {
+            const json* arr =
+                body.contains("plugins") && body["plugins"].is_array() ? &body["plugins"] : nullptr;
+            os << "plugins: " << (arr ? arr->size() : 0) << "\n";
+            if (arr)
+                for (const auto& p : *arr) append_plugin_row(os, p);
+            break;
+        }
+        case Kind::PluginInstall: {
+            os << "installed: " << str_at("id") << "\n";
+            if (body.contains("plugin") && body["plugin"].is_object())
+                append_plugin_row(os, body["plugin"]);
+            break;
+        }
+        case Kind::PluginUninstall:
+            os << "ok: uninstalled\n";
+            break;
+        case Kind::PluginReload: {
+            const json* arr =
+                body.contains("plugins") && body["plugins"].is_array() ? &body["plugins"] : nullptr;
+            os << "ok: reloaded  plugins: " << (arr ? arr->size() : 0) << "\n";
+            if (arr)
+                for (const auto& p : *arr) append_plugin_row(os, p);
+            break;
+        }
+        case Kind::PluginTools: {
+            const json* arr =
+                body.contains("tools") && body["tools"].is_array() ? &body["tools"] : nullptr;
+            os << "tools: " << (arr ? arr->size() : 0) << "\n";
+            if (arr) {
+                for (const auto& t : *arr) {
+                    os << "    " << jstr(t, "name");
+                    const std::string pid = jstr(t, "plugin_id");
+                    if (!pid.empty()) os << "  plugin=" << pid;
+                    if (jbool(t, "confirm")) os << "  confirm";
+                    const std::string desc = jstr(t, "description");
+                    if (!desc.empty()) os << "  " << utf8_prefix(oneline(desc), 70);
+                    os << "\n";
+                }
+            }
+            break;
+        }
+        case Kind::CloudProviders: {
+            const json* arr = body.contains("providers") && body["providers"].is_array()
+                                  ? &body["providers"]
+                                  : nullptr;
+            os << "providers: " << (arr ? arr->size() : 0) << "\n";
+            if (arr) {
+                for (const auto& p : *arr) {
+                    os << "    " << jstr(p, "id") << "  " << jstr(p, "name") << "  ["
+                       << jstr(p, "type") << "]";
+                    const std::string rr = jstr(p, "remote_root");
+                    if (!rr.empty()) os << "  remote_root=" << rr;
+                    os << "\n";
+                }
+            }
+            if (body.contains("drivers") && body["drivers"].is_array()) {
+                os << "drivers:";
+                for (const auto& d : body["drivers"]) os << " " << scalar_or_dump(d);
+                os << "\n";
+            }
+            break;
+        }
+        case Kind::CloudAdd:
+        case Kind::CloudUpdate: {
+            if (body.contains("provider") && body["provider"].is_object()) {
+                const json& p = body["provider"];
+                os << "provider: " << jstr(p, "id") << "  " << jstr(p, "name") << "  ["
+                   << jstr(p, "type") << "]"
+                   << "  remote_root=" << jstr(p, "remote_root") << "\n";
+            } else {
+                os << sa_core::py_dumps(body) << "\n";
+            }
+            break;
+        }
+        case Kind::CloudRemove:
+        case Kind::CloudTest:
+            os << (c.kind == Kind::CloudRemove ? "ok: removed" : "ok: connection ok") << "\n";
+            break;
+        case Kind::CloudStatus: {
+            os << "running: " << (body.value("running", false) ? "true" : "false")
+               << "  action: " << str_at("action")
+               << "  progress: " << body.value("progress", 0) << "/" << body.value("total", 0)
+               << "\n";
+            if (!str_at("provider").empty()) os << "provider: " << str_at("provider") << "\n";
+            if (!str_at("last").empty()) os << "last: " << str_at("last") << "\n";
+            if (!str_at("error").empty()) os << "error: " << str_at("error") << "\n";
+            if (body.contains("history") && body["history"].is_array()) {
+                for (const auto& h : body["history"]) {
+                    os << "    " << jstr(h, "time") << "  " << jstr(h, "provider") << "  "
+                       << jstr(h, "mod") << "  " << jstr(h, "direction")
+                       << "  count=" << jint(h, "count", 0) << "\n";
+                }
+            }
+            break;
+        }
+        case Kind::CloudDrivers: {
+            const json* drv =
+                body.contains("drivers") && body["drivers"].is_object() ? &body["drivers"] : nullptr;
+            os << "drivers: " << (drv ? drv->size() : 0) << "\n";
+            if (drv) {
+                for (auto it = drv->begin(); it != drv->end(); ++it) {
+                    os << "    " << it.key() << ":";
+                    if (it.value().is_object()) {
+                        for (auto f = it.value().begin(); f != it.value().end(); ++f)
+                            os << " " << f.key();
+                    }
+                    os << "\n";
+                }
+            }
+            break;
+        }
+        case Kind::CloudLocal: {
+            os << "mod: " << str_at("mod") << "  root: " << str_at("root") << "\n"
+               << "files: " << body.value("count", 0) << "\n";
+            if (body.contains("entries") && body["entries"].is_array()) {
+                for (const auto& e : body["entries"]) {
+                    os << "    " << jstr(e, "name") << "  " << jint(e, "size", 0) << "B\n";
+                }
+            }
+            break;
+        }
+        case Kind::CloudRemote: {
+            os << "remote: " << str_at("remote") << "\n";
+            const json* objs =
+                body.contains("objects") && body["objects"].is_array() ? &body["objects"] : nullptr;
+            os << "objects: " << (objs ? objs->size() : 0) << "\n";
+            if (objs) {
+                for (const auto& o : *objs) {
+                    std::string path = jstr(o, "path");
+                    if (path.empty()) path = jstr(o, "name");
+                    os << "    " << path << (jbool(o, "is_dir") ? "/" : "")
+                       << "  " << jint(o, "size", 0) << "B\n";
+                }
+            }
+            break;
+        }
+        case Kind::CloudSync: {
+            os << "direction: " << str_at("direction")
+               << "  dry_run: " << (body.value("dry_run", false) ? "true" : "false") << "\n";
+            if (!str_at("message").empty()) os << "message: " << str_at("message") << "\n";
+            if (body.contains("total")) os << "total: " << body.value("total", 0) << "\n";
+            if (body.contains("results") && body["results"].is_array()) {
+                long long uploaded = 0, downloaded = 0, skipped = 0, failed = 0;
+                for (const auto& r : body["results"]) {
+                    const std::string rel = jstr(r, "rel");
+                    const std::string action = jstr(r, "action");
+                    if (!jbool(r, "ok")) ++failed;
+                    else if (action.rfind("download", 0) == 0) ++downloaded;
+                    else if (action.rfind("upload", 0) == 0) ++uploaded;
+                    else ++skipped;
+                    os << "    [" << (jbool(r, "ok") ? "ok" : "!!") << "] "
+                       << (action.empty() ? "?" : action) << "  " << rel;
+                    const std::string err = jstr(r, "error");
+                    if (!err.empty()) os << "  error=" << utf8_prefix(oneline(err), 70);
+                    os << "\n";
+                }
+                os << "summary: upload=" << uploaded << " download=" << downloaded
+                   << " skip=" << skipped << " failed=" << failed << "\n";
+            } else {
+                // Single-file result shape (no results[]): dump the interesting keys.
+                if (body.contains("local_exists") || body.contains("remote_exists")) {
+                    os << "local_exists: " << (body.value("local_exists", false) ? "true" : "false")
+                       << "  remote_exists: "
+                       << (body.value("remote_exists", false) ? "true" : "false") << "\n";
+                }
+                if (!str_at("action").empty()) os << "action: " << str_at("action") << "\n";
+                if (!str_at("remote").empty()) os << "remote: " << str_at("remote") << "\n";
+                if (!str_at("local").empty()) os << "local: " << str_at("local") << "\n";
+            }
+            break;
+        }
+        case Kind::AiSettings: {
+            const json* s =
+                body.contains("settings") && body["settings"].is_object() ? &body["settings"] : nullptr;
+            if (!s) {
+                os << sa_core::py_dumps(body) << "\n";
+                break;
+            }
+            os << "permissionMode: " << jstr(*s, "permissionMode") << "\n"
+               << "provider: " << jstr(*s, "provider") << "\n"
+               << "baseUrl: " << jstr(*s, "baseUrl") << "\n"
+               << "model: " << jstr(*s, "model") << "\n"
+               << "temperature: " << scalar_or_dump(s->contains("temperature")
+                                                        ? s->at("temperature")
+                                                        : json())
+               << "\n";
+            break;
+        }
+        case Kind::AiSet: {
+            os << "ok: settings updated\n";
+            if (body.contains("settings") && body["settings"].is_object())
+                os << "permissionMode: " << jstr(body["settings"], "permissionMode") << "\n";
             break;
         }
         case Kind::StoryExport: {

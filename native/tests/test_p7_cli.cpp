@@ -612,3 +612,437 @@ TEST_CASE("p7 misc helpers: csv / json / usage text", "[p7]") {
     CHECK(usage_text().find("--data-root") != std::string::npos);
     CHECK(usage_text().find("bugfix") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// plugin / cloud / ai (GUI-parity surface added on top of the wave-1 set)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("p7 parse: plugin/cloud/ai command families", "[p7]") {
+    CHECK(run({"plugin", "list"}).c.kind == Kind::PluginList);
+    CHECK(run({"plugin", "reload"}).c.kind == Kind::PluginReload);
+    CHECK(run({"plugin", "tools"}).c.kind == Kind::PluginTools);
+    CHECK(run({"plugin", "install", "p.zip"}).c.kind == Kind::PluginInstall);
+    CHECK(run({"plugin", "uninstall", "demo"}).c.kind == Kind::PluginUninstall);
+    CHECK(run({"plugin", "install"}).r == ParseResult::UsageError);       // zip required
+    CHECK(run({"plugin", "uninstall"}).r == ParseResult::UsageError);     // id required
+
+    CHECK(run({"cloud", "providers"}).c.kind == Kind::CloudProviders);
+    CHECK(run({"cloud", "status"}).c.kind == Kind::CloudStatus);
+    CHECK(run({"cloud", "drivers"}).c.kind == Kind::CloudDrivers);
+    CHECK(run({"cloud", "local"}).c.kind == Kind::CloudLocal);
+    CHECK(run({"cloud", "remove", "p_1"}).c.kind == Kind::CloudRemove);
+    CHECK(run({"cloud", "remove"}).r == ParseResult::UsageError);
+    CHECK(run({"cloud", "remote", "p_1"}).c.kind == Kind::CloudRemote);
+    CHECK(run({"cloud", "remote"}).r == ParseResult::UsageError);
+
+    CHECK(run({"ai", "settings"}).c.kind == Kind::AiSettings);
+    CHECK(run({"ai", "set", "--mode", "full"}).c.kind == Kind::AiSet);
+    CHECK(run({"ai", "set"}).r == ParseResult::UsageError);               // nothing to set
+}
+
+TEST_CASE("p7 parse: cloud test / sync / ai set guards", "[p7]") {
+    // cloud test: provider id XOR --type.
+    auto by_id = run({"cloud", "test", "p_1"});
+    REQUIRE(by_id.r == ParseResult::Ok);
+    CHECK(by_id.c.provider_id == "p_1");
+    auto by_type = run({"cloud", "test", "--type", "webdav", "--config", "{\"url\":\"u\"}"});
+    REQUIRE(by_type.r == ParseResult::Ok);
+    CHECK(by_type.c.provider_type == "webdav");
+    CHECK(by_type.c.has_provider_config);
+    CHECK(run({"cloud", "test"}).r == ParseResult::UsageError);
+
+    // sync: direction is mandatory and validated, and is lowercased.
+    CHECK(run({"cloud", "sync", "p_1"}).r == ParseResult::UsageError);
+    CHECK(run({"cloud", "sync", "p_1", "--direction", "sideways"}).r == ParseResult::UsageError);
+    auto up = run({"cloud", "sync", "p_1", "--direction", "UPLOAD", "--dry-run", "--files",
+                   " a.json , b/c.json "});
+    REQUIRE(up.r == ParseResult::Ok);
+    CHECK(up.c.direction == "upload");
+    CHECK(up.c.dry_run);
+    CHECK(up.c.files_txt == " a.json , b/c.json ");
+
+    // ai set: mode vocabulary + case folding.
+    auto m = run({"ai", "set", "--mode", "FULL"});
+    REQUIRE(m.r == ParseResult::Ok);
+    CHECK(m.c.direction == "full");
+    CHECK(run({"ai", "set", "--mode", "yolo"}).r == ParseResult::UsageError);
+    CHECK(run({"ai", "set", "--data", "[1]"}).r == ParseResult::UsageError);  // not an object
+    CHECK(run({"cloud", "add", "--config", "[1]"}).r == ParseResult::UsageError);
+    CHECK(run({"oobe", "setup", "--cloud-provider", "5"}).r == ParseResult::UsageError);
+}
+
+TEST_CASE("p7 plan: plugin commands hit the real plugin routes", "[p7]") {
+    auto l = run({"plugin", "list"});
+    auto lp = plan(l.c);
+    REQUIRE(lp.ok);
+    CHECK(lp.reqs[0].method == "GET");
+    CHECK(lp.reqs[0].path == "/api/plugins");
+
+    auto t = run({"plugin", "tools"});
+    auto tp = plan(t.c);
+    REQUIRE(tp.ok);
+    CHECK(tp.reqs[0].path == "/api/plugins/agent/tools");
+
+    auto rl = run({"plugin", "reload"});
+    auto rlp = plan(rl.c);
+    REQUIRE(rlp.ok);
+    CHECK(rlp.reqs[0].method == "POST");
+    CHECK(rlp.reqs[0].path == "/api/plugins/reload");
+
+    // install: local path form (no base64), filename only when --name is given.
+    auto i1 = run({"plugin", "install", "C:/tmp/demo.zip"});
+    auto i1p = plan(i1.c);
+    REQUIRE(i1p.ok);
+    CHECK(i1p.reqs[0].method == "POST");
+    CHECK(i1p.reqs[0].path == "/api/plugins/install_path");
+    CHECK(i1p.reqs[0].body["path"] == "C:/tmp/demo.zip");
+    CHECK_FALSE(i1p.reqs[0].body.contains("filename"));
+
+    auto i2 = run({"plugin", "install", "C:/tmp/My.Plugin.zip", "--name", "My.Plugin.zip"});
+    auto i2p = plan(i2.c);
+    REQUIRE(i2p.ok);
+    CHECK(i2p.reqs[0].body["filename"] == "My.Plugin.zip");
+
+    auto un = run({"plugin", "uninstall", "demo"});
+    auto unp = plan(un.c);
+    REQUIRE(unp.ok);
+    CHECK(unp.reqs[0].method == "DELETE");
+    CHECK(unp.reqs[0].path == "/api/plugins/demo");
+}
+
+TEST_CASE("p7 plan: cloud commands hit the real cloud routes", "[p7]") {
+    auto p = run({"cloud", "providers"});
+    auto pp = plan(p.c);
+    REQUIRE(pp.ok);
+    CHECK(pp.reqs[0].path == "/api/cloud/providers");
+
+    auto a = run({"cloud", "add", "--name", "Drive", "--type", "webdav",
+                  "--config", "{\"url\":\"u\"}", "--remote-root", "mods"});
+    auto ap = plan(a.c);
+    REQUIRE(ap.ok);
+    CHECK(ap.reqs[0].method == "POST");
+    CHECK(ap.reqs[0].path == "/api/cloud/providers");
+    CHECK(ap.reqs[0].body["name"] == "Drive");
+    CHECK(ap.reqs[0].body["type"] == "webdav");
+    CHECK(ap.reqs[0].body["config"]["url"] == "u");
+    CHECK(ap.reqs[0].body["remote_root"] == "mods");
+    // Nothing to add at all is a plan error, not an empty POST.
+    auto none = run({"cloud", "add"});
+    CHECK(!plan(none.c).ok);
+
+    auto u = run({"cloud", "update", "p_1", "--name", "New"});
+    auto up = plan(u.c);
+    REQUIRE(up.ok);
+    CHECK(up.reqs[0].method == "PUT");
+    CHECK(up.reqs[0].path == "/api/cloud/providers/p_1");
+    CHECK(up.reqs[0].body["name"] == "New");
+    CHECK_FALSE(up.reqs[0].body.contains("type"));
+    auto uempty = run({"cloud", "update", "p_1"});
+    CHECK(!plan(uempty.c).ok);
+
+    auto rm = run({"cloud", "remove", "p_1"});
+    auto rmp = plan(rm.c);
+    REQUIRE(rmp.ok);
+    CHECK(rmp.reqs[0].method == "DELETE");
+    CHECK(rmp.reqs[0].path == "/api/cloud/providers/p_1");
+
+    auto t_id = run({"cloud", "test", "p_1"});
+    auto t_idp = plan(t_id.c);
+    REQUIRE(t_idp.ok);
+    CHECK(t_idp.reqs[0].path == "/api/cloud/test");
+    CHECK(t_idp.reqs[0].body["provider_id"] == "p_1");
+    CHECK_FALSE(t_idp.reqs[0].body.contains("type"));
+    auto t_ty = run({"cloud", "test", "--type", "local"});
+    auto t_typ = plan(t_ty.c);
+    REQUIRE(t_typ.ok);
+    CHECK(t_typ.reqs[0].body["type"] == "local");
+    CHECK(t_typ.reqs[0].body["config"].is_object());
+
+    // sync: folder mode when no --files, file mode when --files is supplied.
+    auto sf = run({"cloud", "sync", "p_1", "--direction", "sync", "--delete-extra"});
+    auto sfp = plan(sf.c);
+    REQUIRE(sfp.ok);
+    CHECK(sfp.reqs[0].path == "/api/cloud/sync");
+    CHECK(sfp.reqs[0].body["provider_id"] == "p_1");
+    CHECK(sfp.reqs[0].body["direction"] == "sync");
+    CHECK(sfp.reqs[0].body["folder"] == true);
+    CHECK(sfp.reqs[0].body["delete_extra"] == true);
+    CHECK_FALSE(sfp.reqs[0].body.contains("files"));
+
+    auto sfl = run({"cloud", "sync", "p_1", "--direction", "upload", "--files", "a.json,b.json"});
+    auto sflp = plan(sfl.c);
+    REQUIRE(sflp.ok);
+    CHECK(sflp.reqs[0].body["files"] == json::array({"a.json", "b.json"}));
+    CHECK_FALSE(sflp.reqs[0].body.contains("folder"));
+
+    auto st = run({"cloud", "status"});
+    auto stp = plan(st.c);
+    REQUIRE(stp.ok);
+    CHECK(stp.reqs[0].path == "/api/cloud/status");
+
+    auto dr = run({"cloud", "drivers"});
+    auto drp = plan(dr.c);
+    REQUIRE(drp.ok);
+    CHECK(drp.reqs[0].path == "/api/cloud/drivers");
+
+    auto lo = run({"cloud", "local", "--mod", "M"});
+    auto lop = plan(lo.c);
+    REQUIRE(lop.ok);
+    CHECK(lop.reqs[0].path == "/api/cloud/local_files");
+    REQUIRE(lop.reqs[0].query.size() == 1);
+    CHECK(lop.reqs[0].query[0] == std::make_pair(std::string("mod_name"), std::string("M")));
+
+    auto re = run({"cloud", "remote", "p_1", "--mod", "M", "--path", "sub"});
+    auto rep = plan(re.c);
+    REQUIRE(rep.ok);
+    CHECK(rep.reqs[0].path == "/api/cloud/list");
+    REQUIRE(rep.reqs[0].query.size() == 3);
+    CHECK(rep.reqs[0].query[0] == std::make_pair(std::string("provider_id"), std::string("p_1")));
+    CHECK(rep.reqs[0].query[1] == std::make_pair(std::string("mod_name"), std::string("M")));
+    CHECK(rep.reqs[0].query[2] == std::make_pair(std::string("path"), std::string("sub")));
+}
+
+TEST_CASE("p7 plan: ai settings read/write and --file merge", "[p7]") {
+    auto g = run({"ai", "settings"});
+    auto gp = plan(g.c);
+    REQUIRE(gp.ok);
+    CHECK(gp.reqs[0].method == "GET");
+    CHECK(gp.reqs[0].path == "/api/ai/settings");
+
+    auto m = run({"ai", "set", "--mode", "full"});
+    auto mp = plan(m.c);
+    REQUIRE(mp.ok);
+    CHECK(mp.reqs[0].method == "PUT");
+    CHECK(mp.reqs[0].path == "/api/ai/settings");
+    CHECK(mp.reqs[0].body == json{{"permissionMode", "full"}});
+
+    auto d = run({"ai", "set", "--mode", "confirm", "--data", "{\"model\":\"m1\"}"});
+    auto dp = plan(d.c);
+    REQUIRE(dp.ok);
+    CHECK(dp.reqs[0].body["permissionMode"] == "confirm");
+    CHECK(dp.reqs[0].body["model"] == "m1");
+
+    std::string f = tmp_file("ai.json", "\xEF\xBB\xBF{\"ttsVoice\":\"v1\"}");  // BOM tolerated
+    auto ff = run({"ai", "set", "--file", f});
+    auto ffp = plan(ff.c);
+    REQUIRE(ffp.ok);
+    CHECK(ffp.reqs[0].body["ttsVoice"] == "v1");
+
+    std::string bad = tmp_file("ai_bad.json", "[1]");
+    auto bf = run({"ai", "set", "--file", bad});
+    REQUIRE(bf.r == ParseResult::Ok);
+    CHECK(!plan(bf.c).ok);
+}
+
+TEST_CASE("p7 plan: cloud add merges --config-file over --config", "[p7]") {
+    std::string f = tmp_file("drv.json", "{\"username\":\"u\",\"password\":\"p\"}");
+    auto a = run({"cloud", "add", "--type", "webdav", "--config", "{\"url\":\"https://x\"}",
+                  "--config-file", f});
+    REQUIRE(a.r == ParseResult::Ok);
+    auto ap = plan(a.c);
+    REQUIRE(ap.ok);
+    CHECK(ap.reqs[0].body["config"]["url"] == "https://x");
+    CHECK(ap.reqs[0].body["config"]["username"] == "u");
+    CHECK(ap.reqs[0].body["config"]["password"] == "p");
+
+    std::string bad = tmp_file("drv_bad.json", "[]");
+    auto b = run({"cloud", "add", "--type", "webdav", "--config-file", bad});
+    REQUIRE(b.r == ParseResult::Ok);
+    CHECK(!plan(b.c).ok);
+}
+
+TEST_CASE("p7 plan: oobe setup composes ai + cloud follow-ups", "[p7]") {
+    // Bare setup stays a single request (unchanged wave-1 contract).
+    auto bare = run({"oobe", "setup", "--workspace", "W"});
+    auto barep = plan(bare.c);
+    REQUIRE(barep.ok);
+    REQUIRE(barep.reqs.size() == 1);
+    CHECK(barep.reqs[0].path == "/api/oobe/setup");
+
+    // With --ai/--cloud-provider the backend setup route drops them on the
+    // floor, so the CLI appends real follow-up requests in order.
+    auto full = run({"oobe", "setup", "--workspace", "W", "--mod", "M",
+                     "--ai", "{\"permissionMode\":\"full\"}",
+                     "--cloud-provider", "{\"name\":\"D\",\"type\":\"local\"}"});
+    auto fullp = plan(full.c);
+    REQUIRE(fullp.ok);
+    REQUIRE(fullp.reqs.size() == 3);
+    CHECK(fullp.reqs[0].path == "/api/oobe/setup");
+    CHECK(fullp.reqs[0].body["mod_title"] == "M");
+    CHECK(fullp.reqs[1].method == "PUT");
+    CHECK(fullp.reqs[1].path == "/api/ai/settings");
+    CHECK(fullp.reqs[1].body["settings"]["permissionMode"] == "full");
+    CHECK(fullp.reqs[2].method == "POST");
+    CHECK(fullp.reqs[2].path == "/api/cloud/providers");
+    CHECK(fullp.reqs[2].body["type"] == "local");  // provider object IS the body
+}
+
+TEST_CASE("p7 format_text: plugin renderers", "[p7]") {
+    Command lc;
+    lc.kind = Kind::PluginList;
+    json p1{{"id", "demo"},
+            {"name", "Demo Plugin"},
+            {"version", "1.2.3"},
+            {"author", "me"},
+            {"description", "desc"},
+            {"loaded", true},
+            {"error", ""}};
+    json p2{{"id", "broken"}, {"name", "Broken"}, {"loaded", false}, {"error", "boom"}};
+    auto ls = format_text(lc, json{{"plugins", json::array({p1, p2})}});
+    CHECK(ls.find("plugins: 2") != std::string::npos);
+    CHECK(ls.find("demo  Demo Plugin v1.2.3  已加载") != std::string::npos);
+    CHECK(ls.find("author=me") != std::string::npos);
+    CHECK(ls.find("broken  Broken  未加载  error=boom") != std::string::npos);
+    CHECK(format_text(lc, json{{"plugins", json::array()}}).find("plugins: 0") != std::string::npos);
+
+    Command ic;
+    ic.kind = Kind::PluginInstall;
+    auto is = format_text(ic, json{{"ok", true}, {"id", "demo"}, {"plugin", p1}});
+    CHECK(is.find("installed: demo") != std::string::npos);
+    CHECK(is.find("Demo Plugin") != std::string::npos);
+
+    Command uc;
+    uc.kind = Kind::PluginUninstall;
+    CHECK(format_text(uc, json{{"ok", true}}) == "ok: uninstalled\n");
+
+    Command rc;
+    rc.kind = Kind::PluginReload;
+    CHECK(format_text(rc, json{{"ok", true}, {"plugins", json::array({p1})}})
+              .find("ok: reloaded  plugins: 1") != std::string::npos);
+
+    Command tc;
+    tc.kind = Kind::PluginTools;
+    json tool{{"name", "do_thing"}, {"plugin_id", "demo"}, {"confirm", true}, {"description", "d"}};
+    auto ts = format_text(tc, json{{"tools", json::array({tool})}});
+    CHECK(ts.find("tools: 1") != std::string::npos);
+    CHECK(ts.find("do_thing  plugin=demo  confirm") != std::string::npos);
+}
+
+TEST_CASE("p7 format_text: cloud renderers", "[p7]") {
+    Command pc;
+    pc.kind = Kind::CloudProviders;
+    json prov{{"id", "p_1"}, {"name", "Drive"}, {"type", "webdav"}, {"remote_root", "mods"}};
+    auto ps = format_text(
+        pc, json{{"providers", json::array({prov})}, {"drivers", json::array({"local", "webdav"})}});
+    CHECK(ps.find("providers: 1") != std::string::npos);
+    CHECK(ps.find("p_1  Drive  [webdav]  remote_root=mods") != std::string::npos);
+    CHECK(ps.find("drivers: local webdav") != std::string::npos);
+
+    Command ac;
+    ac.kind = Kind::CloudAdd;
+    CHECK(format_text(ac, json{{"provider", prov}}).find("provider: p_1  Drive  [webdav]")
+          != std::string::npos);
+    Command upc;
+    upc.kind = Kind::CloudUpdate;
+    CHECK(format_text(upc, json{{"provider", prov}}).find("provider: p_1") != std::string::npos);
+    Command rmc;
+    rmc.kind = Kind::CloudRemove;
+    CHECK(format_text(rmc, json{{"ok", true}}) == "ok: removed\n");
+    Command tsc;
+    tsc.kind = Kind::CloudTest;
+    CHECK(format_text(tsc, json{{"ok", true}}) == "ok: connection ok\n");
+
+    Command sc;
+    sc.kind = Kind::CloudStatus;
+    json hist{{"time", "T"}, {"provider", "p_1"}, {"mod", "M"}, {"direction", "upload"}, {"count", 3}};
+    auto ss = format_text(sc, json{{"running", true},
+                                   {"action", "upload"},
+                                   {"progress", 1},
+                                   {"total", 4},
+                                   {"history", json::array({hist})}});
+    CHECK(ss.find("running: true") != std::string::npos);
+    CHECK(ss.find("progress: 1/4") != std::string::npos);
+    CHECK(ss.find("T  p_1  M  upload  count=3") != std::string::npos);
+
+    Command dc;
+    dc.kind = Kind::CloudDrivers;
+    json drv{{"webdav", json{{"url", ""}, {"username", ""}}}};
+    auto ds = format_text(dc, json{{"drivers", drv}});
+    CHECK(ds.find("drivers: 1") != std::string::npos);
+    CHECK(ds.find("webdav: url username") != std::string::npos);
+
+    Command loc;
+    loc.kind = Kind::CloudLocal;
+    json ent{{"name", "Cfgs/zh-cn/EvtCfg.json"}, {"type", "file"}, {"size", 12}};
+    auto los = format_text(loc, json{{"mod", "M"},
+                                     {"root", "R"},
+                                     {"entries", json::array({ent})},
+                                     {"count", 1}});
+    CHECK(los.find("mod: M  root: R") != std::string::npos);
+    CHECK(los.find("files: 1") != std::string::npos);
+    CHECK(los.find("Cfgs/zh-cn/EvtCfg.json  12B") != std::string::npos);
+
+    Command rem;
+    rem.kind = Kind::CloudRemote;
+    json o1{{"name", "a.json"}, {"path", "mods/a.json"}, {"is_dir", false}, {"size", 5}};
+    json o2{{"name", "d"}, {"path", "mods/d"}, {"is_dir", true}, {"size", 0}};
+    auto rs = format_text(rem, json{{"remote", "mods"},
+                                    {"objects", json::array({o1, o2})}});
+    CHECK(rs.find("remote: mods") != std::string::npos);
+    CHECK(rs.find("objects: 2") != std::string::npos);
+    CHECK(rs.find("mods/a.json  5B") != std::string::npos);
+    CHECK(rs.find("mods/d/  0B") != std::string::npos);
+}
+
+TEST_CASE("p7 format_text: cloud sync folder + single-file shapes", "[p7]") {
+    Command sc;
+    sc.kind = Kind::CloudSync;
+    json r1{{"rel", "a.json"}, {"ok", true}, {"action", "upload_new"}};
+    json r2{{"rel", "b.json"}, {"ok", true}, {"action", "skip_unchanged"}};
+    json r3{{"rel", "c.json"}, {"ok", false}, {"action", ""}, {"error", "boom"}};
+    auto s = format_text(sc, json{{"direction", "upload"},
+                                  {"dry_run", true},
+                                  {"total", 3},
+                                  {"results", json::array({r1, r2, r3})}});
+    CHECK(s.find("direction: upload  dry_run: true") != std::string::npos);
+    CHECK(s.find("total: 3") != std::string::npos);
+    CHECK(s.find("[ok] upload_new  a.json") != std::string::npos);
+    CHECK(s.find("summary: upload=1 download=0 skip=1 failed=1") != std::string::npos);
+    CHECK(s.find("error=boom") != std::string::npos);
+
+    // Single-file dry-run shape (no results[]).
+    auto one = format_text(sc, json{{"dry_run", true},
+                                    {"local_exists", true},
+                                    {"remote_exists", false},
+                                    {"direction", "upload"},
+                                    {"remote", "mods/a.json"}});
+    CHECK(one.find("local_exists: true  remote_exists: false") != std::string::npos);
+    CHECK(one.find("remote: mods/a.json") != std::string::npos);
+}
+
+TEST_CASE("p7 format_text: ai settings + bugfix flag grouping", "[p7]") {
+    Command ac;
+    ac.kind = Kind::AiSettings;
+    auto as = format_text(ac, json{{"settings", json{{"permissionMode", "full"},
+                                                    {"provider", "openai_compatible"},
+                                                    {"baseUrl", ""},
+                                                    {"model", "m"},
+                                                    {"temperature", 0.7}}}});
+    CHECK(as.find("permissionMode: full") != std::string::npos);
+    CHECK(as.find("provider: openai_compatible") != std::string::npos);
+
+    Command sc;
+    sc.kind = Kind::AiSet;
+    auto ss = format_text(sc, json{{"ok", true}, {"settings", json{{"permissionMode", "confirm"}}}});
+    CHECK(ss.find("ok: settings updated") != std::string::npos);
+    CHECK(ss.find("permissionMode: confirm") != std::string::npos);
+    // A shape without settings still renders (no throw).
+    CHECK(format_text(sc, json{{"ok", true}}).find("ok: settings updated") != std::string::npos);
+
+    Command bc;
+    bc.kind = Kind::BugfixScan;
+    json b1{{"flag", "LOGIC"}, {"cfg", "T"}, {"id", 1}, {"key", "k"}, {"desc", "d1"}};
+    json b2{{"flag", "ERROR"}, {"cfg", "T"}, {"id", 2}, {"key", "k"}, {"desc", "d2"}};
+    json b3{{"flag", "LOGIC"}, {"cfg", "T"}, {"id", 3}, {"key", "k"}, {"desc", "d3"}};
+    auto bs = format_text(bc, json{{"bugs", json::array({b1, b2, b3})}, {"count", 3}});
+    CHECK(bs.find("count: 3") != std::string::npos);
+    CHECK(bs.find("by_flag: LOGIC=2 ERROR=1") != std::string::npos);
+
+    Command fc;
+    fc.kind = Kind::BugfixFix;
+    auto fs = format_text(fc, json{{"fixed", 1},
+                                   {"remaining_count", 1},
+                                   {"remaining", json::array({b1})}});
+    CHECK(fs.find("fixed: 1  remaining: 1") != std::string::npos);
+    CHECK(fs.find("remaining [LOGIC] T#1.k") != std::string::npos);
+}

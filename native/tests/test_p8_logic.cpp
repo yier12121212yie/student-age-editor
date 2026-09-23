@@ -56,6 +56,7 @@ TEST_CASE("HandleKey: mods navigation clamps and Enter selects", "[p8]") {
 
 TEST_CASE("HandleKey: table page edit + remove + save intent", "[p8]") {
     AppState s = RowsState();
+    s.permission_mode = "full";  // ungated: this case asserts the raw intents
     s.table.rows = {TableRow{"1", "one", "\"one\""}, TableRow{"2", "two", "\"two\""}};
     // Enter -> editing, buffer seeded with raw JSON text.
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
@@ -189,6 +190,7 @@ TEST_CASE("HandleKey: n under an active filter clears it and targets the new row
 
 TEST_CASE("HandleKey: page jumps drop edit state; Ctrl-S saves from any pane", "[p8]") {
     AppState s = RowsState();
+    s.permission_mode = "full";  // ungated: this case asserts the raw intents
     s.table.rows = {TableRow{"1", "a", "\"a\""}};
     s.table.edits["1"] = "\"b\"";
     HandleKey(s, K(KeyInput::Enter));  // open the row editor
@@ -459,4 +461,270 @@ TEST_CASE("SaveSession/LoadSession round-trips through disk", "[p8]") {
     // Unsafe id rejected.
     REQUIRE_FALSE(SaveSession(root, "../evil", msgs));
     fs::remove_all(root);
+}
+
+// ------------------------------------------- permission mode / confirm gate
+TEST_CASE("HandleKey: Ctrl-M toggles permission mode and asks for a persist", "[p8]") {
+    AppState s = NavState();
+    REQUIRE(s.permission_mode == "confirm");  // the backend default
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'm')) == Intent::SetPermissionMode);
+    REQUIRE(s.permission_mode == "full");
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'm')) == Intent::SetPermissionMode);
+    REQUIRE(s.permission_mode == "confirm");
+}
+
+TEST_CASE("Confirm gate: confirm mode defers save, y approves and releases it", "[p8]") {
+    AppState s;
+    s.page = Page::Table;
+    s.focus = Focus::Rows;
+    s.table.name = "TalkCfg";
+    s.table.rows = {TableRow{"1", "a", "\"a\""}};
+    s.table.edits["1"] = "\"b\"";
+    REQUIRE(s.permission_mode == "confirm");
+
+    // Ctrl-S arms the dialog instead of returning the save intent.
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.title == "保存表格");
+    REQUIRE(s.confirm.detail.find("TalkCfg") != std::string::npos);
+    REQUIRE(s.confirm.detail.find("修改 1") != std::string::npos);
+    REQUIRE(s.confirm.pending == Intent::SaveTable);
+
+    // Any other key is swallowed by the modal.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "z")) == Intent::None);
+    REQUIRE(s.confirm.active);
+
+    // y approves: the deferred intent is released exactly once.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::SaveTable);
+    REQUIRE_FALSE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::None);
+}
+
+TEST_CASE("Confirm gate: n and Esc reject and clear the deferred intent", "[p8]") {
+    AppState s;
+    s.page = Page::Table;
+    s.focus = Focus::Rows;
+    s.table.name = "TalkCfg";
+    s.table.rows = {TableRow{"1", "a", "\"a\""}};
+    s.table.removes.push_back("1");
+
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "n")) == Intent::None);
+    REQUIRE_FALSE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::None);
+    REQUIRE(s.status.find("已拒绝") != std::string::npos);
+
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE_FALSE(s.confirm.active);
+}
+
+TEST_CASE("Confirm gate: full mode runs the write straight through", "[p8]") {
+    AppState s;
+    s.page = Page::Table;
+    s.focus = Focus::Rows;
+    s.table.name = "TalkCfg";
+    s.permission_mode = "full";
+    s.table.rows = {TableRow{"1", "a", "\"a\""}};
+    s.table.edits["1"] = "\"b\"";
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::SaveTable);
+    REQUIRE_FALSE(s.confirm.active);
+}
+
+TEST_CASE("Confirm gate: bugfix fix-all is gated too", "[p8]") {
+    AppState s;
+    s.page = Page::Bugfix;
+    s.selected_mod = "M";
+    s.bugs = {BugEntry{"T", "1", "k", "REF", "d"}};
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "f")) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::FixBugs);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::FixBugs);
+
+    s.permission_mode = "full";
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "f")) == Intent::FixBugs);
+    // Rescanning (a read) is never gated.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::ScanBugs);
+}
+
+TEST_CASE("HandleKey: Ctrl-P opens plugins, and the page drives its actions", "[p8]") {
+    AppState s = NavState();
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'p')) == Intent::RefreshPlugins);
+    REQUIRE(s.page == Page::Plugins);
+    s.plugins = {PluginEntry{"demo", "Demo", "1", "", "", "", true},
+                 PluginEntry{"other", "Other", "1", "", "", "", true}};
+    s.plugins_loaded = true;
+    REQUIRE(HandleKey(s, K(KeyInput::Down)) == Intent::None);
+    REQUIRE(s.plugin_sel == 1);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::RefreshPlugins);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "R")) == Intent::ReloadPlugins);
+
+    // `u` uninstall is a write -> gated; the dialog names the selected id.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "u")) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.detail == "other");
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::UninstallPlugin);
+
+    // `i` opens a path prompt; Enter installs (also gated) with the trimmed path.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "i")) == Intent::None);
+    REQUIRE(s.plugin_input_active);
+    for (char c : std::string("  C:/tmp/p.zip  ")) HandleKey(s, K(KeyInput::Char, std::string(1, c)));
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE_FALSE(s.plugin_input_active);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.detail == "C:/tmp/p.zip");
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::InstallPlugin);
+
+    // Esc leaves the page.
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE(s.page == Page::Mods);
+}
+
+TEST_CASE("HandleKey: Ctrl-P jump abandons a half-typed install path", "[p8]") {
+    AppState s = NavState();
+    s.page = Page::Plugins;
+    HandleKey(s, K(KeyInput::Char, "i"));
+    HandleKey(s, K(KeyInput::Char, "x"));
+    REQUIRE(s.plugin_input_active);
+    HandleKey(s, K(KeyInput::CtrlChar, "", 't'));
+    REQUIRE_FALSE(s.plugin_input_active);
+    REQUIRE(s.page == Page::Table);
+}
+
+TEST_CASE("HandleKey: Ctrl-L opens cloud; direction/DryRun and gated sync", "[p8]") {
+    AppState s = NavState();
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'l')) == Intent::RefreshCloudProviders);
+    REQUIRE(s.page == Page::Cloud);
+    s.providers = {CloudProvider{"p_1", "Drive", "webdav", "mods"}};
+
+    // Direction radio: u/d/b; default is upload.
+    REQUIRE(s.cloud_direction == "upload");
+    HandleKey(s, K(KeyInput::Char, "d"));
+    REQUIRE(s.cloud_direction == "download");
+    HandleKey(s, K(KeyInput::Char, "b"));
+    REQUIRE(s.cloud_direction == "sync");
+    HandleKey(s, K(KeyInput::Char, "u"));
+    REQUIRE(s.cloud_direction == "upload");
+
+    // DryRun toggles and is off by default (desktop parity).
+    REQUIRE_FALSE(s.cloud_dry_run);
+    HandleKey(s, K(KeyInput::Char, "y"));
+    REQUIRE(s.cloud_dry_run);
+    // delete-extra toggle.
+    REQUIRE_FALSE(s.cloud_delete_extra);
+    HandleKey(s, K(KeyInput::Char, "x"));
+    REQUIRE(s.cloud_delete_extra);
+
+    // A dry run mutates nothing -> runs without approval.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "s")) == Intent::CloudSync);
+    REQUIRE_FALSE(s.confirm.active);
+
+    // A real run is a write -> approval first.
+    HandleKey(s, K(KeyInput::Char, "y"));
+    REQUIRE_FALSE(s.cloud_dry_run);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "s")) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::CloudSync);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::CloudSync);
+
+    // Read-only actions are never gated.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "t")) == Intent::CloudTest);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::LoadCloudFiles);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::RefreshCloudProviders);
+}
+
+TEST_CASE("HandleKey: cloud with no provider refuses to act", "[p8]") {
+    AppState s;
+    s.page = Page::Cloud;
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.status == "没有云盘 Provider（先 cloud add）");
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "s")) == Intent::None);
+    REQUIRE(s.status == "没有可选 Provider");
+    REQUIRE_FALSE(s.confirm.active);
+}
+
+// ------------------------------------------------------ plugin/cloud parsing
+TEST_CASE("ParsePlugins reads the declarative plugin entry shape", "[p8]") {
+    Json body = Json::parse(
+        R"({"plugins":[{"id":"demo","name":"Demo","version":"1.0","author":"me",)"
+        R"("description":"d","error":"","loaded":true},)"
+        R"({"id":"bad","name":"Bad","loaded":false,"error":"manifest not found"}]})");
+    auto ps = BackendApi::ParsePlugins(body);
+    REQUIRE(ps.size() == 2);
+    REQUIRE(ps[0].id == "demo");
+    REQUIRE(ps[0].version == "1.0");
+    REQUIRE(ps[0].loaded);
+    REQUIRE_FALSE(ps[1].loaded);
+    REQUIRE(ps[1].error == "manifest not found");
+    // A missing plugins array is empty, not a crash.
+    REQUIRE(BackendApi::ParsePlugins(Json::object()).empty());
+}
+
+TEST_CASE("ParseProviders / ParseLocalFiles / ParseRemoteObjects", "[p8]") {
+    Json prov = Json::parse(
+        R"({"providers":[{"id":"p_1","name":"Drive","type":"webdav","remote_root":"mods"}],)"
+        R"("drivers":["local","webdav"]})");
+    auto ps = BackendApi::ParseProviders(prov);
+    REQUIRE(ps.size() == 1);
+    REQUIRE(ps[0].id == "p_1");
+    REQUIRE(ps[0].type == "webdav");
+    REQUIRE(ps[0].remote_root == "mods");
+
+    Json local = Json::parse(
+        R"({"mod":"M","root":"/m","entries":[{"name":"Cfgs/x.json","type":"file","size":12}],"count":1})");
+    auto lf = BackendApi::ParseLocalFiles(local);
+    REQUIRE(lf.size() == 1);
+    REQUIRE(lf[0].name == "Cfgs/x.json");
+    REQUIRE(lf[0].size == 12);
+
+    Json remote = Json::parse(
+        R"({"remote":"mods","objects":[{"name":"d","path":"mods/d","is_dir":true,"size":0},)"
+        R"({"name":"a.json","path":"mods/a.json","is_dir":false,"size":5}]})");
+    auto rf = BackendApi::ParseRemoteObjects(remote);
+    REQUIRE(rf.size() == 2);
+    REQUIRE(rf[0].is_dir);              // path preferred over name for the diff
+    REQUIRE(rf[0].name == "mods/d");
+    REQUIRE(rf[1].size == 5);
+}
+
+TEST_CASE("InterpretSync folds both cloud/sync response shapes", "[p8]") {
+    // Folder shape.
+    Json folder = Json::parse(
+        R"({"direction":"upload","dry_run":true,"total":3,"results":[)"
+        R"({"rel":"a","ok":true,"action":"upload_new"},)"
+        R"({"rel":"b","ok":true,"action":"skip_unchanged"},)"
+        R"({"rel":"c","ok":false,"action":"","error":"boom"}]})");
+    auto f = BackendApi::InterpretSync(folder);
+    REQUIRE(f.dry_run);
+    REQUIRE(f.direction == "upload");
+    REQUIRE(f.total == 3);
+    REQUIRE(f.uploaded == 1);
+    REQUIRE(f.downloaded == 0);
+    REQUIRE(f.skipped == 1);
+    REQUIRE(f.failed == 1);
+
+    // Single-file shape (no results[]).
+    Json one = Json::parse(
+        R"({"dry_run":true,"local_exists":true,"remote_exists":false,"direction":"upload"})");
+    auto o = BackendApi::InterpretSync(one);
+    REQUIRE(o.dry_run);
+    REQUIRE(o.total == 1);
+    REQUIRE(o.skipped == 1);
+
+    // An HTTP error envelope surfaces its message.
+    auto e = BackendApi::InterpretSync(Json::parse(R"({"error":"invalid direction"})"));
+    REQUIRE(e.message == "invalid direction");
+}
+
+TEST_CASE("ParsePermissionMode defaults to confirm on anything unusable", "[p8]") {
+    REQUIRE(BackendApi::ParsePermissionMode(Json::parse(R"({"settings":{"permissionMode":"full"}})")) ==
+            "full");
+    REQUIRE(BackendApi::ParsePermissionMode(Json::parse(R"({"permissionMode":"confirm"})")) ==
+            "confirm");
+    REQUIRE(BackendApi::ParsePermissionMode(Json::parse(R"({"settings":{"permissionMode":"yolo"}})")) ==
+            "confirm");
+    REQUIRE(BackendApi::ParsePermissionMode(Json::object()) == "confirm");
+    REQUIRE(BackendApi::ParsePermissionMode(Json()) == "confirm");
 }

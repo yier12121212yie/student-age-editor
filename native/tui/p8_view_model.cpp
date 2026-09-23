@@ -107,6 +107,55 @@ Intent HandleValidateOverlay(AppState& s, const KeyInput&) {
     return Intent::None;
 }
 
+// permissionMode gating (desktop parity). In "confirm" — the default the
+// backend stores — every mutating action first raises the approval dialog; in
+// "full" the action runs straight away. Either way this is a pure function of
+// the view-model: the overlay carries the deferred intent as data.
+Intent GateWrite(AppState& s, Intent want, std::string title, std::string detail) {
+    if (s.permission_mode != "confirm") return want;
+    s.confirm.active = true;
+    s.confirm.title = std::move(title);
+    s.confirm.detail = std::move(detail);
+    s.confirm.pending = want;
+    return Intent::None;
+}
+
+// y/Enter approves (and releases the deferred intent), n/Esc rejects.
+Intent HandleConfirmOverlay(AppState& s, const KeyInput& k) {
+    bool approve = false;
+    switch (k.kind) {
+        case KeyInput::Enter:
+            approve = true;
+            break;
+        case KeyInput::Escape:
+            approve = false;
+            break;
+        case KeyInput::Char:
+            if (k.text == "y" || k.text == "Y") approve = true;
+            else if (k.text == "n" || k.text == "N") approve = false;
+            else return Intent::None;  // other keys are ignored while the box is up
+            break;
+        default:
+            return Intent::None;
+    }
+    const std::string title = s.confirm.title;
+    Intent pending = s.confirm.pending;
+    s.confirm.active = false;
+    s.confirm.pending = Intent::None;
+    if (!approve) {
+        s.status = "已拒绝: " + title;
+        return Intent::None;
+    }
+    return pending;
+}
+
+std::string TrimAscii(const std::string& s) {
+    size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return {};
+    size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
 }  // namespace
 
 int AppState::ClampSel(int sel, int count) const {
@@ -137,10 +186,14 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
     if (k.kind == KeyInput::CtrlChar) {
         // Page jumps never carry transient edit state or the validation overlay
         // across (the search overlay is re-openable and Esc-dismissable).
-        if (k.ctrl == 'd' || k.ctrl == 't' || k.ctrl == 'b' || k.ctrl == 'a') {
+        if (k.ctrl == 'd' || k.ctrl == 't' || k.ctrl == 'b' || k.ctrl == 'a' ||
+            k.ctrl == 'p' || k.ctrl == 'l') {
             s.editing = false;
             s.editing_field = false;
             s.validate.active = false;
+            s.plugin_input_active = false;
+            s.confirm.active = false;
+            s.confirm.pending = Intent::None;
         }
         switch (k.ctrl) {
             case 'q':
@@ -159,6 +212,21 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
             case 'a':
                 s.page = Page::Agent;
                 return Intent::None;
+            case 'p':
+                s.page = Page::Plugins;
+                s.status = "插件管理";
+                return Intent::RefreshPlugins;
+            case 'l':
+                s.page = Page::Cloud;
+                s.status = "云同步";
+                return Intent::RefreshCloudProviders;
+            case 'm':
+                // Desktop parity: the AI panel's permission-mode quick toggle.
+                s.permission_mode = s.permission_mode == "confirm" ? "full" : "confirm";
+                s.status = std::string("权限模式: ") +
+                           (s.permission_mode == "confirm" ? "confirm（变更前确认）"
+                                                           : "full（不再确认）");
+                return Intent::SetPermissionMode;
             case 'k':
                 s.show_help = false;
                 s.search.active = true;
@@ -172,6 +240,8 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
     }
 
     // Ctrl-K opens the search overlay from anywhere (including the help view).
+    // The approval dialog is the topmost modal and swallows every key.
+    if (s.confirm.active) return HandleConfirmOverlay(s, k);
     if (s.search.active) return HandleSearchOverlay(s, k);
     if (s.validate.active) return HandleValidateOverlay(s, k);
 
@@ -269,7 +339,11 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                         s.status = "无改动";
                         return Intent::None;
                     }
-                    return Intent::SaveTable;
+                    return GateWrite(s, Intent::SaveTable, "保存表格",
+                                     s.table.name + "  修改 " +
+                                         std::to_string(s.table.edits.size()) + "  删除 " +
+                                         std::to_string(s.table.removes.size()) + "  新增 " +
+                                         std::to_string(s.table.adds.size()));
                 }
                 return Intent::None;
             }
@@ -472,11 +546,17 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                     return Intent::None;
                 case KeyInput::Char:
                     if (k.text == "r" || k.text == "s") return Intent::ScanBugs;
-                    if (k.text == "f") return Intent::FixBugs;
+                    if (k.text == "f")
+                        return GateWrite(s, Intent::FixBugs, "修复全部 Bug",
+                                         "模组 " + s.selected_mod + "  共 " +
+                                             std::to_string(s.bugs.size()) + " 条");
                     return Intent::None;
                 case KeyInput::CtrlChar:
                     if (k.ctrl == 'r') return Intent::ScanBugs;
-                    if (k.ctrl == 's') return Intent::FixBugs;
+                    if (k.ctrl == 's')
+                        return GateWrite(s, Intent::FixBugs, "修复全部 Bug",
+                                         "模组 " + s.selected_mod + "  共 " +
+                                             std::to_string(s.bugs.size()) + " 条");
                     return Intent::None;
                 case KeyInput::Escape:
                     s.page = Page::Table;
@@ -507,6 +587,134 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                     return Intent::None;
                 case KeyInput::Escape:
                     s.page = Page::Table;
+                    return Intent::None;
+                default:
+                    return Intent::None;
+            }
+        }
+        case Page::Plugins: {
+            // `i` opens a one-line path prompt; nothing touches the filesystem
+            // until Enter, and the install itself is confirmation-gated.
+            if (s.plugin_input_active) {
+                switch (k.kind) {
+                    case KeyInput::Enter: {
+                        std::string path = TrimAscii(s.plugin_input);
+                        if (path.empty()) {
+                            s.status = "输入插件 zip 路径";
+                            return Intent::None;
+                        }
+                        s.plugin_input_active = false;
+                        return GateWrite(s, Intent::InstallPlugin, "安装插件", path);
+                    }
+                    case KeyInput::Escape:
+                        s.plugin_input_active = false;
+                        s.status = "已取消安装";
+                        return Intent::None;
+                    case KeyInput::Backspace:
+                        PopCodepoint(s.plugin_input);
+                        return Intent::None;
+                    case KeyInput::Char:
+                        s.plugin_input += k.text;
+                        return Intent::None;
+                    default:
+                        return Intent::None;
+                }
+            }
+            switch (k.kind) {
+                case KeyInput::Up:
+                    s.plugin_sel =
+                        s.ClampSel(s.plugin_sel - 1, static_cast<int>(s.plugins.size()));
+                    return Intent::None;
+                case KeyInput::Down:
+                    s.plugin_sel =
+                        s.ClampSel(s.plugin_sel + 1, static_cast<int>(s.plugins.size()));
+                    return Intent::None;
+                case KeyInput::Char:
+                    if (k.text == "r") return Intent::RefreshPlugins;
+                    if (k.text == "R") return Intent::ReloadPlugins;
+                    if (k.text == "i") {
+                        s.plugin_input_active = true;
+                        s.plugin_input.clear();
+                        s.status = "输入插件 zip 路径，Enter 安装，Esc 取消";
+                        return Intent::None;
+                    }
+                    if (k.text == "u") {
+                        if (s.plugins.empty()) {
+                            s.status = "没有可卸载的插件";
+                            return Intent::None;
+                        }
+                        int pi = s.ClampSel(s.plugin_sel, static_cast<int>(s.plugins.size()));
+                        return GateWrite(s, Intent::UninstallPlugin, "卸载插件",
+                                         s.plugins[pi].id);
+                    }
+                    return Intent::None;
+                case KeyInput::Escape:
+                    s.page = Page::Mods;
+                    return Intent::None;
+                default:
+                    return Intent::None;
+            }
+        }
+        case Page::Cloud: {
+            switch (k.kind) {
+                case KeyInput::Up:
+                    s.provider_sel =
+                        s.ClampSel(s.provider_sel - 1, static_cast<int>(s.providers.size()));
+                    return Intent::None;
+                case KeyInput::Down:
+                    s.provider_sel =
+                        s.ClampSel(s.provider_sel + 1, static_cast<int>(s.providers.size()));
+                    return Intent::None;
+                case KeyInput::Enter:
+                    if (s.providers.empty()) {
+                        s.status = "没有云盘 Provider（先 cloud add）";
+                        return Intent::None;
+                    }
+                    s.status = "读取本地/远端文件列表…";
+                    return Intent::LoadCloudFiles;
+                case KeyInput::Char:
+                    if (k.text == "r") return Intent::RefreshCloudProviders;
+                    if (k.text == "t") {
+                        if (s.providers.empty()) {
+                            s.status = "没有可选 Provider";
+                            return Intent::None;
+                        }
+                        return Intent::CloudTest;
+                    }
+                    if (k.text == "y") {
+                        s.cloud_dry_run = !s.cloud_dry_run;
+                        s.status = std::string("DryRun: ") +
+                                   (s.cloud_dry_run ? "开（只预览不写入）"
+                                                    : "关（会真实写盘）");
+                        return Intent::None;
+                    }
+                    if (k.text == "x") {
+                        s.cloud_delete_extra = !s.cloud_delete_extra;
+                        s.status = std::string("清理远端多余: ") +
+                                   (s.cloud_delete_extra ? "开" : "关");
+                        return Intent::None;
+                    }
+                    if (k.text == "u" || k.text == "d" || k.text == "b") {
+                        s.cloud_direction = k.text == "u"   ? "upload"
+                                           : k.text == "d" ? "download"
+                                                           : "sync";
+                        s.status = "方向: " + s.cloud_direction;
+                        return Intent::None;
+                    }
+                    if (k.text == "s") {
+                        if (s.providers.empty()) {
+                            s.status = "没有可选 Provider";
+                            return Intent::None;
+                        }
+                        // A dry run mutates nothing, so it never needs approval.
+                        if (s.cloud_dry_run) return Intent::CloudSync;
+                        return GateWrite(s, Intent::CloudSync, "云同步",
+                                         "方向 " + s.cloud_direction + "  模组 " +
+                                             s.selected_mod);
+                    }
+                    return Intent::None;
+                case KeyInput::Escape:
+                    s.page = Page::Mods;
                     return Intent::None;
                 default:
                     return Intent::None;

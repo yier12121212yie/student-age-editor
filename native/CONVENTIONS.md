@@ -280,8 +280,10 @@ void register_demo_routes(Router& r) {
   A15 mods 列表 2s TTL；B2 lossy 409；B3 peek-then-pop；B4 LF；B5 BOM 保留；B6 sha1 优先 mtime；
   B11 响应已发不补刀；B12 OPTIONS 同校验；B13 64 槽 503；B16 坏表如实；G3/B1 只读视图；
   S1 免序列化三零计数；S2 patch 判别在 body（无 PATCH 路由）。
-- **波次 2**：B9（选项 id 后缀≥100 不自动分配）→ bugfix/validate 组；B8/B7/A11/A12/A16 →
-  见 `still-stone-stickleback.md` 与 IMPLEMENTATION_STATUS.md 行为变更节，各组简报会带子集。
+- **波次 2（均已落地，各组简报按子集派发）**：B9 选项 id 后缀≥100 不再自动分配（跨事件
+  撞号）；B8 引用校验不再 `except: pass`；B7 `tts_store.bind_talk_audio` 传 expect_mtime_ns；
+  A11 `bugfix_fix` 预建索引 + 只重扫 touched 表；A12 `ref_rules` 按 target 缓存 id 全集；
+  A16 只为被引用的 base 表建键集。
 - **全局**：`_truthy` 只认真 true/"true"；错误 detail 中文逐字；`sorted()` 显式排序点；
   「假完成」教训——准出证据必须能复跑。
 - **N1（波次 3 发现，已修 `preview_service.dict_pool`）**：nlohmann

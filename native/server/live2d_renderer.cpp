@@ -2,14 +2,10 @@
 // P5 Phase 1: Offline expression preview generation (PNG) for mob UI caching.
 //
 // Implementation plan:
-// 1. Load Live2DCubismCore.dll from game root (via ctypes on Windows)
+// 1. Load Live2DCubismCore.dll from game root (dynamic loading on Windows)
 // 2. Parse moc3 + profile.json for parameter mappings
 // 3. Render each expression to 512x512 PNG
 // 4. Cache by signature: bundle_sha256[:24] + expr_name
-//
-// Usage (as HTTP plugin service):
-//   cd native/server/services
-//   python3 live2d_renderer.py --port 39252
 //
 // API:
 //   GET /plugin.json           # Self-description for editor integration

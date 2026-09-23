@@ -97,6 +97,139 @@ void BackendApi::ParseValidate(const Json& body, ValidateResult& out) {
     }
 }
 
+std::vector<PluginEntry> BackendApi::ParsePlugins(const Json& body) {
+    std::vector<PluginEntry> out;
+    if (!body.is_object() || !body.contains("plugins") || !body.at("plugins").is_array()) return out;
+    auto field = [](const Json& p, const char* k) -> std::string {
+        if (!p.is_object() || !p.contains(k) || !p.at(k).is_string()) return std::string();
+        return p.at(k).get<std::string>();
+    };
+    for (const auto& p : body.at("plugins")) {
+        PluginEntry e;
+        e.id = field(p, "id");
+        e.name = field(p, "name");
+        e.version = field(p, "version");
+        e.author = field(p, "author");
+        e.description = field(p, "description");
+        e.error = field(p, "error");
+        e.loaded = p.is_object() && p.value("loaded", false);
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+std::vector<CloudProvider> BackendApi::ParseProviders(const Json& body) {
+    std::vector<CloudProvider> out;
+    if (!body.is_object() || !body.contains("providers") || !body.at("providers").is_array())
+        return out;
+    auto field = [](const Json& p, const char* k) -> std::string {
+        if (!p.is_object() || !p.contains(k) || !p.at(k).is_string()) return std::string();
+        return p.at(k).get<std::string>();
+    };
+    for (const auto& p : body.at("providers")) {
+        CloudProvider c;
+        c.id = field(p, "id");
+        c.name = field(p, "name");
+        c.type = field(p, "type");
+        c.remote_root = field(p, "remote_root");
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+std::vector<CloudFile> BackendApi::ParseLocalFiles(const Json& body) {
+    std::vector<CloudFile> out;
+    if (!body.is_object() || !body.contains("entries") || !body.at("entries").is_array())
+        return out;
+    for (const auto& e : body.at("entries")) {
+        CloudFile f;
+        if (e.is_object() && e.contains("name") && e.at("name").is_string())
+            f.name = e.at("name").get<std::string>();
+        if (e.is_object() && e.contains("size") && e.at("size").is_number())
+            f.size = e.at("size").get<long long>();
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
+std::vector<CloudFile> BackendApi::ParseRemoteObjects(const Json& body) {
+    std::vector<CloudFile> out;
+    if (!body.is_object() || !body.contains("objects") || !body.at("objects").is_array())
+        return out;
+    for (const auto& o : body.at("objects")) {
+        CloudFile f;
+        // `path` is the provider-relative path; `name` is the leaf. The dual
+        // panel compares against the local side, so prefer `path`.
+        if (o.is_object()) {
+            if (o.contains("path") && o.at("path").is_string())
+                f.name = o.at("path").get<std::string>();
+            else if (o.contains("name") && o.at("name").is_string())
+                f.name = o.at("name").get<std::string>();
+            f.is_dir = o.value("is_dir", false);
+            if (o.contains("size") && o.at("size").is_number())
+                f.size = o.at("size").get<long long>();
+        }
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
+CloudSyncSummary BackendApi::InterpretSync(const Json& body) {
+    CloudSyncSummary s;
+    if (!body.is_object()) return s;
+    s.dry_run = body.value("dry_run", false);
+    if (body.contains("direction") && body.at("direction").is_string())
+        s.direction = body.at("direction").get<std::string>();
+    if (body.contains("total") && body.at("total").is_number())
+        s.total = body.at("total").get<long long>();
+    if (body.contains("message") && body.at("message").is_string())
+        s.message = body.at("message").get<std::string>();
+    if (body.contains("error") && body.at("error").is_string() && s.message.empty())
+        s.message = body.at("error").get<std::string>();
+    if (body.contains("results") && body.at("results").is_array()) {
+        for (const auto& r : body.at("results")) {
+            const std::string action = r.is_object() && r.contains("action") &&
+                                               r.at("action").is_string()
+                                           ? r.at("action").get<std::string>()
+                                           : std::string();
+            const bool ok = r.is_object() && r.value("ok", false);
+            if (!ok) {
+                ++s.failed;
+            } else if (action.rfind("download", 0) == 0) {
+                ++s.downloaded;
+            } else if (action.rfind("upload", 0) == 0) {
+                ++s.uploaded;
+            } else {
+                ++s.skipped;
+            }
+        }
+        if (s.total == 0) s.total = static_cast<long long>(body.at("results").size());
+    } else {
+        // Single-file shape: no results[] — one action, at most.
+        const std::string action =
+            body.contains("action") && body.at("action").is_string()
+                ? body.at("action").get<std::string>()
+                : std::string();
+        s.total = 1;
+        if (action.rfind("download", 0) == 0) ++s.downloaded;
+        else if (action.rfind("upload", 0) == 0) ++s.uploaded;
+        else ++s.skipped;
+    }
+    return s;
+}
+
+std::string BackendApi::ParsePermissionMode(const Json& body) {
+    if (!body.is_object()) return "confirm";
+    const Json* s = body.contains("settings") && body.at("settings").is_object()
+                        ? &body.at("settings")
+                        : &body;
+    if (s->contains("permissionMode") && s->at("permissionMode").is_string()) {
+        const std::string m = s->at("permissionMode").get<std::string>();
+        if (m == "confirm" || m == "full") return m;
+    }
+    return "confirm";  // the backend's own default
+}
+
 SaveResult BackendApi::InterpretSave(int http_status, const Json& body) {
     SaveResult r;
     std::string code =
@@ -267,6 +400,177 @@ bool BackendApi::ValidateTable(const std::string& cfg, const Json& data, Validat
         return false;
     }
     if (out) ParseValidate(resp, *out);
+    return true;
+}
+
+std::vector<PluginEntry> BackendApi::ListPlugins(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/plugins", nullptr, &status, err);
+    if (!err->empty()) return {};
+    if (status != 200) {
+        *err = "读取插件失败: " + body.value("error", std::string("HTTP " + std::to_string(status)));
+        return {};
+    }
+    return ParsePlugins(body);
+}
+
+bool BackendApi::InstallPlugin(const std::string& zip_path, std::string* id_out,
+                               std::string* err) {
+    if (err) err->clear();
+    Json req = Json::object();
+    req["path"] = zip_path;
+    // The backend defaults filename to basename(path) when it is absent, which
+    // is exactly the desktop behaviour (no temp copy needed for a local path).
+    int status = 0;
+    Json body = Call("POST", "/api/plugins/install_path", &req, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = body.value("error", std::string("安装失败 (HTTP " + std::to_string(status) + ")"));
+        return false;
+    }
+    if (id_out && body.contains("id") && body.at("id").is_string())
+        *id_out = body.at("id").get<std::string>();
+    return true;
+}
+
+bool BackendApi::UninstallPlugin(const std::string& id, std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("DELETE", "/api/plugins/" + sa_core::http::quote_component(id), nullptr,
+                     &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = body.value("error", std::string("卸载失败 (HTTP " + std::to_string(status) + ")"));
+        return false;
+    }
+    return true;
+}
+
+bool BackendApi::ReloadPlugins(std::vector<PluginEntry>* out, std::string* err) {
+    if (err) err->clear();
+    Json empty = Json::object();
+    int status = 0;
+    Json body = Call("POST", "/api/plugins/reload", &empty, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = body.value("error", std::string("重载失败 (HTTP " + std::to_string(status) + ")"));
+        return false;
+    }
+    if (out) *out = ParsePlugins(body);
+    return true;
+}
+
+std::vector<CloudProvider> BackendApi::ListCloudProviders(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/cloud/providers", nullptr, &status, err);
+    if (!err->empty()) return {};
+    if (status != 200) {
+        *err = "读取 Provider 失败: " +
+               body.value("error", std::string("HTTP " + std::to_string(status)));
+        return {};
+    }
+    return ParseProviders(body);
+}
+
+std::vector<CloudFile> BackendApi::CloudLocalFiles(const std::string& mod, std::string* err) {
+    if (err) err->clear();
+    std::string path = "/api/cloud/local_files";
+    if (!mod.empty()) path += "?mod_name=" + sa_core::http::quote_component(mod);
+    int status = 0;
+    Json body = Call("GET", path, nullptr, &status, err);
+    if (!err->empty()) return {};
+    if (status != 200) {
+        *err = body.value("error", std::string("本地列表失败 (HTTP " + std::to_string(status) + ")"));
+        return {};
+    }
+    return ParseLocalFiles(body);
+}
+
+std::vector<CloudFile> BackendApi::CloudRemoteFiles(const std::string& provider_id,
+                                                    const std::string& mod, std::string* err) {
+    if (err) err->clear();
+    std::string path = "/api/cloud/list?provider_id=" +
+                       sa_core::http::quote_component(provider_id);
+    if (!mod.empty()) path += "&mod_name=" + sa_core::http::quote_component(mod);
+    int status = 0;
+    Json body = Call("GET", path, nullptr, &status, err);
+    if (!err->empty()) return {};
+    if (status != 200) {
+        *err = body.value("error", std::string("远端列表失败 (HTTP " + std::to_string(status) + ")"));
+        return {};
+    }
+    return ParseRemoteObjects(body);
+}
+
+bool BackendApi::CloudTest(const std::string& provider_id, std::string* err) {
+    if (err) err->clear();
+    Json req = Json::object();
+    req["provider_id"] = provider_id;
+    int status = 0;
+    Json body = Call("POST", "/api/cloud/test", &req, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = body.value("error", std::string("连接测试失败 (HTTP " + std::to_string(status) + ")"));
+        return false;
+    }
+    return true;
+}
+
+CloudSyncSummary BackendApi::CloudSync(const std::string& provider_id,
+                                       const std::string& direction, const std::string& mod,
+                                       bool dry_run, bool delete_extra, bool full,
+                                       std::string* err) {
+    CloudSyncSummary s;
+    s.dry_run = dry_run;
+    s.direction = direction;
+    if (err) err->clear();
+    Json req = Json::object();
+    req["provider_id"] = provider_id;
+    req["direction"] = direction;
+    if (!mod.empty()) req["mod_name"] = mod;
+    if (full) req["folder"] = true;
+    if (dry_run) req["dry_run"] = true;
+    if (delete_extra) req["delete_extra"] = true;
+    int status = 0;
+    Json body = Call("POST", "/api/cloud/sync", &req, &status, err);
+    if (!err->empty()) {
+        s.message = *err;
+        return s;
+    }
+    if (status != 200) {
+        s.message = body.value("error", std::string("同步失败 (HTTP " + std::to_string(status) + ")"));
+        *err = s.message;
+        return s;
+    }
+    return InterpretSync(body);
+}
+
+std::string BackendApi::LoadPermissionMode(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/ai/settings", nullptr, &status, err);
+    // A missing/failing settings route must not block the UI: "confirm" is the
+    // backend's own default and the safe choice.
+    if (!err->empty() || status != 200) {
+        if (err && err->empty()) *err = "读取 AI 设置失败";
+        return "confirm";
+    }
+    return ParsePermissionMode(body);
+}
+
+bool BackendApi::SavePermissionMode(const std::string& mode, std::string* err) {
+    if (err) err->clear();
+    Json req = Json::object();
+    req["permissionMode"] = mode;
+    int status = 0;
+    Json body = Call("PUT", "/api/ai/settings", &req, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = body.value("error", std::string("保存权限模式失败 (HTTP " + std::to_string(status) + ")"));
+        return false;
+    }
     return true;
 }
 

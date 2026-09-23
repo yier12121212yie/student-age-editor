@@ -1,6 +1,6 @@
 // S3 准出（cfg_patch_equivalence_test）：diffStage 生成补丁 == mergeStageBack 全量合并。
 //
-// 契约（still-stone-stickleback.md S3-3）：对同一张全量表，
+// 契约（S3-3 增量保存）：对同一张全量表，
 //   applyPatch(table, diffStage(baseline, stage, prefixes)) 的结果
 //   == mergeStageBack(table, baseline, stage, prefixes)
 // 用 N 组随机 baseline/stage/prefix（含 int/str 键混排、删除、新增、原地改、
