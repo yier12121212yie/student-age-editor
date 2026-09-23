@@ -97,8 +97,12 @@ jobs:
           }
           if (-not $GEN_OK) { Write-Error "No suitable VS generator found"; exit 1 }
           Write-Host "Using generator: $GEN_OK"
+          # Native exit codes are not errors in PowerShell, so a failed build or a
+          # failing test suite still fell through to "success=true" below.
           cmake --build build-native-win --config Release
+          if ($LASTEXITCODE -ne 0) { Write-Error "native build failed"; exit 1 }
           ctest --test-dir build-native-win -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { Write-Error "native tests failed"; exit 1 }
           echo "success=true" >> $env:GITHUB_OUTPUT
         continue-on-error: false
       
@@ -427,7 +431,8 @@ jobs:
       - name: 📊 Environment Setup
         run: |
           java -version 2>&1 | tee android_env.log
-          echo "Gradle Wrapper Version:" > android_env.log
+          # >> not > — ">" truncated the java version just captured above.
+          echo "Gradle Wrapper Version:" >> android_env.log
           cat frontend/android/gradle/wrapper/gradle-wrapper.properties >> android_env.log
       
       - name: 🔧 Setup Android SDK

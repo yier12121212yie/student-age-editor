@@ -249,33 +249,33 @@ jobs:
           
           if [ "${{ steps.xcode_build.outputs.status }}" = "failed" ]; then
             echo "1. **Check Xcode Project Configuration**" >> macos_bug_report.md
-            echo "   ```bash" >> macos_bug_report.md
+            echo "   \`\`\`bash" >> macos_bug_report.md
             echo "   cd frontend/macos" >> macos_bug_report.md
             echo "   pod install" >> macos_bug_report.md
             echo "   xcodebuild -workspace Runner.xcworkspace -list" >> macos_bug_report.md
-            echo "   ```" >> macos_bug_report.md
+            echo "   \`\`\`" >> macos_bug_report.md
             echo "" >> macos_bug_report.md
           fi
           
           if [ "${{ steps.pod_install.outputs.status }}" != "succeeded" ]; then
             echo "2. **Update CocoaPods**" >> macos_bug_report.md
-            echo "   ```bash" >> macos_bug_report.md
+            echo "   \`\`\`bash" >> macos_bug_report.md
             echo "   sudo gem install cocoapods" >> macos_bug_report.md
             echo "   pod repo update" >> macos_bug_report.md
-            echo "   ```" >> macos_bug_report.md
+            echo "   \`\`\`" >> macos_bug_report.md
             echo "" >> macos_bug_report.md
           fi
           
           echo "3. **Clean Flutter Build Artifacts**" >> macos_bug_report.md
-          echo "   ```bash" >> macos_bug_report.md
+          echo "   \`\`\`bash" >> macos_bug_report.md
           echo "   cd frontend" >> macos_bug_report.md
           echo "   flutter clean" >> macos_bug_report.md
           echo "   flutter pub get" >> macos_bug_report.md
-          echo "   ```" >> macos_bug_report.md
+          echo "   \`\`\`" >> macos_bug_report.md
           echo "" >> macos_bug_report.md
           
           echo "4. **Verify macOS Deployment Target**" >> macos_bug_report.md
-          echo "   Check `frontend/macos/Runner/Info.plist` for minimum version requirements" >> macos_bug_report.md
+          echo "   Check \`frontend/macos/Runner/Info.plist\` for minimum version requirements" >> macos_bug_report.md
           echo "" >> macos_bug_report.md
           
           # Count errors
@@ -498,35 +498,38 @@ jobs:
           SIGNING_ERRORS=0
 
           # Analyze errors using pattern matching
-          if [ -f "flutter_apk_build.log" ]; then
+          # apk_build runs with working-directory: frontend, so the log lives
+          # under frontend/ — the old root-relative path never matched and the
+          # whole error-analysis block below was silently skipped.
+          if [ -f "frontend/flutter_apk_build.log" ]; then
             echo "### 🔴 Build Errors" >> android_bug_report.md
             echo "" >> android_bug_report.md
             
-            DART_ERRORS=$(grep -c "Error:" flutter_apk_build.log 2>/dev/null) || DART_ERRORS=0
+            DART_ERRORS=$(grep -c "Error:" frontend/flutter_apk_build.log 2>/dev/null) || DART_ERRORS=0
             if [ "$DART_ERRORS" -gt 0 ]; then
               echo "#### Dart Compilation Errors ($DART_ERRORS found)" >> android_bug_report.md
-              grep "Error:" flutter_apk_build.log 2>/dev/null | head -10 >> android_bug_report.md
+              grep "Error:" frontend/flutter_apk_build.log 2>/dev/null | head -10 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
             
-            GRADLE_CONFLICTS=$(grep -cE "(conflict|override|duplicate)" flutter_apk_build.log 2>/dev/null) || GRADLE_CONFLICTS=0
+            GRADLE_CONFLICTS=$(grep -cE "(conflict|override|duplicate)" frontend/flutter_apk_build.log 2>/dev/null) || GRADLE_CONFLICTS=0
             if [ "$GRADLE_CONFLICTS" -gt 0 ]; then
               echo "#### Gradle Dependency Conflicts ($GRADLE_CONFLICTS found)" >> android_bug_report.md
-              grep -iE "(conflict|override|duplicate)" flutter_apk_build.log 2>/dev/null | head -5 >> android_bug_report.md
+              grep -iE "(conflict|override|duplicate)" frontend/flutter_apk_build.log 2>/dev/null | head -5 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
             
-            NDK_ERRORS=$(grep -cE "(no rule|unresolved|cannot find).*\.(so|a)" flutter_apk_build.log 2>/dev/null) || NDK_ERRORS=0
+            NDK_ERRORS=$(grep -cE "(no rule|unresolved|cannot find).*\.(so|a)" frontend/flutter_apk_build.log 2>/dev/null) || NDK_ERRORS=0
             if [ "$NDK_ERRORS" -gt 0 ]; then
               echo "#### NDK Linking Issues ($NDK_ERRORS found)" >> android_bug_report.md
-              grep -iE "(no rule|unresolved|cannot find).*\.(so|a)" flutter_apk_build.log 2>/dev/null | head -10 >> android_bug_report.md
+              grep -iE "(no rule|unresolved|cannot find).*\.(so|a)" frontend/flutter_apk_build.log 2>/dev/null | head -10 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
             
-            SIGNING_ERRORS=$(grep -cE "(keystore|signature|certificate)" flutter_apk_build.log 2>/dev/null) || SIGNING_ERRORS=0
+            SIGNING_ERRORS=$(grep -cE "(keystore|signature|certificate)" frontend/flutter_apk_build.log 2>/dev/null) || SIGNING_ERRORS=0
             if [ "$SIGNING_ERRORS" -gt 0 ]; then
               echo "#### Signature/Keystore Issues ($SIGNING_ERRORS found)" >> android_bug_report.md
-              grep -iE "(keystore|signature|certificate)" flutter_apk_build.log 2>/dev/null | head -5 >> android_bug_report.md
+              grep -iE "(keystore|signature|certificate)" frontend/flutter_apk_build.log 2>/dev/null | head -5 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
           fi
@@ -540,45 +543,49 @@ jobs:
           if [ "${{ steps.apk_build.outcome }}" = "failure" ]; then
             if [ "${{ steps.apk_verify.outputs.apk_exists }}" = "false" ]; then
               RECOMMENDATIONS+="1. **Clean Flutter Build Completely**\n"
-              RECOMMENDATIONS+="   ```bash\n"
+              RECOMMENDATIONS+="   \`\`\`bash\n"
               RECOMMENDATIONS+="   cd frontend\n"
               RECOMMENDATIONS+="   flutter clean\n"
               RECOMMENDATIONS+="   rm -rf .dart_tool build/\n"
               RECOMMENDATIONS+="   flutter pub get\n"
-              RECOMMENDATIONS+="   ```\n\n"
+              RECOMMENDATIONS+="   \`\`\`\n\n"
             fi
             
             if [ "$NDK_ERRORS" -gt 0 ]; then
               RECOMMENDATIONS+="2. **Verify Native Backend JNI Library**\n"
-              RECOMMENDATIONS+="   Check if `libbackend_shared.so` exists in `native/jniLibs/arm64-v8a/`\n"
-              RECOMMENDATIONS+="   Rebuild native backend: `bash native/android/android_build.sh`\n\n"
+              RECOMMENDATIONS+="   Check if \`libbackend_shared.so\` exists in \`native/jniLibs/arm64-v8a/\`\n"
+              RECOMMENDATIONS+="   Rebuild native backend: \`bash native/android/android_build.sh\`\n\n"
             fi
             
             if [ "$GRADLE_CONFLICTS" -gt 0 ]; then
               RECOMMENDATIONS+="3. **Resolve Gradle Dependency Conflicts**\n"
-              RECOMMENDATIONS+="   ```bash\n"
+              RECOMMENDATIONS+="   \`\`\`bash\n"
               RECOMMENDATIONS+="   cd frontend/android\n"
               RECOMMENDATIONS+="   ./gradlew app:dependencies --configuration debugCompileClasspath\n"
-              RECOMMENDATIONS+="   ```\n\n"
+              RECOMMENDATIONS+="   \`\`\`\n\n"
             fi
           fi
           
           if [ "${{ steps.native_android_build.outcome }}" = "failure" ]; then
             RECOMMENDATIONS+="4. **Fix Native Backend Build**\n"
-            RECOMMENDATIONS+="   Review errors in `native/android/android_build.sh` output\n"
+            RECOMMENDATIONS+="   Review errors in \`native/android/android_build.sh\` output\n"
             RECOMMENDATIONS+="   Check NDK version compatibility with current project\n"
             RECOMMENDATIONS+="   Ensure CMakeLists.txt includes correct ABI filters\n\n"
           fi
           
+          # Backticks inside a double-quoted assignment are command
+          # substitution, and `set -e` aborts on the resulting 127 — the
+          # unescaped `compileSdk` below killed this whole step. Escape every
+          # literal Markdown backtick in this block.
           RECOMMENDATIONS+="5. **General Troubleshooting**\n"
-          RECOMMENDATIONS+="   - Verify Android SDK API levels match `compileSdk` in `build.gradle.kts`\n"
-          RECOMMENDATIONS+="   - Check keystore configuration in `app/build.gradle.kts`\n"
-          RECOMMENDATIONS+="   - Update Gradle wrapper if needed (`gradle-wrapper.properties`)\n"
+          RECOMMENDATIONS+="   - Verify Android SDK API levels match \`compileSdk\` in \`build.gradle.kts\`\n"
+          RECOMMENDATIONS+="   - Check keystore configuration in \`app/build.gradle.kts\`\n"
+          RECOMMENDATIONS+="   - Update Gradle wrapper if needed (\`gradle-wrapper.properties\`)\n"
           
           echo -e "$RECOMMENDATIONS" >> android_bug_report.md
           
           # Count total errors
-          ERROR_COUNT=$(grep -ci "error\|fatal" flutter_apk_build.log 2>/dev/null) || ERROR_COUNT=0
+          ERROR_COUNT=$(grep -ci "error\|fatal" frontend/flutter_apk_build.log 2>/dev/null) || ERROR_COUNT=0
           echo "error_count=$ERROR_COUNT" >> $GITHUB_OUTPUT
           
           # Categorize error types. $GITHUB_OUTPUT accepts only key=value lines,
@@ -606,8 +613,8 @@ jobs:
           name: android-build-logs
           path: |
             ndk_build.log
-            flutter_apk_build.log
-            gradle_deps.tmp
+            frontend/flutter_apk_build.log
+            frontend/android/gradle_deps.tmp
             flutter_doctor.log
             android_bug_report.md
             frontend/.gradle/
