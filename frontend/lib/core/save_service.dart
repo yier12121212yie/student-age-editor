@@ -129,8 +129,13 @@ class SaveService {
         cfg: res['cfg'] as String?,
         mtimeNs: res['mtime_ns'] as int?,
         snapshot: res['snapshot'] as String?,
-        appliedSet: (res['applied_set'] as Map?)?.cast<String, dynamic>() ?? {},
-        appliedRemove: (res['applied_remove'] as List?)?.cast<dynamic>() ?? [],
+        // 后端只回计数（数字），不是行对象/数组；形状不匹配时退化成空集合，
+        // 绝不能对数字做 as Map? 硬转（那会在保存成功路径上抛 TypeError）。
+        appliedSet: res['applied_set'] is Map
+            ? (res['applied_set'] as Map).cast<String, dynamic>()
+            : const {},
+        appliedRemove:
+            res['applied_remove'] is List ? (res['applied_remove'] as List) : const [],
       );
     } on ApiException catch (e) {
       if (e.statusCode == 409 && e.code == 'conflict') {
@@ -182,8 +187,13 @@ class SaveService {
         cfg: res['cfg'] as String?,
         mtimeNs: res['mtime_ns'] as int?,
         snapshot: res['snapshot'] as String?,
-        appliedSet: (res['applied_set'] as Map?)?.cast<String, dynamic>() ?? {},
-        appliedRemove: (res['applied_remove'] as List?)?.cast<dynamic>() ?? [],
+        // 后端只回计数（数字），不是行对象/数组；形状不匹配时退化成空集合，
+        // 绝不能对数字做 as Map? 硬转（那会在保存成功路径上抛 TypeError）。
+        appliedSet: res['applied_set'] is Map
+            ? (res['applied_set'] as Map).cast<String, dynamic>()
+            : const {},
+        appliedRemove:
+            res['applied_remove'] is List ? (res['applied_remove'] as List) : const [],
       );
     } on ApiException catch (e) {
       if (e.statusCode == 409 && e.code == 'conflict') {

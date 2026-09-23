@@ -120,8 +120,8 @@ TEST_CASE("40MB read/write acceptance over HTTP", "[perf][s1][s2][bench][slow]")
         CHECK(w1 - w0 == 1);                    // CONVENTIONS 7: 单字段补丁 Δwrites=1
         CHECK(static_cast<long long>(patch->body.size()) < 2048);  // response < 2KB (optimized)
         auto env = nlohmann::ordered_json::parse(patch->body);
-        CHECK(env["applied_set_count"] == 1);   // optimized to count only
-        CHECK(env["applied_remove_count"] == 0);
+        CHECK(env["applied_set"] == 1);         // optimized to count only
+        CHECK(env["applied_remove"] == 0);
         CHECK(env["ok"] == true);
         CHECK(env.contains("snapshot"));        // overwrite of an existing table -> snapshot
 

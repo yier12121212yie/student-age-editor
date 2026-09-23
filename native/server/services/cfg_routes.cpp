@@ -175,15 +175,19 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     json env;
     env["ok"] = true;
     env["cfg"] = cfg_name;
-    // Optimized: only return counts instead of full objects to reduce body size <10KB
-    long long set_count = applied.contains("set") && applied.at("set").is_object() 
-                          ? static_cast<long long>(applied.at("set").size()) 
-                          : 0;
-    long long remove_count = applied.contains("remove") && applied.at("remove").is_array()
-                             ? static_cast<long long>(applied.at("remove").size())
-                             : 0;
-    env["applied_set_count"] = set_count;
-    env["applied_remove_count"] = remove_count;
+    // 只回计数不回整行：把补丁响应压到 <2KB（S2 准出）。字段名沿用 Python 契约
+    // 的 applied_set / applied_remove（CONVENTIONS §5.4、smoke_cli.py:166、
+    // run_cpp_smoke.py:238、CLI formatter 都读这两个名字）。
+    //
+    // 计数来源：apply_patch 回的本来就是数字（cfg_store.cpp:442-444），旧代码却
+    // 按 is_object()/is_array() 取 size()，条件恒假 -> 计数恒为 0。两种形态都认。
+    auto applied_count = [](const json& v) -> long long {
+        if (v.is_number()) return v.get<long long>();
+        if (v.is_object() || v.is_array()) return static_cast<long long>(v.size());
+        return 0;
+    };
+    env["applied_set"] = applied.contains("set") ? applied_count(applied.at("set")) : 0;
+    env["applied_remove"] = applied.contains("remove") ? applied_count(applied.at("remove")) : 0;
     env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
     env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
     return Resp::Json(200, std::move(env));

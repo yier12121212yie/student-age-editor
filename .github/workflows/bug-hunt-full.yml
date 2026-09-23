@@ -62,7 +62,7 @@ jobs:
   # ============================================================
   windows-diagnosis:
     name: 🪟 Windows Diagnosis
-    if: contains(github.event.inputs.platforms, 'windows') || contains(github.event.inputs.platforms, 'all')
+    if: ${{ github.event_name != 'workflow_dispatch' || contains(github.event.inputs.platforms, 'windows') || contains(github.event.inputs.platforms, 'all') }}
     runs-on: windows-latest
     timeout-minutes: 50
     outputs:
@@ -84,15 +84,16 @@ jobs:
         uses: microsoft/setup-msbuild@v2
       
       - name: 🔨 Native C++ Backend Test (VS Generator)
-        if: github.event.inputs.include_native_tests == 'true'
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.include_native_tests == 'true' }}
         id: native_build
         run: |
-          $GEN_OK=""
+          # `if (cmake ...)` tests cmake's OUTPUT, not its exit code, so a
+          # failing generator probe could be taken as success. Use $LASTEXITCODE.
+          $GEN_OK = ""
           foreach ($GEN in @("Visual Studio 18 2026", "Visual Studio 17 2022")) {
             Remove-Item -Recurse -Force build-native-win -ErrorAction SilentlyContinue
-            if (cmake -G "$GEN" -A x64 -T host=x64 -S native -B build-native-win) {
-              $GEN_OK = $GEN; break
-            }
+            cmake -G "$GEN" -A x64 -T host=x64 -S native -B build-native-win -DCMAKE_BUILD_TYPE=Release
+            if ($LASTEXITCODE -eq 0) { $GEN_OK = $GEN; break }
           }
           if (-not $GEN_OK) { Write-Error "No suitable VS generator found"; exit 1 }
           Write-Host "Using generator: $GEN_OK"
@@ -110,13 +111,15 @@ jobs:
       - name: 🔍 Flutter Windows Build
         id: flutter_windows_build
         working-directory: frontend
+        # windows-latest defaults to pwsh; this step is deliberately POSIX shell.
+        shell: bash
         continue-on-error: true
         run: |
-          flutter doctor -v 2>&1 | tee flutter_doctor.log
+          set -o pipefail
+          flutter doctor -v 2>&1 | tee flutter_doctor.log || true
           flutter clean
           flutter pub get
-          flutter build windows --release 2>&1 | tee flutter_windows_build.log
-          if [ $? -eq 0 ]; then
+          if flutter build windows --release 2>&1 | tee flutter_windows_build.log; then
             echo "status=succeeded" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -139,18 +142,21 @@ jobs:
         run: |
           $ERRORS = 0
           if (Test-Path "frontend/flutter_windows_build.log") {
-            $dart_errors = (Select-String -Pattern "error:" -Path "frontend/flutter_windows_build.log").Count
-            if ($dart_errors) { $ERRORS += $dart_errors }
+            $found = @(Select-String -Pattern "error:" -Path "frontend/flutter_windows_build.log" -ErrorAction SilentlyContinue)
+            $ERRORS = $found.Count
           }
           
-          $msg = @"
-# Windows Build Report
-## Status: ${{ steps.flutter_windows_build.outcome }}
-## Artifact Created: ${{ steps.verify_artifacts.win_exists }}
-## Errors Found: $ERRORS
-
-"@
-          $msg | Out-File "windows_report.md" -Encoding UTF8
+          # NOTE: no PowerShell here-string here — its terminator must sit at
+          # column 1, which closes the YAML block scalar and makes the whole
+          # workflow file unparseable. Build the report from an array instead.
+          $lines = @(
+            "# Windows Build Report",
+            "## Status: ${{ steps.flutter_windows_build.outcome }}",
+            "## Artifact Created: ${{ steps.verify_artifacts.outputs.win_exists }}",
+            "## Errors Found: $ERRORS",
+            ""
+          )
+          $lines | Out-File "windows_report.md" -Encoding UTF8
           Write-Output "error_count=$ERRORS" >> $env:GITHUB_OUTPUT
       
       - uses: actions/upload-artifact@v4
@@ -169,7 +175,7 @@ jobs:
   # ============================================================
   macos-diagnosis:
     name: 🍎 macOS Diagnosis
-    if: contains(github.event.inputs.platforms, 'macos') || contains(github.event.inputs.platforms, 'all')
+    if: ${{ github.event_name != 'workflow_dispatch' || contains(github.event.inputs.platforms, 'macos') || contains(github.event.inputs.platforms, 'all') }}
     runs-on: macos-14
     timeout-minutes: 45
     outputs:
@@ -189,9 +195,12 @@ jobs:
         run: brew install cmake ninja || true
       
       - name: 🔨 Native C++ Backend Build Test
-        if: github.event.inputs.include_native_tests == 'true'
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.include_native_tests == 'true' }}
         id: native_build
         run: |
+          # pipefail: `cmd | tee` otherwise reports tee's status, so a failed
+          # configure/build would still be recorded as success.
+          set -o pipefail
           mkdir -p build-native-macos-debug && cd build-native-macos-debug
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug -S ../native -B . 2>&1 | tee cmake_configure.log
           cmake --build . --target all 2>&1 | tee cmake_build.log
@@ -226,19 +235,21 @@ jobs:
         working-directory: frontend/macos
         continue-on-error: true
         run: |
-          if [ ! -f "Runner.xcworkspace" ]; then
+          # Runner.xcworkspace is a DIRECTORY, so -f is always false here.
+          if [ ! -d "Runner.xcworkspace" ]; then
             echo "❌ Runner.xcworkspace not found"
             exit 1
           fi
-          xcodebuild -workspace Runner.xcworkspace \
+          # pipefail + testing the pipeline itself: `$?` after `| tee` is
+          # tee's status (always 0), which reported every failure as success.
+          set -o pipefail
+          if xcodebuild -workspace Runner.xcworkspace \
             -scheme Runner \
             -configuration Debug \
             -sdk macosx \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee xcode_full_build.log
-          
-          if [ $? -eq 0 ]; then
+            2>&1 | tee xcode_full_build.log; then
             echo "status=succeeded" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -254,25 +265,28 @@ jobs:
         run: |
           ERRORS=0
           if [ -f "frontend/macos/xcode_full_build.log" ]; then
-            ERRORS=$(grep -ciE "(error|failure)" frontend/macos/xcode_full_build.log || echo "0")
+            ERRORS=$(grep -ciE "(error|failure)" frontend/macos/xcode_full_build.log 2>/dev/null) || ERRORS=0
           fi
           
           NATIVE_BUILD="${{ steps.native_build.outcome }}"
           [ -z "$NATIVE_BUILD" ] && NATIVE_BUILD="skipped"
           
-          cat > macos_report.md << EOF
-# macOS Build Diagnostics
-## Runner: macos-14
-## Xcode: $(xcodebuild -version | head -1)
-
-## Build Results
-- Native C++: $NATIVE_BUILD
-- CocoaPods: ${{ steps.pod_install.outcome }}
-- Xcode Build: ${{ steps.xcode_build.outcome }}
-
-## Error Summary
-**Critical Errors**: $ERRORS
-EOF
+          # NOTE: a heredoc body must stay indented inside this YAML block scalar —
+          # content at column 1 closes the block and makes the whole workflow file
+          # unparseable. Use an echo group instead.
+          {
+            echo "# macOS Build Diagnostics"
+            echo "## Runner: macos-14"
+            echo "## Xcode: $(xcodebuild -version | head -1)"
+            echo ""
+            echo "## Build Results"
+            echo "- Native C++: $NATIVE_BUILD"
+            echo "- CocoaPods: ${{ steps.pod_install.outcome }}"
+            echo "- Xcode Build: ${{ steps.xcode_build.outcome }}"
+            echo ""
+            echo "## Error Summary"
+            echo "**Critical Errors**: $ERRORS"
+          } > macos_report.md
           
           grep -iE "(error|warning).*:" frontend/macos/xcode_full_build.log 2>/dev/null | head -20 >> macos_report.md || true
       
@@ -293,7 +307,7 @@ EOF
   # ============================================================
   linux-diagnosis:
     name: 🐧 Linux Diagnosis
-    if: contains(github.event.inputs.platforms, 'linux') || contains(github.event.inputs.platforms, 'all')
+    if: ${{ github.event_name != 'workflow_dispatch' || contains(github.event.inputs.platforms, 'linux') || contains(github.event.inputs.platforms, 'all') }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     outputs:
@@ -322,7 +336,7 @@ EOF
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
       
       - name: 🔨 Native C++ Backend Build
-        if: github.event.inputs.include_native_tests == 'true'
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.include_native_tests == 'true' }}
         id: native_build
         run: |
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -S native -B build-native-linux
@@ -345,6 +359,9 @@ EOF
         run: |
           flutter clean
           flutter pub get
+          # pipefail: `cmd | tee` reports tee's status, so this step could never
+          # fail even when the build did.
+          set -o pipefail
           flutter build linux --release 2>&1 | tee flutter_linux_build.log
       
       - name: ✅ Verify Linux Binary
@@ -362,19 +379,24 @@ EOF
         id: analyze
         run: |
           ERRORS=0
-          [ -f "frontend/flutter_linux_build.log" ] && ERRORS=$(grep -ciE "error|fatal" frontend/flutter_linux_build.log || echo "0")
+          if [ -f "frontend/flutter_linux_build.log" ]; then
+            ERRORS=$(grep -ciE "error|fatal" frontend/flutter_linux_build.log 2>/dev/null) || ERRORS=0
+          fi
           
-          cat > linux_report.md << EOF
-# Linux Build Diagnostics
-## Runner: ubuntu-latest
-
-## Build Results
-- Native C++: ${{ job.status }}
-- Flutter Linux Build: ${{ steps.flutter_linux_build.outcome }}
-- Binary Exists: ${{ steps.verify_binary.linux_exists }}
-
-## Error Count: $ERRORS
-EOF
+          # NOTE: a heredoc body must stay indented inside this YAML block scalar —
+          # content at column 1 closes the block and makes the whole workflow file
+          # unparseable. Use an echo group instead.
+          {
+            echo "# Linux Build Diagnostics"
+            echo "## Runner: ubuntu-latest"
+            echo ""
+            echo "## Build Results"
+            echo "- Native C++: ${{ job.status }}"
+            echo "- Flutter Linux Build: ${{ steps.flutter_linux_build.outcome }}"
+            echo "- Binary Exists: ${{ steps.verify_binary.outputs.linux_exists }}"
+            echo ""
+            echo "## Error Count: $ERRORS"
+          } > linux_report.md
           grep -iE "(error|warning).*:" frontend/flutter_linux_build.log 2>/dev/null | head -10 >> linux_report.md || true
       
       - uses: actions/upload-artifact@v4
@@ -393,7 +415,7 @@ EOF
   # ============================================================
   android-diagnosis:
     name: 🤖 Android Diagnosis
-    if: contains(github.event.inputs.platforms, 'android') || contains(github.event.inputs.platforms, 'all')
+    if: ${{ github.event_name != 'workflow_dispatch' || contains(github.event.inputs.platforms, 'android') || contains(github.event.inputs.platforms, 'all') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -412,15 +434,21 @@ EOF
         uses: android-actions/setup-android@v4
         with:
           cmdline-tools-version: latest
-          accept-license: true
+          accept-android-sdk-licenses: true
       
       - name: 📦 Install NDK
-        run: sdkmanager "ndk;$NDK_VERSION" --licenses
+        run: |
+          # --licenses is an interactive prompt; feed it and keep it non-fatal.
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;$NDK_VERSION"
       
       - name: 🔨 Native Backend Android Build
-        if: github.event.inputs.include_native_tests == 'true'
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.include_native_tests == 'true' }}
         id: native_android_build
         run: |
+          # pipefail: `cmd | tee || handler` tested tee's status, so this guard
+          # could never fire.
+          set -o pipefail
           bash native/android/android_build.sh 2>&1 | tee ndk_build.log || { echo "Status: Failed" >> $GITHUB_OUTPUT; exit 1; }
           echo "Status: Success" >> $GITHUB_OUTPUT
           echo "=== JNI Libraries ===" >> ndk_build.log
@@ -433,7 +461,9 @@ EOF
           channel: stable
       
       - name: 📱 Flutter Doctor
-        run: flutter doctor -v 2>&1 | tee flutter_doctor.log
+        # flutter doctor exits non-zero when it reports issues; that is diagnostic
+        # output here, not a build failure (matches the other workflows).
+        run: flutter doctor -v 2>&1 | tee flutter_doctor.log || true
       
       - name: 🧹 Clean Flutter Project
         working-directory: frontend
@@ -452,8 +482,8 @@ EOF
         working-directory: frontend
         continue-on-error: true
         run: |
-          flutter build apk --release --target-platform android-arm64,android-x64 2>&1 | tee flutter_apk_build.log
-          if [ $? -eq 0 ]; then
+          set -o pipefail
+          if flutter build apk --release --target-platform android-arm64,android-x64 2>&1 | tee flutter_apk_build.log; then
             echo "status=succeeded" >> $GITHUB_OUTPUT
           else
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -473,26 +503,31 @@ EOF
       - name: 🤖 Intelligent Error Analysis
         id: analyze
         run: |
-          DART_ERRORS=$(grep -c "Error:" frontend/flutter_apk_build.log 2>/dev/null || echo "0")
-          GRADLE_CONFLICTS=$(grep -cE "(conflict|duplicate)" frontend/flutter_apk_build.log 2>/dev/null || echo "0")
-          NDK_ERRORS=$(grep -cE "no rule.*\.so" frontend/flutter_apk_build.log 2>/dev/null || echo "0")
+          # `grep -c` prints "0" AND exits 1 when there are no matches, so
+          # `|| echo "0"` produced "0\n0" — breaking every -gt test downstream.
+          DART_ERRORS=$(grep -c "Error:" frontend/flutter_apk_build.log 2>/dev/null) || DART_ERRORS=0
+          GRADLE_CONFLICTS=$(grep -cE "(conflict|duplicate)" frontend/flutter_apk_build.log 2>/dev/null) || GRADLE_CONFLICTS=0
+          NDK_ERRORS=$(grep -cE "no rule.*\.so" frontend/flutter_apk_build.log 2>/dev/null) || NDK_ERRORS=0
           
-          cat > android_report.md << EOF
-# Android Build Diagnostics
-## Runner: ubuntu-latest
-## NDK Version: $NDK_VERSION
-## Gradle: 9.3.1
-
-## Build Results
-- Native Backend (JNI): ${{ job.status }}
-- Flutter APK Build: ${{ steps.apk_build.outcome }}
-- APK Created: ${{ steps.apk_verify.apk_exists }}
-
-## Error Categories
-- Dart Compilation Errors: $DART_ERRORS
-- Gradle Conflicts: $GRADLE_CONFLICTS  
-- NDK Linking Issues: $NDK_ERRORS
-EOF
+          # NOTE: a heredoc body must stay indented inside this YAML block scalar —
+          # content at column 1 closes the block and makes the whole workflow file
+          # unparseable. Use an echo group instead.
+          {
+            echo "# Android Build Diagnostics"
+            echo "## Runner: ubuntu-latest"
+            echo "## NDK Version: $NDK_VERSION"
+            echo "## Gradle: 9.3.1"
+            echo ""
+            echo "## Build Results"
+            echo "- Native Backend (JNI): ${{ job.status }}"
+            echo "- Flutter APK Build: ${{ steps.apk_build.outcome }}"
+            echo "- APK Created: ${{ steps.apk_verify.outputs.apk_exists }}"
+            echo ""
+            echo "## Error Categories"
+            echo "- Dart Compilation Errors: $DART_ERRORS"
+            echo "- Gradle Conflicts: $GRADLE_CONFLICTS"
+            echo "- NDK Linking Issues: $NDK_ERRORS"
+          } > android_report.md
       
       - uses: actions/upload-artifact@v4
         if: always()
@@ -520,22 +555,25 @@ EOF
       
       - name: Compile Cross-Platform Report
         run: |
-          cat > comprehensive_summary.md << 'HEADER'
-# 🌐 Full-Platform Build Diagnostics Summary
-
-**Generated**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-**Commit**: ${{ github.sha }}
-**Branch**: ${{ github.ref }}
-
-## Execution Results
-| Platform | Status | Errors | Artifact |
-|----------|--------|--------|----------|
-| Windows  | ${{ needs.windows-diagnosis.result }} | ${{ needs.windows-diagnosis.outputs.error_count }} | See artifacts |
-| macOS    | ${{ needs.macos-diagnosis.result }} | ${{ needs.macos-diagnosis.outputs.error_count }} | See artifacts |
-| Linux    | ${{ needs.linux-diagnosis.result }} | ${{ needs.linux-diagnosis.outputs.error_count }} | See artifacts |
-| Android  | ${{ needs.android-diagnosis.result }} | ${{ needs.android-diagnosis.outputs.error_count }} | See artifacts |
-
-HEADER
+          # NOTE: a heredoc body must stay indented inside this YAML block scalar —
+          # content at column 1 closes the block and makes the whole workflow file
+          # unparseable. Use an echo group instead.
+          {
+            echo "# 🌐 Full-Platform Build Diagnostics Summary"
+            echo ""
+            echo "**Generated**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "**Commit**: ${{ github.sha }}"
+            echo "**Branch**: ${{ github.ref }}"
+            echo ""
+            echo "## Execution Results"
+            echo "| Platform | Status | Errors | Artifact |"
+            echo "|----------|--------|--------|----------|"
+            echo "| Windows  | ${{ needs.windows-diagnosis.result }} | ${{ needs.windows-diagnosis.outputs.error_count }} | See artifacts |"
+            echo "| macOS    | ${{ needs.macos-diagnosis.result }} | ${{ needs.macos-diagnosis.outputs.error_count }} | See artifacts |"
+            echo "| Linux    | ${{ needs.linux-diagnosis.result }} | ${{ needs.linux-diagnosis.outputs.error_count }} | See artifacts |"
+            echo "| Android  | ${{ needs.android-diagnosis.result }} | ${{ needs.android-diagnosis.outputs.error_count }} | See artifacts |"
+            echo ""
+          } > comprehensive_summary.md
           
           # Append individual reports
           [ -f "windows-build-logs/windows_report.md" ] && {

@@ -94,6 +94,9 @@ jobs:
         run: |
           mkdir -p build-native-macos-debug && cd build-native-macos-debug
           
+          # pipefail: without it `cmake | tee` reports tee's status, so the
+          # failure branch below could never be taken.
+          set -o pipefail
           echo "Configuring with Ninja generator..."
           if ! cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug -S ../native -B . 2>&1 | tee cmake_configure.log; then
             echo "❌ CMake configuration failed" >> $GITHUB_STEP_SUMMARY
@@ -152,11 +155,15 @@ jobs:
         working-directory: frontend/macos
         continue-on-error: true
         run: |
-          if [ ! -f "Runner.xcworkspace" ]; then
+          # Runner.xcworkspace is a DIRECTORY, so -f is always false here.
+          if [ ! -d "Runner.xcworkspace" ]; then
             echo "❌ Runner.xcworkspace not found"
             exit 1
           fi
           
+          # pipefail: `if cmd | tee` tests tee's status, so this branch was
+          # always "succeeded" no matter what xcodebuild did.
+          set -o pipefail
           echo "Starting Xcode build..."
           if xcodebuild -workspace Runner.xcworkspace \
             -scheme Runner \
@@ -208,23 +215,31 @@ jobs:
           echo "- Xcode Build: ${{ steps.xcode_build.outputs.status }}" >> macos_bug_report.md
           echo "" >> macos_bug_report.md
           
+          # The xcode/pod steps run with `working-directory: frontend/macos`, so
+          # their logs live there — the old root-relative paths never matched and
+          # the report always claimed "No critical errors found".
+          XCODE_LOG="frontend/macos/xcode_full_build.log"
+          POD_LOG="frontend/macos/pod_install.log"
+
           # Extract and summarize errors
-          if [ -f "xcode_full_build.log" ]; then
+          if [ -f "$XCODE_LOG" ]; then
             echo "### 🔴 Xcode Errors" >> macos_bug_report.md
             echo "" >> macos_bug_report.md
-            ERRORS_FOUND=$(grep -ci "error:" xcode_full_build.log 2>/dev/null || echo "0")
+            # grep -c prints "0" AND exits 1 on no match, so `|| echo "0"` yielded
+            # "0\n0" and broke the -gt test below.
+            ERRORS_FOUND=$(grep -ci "error:" "$XCODE_LOG" 2>/dev/null) || ERRORS_FOUND=0
             if [ "$ERRORS_FOUND" -gt 0 ]; then
-              grep -i "error:" xcode_full_build.log 2>/dev/null | head -20 >> macos_bug_report.md
+              grep -i "error:" "$XCODE_LOG" 2>/dev/null | head -20 >> macos_bug_report.md
             else
               echo "No critical errors found ✅" >> macos_bug_report.md
             fi
             echo "" >> macos_bug_report.md
           fi
           
-          if [ -f "pod_install.log" ] && grep -qi "error\|warning" pod_install.log; then
+          if [ -f "$POD_LOG" ] && grep -qi "error\|warning" "$POD_LOG"; then
             echo "### ⚠️ CocoaPods Warnings/Errors" >> macos_bug_report.md
             echo "" >> macos_bug_report.md
-            grep -iE "(error|warning|deprecated)" pod_install.log | head -10 >> macos_bug_report.md
+            grep -iE "(error|warning|deprecated)" "$POD_LOG" | head -10 >> macos_bug_report.md
             echo "" >> macos_bug_report.md
           fi
           
@@ -264,20 +279,24 @@ jobs:
           echo "" >> macos_bug_report.md
           
           # Count errors
-          ERROR_COUNT=$(grep -ci "error:" xcode_full_build.log 2>/dev/null || echo "0")
+          ERROR_COUNT=$(grep -ci "error:" "$XCODE_LOG" 2>/dev/null) || ERROR_COUNT=0
           echo "error_count=$ERROR_COUNT" >> $GITHUB_OUTPUT
           
           # Categorize errors
-          echo "error_types=" >> $GITHUB_OUTPUT
-          if grep -qi "undefined.*symbol" xcode_full_build.log 2>/dev/null; then
-            echo "linking_issues" >> $GITHUB_OUTPUT
+          # $GITHUB_OUTPUT accepts only key=value lines: the old bare
+          # `echo "linking_issues"` was rejected as an invalid format, and
+          # $error_types was never defined at all. Accumulate, then write once.
+          ERROR_TYPES=""
+          if grep -qi "undefined.*symbol" "$XCODE_LOG" 2>/dev/null; then
+            ERROR_TYPES="${ERROR_TYPES}linking_issues,"
           fi
-          if grep -qi "module.*not found" xcode_full_build.log 2>/dev/null; then
-            echo "$error_types,cocoapods_missing" >> $GITHUB_OUTPUT
+          if grep -qi "module.*not found" "$XCODE_LOG" 2>/dev/null; then
+            ERROR_TYPES="${ERROR_TYPES}cocoapods_missing,"
           fi
-          if grep -qi "deployment.target" xcode_full_build.log 2>/dev/null; then
-            echo "$error_types,deployment_version" >> $GITHUB_OUTPUT
+          if grep -qi "deployment.target" "$XCODE_LOG" 2>/dev/null; then
+            ERROR_TYPES="${ERROR_TYPES}deployment_version,"
           fi
+          echo "error_types=${ERROR_TYPES%,}" >> $GITHUB_OUTPUT
       
       - name: Upload Full Logs (macOS)
         uses: actions/upload-artifact@v4
@@ -321,20 +340,24 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           cmdline-tools-version: latest
-          accept-license: true
+          accept-android-sdk-licenses: true
       
       - name: 📦 Install NDK & Build Tools
         run: |
-          sdkmanager --list | grep -A5 "ndk;"
-          sdkmanager "ndk;$NDK_VERSION" "build-tools;34.0.0" "platform-tools" || echo "⚠️ Some packages may have already been installed"
+          # bash -e: a grep with no match returns 1 and would abort the step.
+          sdkmanager --list 2>/dev/null | grep -A5 "ndk;" || true
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;$NDK_VERSION" "build-tools;34.0.0" "platform-tools"
       
       - name: ✅ Verify NDK Installation
         run: |
+          # `--installed` is not a valid sdkmanager flag (it is --list_installed).
+          # The unknown-argument error exited 1 and aborted the whole job.
           echo "=== Installed NDK Versions ==="
-          sdkmanager --installed | grep ndk
+          sdkmanager --list_installed 2>/dev/null | grep -i ndk || echo "⚠️ No NDK reported as installed"
           echo ""
           echo "=== Expected NDK Path ==="
-          ls -la $ANDROID_HOME/ndk/$NDK_VERSION/ 2>/dev/null || echo "NDK not found at expected path"
+          ls -la "$ANDROID_HOME/ndk/$NDK_VERSION/" 2>/dev/null || echo "NDK not found at expected path"
       
       - name: 🔨 Native Backend Android Build Test
         id: native_android_build
@@ -345,6 +368,9 @@ jobs:
             exit 0
           fi
           
+          # pipefail: `if cmd | tee` tests tee's status (always 0), so the
+          # failure branch below was dead code and failures looked like success.
+          set -o pipefail
           echo "=== Starting Native Backend Build ==="
           if bash native/android/android_build.sh 2>&1 | tee ndk_build.log; then
             echo "✅ Native backend built successfully"
@@ -400,6 +426,9 @@ jobs:
           echo "Target platforms: android-arm64,android-x64"
           echo "" >> $GITHUB_STEP_SUMMARY
           
+          # pipefail: `if cmd | tee` tests tee's status (always 0), so a failed
+          # APK build was still reported as "succeeded".
+          set -o pipefail
           if flutter build apk --release --target-platform android-arm64,android-x64 \
             --dart-define=flutter.build.mode=release \
             2>&1 | tee flutter_apk_build.log; then
@@ -460,33 +489,41 @@ jobs:
           echo "- APK Exists: ${{ steps.apk_verify.outputs.apk_exists }}" >> android_bug_report.md
           echo "" >> android_bug_report.md
           
+          # grep -c prints "0" AND exits 1 on no match, so `|| echo "0"` produced
+          # "0\n0" and broke every -gt test below. Initialise up front, then use
+          # the `VAR=$(...) || VAR=0` form.
+          DART_ERRORS=0
+          GRADLE_CONFLICTS=0
+          NDK_ERRORS=0
+          SIGNING_ERRORS=0
+
           # Analyze errors using pattern matching
           if [ -f "flutter_apk_build.log" ]; then
             echo "### 🔴 Build Errors" >> android_bug_report.md
             echo "" >> android_bug_report.md
             
-            DART_ERRORS=$(grep -c "Error:" flutter_apk_build.log 2>/dev/null || echo "0")
+            DART_ERRORS=$(grep -c "Error:" flutter_apk_build.log 2>/dev/null) || DART_ERRORS=0
             if [ "$DART_ERRORS" -gt 0 ]; then
               echo "#### Dart Compilation Errors ($DART_ERRORS found)" >> android_bug_report.md
               grep "Error:" flutter_apk_build.log 2>/dev/null | head -10 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
             
-            GRADLE_CONFLICTS=$(grep -cE "(conflict|override|duplicate)" flutter_apk_build.log 2>/dev/null || echo "0")
+            GRADLE_CONFLICTS=$(grep -cE "(conflict|override|duplicate)" flutter_apk_build.log 2>/dev/null) || GRADLE_CONFLICTS=0
             if [ "$GRADLE_CONFLICTS" -gt 0 ]; then
               echo "#### Gradle Dependency Conflicts ($GRADLE_CONFLICTS found)" >> android_bug_report.md
               grep -iE "(conflict|override|duplicate)" flutter_apk_build.log 2>/dev/null | head -5 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
             
-            NDK_ERRORS=$(grep -cE "(no rule|unresolved|cannot find).*\.(so|a)" flutter_apk_build.log 2>/dev/null || echo "0")
+            NDK_ERRORS=$(grep -cE "(no rule|unresolved|cannot find).*\.(so|a)" flutter_apk_build.log 2>/dev/null) || NDK_ERRORS=0
             if [ "$NDK_ERRORS" -gt 0 ]; then
               echo "#### NDK Linking Issues ($NDK_ERRORS found)" >> android_bug_report.md
               grep -iE "(no rule|unresolved|cannot find).*\.(so|a)" flutter_apk_build.log 2>/dev/null | head -10 >> android_bug_report.md
               echo "" >> android_bug_report.md
             fi
             
-            SIGNING_ERRORS=$(grep -cE "(keystore|signature|certificate)" flutter_apk_build.log 2>/dev/null || echo "0")
+            SIGNING_ERRORS=$(grep -cE "(keystore|signature|certificate)" flutter_apk_build.log 2>/dev/null) || SIGNING_ERRORS=0
             if [ "$SIGNING_ERRORS" -gt 0 ]; then
               echo "#### Signature/Keystore Issues ($SIGNING_ERRORS found)" >> android_bug_report.md
               grep -iE "(keystore|signature|certificate)" flutter_apk_build.log 2>/dev/null | head -5 >> android_bug_report.md
@@ -541,23 +578,26 @@ jobs:
           echo -e "$RECOMMENDATIONS" >> android_bug_report.md
           
           # Count total errors
-          ERROR_COUNT=$(cat flutter_apk_build.log 2>/dev/null | grep -ci "error\|fatal" || echo "0")
+          ERROR_COUNT=$(grep -ci "error\|fatal" flutter_apk_build.log 2>/dev/null) || ERROR_COUNT=0
           echo "error_count=$ERROR_COUNT" >> $GITHUB_OUTPUT
           
-          # Categorize error types
-          echo "error_types=" >> $GITHUB_OUTPUT
+          # Categorize error types. $GITHUB_OUTPUT accepts only key=value lines,
+          # so the old bare `echo "dart_compile"` was rejected as an invalid
+          # format (and $error_types was never defined). Accumulate, write once.
+          ERROR_TYPES=""
           if [ "$DART_ERRORS" -gt 0 ]; then
-            echo "dart_compile" >> $GITHUB_OUTPUT
+            ERROR_TYPES="${ERROR_TYPES}dart_compile,"
           fi
           if [ "$GRADLE_CONFLICTS" -gt 0 ]; then
-            echo "$error_types,gradle_conflict" >> $GITHUB_OUTPUT
+            ERROR_TYPES="${ERROR_TYPES}gradle_conflict,"
           fi
           if [ "$NDK_ERRORS" -gt 0 ]; then
-            echo "$error_types,ndk_linking" >> $GITHUB_OUTPUT
+            ERROR_TYPES="${ERROR_TYPES}ndk_linking,"
           fi
           if [ "$SIGNING_ERRORS" -gt 0 ]; then
-            echo "$error_types,signing_issue" >> $GITHUB_OUTPUT
+            ERROR_TYPES="${ERROR_TYPES}signing_issue,"
           fi
+          echo "error_types=${ERROR_TYPES%,}" >> $GITHUB_OUTPUT
       
       - name: Upload Full Logs (Android)
         uses: actions/upload-artifact@v4

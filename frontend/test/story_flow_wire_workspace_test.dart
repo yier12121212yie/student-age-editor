@@ -28,7 +28,16 @@ void main() {
           'cfg': path.split('/').last,
           'body': jsonDecode(request.body) as Map<String, dynamic>,
         });
-        return http.Response(jsonEncode({'mtime_ns': 12346}), 200,
+        return http.Response(
+            jsonEncode({
+              'ok': true,
+              'cfg': path.split('/').last,
+              'applied_set': 1,
+              'applied_remove': 0,
+              'mtime_ns': 12346,
+              'snapshot': null,
+            }),
+            200,
             headers: {'content-type': 'application/json'});
       }
       if (path.startsWith('/api/cfg/')) {
@@ -66,6 +75,19 @@ void main() {
       }
       if (path == '/api/tools/read') {
         return http.Response('{"error": "not a file"}', 400);
+      }
+      if (path == '/api/workspace/revision') {
+        // 保存前 SaveService.refreshRevision() 会拉工作区指纹；缺这个桩会按设计
+        // 中止保存（story_flow_workspace._save 捕获异常后直接 return false）。
+        return http.Response(
+          jsonEncode({
+            'revision': List<String>.filled(64, 'a').join(),
+            'computed_at_ms': 1,
+            'files_scanned': 1,
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
       }
       return http.Response('{"error": "unexpected $path"}', 500);
     });
