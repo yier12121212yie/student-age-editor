@@ -68,11 +68,21 @@ public:
     static CloudSyncSummary InterpretSync(const Json& body);
     // GET /api/ai/settings -> {"settings":{...permissionMode...}}.
     static std::string ParsePermissionMode(const Json& body);
+    // GET/PUT /api/settings/editor -> {"settings":{"noCodeMode":bool}}.
+    static bool ParseNoCodeMode(const Json& body);
+    // GET /api/effect_suggest -> items[] (code/desc/raw_code/slots[]).
+    static std::vector<FieldSuggestion> ParseSuggestions(const Json& body);
+    // GET /api/roles -> roles[] (id/name) folded into insertable candidates.
+    static std::vector<FieldSuggestion> ParseRoles(const Json& body);
 
     // ---- transport (never throws; fills *err on failure) ----------------
     bool Ping(std::string* err);
     std::vector<ModEntry> ListMods(std::string* err);
     bool SelectMod(const std::string& name, std::string* err);
+    // POST /api/mods/create {title, desc} (the `N` prompt). On success the
+    // mod's directory name arrives back via *name_out (falls back to the
+    // response's mod.name when the backend echoes one).
+    bool CreateMod(const std::string& title, std::string* name_out, std::string* err);
     std::vector<std::string> ListTables(std::string* err);
     bool LoadTable(const std::string& name, Table& out, std::string* err);
     SaveResult SaveTable(const std::string& name, const Json& body, std::string* err);
@@ -107,6 +117,22 @@ public:
     // GET /api/ai/settings -> permission mode ("confirm" on any failure).
     std::string LoadPermissionMode(std::string* err);
     bool SavePermissionMode(const std::string& mode, std::string* err);
+    // ---- shared editor settings / usage / suggestions -------------------
+    // GET /api/settings/editor -> no-code mode (false on any failure).
+    bool LoadNoCodeMode(std::string* err);
+    bool SaveNoCodeMode(bool on, std::string* err);
+    // GET /api/effect_suggest?mode=<m>&q=<q> — "" q yields the backend's
+    // recent/curated default list (the no-code "empty input" candidate set).
+    std::vector<FieldSuggestion> EffectSuggest(const std::string& mode,
+                                               const std::string& q, std::string* err);
+    // GET /api/roles?q=<q> — role directory as candidates (code=id, desc=name).
+    std::vector<FieldSuggestion> RoleSuggest(const std::string& q, std::string* err);
+    // One game_dicts pool ("attrs"/"roles"/...) as (id, name) pairs; "" pool
+    // or dead backend -> empty. Names may be arrays in the dicts — first entry.
+    std::vector<std::pair<std::string, std::string>> DictEntries(const std::string& dict_key,
+                                                                 std::string* err);
+    // POST /api/usage {kind,key} — best-effort; failures are swallowed.
+    void ReportUsage(const std::string& kind, const std::string& key);
     // POST /api/shutdown — best-effort; used to reap a backend we spawned.
     void Shutdown();
 

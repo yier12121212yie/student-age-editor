@@ -30,10 +30,12 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))           # native/tests
 NATIVE = os.path.abspath(os.path.join(HERE, ".."))    # native
 # Portable builds drop the .exe suffix on Linux/macOS; on Windows this resolves
-# to ".exe", so the paths below stay byte-identical to before.
+# to ".exe", so the paths below stay byte-identical to before. P8_SMOKE_BACKEND /
+# P8_SMOKE_TUI let a dev tree point the smoke at its own build dir (e.g.
+# build-native) without touching the canonical native/build layout.
 EXE = ".exe" if sys.platform == "win32" else ""
-BACKEND = os.path.join(NATIVE, "build", "bin", "backend" + EXE)
-TUI = os.path.join(NATIVE, "build", "bin", "backend_tui" + EXE)
+BACKEND = os.environ.get("P8_SMOKE_BACKEND") or os.path.join(NATIVE, "build", "bin", "backend" + EXE)
+TUI = os.environ.get("P8_SMOKE_TUI") or os.path.join(NATIVE, "build", "bin", "backend_tui" + EXE)
 PORTS = [8772, 8773, 8774, 8775]
 
 checks = []
@@ -68,6 +70,14 @@ def make_temp_env(root):
 
 def http_get(url, timeout=2):
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read().decode("utf-8", "replace")
+
+
+def http_put(url, payload, timeout=3):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="PUT",
+                                 headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read().decode("utf-8", "replace")
 
@@ -126,10 +136,30 @@ def main():
         check("connect sees the smoke mod's table", "first=TestCfg" in out, out.strip()[:160])
         check("connect loaded 2 rows", "rows=2" in out, out.strip()[:160])
 
-        rc2, out2 = run([TUI, "--render-check", "all", "--width", "92", "--height", "22"], env=env)
+        # No-code mode (M2): the shared editor setting round-trips through the
+        # live backend — GET reads it, PUT persists it (the exact calls the TUI
+        #'s Ctrl-N / the GUI settings page make).
+        st, body = http_get(url + "/api/settings/editor")
+        settings0 = json.loads(body).get("settings", {}) if st == 200 else {}
+        check("editor settings readable", st == 200 and "noCodeMode" in settings0,
+              body[:120])
+        check("editor settings default off", settings0.get("noCodeMode") is False, body[:120])
+        st2, body2 = http_put(url + "/api/settings/editor", {"noCodeMode": True})
+        check("no-code mode PUT ok", st2 == 200 and json.loads(body2).get("ok") is True,
+              body2[:120])
+        st3, body3 = http_get(url + "/api/settings/editor")
+        settings3 = json.loads(body3).get("settings", {}) if st3 == 200 else {}
+        check("no-code mode persisted true", settings3.get("noCodeMode") is True, body3[:120])
+
+        rc2, out2 = run([TUI, "--render-check", "all", "--width", "100", "--height", "22"], env=env)
         check("render-check exit 0", rc2 == 0, "rc=%d" % rc2)
-        for token in ("编辑器 TUI", "模组", "表列表", "表格", "Bug 扫描", "AI 助手",
-                      "DemoMod", "TalkCfg", "今天下雨了", "引用了不存在的角色"):
+        # Alpha-v0.3 chrome + the three-pane home + the modal surfaces. The
+        # no-code needles are the always-on footer hint + help line: --render-
+        # check is headless (SampleState), it never reads the backend setting.
+        for token in ("学生时代 · 模组编辑器 — TUI", "📦 Mods / Cfgs", "📋 Records",
+                      "📝 Detail / JSON", "Workspace: DemoMod", "DemoMod", "TalkCfg",
+                      "今天下雨了", "🤖 AI 助手", "🧩 插件管理", "☁️ 云同步",
+                      "🐞 Bug 扫描 / 修复", "引用了不存在的角色", "Ctrl-N 无代码"):
             check("render contains %r" % token, token in out2)
         return finish()
     finally:

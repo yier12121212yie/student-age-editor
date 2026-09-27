@@ -1,9 +1,10 @@
 // p8_render.cpp — AppState -> FTXUI DOM.
 //
-// The browse page is the Python-TUI-style three-pane layout: 表列表 (left) /
-// 记录 (middle) / 详情 (right) with a per-pane focus cursor, a form/JSON mode
-// toggle on the right pane and modal overlays for Ctrl-K global search and `v`
-// validation. Rendering stays a pure function of the view-model.
+// Alpha-v0.3 parity: the home screen is the three-pane VS Code Dark+ editor
+// (blue title bars 📦 Mods / Cfgs | 📋 Records | 📝 Detail / JSON, layered gray
+// backgrounds) and every other surface renders as a centered blue-bordered
+// modal. Rendering stays a pure function of the view-model; palette + chrome
+// builders live in p8_theme.
 #include "p8_render.h"
 
 #include <algorithm>
@@ -15,12 +16,14 @@
 #include <ftxui/screen/screen.hpp>
 
 #include "p8_cfg.h"  // ValuePreview / FormFields for consistent truncation
+#include "p8_theme.h"
 
 namespace p8 {
 namespace {
 
 using namespace ftxui;
 namespace core = sa_core;
+namespace th = theme;
 
 // Cut to at most `n` code points (single-line safety; matches p8_cfg).
 std::string Cut(const std::string& s, size_t n) {
@@ -48,130 +51,76 @@ Slice Window(int count, int sel, int maxlines) {
     return {start, start + maxlines};
 }
 
-// One selectable list row: cursor marker + label, highlighted when selected.
-// `active` marks the pane that owns the keyboard (only it shows the cursor).
-Element Row(const std::string& label, bool selected, bool active, int width) {
+Color SelBlue() { return Color::RGB(0x09, 0x47, 0x71); }  // VS Code list selection
+
+// One selectable list row: cursor marker + label. The selected row gets the VS
+// Code list-selection blue; zebra striping (`bg`) alternates behind it.
+Element Row(const std::string& label, bool selected, bool active, int width, bool zebra) {
     std::string marker = active ? (selected ? "» " : "  ") : "  ";
     std::string text_ = marker + Cut(label, static_cast<size_t>(std::max(0, width - 2)));
-    Element e = text(text_);
+    Element e = hbox({text(text_), filler()});
+    if (selected && active) return e | bgcolor(SelBlue()) | color(Color::White) | bold;
     if (!active) e |= dim;
-    return selected && active ? (e | inverted) : e;
+    if (zebra) e |= bgcolor(th::BgLeft());
+    return e;
 }
 
-// Tab bar like the desktop frontend's page rail: current page inverted. Keys
-// are shown as a single letter (full bindings live in the help overlay) so the
-// header fits narrow terminals.
-Element TabBar(const AppState& s) {
-    struct Tab {
-        Page page;
-        const char* label;
-        const char* key;
-    };
-    static const Tab tabs[] = {
-        {Page::Mods, "模组", "D"},  {Page::Table, "表格", "T"},
-        {Page::Bugfix, "Bug", "B"}, {Page::Agent, "助手", "A"},
-        {Page::Plugins, "插件", "P"}, {Page::Cloud, "云", "L"},
-    };
-    Elements cells;
-    for (const auto& t : tabs) {
-        std::string label = std::string(t.label) + " " + t.key;
-        Element cell = text(Cut(label, 10));
-        if (s.page == t.page && !s.show_help) cell |= inverted;
-        cells.push_back(cell);
-        cells.push_back(text(" "));
-    }
-    return hbox(std::move(cells));
-}
-
-Element Header(const AppState& s) {
-    // The permission mode is global chrome: it gates every mutating action, so
-    // it stays visible on every page (Ctrl-M toggles it). The header budget is
-    // tight at 80 columns, so the help/quit cue lives in the hint bar instead.
-    const bool confirming = s.permission_mode == "confirm";
-    Element badge = confirming ? (text("[权限:confirm]") | dim)
-                               : (text("[权限:full]") | bold | color(Color::Yellow));
-    return hbox({text("学生时代·编辑器 TUI") | bold, text(" "), TabBar(s), filler(), badge});
-}
-
-Element StatusLine(const AppState& s) {
-    return text("  " + Cut(s.status, 120)) | dim;
-}
-
-// Per-page key hints (the footer line above the status), so the most common
-// actions are discoverable without opening the help overlay.
-Element HintBar(const AppState& s) {
-    std::string hint;
-    switch (s.page) {
-        case Page::Mods:
-            hint = "↑↓ 选择  Enter 进入浏览  r 刷新  Esc 退出";
-            break;
-        case Page::Table:
-            if (s.editing || s.editing_field)
-                hint = "Enter 确认  Esc 取消";
-            else if (s.focus == Focus::Tables)
-                hint = "↑↓ 选表  Enter 打开  输入过滤  Tab 切焦点  Esc 返回";
-            else if (s.focus == Focus::Detail)
-                hint = "↑↓ 选字段  Enter 编辑  m JSON/表单切换  Tab 切焦点";
-            else
-                hint = "↑↓ 行  Enter 编辑  n 新增  y 复制  d 删除  v 校验  Ctrl-S 保存  Tab 切焦点";
-            break;
-        case Page::Bugfix:
-            hint = "↑↓ 选择  r 重扫  f 修复全部  Esc 返回";
-            break;
-        case Page::Agent:
-            hint = "Enter 发送  Esc 返回  Ctrl-M 权限模式";
-            break;
-        case Page::Plugins:
-            hint = s.plugin_input_active
-                       ? "Enter 安装  Esc 取消"
-                       : "↑↓ 选择  r 刷新  R 重载全部  i 安装 zip  u 卸载  Esc 返回";
-            break;
-        case Page::Cloud:
-            hint = "↑↓ 选 Provider  Enter 读取文件  u/d/b 方向  y DryRun  x 清理远端  s 同步  t 测试  r 刷新";
-            break;
-    }
-    return text(" [?] 帮助  " + hint) | dim;
+Element FooterBar(const AppState& s) {
+    return th::HintLine(
+        "a AI 助手   c 云同步   p 插件   b Bug 扫描   Ctrl-K 搜索   Ctrl-M 权限   Ctrl-N 无代码   "
+        "? 帮助   q 退出");
 }
 
 // ---------------------------------------------------------------------------
-// Browse page panes
+// Home screen panes
 // ---------------------------------------------------------------------------
-
-Element PaneTitle(const std::string& title, bool focused) {
-    return text((focused ? "» " : "  ") + title) | (focused ? bold : dim);
-}
 
 Element TablesPane(const AppState& s, int width, int lh) {
     bool active = s.focus == Focus::Tables && !s.editing && !s.editing_field;
-    auto vis = s.VisibleTables();
-    Elements out{PaneTitle("表列表", active),
-                 text("   过滤:" + (s.table_filter.empty() ? "-" : s.table_filter)) | dim,
-                 separator()};
-    Slice w = Window(static_cast<int>(vis.size()), s.table_sel, lh);
+    auto items = s.TreeItems();
+    Elements out{th::PanelTitleBar("📦", "Mods / Cfgs", active)};
+    if (s.filtering && s.focus == Focus::Tables)
+        out.push_back(text("  过滤: " + s.table_filter + "▏") | color(Color::White));
+    else if (!s.table_filter.empty())
+        out.push_back(text("  过滤: " + s.table_filter) | color(th::TextDim()));
+    Slice w = Window(static_cast<int>(items.size()), s.tree_sel, lh - 3);
     for (int i = w.start; i < w.end; ++i) {
-        int ti = vis[i];
-        bool is_open = s.tables[ti] == s.table.name;
-        std::string label = (is_open ? "* " : "") + s.tables[ti];
-        out.push_back(Row(label, ti == s.ClampSel(s.table_sel, static_cast<int>(vis.size())),
-                          active, width));
+        const TreeItem& it = items[i];
+        const ModEntry& mod = s.mods[it.mod_index];
+        if (it.table_index < 0) {
+            bool expanded = s.expanded_mod == it.mod_index &&
+                            mod.name == s.selected_mod && !s.VisibleTables().empty();
+            std::string label = std::string(expanded ? "📂 " : "📁 ") + mod.name;
+            if (mod.name == s.selected_mod) label += "  ●";
+            out.push_back(Row(label, i == s.tree_sel, active, width, false));
+        } else {
+            bool is_open = s.tables[it.table_index] == s.table.name;
+            std::string label = "    " + std::string(is_open ? "● " : "◦ ") +
+                                s.tables[it.table_index];
+            out.push_back(Row(label, i == s.tree_sel, active, width, false));
+        }
     }
-    if (vis.empty()) out.push_back(text("  （无匹配表）") | dim);
-    return vbox(std::move(out));
+    if (items.empty()) out.push_back(text("  （无模组，r 刷新）") | color(th::TextDim()));
+    out.push_back(filler());
+    out.push_back(th::HintLine("↑↓ 选择 Enter 打开"));
+    out.push_back(th::HintLine("→ 展开  N 新建Mod"));
+    return vbox(std::move(out)) | bgcolor(th::BgLeft());
 }
 
 Element RowsPane(const AppState& s, int width, int lh) {
     bool active = s.focus == Focus::Rows && !s.editing && !s.editing_field;
     auto vis = s.VisibleRows();
     int dirty = static_cast<int>(s.table.edits.size()) + static_cast<int>(s.table.removes.size());
-    Elements out{PaneTitle("表格: " + s.table.name +
-                               (s.table.exists ? "" : "  [缺失]"),
-                           active),
-                 text("   行数: " + std::to_string(s.table.rows.size()) +
-                      "  未保存: " + std::to_string(dirty) +
-                      "  过滤:" + (s.filter.empty() ? "-" : s.filter)) |
-                     dim,
-                 separator()};
-    Slice w = Window(static_cast<int>(vis.size()), s.row_sel, lh);
+    Elements out{th::PanelTitleBar("📋", Cut("Records — " + (s.table.name.empty()
+                                                                 ? std::string("（未打开）")
+                                                                 : s.table.name),
+                                              static_cast<size_t>(std::max(4, width - 6))),
+                                  active)};
+    out.push_back(text("  行数: " + std::to_string(s.table.rows.size()) + "  未保存: " +
+                       std::to_string(dirty) +
+                       (s.filter.empty() ? "" : "  过滤: " + s.filter)) |
+                   color(th::TextDim()));
+    Slice w = Window(static_cast<int>(vis.size()), s.row_sel, lh - 2);
     int row_width = std::max(8, width - 2);
     for (int wi = w.start; wi < w.end; ++wi) {
         int ri = vis[wi];
@@ -188,14 +137,19 @@ Element RowsPane(const AppState& s, int width, int lh) {
             val = s.table.rows[ri].preview;
         std::string marker = removed ? "-" : (edited ? "*" : " ");
         std::string line = marker + key + " = " + val;
-        out.push_back(Row(line, wi == s.row_sel, active, row_width));
+        out.push_back(Row(line, wi == s.row_sel, active, row_width, /*zebra=*/wi % 2 == 1));
     }
-    if (vis.empty()) out.push_back(text("  （无匹配行）") | dim);
+    if (vis.empty() && !s.table.name.empty())
+        out.push_back(text("  （无匹配行）") | color(th::TextDim()));
     if (s.editing) {
         out.push_back(separator());
-        out.push_back(hbox({text("编辑值> ") | bold, text(s.edit_buffer + "▏") | inverted}));
+        out.push_back(hbox({text(" 编辑值> ") | bold | color(th::FocusPurple()),
+                            text(s.edit_buffer + "▏") | inverted}));
     }
-    return vbox(std::move(out));
+    out.push_back(filler());
+    out.push_back(th::HintLine("n 新建  y 复制  d 删除"));
+    out.push_back(th::HintLine("Enter 编辑  Ctrl-S 保存"));
+    return vbox(std::move(out)) | bgcolor(th::BgMiddle());
 }
 
 // Current row's JSON text: pending edit wins, removed rows have no detail.
@@ -210,17 +164,48 @@ std::string DetailRaw(const AppState& s) {
     return it != s.table.edits.end() ? it->second : s.table.rows[vis[idx]].raw;
 }
 
+// The 📝 title bar mirrors the record's save state the way the Alpha right
+// pane did: red while dirty, the standard blue once synced.
+Element DetailTitle(const AppState& s, bool active) {
+    bool dirty = !s.table.edits.empty() || !s.table.removes.empty() || !s.table.adds.empty();
+    Element bar =
+        hbox({text(" 📝 Detail / JSON" + std::string(dirty ? "  ●" : "")), filler()}) |
+        bold;
+    if (dirty) return bar | bgcolor(Color::RGB(0x5a, 0x1d, 0x1d)) | color(th::DirtyRed());
+    return bar | bgcolor(active ? th::AccentBlue() : Color::RGB(0x3a, 0x3d, 0x41)) |
+           color(Color::White);
+}
+
+// The Alpha right pane's button row: 保存 in primary blue, the rest gray.
+Element ButtonRow(const AppState& s) {
+    (void)s;
+    auto btn = [](const std::string& label, Color bg) {
+        return text(" " + label + " ") | bgcolor(bg) | color(Color::White) | bold;
+    };
+    Color gray = Color::RGB(0x3c, 0x3c, 0x3c);
+    return hbox({btn("s 保存", th::ButtonBlue()), text(" "), btn("v 校验", gray),
+                 text(" "), btn("y 复制", gray), text(" "), btn("d 删除", gray)});
+}
+
 Element DetailPane(const AppState& s, int width, int lh) {
     bool active = s.focus == Focus::Detail && !s.editing && !s.editing_field;
-    Elements out{PaneTitle("详情", active),
-                 text("   " + std::string(s.detail_mode == DetailMode::Json ? "[JSON]"
+    Elements out{DetailTitle(s, active)};
+    if (s.table.name.empty()) {
+        // Startup welcome (Alpha: the right pane opened on the guide text).
+        for (const auto& line : th::WelcomeLines())
+            out.push_back(text(Cut("  " + line, static_cast<size_t>(std::max(4, width)))) |
+                          color(line.rfind('#', 0) == 0 ? th::SectionOrange() : th::TextMain()));
+        out.push_back(filler());
+        out.push_back(ButtonRow(s));
+        return vbox(std::move(out)) | bgcolor(th::BgRight());
+    }
+    out.push_back(text("  " + std::string(s.detail_mode == DetailMode::Json ? "[JSON]"
                                                                             : "[表单]") +
-                      "  m 切换  Enter 编辑字段") |
-                     dim,
-                 separator()};
+                       "  m 切换  Enter 编辑字段") |
+                   color(th::TextDim()));
     std::string raw = DetailRaw(s);
     if (raw.empty()) {
-        out.push_back(text("  （无选中行）") | dim);
+        out.push_back(text("  （无选中行）") | color(th::TextDim()));
     } else if (s.detail_mode == DetailMode::Json) {
         Json parsed = Json::parse(raw, nullptr, /*allow_exceptions=*/false);
         std::string pretty = parsed.is_discarded() ? raw : core::py_dumps_indent(parsed);
@@ -228,9 +213,9 @@ Element DetailPane(const AppState& s, int width, int lh) {
         int shown = 0;
         while (pos <= pretty.size() && shown < lh) {
             size_t nl = pretty.find('\n', pos);
-            std::string line = pretty.substr(
-                pos, nl == std::string::npos ? std::string::npos : nl - pos);
-            out.push_back(text(Cut(line, static_cast<size_t>(width))));
+            std::string line =
+                pretty.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+            out.push_back(text(Cut(line, static_cast<size_t>(width))) | color(th::TextMain()));
             ++shown;
             if (nl == std::string::npos) break;
             pos = nl + 1;
@@ -239,248 +224,301 @@ Element DetailPane(const AppState& s, int width, int lh) {
         auto fields = FormFields(raw);
         Slice w = Window(static_cast<int>(fields.size()), s.field_sel, lh);
         for (int i = w.start; i < w.end; ++i) {
-            std::string line = fields[i].first + " = " + fields[i].second;
-            out.push_back(Row(line, i == s.field_sel, active, width));
+            Element line = hbox({text("  " + Cut(fields[i].first, 16) + " ") |
+                                     color(active && i == s.field_sel ? Color::White
+                                                                       : th::TextDim()),
+                                 text(Cut(fields[i].second, static_cast<size_t>(
+                                                              std::max(4, width - 20)))) |
+                                     color(th::TextMain()),
+                                 filler()});
+            if (active && i == s.field_sel) line |= bgcolor(th::FocusPurple());
+            out.push_back(line);
         }
-        if (fields.empty()) out.push_back(text("  （该记录不是 JSON object）") | dim);
+        if (fields.empty()) out.push_back(text("  （该记录不是 JSON object）") | color(th::TextDim()));
     }
     if (s.editing_field) {
         out.push_back(separator());
-        out.push_back(hbox({text("编辑 " + s.field_name + "> ") | bold,
+        out.push_back(hbox({text(" 编辑 " + s.field_name + "> ") | bold |
+                                color(th::FocusPurple()),
                             text(s.field_buffer + "▏") | inverted}));
+        // 无代码模式：就地候选列表 / 参数槽二级选择（Tab/↑↓ 选，Enter 接受）。
+        const int sug_h = std::min(6, lh);
+        if (s.sug.slot_mode && s.sug.cand >= 0 && s.sug.cand < static_cast<int>(s.sug.all.size()) &&
+            s.sug.slot_i < static_cast<int>(s.sug.all[s.sug.cand].slots.size())) {
+            const auto& slots = s.sug.all[s.sug.cand].slots;
+            const auto& slot = slots[s.sug.slot_i];
+            std::string head = " 槽 " + std::to_string(s.sug.slot_i + 1) + "/" +
+                               std::to_string(slots.size()) + " · " +
+                               (slot.label.empty() ? slot.name : slot.label) + " (" + slot.name + ")";
+            out.push_back(text(Cut(head, static_cast<size_t>(width))) | color(th::SectionOrange()));
+            if (!s.sug.slot_entries.empty()) {
+                Slice w = Window(static_cast<int>(s.sug.entry_shown.size()), s.sug.entry_sel, sug_h);
+                for (int i = w.start; i < w.end; ++i) {
+                    const auto& e = s.sug.slot_entries[s.sug.entry_shown[i]];
+                    std::string label = std::string("  ") +
+                                        (i == s.sug.entry_sel ? "» " : "  ") + e.first +
+                                        " · " + e.second;
+                    Element line = text(Cut(label, static_cast<size_t>(width)));
+                    if (i == s.sug.entry_sel) line |= bgcolor(th::FocusPurple()) | color(Color::White);
+                    out.push_back(std::move(line));
+                }
+            } else {
+                out.push_back(text("  （手输值，Enter 确认，Esc 取消）") | color(th::TextDim()));
+            }
+        } else if (s.sug.active) {
+            Slice w = Window(static_cast<int>(s.sug.shown.size()), s.sug.sel, sug_h);
+            for (int i = w.start; i < w.end; ++i) {
+                const FieldSuggestion& f = s.sug.all[s.sug.shown[i]];
+                std::string label = std::string("  ") + (i == s.sug.sel ? "» " : "  ") +
+                                    Cut(f.desc, static_cast<size_t>(std::max(4, width - 12)));
+                Element line = text(label);
+                if (i == s.sug.sel) line |= bgcolor(th::FocusPurple()) | color(Color::White);
+                out.push_back(std::move(line));
+            }
+            out.push_back(text("  ↑↓/Tab 选 · Enter 接受 · 打字过滤 · Esc 手输") |
+                          color(th::TextDim()));
+        }
     }
-    return vbox(std::move(out));
+    out.push_back(filler());
+    out.push_back(ButtonRow(s));
+    return vbox(std::move(out)) | bgcolor(th::BgRight());
 }
 
 Element BrowseBody(const AppState& s, int width, int lh) {
-    int left = std::clamp(width / 5, 16, 26);
-    int right = std::clamp(width / 3, 24, 44);
+    // Pane widths are pinned (EQUAL) — hbox would otherwise negotiate widths
+    // from content and squeeze the middle pane when the welcome text is long.
+    int left = std::clamp(width / 4, 22, 34);
+    int right = std::clamp(width / 3, 30, 46);
     int mid = std::max(20, width - left - right - 2);
-    return hbox({TablesPane(s, left - 1, lh), separator(),
-                 RowsPane(s, mid - 1, lh), separator(),
-                 DetailPane(s, right - 1, lh)});
+    return hbox({TablesPane(s, left, lh) | size(WIDTH, EQUAL, left),
+                 separator(),
+                 RowsPane(s, mid, lh) | size(WIDTH, EQUAL, mid),
+                 separator(),
+                 DetailPane(s, right, lh) | size(WIDTH, EQUAL, right)}) |
+           flex;
 }
 
 // ---------------------------------------------------------------------------
-// Other pages
+// Modal bodies (rendered inside theme::ModalFrame)
 // ---------------------------------------------------------------------------
-
-Element ModsBody(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("选择模组 (Enter 进入浏览, r 刷新):")}) | bold, separator()};
-    Slice w = Window(static_cast<int>(s.mods.size()), s.mod_sel, lh);
-    for (int i = w.start; i < w.end; ++i)
-        out.push_back(Row(s.mods[i].name, i == s.mod_sel, true, width));
-    if (s.mods.empty()) out.push_back(text("  （无模组，检查后端 workspace）") | dim);
-    return vbox(std::move(out));
-}
 
 Element BugfixBody(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("Bug 扫描/修复  模组: " + s.selected_mod + "  共 " +
-                            std::to_string(s.bugs.size()) + " 条") |
-                       bold,
-                       filler()}),
-                 text(s.bug_scanned ? "↑↓ 选择  r 重扫  f 修复全部  Esc 返回"
-                                    : "按 r 扫描当前模组…") |
-                     dim,
-                 separator()};
-    Slice w = Window(static_cast<int>(s.bugs.size()), s.bug_sel, lh);
+    Elements out{text("  模组: " + s.selected_mod + "  共 " + std::to_string(s.bugs.size()) +
+                      " 条") |
+                     color(th::TextDim())};
+    Slice w = Window(static_cast<int>(s.bugs.size()), s.bug_sel, lh - 1);
     for (int i = w.start; i < w.end; ++i) {
         const auto& b = s.bugs[i];
-        std::string label = "[" + b.flag + "] " + b.cfg + "/" + b.id + " " + b.key + ": " + b.message;
-        out.push_back(Row(label, i == s.bug_sel, true, width));
+        std::string label = "[" + b.flag + "] " + b.cfg + "/" + b.id + " " + b.key + ": " +
+                            b.message;
+        out.push_back(Row(label, i == s.bug_sel, true, width - 2, false));
     }
-    if (s.bugs.empty() && s.bug_scanned) out.push_back(text("  （未发现 Bug）") | dim);
+    if (s.bugs.empty())
+        out.push_back(text(s.bug_scanned ? "  （未发现 Bug）" : "  （按 r 扫描当前模组…）") |
+                      color(th::TextDim()));
     return vbox(std::move(out));
 }
 
 Element AgentBody(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("AI 助手 (openai_compatible, 纯对话)") | bold, filler(),
-                       text(std::string("权限: ") + s.permission_mode) | dim}),
-                 text("Enter 发送  Esc 返回  Ctrl-M 切换 confirm/full") | dim,
-                 separator()};
+    Elements out;
     int n = static_cast<int>(s.chat.size());
-    int start = std::max(0, n - lh);
+    int start = std::max(0, n - (lh - 2));
     for (int i = start; i < n; ++i) {
         const auto& m = s.chat[i];
         std::string who = m.role == "user" ? "你" : (m.role == "assistant" ? "AI" : m.role);
-        out.push_back(text(Cut(who + ": " + m.content, width)));
+        // Multi-line content: split so long replies stay inside the modal.
+        size_t pos = 0;
+        bool first = true;
+        while (pos <= m.content.size()) {
+            size_t nl = m.content.find('\n', pos);
+            std::string line =
+                m.content.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+            out.push_back(text(Cut((first ? who + "：" : "  ") + line,
+                                   static_cast<size_t>(width))) |
+                          color(m.role == "user" ? th::TextMain() : th::SyncGreen()));
+            first = false;
+            if (nl == std::string::npos) break;
+            pos = nl + 1;
+        }
     }
-    if (n == 0) out.push_back(text("  （开始一段新对话；未配置 Key 时按 Enter 会提示）") | dim);
+    if (n == 0)
+        out.push_back(text("  （开始一段新对话；未配置 Key 时按 Enter 会提示）") |
+                      color(th::TextDim()));
     out.push_back(separator());
     if (s.chat_busy) {
-        out.push_back(hbox({text("输入> ") | bold, text("（生成中…）") | dim}));
+        out.push_back(hbox({text(" 输入> ") | bold, text("（生成中…）") | dim}));
     } else {
-        out.push_back(hbox({text("输入> ") | bold, text(s.chat_input + "▏") | inverted}));
+        out.push_back(hbox({text(" 输入> ") | bold, text(s.chat_input + "▏") | inverted}));
     }
     return vbox(std::move(out));
 }
 
-// Plugins page: the declarative inventory plus the two mutating actions
-// (install a zip by path, uninstall the selected id) that the desktop plugins
-// page offers.
 Element PluginsBody(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("插件管理（声明型：常开，无启用态）") | bold, filler(),
-                       text(std::to_string(s.plugins.size()) + " 个") | dim}),
-                 text("↑↓ 选择  r 刷新  R 重载全部  i 安装 zip  u 卸载") | dim,
-                 separator()};
-    int lines = std::max(1, lh - (s.plugin_input_active ? 2 : 0));
-    Slice w = Window(static_cast<int>(s.plugins.size()), s.plugin_sel, lines);
-    for (int i = w.start; i < w.end; ++i) {
+    Elements out;
+    int lines = std::max(1, lh - (s.plugin_input_active ? 2 : 1));
+    for (int i = 0; i < static_cast<int>(s.plugins.size()) && i < lines; ++i) {
         const auto& p = s.plugins[i];
         std::string label = p.id + "  " + (p.name.empty() ? p.id : p.name);
         if (!p.version.empty()) label += " v" + p.version;
-        label += p.loaded ? "  已加载" : "  未加载";
+        label += p.loaded ? "  ✓ 已加载" : "  ✗ 未加载";
         if (!p.error.empty())
             label += "  ! " + p.error;
         else if (!p.author.empty())
             label += "  作者:" + p.author;
-        out.push_back(Row(label, i == s.plugin_sel, true, width));
+        Element e = Row(label, i == s.plugin_sel, !s.plugin_input_active, width - 2, i % 2 == 1);
+        out.push_back(e);
     }
     if (s.plugins.empty())
-        out.push_back(text(s.plugins_loaded ? "  （未安装插件）" : "  （按 r 读取插件列表）") | dim);
+        out.push_back(text(s.plugins_loaded ? "  （未安装插件）" : "  （按 r 读取插件列表）") |
+                      color(th::TextDim()));
     if (s.plugin_input_active) {
         out.push_back(separator());
-        out.push_back(hbox({text("zip 路径> ") | bold, text(s.plugin_input + "▏") | inverted}));
+        out.push_back(hbox({text(" zip 路径> ") | bold, text(s.plugin_input + "▏") | inverted}));
     }
     return vbox(std::move(out));
 }
 
-// Cloud page: provider rail + the desktop page's dual local/remote comparison,
-// with the direction/DryRun state that the sync button acts on.
 Element CloudBody(const AppState& s, int width, int lh) {
     int rail = std::clamp(width / 4, 18, 32);
     int side = std::max(16, (width - rail - 2) / 2);
 
-    Elements pv{hbox({PaneTitle("Provider", true), filler(),
-                      text(std::to_string(s.providers.size())) | dim}),
-                separator()};
-    int pv_lines = std::max(1, lh - 5);
+    Elements pv{th::PanelTitleBar("☁", "Provider", true)};
+    int pv_lines = std::max(1, lh - 6);
     Slice pw = Window(static_cast<int>(s.providers.size()), s.provider_sel, pv_lines);
     for (int i = pw.start; i < pw.end; ++i) {
         const auto& p = s.providers[i];
-        pv.push_back(Row(p.name.empty() ? p.id : p.name, i == s.provider_sel, true, rail - 1));
+        pv.push_back(Row(p.name.empty() ? p.id : p.name, i == s.provider_sel, true, rail - 1,
+                         false));
     }
     if (s.providers.empty())
-        pv.push_back(text(s.providers_loaded ? "  （无 Provider）" : "  （按 r 读取）") | dim);
+        pv.push_back(text(s.providers_loaded ? "  （无 Provider）" : "  （按 r 读取）") |
+                     color(th::TextDim()));
     pv.push_back(separator());
-    pv.push_back(text(std::string("  模组: ") + (s.selected_mod.empty() ? "-" : s.selected_mod)) |
-                 dim);
-    pv.push_back(text(std::string("  方向: ") + s.cloud_direction) | dim);
+    pv.push_back(text("  模组: " + (s.selected_mod.empty() ? "-" : s.selected_mod)) |
+                 color(th::TextDim()));
+    pv.push_back(text("  方向: " + s.cloud_direction) | color(th::TextDim()));
     pv.push_back(text(std::string("  DryRun: ") + (s.cloud_dry_run ? "开" : "关")) |
-                 (s.cloud_dry_run ? dim : color(Color::Yellow)));
-    if (s.cloud_delete_extra) pv.push_back(text("  清理远端多余: 开") | color(Color::Yellow));
+                 (s.cloud_dry_run ? color(th::WarnColor()) : color(th::TextDim())));
+    if (s.cloud_delete_extra)
+        pv.push_back(text("  清理远端多余: 开") | color(th::WarnColor()));
 
-    auto file_panel = [&](const char* title, const std::vector<CloudFile>& files) {
-        Elements out{hbox({PaneTitle(title, false), filler(),
-                           text(std::to_string(files.size())) | dim}),
-                     separator()};
+    auto file_panel = [&](const std::string& title, const std::vector<CloudFile>& files) {
+        Elements out{th::PanelTitleBar("", title, false)};
         int lines = std::max(1, lh - 2);
         for (size_t i = 0; i < files.size() && static_cast<int>(i) < lines; ++i) {
             const auto& f = files[i];
             std::string line = f.name + (f.is_dir ? "/" : "");
-            out.push_back(text("  " + Cut(line, static_cast<size_t>(std::max(4, side - 2)))));
+            out.push_back(text("  " + Cut(line, static_cast<size_t>(std::max(4, side - 2)))) |
+                          color(th::TextMain()));
         }
         if (files.empty())
-            out.push_back(text(s.cloud_files_loaded ? "  （空）" : "  （Enter 读取）") | dim);
-        return vbox(std::move(out));
+            out.push_back(text(s.cloud_files_loaded ? "  （空）" : "  （Enter 读取）") |
+                          color(th::TextDim()));
+        return vbox(std::move(out)) | bgcolor(th::BgLeft());
     };
 
-    Elements body{hbox({vbox(std::move(pv)), separator(),
+    Elements body{hbox({vbox(std::move(pv)) | bgcolor(th::BgLeft()), separator(),
                         file_panel("本地 Mod 文件", s.cloud_local), separator(),
                         file_panel("远端文件", s.cloud_remote)})};
-    if (!s.cloud_sync_summary.empty()) body.push_back(text("  " + s.cloud_sync_summary) | dim);
+    if (!s.cloud_sync_summary.empty())
+        body.push_back(text("  " + s.cloud_sync_summary) | color(th::SyncGreen()));
     if (!s.cloud_error.empty())
         body.push_back(text("  错误: " + Cut(s.cloud_error, static_cast<size_t>(width - 8))) |
-                       color(Color::Red));
+                       color(th::ErrorColor()));
     return vbox(std::move(body));
 }
 
 // The permissionMode=="confirm" approval box (topmost modal).
-Element ConfirmOverlayEl(const AppState& s, int width) {
-    return vbox({text(s.confirm.title) | bold, separator(),
-                 text("  " + Cut(s.confirm.detail, static_cast<size_t>(std::max(20, width - 8)))),
+Element ConfirmBody(const AppState& s, int width) {
+    return vbox({text("  " + Cut(s.confirm.detail,
+                                   static_cast<size_t>(std::max(20, width - 8)))) |
+                     color(th::TextMain()),
                  separator(),
                  text("  [y / Enter] 允许    [n / Esc] 拒绝") | bold}) |
-           border;
+           size(HEIGHT, GREATER_THAN, 4);
 }
 
-// ---------------------------------------------------------------------------
-// Overlays
-// ---------------------------------------------------------------------------
-
-Element SearchOverlayEl(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("全局搜索对白 (TalkCfg/EvtCfg)") | bold, filler()}),
-                 text("输入关键词，Enter 搜索，Esc 关闭") | dim, separator()};
-    out.push_back(hbox({text("搜索> ") | bold, text(s.search.input + "▏") | inverted}));
-    out.push_back(separator());
-    int result_lines = std::max(1, lh - 4);
+Element SearchBody(const AppState& s, int width, int lh) {
+    Elements out{hbox({text(" 搜索> ") | bold, text(s.search.input + "▏") | inverted})};
+    int result_lines = std::max(1, lh - 3);
     Slice w = Window(static_cast<int>(s.search.results.size()), s.search.sel, result_lines);
     for (int i = w.start; i < w.end; ++i) {
         const auto& hit = s.search.results[i];
         std::string label = "[" + hit.src + "] " + hit.talk_id + " (" + hit.evt_title + "): " +
                             hit.content;
-        out.push_back(Row(label, i == s.search.sel, true, width));
+        out.push_back(Row(label, i == s.search.sel, true, width - 2, i % 2 == 1));
     }
     if (s.search.busy) {
         out.push_back(text("  搜索中…") | dim);
     } else if (!s.search.error.empty()) {
-        out.push_back(text("  错误: " + Cut(s.search.error, width - 6)) | color(Color::Red));
+        out.push_back(text("  错误: " + Cut(s.search.error, width - 6)) | color(th::ErrorColor()));
     } else if (s.search.results.empty()) {
-        out.push_back(text("  （无结果）") | dim);
+        out.push_back(text("  （无结果）") | color(th::TextDim()));
     }
-    return vbox(std::move(out)) | border;
+    return vbox(std::move(out));
 }
 
-Element ValidateOverlayEl(const AppState& s, int width, int lh) {
-    Elements out{hbox({text("校验: " + s.validate.cfg) | bold, filler()}),
-                 separator()};
+Element ValidateBody(const AppState& s, int width, int lh) {
+    Elements out;
     if (s.validate.busy) {
         out.push_back(text("  校验中…") | dim);
     } else if (!s.validate.error.empty()) {
-        out.push_back(text("  错误: " + Cut(s.validate.error, width - 6)) | color(Color::Red));
+        out.push_back(text("  错误: " + Cut(s.validate.error, width - 6)) | color(th::ErrorColor()));
     } else {
         for (const auto& it : s.validate.issues) {
             if (static_cast<int>(out.size()) > lh) {
                 out.push_back(text("  …") | dim);
                 break;
             }
-            std::string line = "[" + it.level + "] " +
-                               (it.rid.empty() ? "" : it.rid + ": ") + it.msg;
-            out.push_back(text("  " + Cut(line, static_cast<size_t>(width - 4))));
+            std::string line =
+                "[" + it.level + "] " + (it.rid.empty() ? "" : it.rid + ": ") + it.msg;
+            Color c = it.level == "error"  ? th::ErrorColor()
+                      : it.level == "warn" ? th::WarnColor()
+                                           : th::TextDim();
+            out.push_back(text("  " + Cut(line, static_cast<size_t>(width - 4))) | color(c));
         }
         if (s.validate.issues.empty())
-            out.push_back(text("  （未发现问题）") | color(Color::Green));
+            out.push_back(text("  ✓ 校验通过，未发现问题") | color(th::SyncGreen()));
         out.push_back(separator());
         out.push_back(text("  counts: error=" + std::to_string(s.validate.errors) +
                            " warn=" + std::to_string(s.validate.warns) +
                            " info=" + std::to_string(s.validate.infos) + "   （按任意键关闭）") |
-                       dim);
+                      color(th::TextDim()));
     }
-    return vbox(std::move(out)) | border;
+    return vbox(std::move(out));
 }
 
 Element HelpBody() {
-    // Kept to <=18 lines: that is all the body gets at 80x24 (height - chrome),
-    // and anything longer is silently clipped at the bottom.
-    return vbox({text("键位") | bold,
-                 separator(),
-                 text("Ctrl-D/T/B/A     模组 / 表格 / Bug / 助手"),
-                 text("Ctrl-P / Ctrl-L  插件管理 / 云同步"),
-                 text("Ctrl-M           权限模式 confirm ↔ full"),
-                 text("Ctrl-K           全局搜索对白"),
-                 text("Ctrl-S           保存补丁 / 应用修复"),
-                 text("Tab/↑↓/Enter     切焦点 / 移动 / 打开·编辑·发送"),
-                 text("m / n / y / d    表单↔JSON / 新增 / 复制 / 标记删除"),
-                 text("v                校验当前打开的表"),
-                 text("r                刷新（表·列表·Bug·插件·Provider）"),
-                 text("Esc / Ctrl-Q     返回上层 / 退出"),
-                 text("?                开关本帮助"),
-                 text("直接输入          表列表 / 记录页过滤"),
-                 separator(),
-                 text("插件页: r 刷新  R 重载  i 安装zip  u 卸载"),
-                 text("云同步页: Enter 读取  u/d/b 方向  y DryRun  x 清理远端  s 同步  t 测试"),
-                 text("confirm 模式：保存/修复/装插件/卸载/云同步先弹审批框；dry-run 与只读不弹。") |
-                     dim});
+    using th::TextDim;
+    // Kept compact: the body area at 80x24 after chrome is what the modal shows.
+    return vbox({hbox({text(" 全局") | bold | color(th::SectionOrange()), filler()}),
+                 text("  q / Ctrl-Q    退出（有未保存修改先确认）") | color(TextDim()),
+                 text("  a / c / p / b  AI 助手 / 云同步 / 插件 / Bug 扫描弹窗") | color(TextDim()),
+                 text("  Ctrl-K        全局搜索对白") | color(TextDim()),
+                 text("  Ctrl-M        权限模式 confirm ↔ full") | color(TextDim()),
+                 text("  Ctrl-N        无代码模式开关（选效果/人物，不写代码）") |
+                     color(TextDim()),
+                 text("  无代码: 编辑字段时 Tab/↑↓ 选候选 · Enter 接受（带参槽进二级选择）") |
+                     color(TextDim()),
+                 text("  ?             开关本帮助") | color(TextDim()),
+                 hbox({text(" 浏览") | bold | color(th::SectionOrange()), filler()}),
+                 text("  Tab/Shift+Tab 左→右 / 右→左 切换面板") | color(TextDim()),
+                 text("  ↑↓/Enter      移动 / 打开（模组·记录·字段）") | color(TextDim()),
+                 text("  →/←           展开 / 收起模组的 Cfgs") | color(TextDim()),
+                 text("  /             过滤当前面板（Enter 保留，Esc 清空）") | color(TextDim()),
+                 text("  N             新建模组（输入标题）") | color(TextDim()),
+                 hbox({text(" 编辑") | bold | color(th::SectionOrange()), filler()}),
+                 text("  n / y / d     新增 / 复制 / 标记删除记录") | color(TextDim()),
+                 text("  Enter         编辑 JSON（或表单字段）") | color(TextDim()),
+                 text("  m             JSON ↔ 表单视图") | color(TextDim()),
+                 text("  v / Ctrl-S    校验当前表 / 保存补丁") | color(TextDim()),
+                 text("  r             刷新（模组列表 / 当前表 / 弹窗数据）") | color(TextDim()),
+                 hbox({text(" 弹窗内") | bold | color(th::SectionOrange()), filler()}),
+                 text("  插件: R 重载  i 安装zip  u 卸载") | color(TextDim()),
+                 text("  云: Enter 读取  u/d/b 方向  y DryRun  x 清理远端  s 同步  t 测试") |
+                     color(TextDim()),
+                 text("  confirm 模式：保存/修复/装插件/卸载/云同步先弹审批框；dry-run 与只读不弹。") |
+                     color(TextDim())});
 }
 
 std::string StripAnsi(const std::string& s) {
@@ -488,34 +526,62 @@ std::string StripAnsi(const std::string& s) {
     return std::regex_replace(s, re, "");
 }
 
+// Wrap a modal body in the Alpha chrome and swap it in as the screen body.
+Element Modal(const AppState& s, Element body, const std::string& title, const std::string& hint,
+              int width, int lh) {
+    return th::ModalFrame(std::move(body), title, hint, std::max(30, width - 6), lh + 2);
+}
+
 }  // namespace
 
 ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
     Element body;
+    std::string modal_hint;
     if (s.confirm.active) {
-        body = ConfirmOverlayEl(s, std::max(30, width - 8));
+        body = Modal(s, ConfirmBody(s, width), "⚠ " + s.confirm.title,
+                     "y 允许 · n 拒绝", width, list_height);
     } else if (s.search.active) {
-        body = SearchOverlayEl(s, std::max(30, width - 8), list_height);
+        body = Modal(s, SearchBody(s, width, list_height), "🔍 全局搜索对白",
+                     "Enter 搜索 · Esc 关闭", width, list_height);
     } else if (s.validate.active) {
-        body = ValidateOverlayEl(s, std::max(30, width - 8), list_height);
+        body = Modal(s, ValidateBody(s, width, list_height), "● 校验: " + s.validate.cfg,
+                     "按任意键关闭", width, list_height);
     } else if (s.show_help) {
-        body = HelpBody();
+        body = Modal(s, HelpBody(), "⌨️ 键位帮助", "按任意键关闭", width, list_height);
     } else {
         switch (s.page) {
-            case Page::Mods: body = ModsBody(s, width, list_height); break;
-            case Page::Table: body = BrowseBody(s, width, list_height); break;
-            case Page::Bugfix: body = BugfixBody(s, width, list_height); break;
-            case Page::Agent: body = AgentBody(s, width, list_height); break;
-            case Page::Plugins: body = PluginsBody(s, width, list_height); break;
-            case Page::Cloud: body = CloudBody(s, width, list_height); break;
+            case Page::Bugfix:
+                body = Modal(s, BugfixBody(s, width, list_height), "🐞 Bug 扫描 / 修复",
+                             "↑↓ 选择  r 重扫  f 修复全部  Esc 返回", width, list_height);
+                break;
+            case Page::Agent:
+                body = Modal(s, AgentBody(s, width, list_height),
+                             "🤖 AI 助手" + (s.agent_label.empty() ? "" : "  " + s.agent_label),
+                             "Enter 发送  Esc 关闭  Ctrl-M 权限模式", width, list_height);
+                break;
+            case Page::Plugins:
+                body = Modal(s, PluginsBody(s, width, list_height), "🧩 插件管理",
+                             "↑↓ 选择  r 刷新  R 重载  i 安装zip  u 卸载  Esc 关闭", width,
+                             list_height);
+                break;
+            case Page::Cloud:
+                body = Modal(s, CloudBody(s, width, list_height), "☁️ 云同步",
+                             "↑↓ 选 Provider  Enter 读取  u/d/b 方向  y DryRun  x 清理  s 同步  "
+                             "t 测试  Esc 关闭",
+                             width, list_height);
+                break;
+            case Page::Main:
+                body = BrowseBody(s, width, list_height);
+                break;
         }
     }
-    return vbox({Header(s), separator(), body | flex, HintBar(s), StatusLine(s)}) | border;
+    return vbox({th::HeaderBar(), std::move(body) | flex, FooterBar(s),
+                 th::StatusBar(s, width)});
 }
 
 std::string RenderPageToString(const AppState& s, int width, int height) {
-    int list_height = std::max(1, height - 6);
-    Element el = BuildElement(s, std::max(8, width - 2), list_height);
+    int list_height = std::max(1, height - 5);
+    Element el = BuildElement(s, std::max(8, width), list_height);
     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
     Render(screen, el);
     return StripAnsi(screen.ToString());

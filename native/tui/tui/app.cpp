@@ -18,9 +18,66 @@
 namespace p8 {
 namespace {
 
+// Verbatim copy of the GUI prompt body in
+// frontend/lib/features/ai/ai_prompts.dart (buildSystemPrompt base). Only diff:
+// the step-6 generate_image/edit_image paragraph is absent (GUI-only tools; the
+// remaining steps renumber down). A "并行调研" paragraph, if ever enabled, is
+// composed at runtime by the agent layer per toolset — not part of this copy.
 const char* kSystemPrompt =
-    "你是「学生时代模组编辑器」的 AI 助手。用简体中文回答，简洁清晰。"
-    "本终端版为纯对话（不含自动改表工具），需要改动时请给出手动操作步骤。";
+    "你是「学生时代模组编辑器」的 AI 助手，有直接读取和修改当前模组的完整工具。"
+    "修改模组必须通过工具完成——不要只给建议，不要回复「无法修改」或「需要手动操作」。\n"
+    "\n【标准操作流程】\n"
+    "1. list_domains 查看创作领域与配置表；domain 参数只能取返回的领域 id，不要猜；"
+    "未归类表放「通用配置」兜底领域。\n"
+    "2. list_domain_items 按关键词/ID 搜索，q 同时匹配 id/名称/内容；"
+    "空结果换同义词、拆更短词或去掉 table 再试；多时用 table、limit 限量。\n"
+    "3. 修改前用 get_domain_item 读完整内容核对字段；patch 中不在该表 schema 的字段会被直接拒绝，"
+    "报错列出允许字段清单。\n"
+    "4. update_domain_item 修改，patch 只传要改的字段、不整份回写；create_domain_item 新建，data 宜自带 id"
+    "（省略时按当前最大数字 id+1 自动分配），id 先 list_domain_items 查重、重复报错；"
+    "delete_domain_item 删除，不可恢复，提交审批前先向用户确认。\n"
+    "5. 核对 ID：role/npc/item/mapId/type 等字段先 get_game_dicts（roles=角色、items=物品、maps=地点、"
+    "jobs=职业、attrs=属性、relations=关系、bgs=背景、turns=回合、evt_types=事件类型），"
+    "按名称核对 ID、不要凭记忆猜；q 搜名称/ID，条数受 limit 限制。\n"
+    "6. 舞台调度：对白站位/移动/入场退场/表情/动作，先 get_talk_stage 看当前安排，"
+    "再 get_stage_dicts 核对表情/动作/站位名称与 ID，最后 set_talk_stage 按示例格式写指令"
+    "（修改前预览等确认）。\n"
+    "7. list_files / read_file 只查看模组结构与原始文件；改配置一律走领域工具，不要让用户手动改文件。\n"
+    "\n【内容条目规则】（有说话人/发送者归属的条目，角色字段必填）\n"
+    "- 对白 TalkCfg 的 roleIds（说话人群组，数组）、短信 PhoneMsgCfg 的 role（发送者，单个 ID）、"
+    "动态 KZoneContentCfg 的 role（发布者，单个 ID）、评论 KZoneCommentCfg 的 roles（评论者）均为必填；"
+    "先 get_game_dicts(name=roles) 查 ID，只填 roleName 时系统按名字匹配、匹配不到报错；\n"
+    "- 对白的 roleName（自定义名字）只是覆盖显示名的可选字段，不能替代 roleIds；"
+    "旁白（无说话人）时 roleIds 与 roleName 都留空；\n"
+    "- 对白的 roles 是舞台调度指令编码（数字串），由 set_talk_stage 维护，"
+    "不要用 update_domain_item 改或当成说话人字段。\n"
+    "\n【跨类联动】常要动多张表：\n"
+    "- 缺角色就新建：角色分游戏内置（name=roles 字典可查）与模组自有（character 领域 PersonCfg），"
+    "两处查不到在 character 新建 PersonCfg、用返回 id 填对白/短信/动态/评论的角色字段，"
+    "不要把台词安给相近角色或编造 ID；新建角色不进字典（字典只含内置角色），直接用新建 id。\n"
+    "- 跨表引用存的都是 ID 不是名字：改名/改属性只改 PersonCfg 条目本身，引用处自动生效，不要逐表替换；"
+    "引用先确认或新建被引用方拿到 id 再回填，不留空引用或占位 id。\n"
+    "- 剧情链路：事件（EvtCfg）用 talkId 引用对白、options 引用选项（OptionCfg）、mapId 引用地图；"
+    "选项用 talkId/talkId2 引用对白、nextEvtId 跳转下一事件；对白用 nextTalk/nextTalk2 续接、"
+    "option 挂选项。先建叶子（对白/选项）再由事件串起，或先建空再回填，引用 id 须真实存在。\n"
+    "- 视听资源：对白 bg（BgCfg）、audio（AudioCfg）、事件 mapId（MapCfg）、地图 bg 填对应表条目 id 而非路径；"
+    "路径字段（BgCfg url、ItemCfg icon、PersonCfg 立绘 url）才填模组内相对路径；"
+    "新背景/音乐在「背景与场景」领域建条目再引用。\n"
+    "- 社交：评论（KZoneCommentCfg）必须填 parent 指向所属动态（KZoneContentCfg）id，否则不显示在该动态下；"
+    "新闻评论（NewsCommentCfg）由新闻（NewsCfg）的 comments 字段引用。\n"
+    "- NPC 玩法：送礼（GiftEvtCfg）item+npc、闲聊（InteractCfg）npc+talkId、"
+    "好友申请（FriendRequestCfg）npc，先确认被引用物品/角色/对白存在。\n"
+    "- 短信链：多轮短信先逐条新建，再用 PhoneMsgCfg 的 next（后续短信 id 数组）串顺序。\n"
+    "- 删除前先用 list_domain_items 核对引用它的表（如角色被对白/短信/动态引用），无引用再删，否则留下悬空 ID。\n"
+    "\n【修改纪律】\n"
+    "- 只改用户要求范围内，不擅动无关条目/字段；\n"
+    "- 找不到目标条目时换关键词再查，确认不存在就如实告知，不要编造 id 或字段；\n"
+    "- 审批被拒时停止该操作、问用户怎么调整，不要换参数绕过或反复重试；\n"
+    "- 工具报错先读错误信息并按其修正重试；同一操作连续失败 2 次就停下来向用户说明。\n"
+    "\n【回答要求】\n"
+    "- 使用简体中文；修改前一句话说明计划：对哪个条目、改什么；\n"
+    "- 完成后简要汇报：条目名称/ID、改动字段、新值，多条目逐条列出，不要把工具返回的大段 JSON 原样贴出；\n"
+    "- 用户只是提问还没让你改时，先解答并给可行方案，等确认后再动手。\n";
 
 std::string Trim(const std::string& s) {
     size_t b = s.find_first_not_of(" \t\r\n");
@@ -66,7 +123,7 @@ TuiApp::TuiApp(std::string base_url, AgentSettings agent_settings, std::string d
 }
 
 int TuiApp::render_width() const { return width_; }
-int TuiApp::render_list_height() const { return std::max(1, height_ - 6); }
+int TuiApp::render_list_height() const { return std::max(1, height_ - 5); }
 
 void TuiApp::Run() {
     auto probe = ftxui::Screen::Create(ftxui::Dimension::Full(), ftxui::Dimension::Full());
@@ -83,12 +140,25 @@ void TuiApp::Run() {
     } else {
         st.status = "后端未连接: " + err + "  (" + api_.base_url() + ")";
     }
+    // The AI modal title carries the active provider·model like the Alpha's
+    // 🤖 dialog did.
+    {
+        const AgentSettings& as = agent_.settings();
+        st.agent_label = (as.provider.empty() ? std::string("openai_compatible") : as.provider) +
+                         " · " + (as.model.empty() ? std::string("（未配置模型）") : as.model);
+    }
     LoadMods();
     // The permission mode gates every mutating action, so it is seeded from the
     // same .editor_ai.json the desktop frontend reads (GET /api/ai/settings).
     {
         std::string ac_err;
         st.permission_mode = api_.LoadPermissionMode(&ac_err);
+    }
+    // No-code mode is a shared editor setting (GET /api/settings/editor): the
+    // three frontends read the same persisted flag; failures just keep it off.
+    {
+        std::string nc_err;
+        st.no_code_mode = api_.LoadNoCodeMode(&nc_err);
     }
 
     screen.Loop(component);
@@ -102,6 +172,7 @@ void TuiApp::LoadMods() {
         return;
     }
     st.mod_sel = st.ClampSel(st.mod_sel, static_cast<int>(st.mods.size()));
+    st.tree_sel = st.ClampSel(st.tree_sel, static_cast<int>(st.TreeItems().size()));
 }
 
 void TuiApp::RunIntent(Intent intent) {
@@ -113,13 +184,42 @@ void TuiApp::RunIntent(Intent intent) {
         case Intent::SelectMod: {
             if (api_.SelectMod(st.selected_mod, &err)) {
                 st.tables = api_.ListTables(&err);
-                st.table_sel = 0;
                 st.table = Table{};
-                st.page = Page::Table;
-                st.focus = Focus::Tables;  // browse starts on the tables pane
+                st.focus = Focus::Tables;  // browse starts on the tree pane
                 st.status = err.empty() ? ("模组 " + st.selected_mod + " 共 " +
                                            std::to_string(st.tables.size()) + " 张表")
                                         : err;
+            } else {
+                st.status = err;
+            }
+            break;
+        }
+        case Intent::CreateMod: {
+            // N's title prompt: POST /api/mods/create {title}, then select the
+            // fresh mod so the tree can expand it (same path as `mods create`).
+            const std::string title = Trim(st.mod_input);
+            st.mod_input.clear();
+            if (title.empty()) {
+                st.status = "输入模组标题";
+                break;
+            }
+            Json body;
+            body["title"] = title;
+            body["desc"] = "";
+            std::string id;
+            if (api_.CreateMod(title, &id, &err)) {
+                st.status = "已创建模组 " + (id.empty() ? title : id);
+                LoadMods();
+                for (int i = 0; i < static_cast<int>(st.mods.size()); ++i) {
+                    if (st.mods[i].name == (id.empty() ? title : id)) {
+                        st.tree_sel = i;
+                        st.selected_mod = st.mods[i].name;
+                        st.mod_sel = i;
+                        st.expanded_mod = i;
+                        RunIntent(Intent::SelectMod);
+                        break;
+                    }
+                }
             } else {
                 st.status = err;
             }
@@ -352,6 +452,58 @@ void TuiApp::RunIntent(Intent intent) {
             if (!api_.SavePermissionMode(st.permission_mode, &e2)) st.status = e2;
             break;
         }
+        case Intent::SetNoCodeMode: {
+            std::string e2;
+            if (!api_.SaveNoCodeMode(st.no_code_mode, &e2)) st.status = e2;
+            break;
+        }
+        case Intent::FetchFieldSuggestions: {
+            std::string e2;
+            st.sug.all = st.sug.mode == "role"
+                             ? api_.RoleSuggest(std::string(), &e2)
+                             : api_.EffectSuggest(st.sug.mode, std::string(), &e2);
+            st.sug.shown = FilterSuggestions(st.sug.all, std::string());
+            st.sug.sel = 0;
+            st.sug.query.clear();
+            st.sug.active = !st.sug.all.empty();
+            if (!e2.empty()) {
+                st.status = e2;
+            } else if (st.sug.active) {
+                st.status = "候选 " + std::to_string(st.sug.all.size()) +
+                            " 条：Tab/↑↓ 选 · Enter 接受 · Esc 手输";
+            } else {
+                st.status = "该字段没有可用候选";
+            }
+            break;
+        }
+        case Intent::FetchSlotEntries: {
+            FieldSuggestState& sg = st.sug;
+            if (sg.cand < 0 || sg.cand >= static_cast<int>(sg.all.size()) ||
+                sg.slot_i >= static_cast<int>(sg.all[sg.cand].slots.size()))
+                break;
+            const SuggestionSlot& slot = sg.all[sg.cand].slots[sg.slot_i];
+            std::string e2;
+            if (sg.mode == "role" || SlotPoolDictKey(slot.dict) == "roles") {
+                // Role pool: /api/roles merges the workspace PersonCfg entries
+                // on top of game_dicts — always richer than the raw dict.
+                sg.slot_entries.clear();
+                for (const FieldSuggestion& r : api_.RoleSuggest(sg.slot_q, &e2))
+                    sg.slot_entries.emplace_back(r.code, r.desc);
+            } else {
+                sg.slot_entries = api_.DictEntries(SlotPoolDictKey(slot.dict), &e2);
+            }
+            if (!e2.empty()) st.status = e2;
+            sg.entry_shown = FilterEntries(sg.slot_entries, sg.slot_q);
+            sg.entry_sel = 0;
+            break;
+        }
+        case Intent::ReportUsage: {
+            if (!st.sug.pending_kind.empty() && !st.sug.pending_key.empty())
+                api_.ReportUsage(st.sug.pending_kind, st.sug.pending_key);
+            st.sug.pending_kind.clear();
+            st.sug.pending_key.clear();
+            break;
+        }
         case Intent::Quit:
         case Intent::None:
             break;
@@ -375,6 +527,7 @@ KeyInput TuiApp::MapEvent(const ftxui::Event& e) const {
     if (e == Event::Escape) return mk(KeyInput::Escape);
     if (e == Event::Backspace) return mk(KeyInput::Backspace);
     if (e == Event::Tab) return mk(KeyInput::Tab);
+    if (e == Event::TabReverse) return mk(KeyInput::ShiftTab);
     if (e == Event::Home) return mk(KeyInput::Home);
     if (e == Event::End) return mk(KeyInput::End);
     if (e == Event::PageUp) return mk(KeyInput::PageUp);
@@ -402,6 +555,9 @@ AppState TuiApp::SampleState(Page page) {
     s.page = page;
     s.mods = {ModEntry{"DemoMod", "mods/DemoMod"}, ModEntry{"Another", "mods/Another"}};
     s.selected_mod = "DemoMod";
+    s.mod_sel = 0;
+    s.expanded_mod = 0;  // the selected mod renders its cfg children
+    s.tree_sel = 1;      // cursor on the first cfg node
     s.tables = {"TalkCfg", "ItemCfg", "PersonCfg", "EvtCfg"};
     s.table = Table{};
     s.table.name = "TalkCfg";
@@ -411,6 +567,7 @@ AppState TuiApp::SampleState(Page page) {
                     TableRow{"2", "今天天气不错", "\"今天天气不错\""}};
     s.table.edits["2"] = "\"今天下雨了\"";
     s.focus = Focus::Rows;
+    s.agent_label = "openai_compatible · gpt-4o-mini";
     s.bugs = {BugEntry{"TalkCfg", "5", "roleIds", "REF", "引用了不存在的角色 ID 999"},
               BugEntry{"ItemCfg", "12", "icon", "SCHEMA_HEAL", "字段应为数组 []"} };
     s.bug_scanned = true;
@@ -428,7 +585,6 @@ AppState TuiApp::SampleState(Page page) {
     s.cloud_files_loaded = true;
     s.cloud_sync_summary = "DRY-RUN 方向 upload  共 2  上传 1  下载 0  跳过 1  失败 0";
     s.status = "示例数据（--render-check）";
-    if (page == Page::Table) s.editing = false;
     return s;
 }
 

@@ -130,10 +130,10 @@ void ReapBackend(SpawnedBackend& spawned, p8::BackendApi& api) {
 }
 
 bool ParsePage(const std::string& name, p8::Page& out) {
-    // "tables" is kept as a legacy alias: the old Tables page was absorbed
-    // into the browse page's left pane.
-    if (name == "mods") out = p8::Page::Mods;
-    else if (name == "tables" || name == "table") out = p8::Page::Table;
+    // "mods"/"tables" are legacy aliases: the Alpha-v0.3 layout folded both
+    // into the Main three-pane screen (the left pane is the two-level tree).
+    if (name == "main" || name == "mods" || name == "tables" || name == "table")
+        out = p8::Page::Main;
     else if (name == "bugfix") out = p8::Page::Bugfix;
     else if (name == "agent") out = p8::Page::Agent;
     else if (name == "plugins" || name == "plugin") out = p8::Page::Plugins;
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
 
     if (!render_page.empty()) {
         if (render_page == "all") {
-            for (const char* p : {"mods", "table", "bugfix", "agent", "plugins", "cloud"}) {
+            for (const char* p : {"main", "bugfix", "agent", "plugins", "cloud"}) {
                 p8::Page page;
                 if (!ParsePage(p, page)) continue;
                 std::cout << "==== render-check: " << p << " ====\n";

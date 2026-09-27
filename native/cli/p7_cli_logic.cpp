@@ -1,20 +1,22 @@
 // p7_cli_logic.cpp — see p7_cli_logic.h.
 //
 // CLI11 owns the grammar; everything downstream of it is plain data so the
-// tests can assert exact request specs and rendered text. JSON-valued options
-// bind to strings and are materialized after parse (CLI11 has no nlohmann
-// lexer). The rendering is deliberately plain lines — the Python rich tables
-// are excluded per brief.
+// tests can assert exact request specs and rendered text. Rendering mirrors
+// the Alpha-v0.3 (Python rich) CLI's palette — bold-green ids, cyan columns,
+// colored ok/error markers — through p7_color.h, which is the identity when
+// styling is off, so plain-text output stays byte-identical for pipes/tests.
 #include "p7_cli_logic.h"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 #include <CLI11/CLI11.hpp>
 
+#include "p7_color.h"
 #include "sa_core/http_client.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/util.h"
@@ -151,7 +153,8 @@ struct AppParts {
              *cloud_add = nullptr, *cloud_update = nullptr, *cloud_remove = nullptr,
              *cloud_test = nullptr, *cloud_sync = nullptr, *cloud_status = nullptr,
              *cloud_drivers = nullptr, *cloud_local = nullptr, *cloud_remote = nullptr,
-             *ai_settings = nullptr, *ai_set = nullptr;
+             *ai_settings = nullptr, *ai_set = nullptr, *search = nullptr,
+             *repl = nullptr, *settings_no_code = nullptr;
 };
 
 void wire_app(AppParts& P) {
@@ -169,6 +172,9 @@ void wire_app(AppParts& P) {
     app.add_option("--workspace", g.workspace, "工作区目录（内嵌模式 init_state 注入）");
     app.add_option("--mod", g.mod, "本次命令使用的模组（等价 Python CLI 的每命令 --mod）");
     app.add_flag("--json", g.json, "原样输出后端 JSON 响应");
+    app.add_flag("--color", [&](std::int64_t) { g.color = 1; },
+                 "强制 ANSI 彩色输出（默认仅 TTY 才着色）");
+    app.add_flag("--no-color", [&](std::int64_t) { g.color = 0; }, "禁用彩色输出");
     app.add_option("--timeout", g.timeout, "HTTP 超时秒数")->capture_default_str();
 
     // ---- mods ----
@@ -246,8 +252,23 @@ void wire_app(AppParts& P) {
     P.story_import->add_option("--start-id", c.start_id, "起始事件 id")->required();
     P.story_import->add_option("--text", c.text, "剧情文本（与 --file 二选一）");
     P.story_import->add_option("--file", c.path, "剧情文本文件");
+
+    // ---- search / repl ----
+    P.search = app.add_subcommand("search", "全局搜索对白（TalkCfg/EvtCfg）");
+    P.search->add_option("keyword", c.text, "关键词")->required();
+    P.search->add_option("--limit", c.limit, "文本视图最多显示行数")->capture_default_str();
+    P.repl = app.add_subcommand("repl", "进入交互模式（无参数启动时的默认行为）");
     P.story_import->add_flag("--write", c.write, "写入 TalkCfg/EvtCfg（默认仅预览）");
     P.story_import->add_flag("--append", c.append, "追加而非替换同前缀行");
+
+    // ---- settings ----
+    // 编辑器共享设置（M0 /api/settings/editor）。目前只有无代码模式一个开关；
+    // 非交互形式 `settings no-code on|off|show`，REPL 里是 `/settings`。
+    CLI::App* settings = app.add_subcommand("settings", "编辑器共享设置（无代码模式等）");
+    settings->require_subcommand(1);
+    P.settings_no_code = settings->add_subcommand("no-code", "无代码模式开关");
+    P.settings_no_code->alias("nocode");
+    P.settings_no_code->add_option("mode", c.setting_value, "on|off|show")->required();
 
     // ---- oobe / env ----
     CLI::App* oobe = app.add_subcommand("oobe", "首次使用引导状态");
@@ -341,7 +362,7 @@ void wire_app(AppParts& P) {
     // (Python parity): every non-root app falls unrecognized options through
     // to its parent. get_subcommands() only lists *parsed* apps pre-parse, so
     // the list is built explicitly here.
-    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env, plugin, cloud, ai,
+    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env, plugin, cloud, ai, settings,
                         P.mods_list, P.mods_create, P.mods_add, P.mods_select, P.mods_remove,
                         P.cfg_list, P.cfg_get, P.cfg_set, P.cfg_patch, P.cfg_history,
                         P.validate, P.bugfix_scan, P.bugfix_fix,
@@ -353,11 +374,10 @@ void wire_app(AppParts& P) {
                         P.cloud_providers, P.cloud_add, P.cloud_update, P.cloud_remove,
                         P.cloud_test, P.cloud_sync, P.cloud_status, P.cloud_drivers,
                         P.cloud_local, P.cloud_remote,
-                        P.ai_settings, P.ai_set}) {
+                        P.ai_settings, P.ai_set, P.settings_no_code}) {
         s->fallthrough();
     }
 }
-
 }  // namespace
 
 ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags& g,
@@ -456,6 +476,9 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
     else if (hit(P.cloud_remote)) c.kind = Kind::CloudRemote;
     else if (hit(P.ai_settings)) c.kind = Kind::AiSettings;
     else if (hit(P.ai_set)) c.kind = Kind::AiSet;
+    else if (hit(P.search)) c.kind = Kind::Search;
+    else if (hit(P.settings_no_code)) c.kind = Kind::SettingsNoCode;
+    else if (hit(P.repl)) c.kind = Kind::Repl;
     else {
         err_msg = "缺少子命令";
         return ParseResult::UsageError;
@@ -496,6 +519,14 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
     // expect-mtime supplied? CLI11 leaves 0 when unset; treat non-zero as set.
     if (c.expect_mtime != 0) c.has_expect_mtime = true;
     if (c.kind == Kind::OobeSetup && P.no_mark_done) c.mark_done = false;
+    if (c.kind == Kind::SettingsNoCode) {
+        const std::string mode = lower_ascii(c.setting_value);
+        if (mode != "on" && mode != "off" && mode != "show") {
+            err_msg = "settings no-code 只接受 on|off|show";
+            return ParseResult::UsageError;
+        }
+        c.setting_value = mode;
+    }
 
     // Materialize inline JSON options.
     if (!bind_json(P.data_txt, c.data, c.has_data, err_msg) ||
@@ -606,6 +637,26 @@ HttpRequestSpec state_request() {
     return HttpRequestSpec{"GET", "/api/state", {}, json()};
 }
 
+HttpRequestSpec editor_settings_get_request() {
+    return HttpRequestSpec{"GET", "/api/settings/editor", {}, json()};
+}
+
+HttpRequestSpec editor_settings_put_request(bool no_code) {
+    json body;
+    body["noCodeMode"] = no_code;
+    return HttpRequestSpec{"PUT", "/api/settings/editor", {}, std::move(body)};
+}
+
+bool parse_no_code_mode(const json& body, bool* known) {
+    if (known) *known = false;
+    if (!body.is_object() || !body.contains("settings") || !body["settings"].is_object())
+        return false;
+    const json& s = body["settings"];
+    if (!s.contains("noCodeMode") || !s["noCodeMode"].is_boolean()) return false;
+    if (known) *known = true;
+    return s["noCodeMode"].get<bool>();
+}
+
 bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_msg) {
     out.clear();
     // --file materialization (runtime inputs, not part of the grammar).
@@ -664,6 +715,17 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
         case Kind::ModsList:
             out.push_back({"GET", "/api/mods", {}, json()});
             return true;
+        case Kind::Search: {
+            HttpRequestSpec spec{"GET", "/api/search/talk", {}, json()};
+            spec.query.emplace_back("q", c.text);
+            out.push_back(std::move(spec));
+            return true;
+        }
+        case Kind::SettingsNoCode: {
+            if (c.setting_value == "show") out.push_back(editor_settings_get_request());
+            else out.push_back(editor_settings_put_request(c.setting_value == "on"));
+            return true;
+        }
         case Kind::ModsCreate: {
             json body;
             body["title"] = c.title;
@@ -1006,8 +1068,9 @@ int compute_exit(int status, const json& body, const Command& c) {
 std::string error_text(const json& body) {
     std::ostringstream os;
     if (body.is_object() && body.contains("error")) {
-        os << "error: " << scalar_or_dump(body.at("error"));
-        if (body.contains("detail")) os << "\ndetail: " << scalar_or_dump(body.at("detail"));
+        os << Style::Red("error:") << " " << scalar_or_dump(body.at("error"));
+        if (body.contains("detail"))
+            os << "\n" << Style::Dim("detail:") << " " << scalar_or_dump(body.at("detail"));
         if (body.contains("conflicting_keys") && body.at("conflicting_keys").is_array()) {
             os << "\nconflicting_keys: ";
             bool first = true;
@@ -1017,7 +1080,7 @@ std::string error_text(const json& body) {
             }
         }
     } else {
-        os << "error: " << oneline(sa_core::py_dumps(body));
+        os << Style::Red("error:") << " " << oneline(sa_core::py_dumps(body));
     }
     return os.str();
 }
@@ -1062,16 +1125,16 @@ void append_plugin_row(std::ostringstream& os, const json& p) {
     const std::string id = jstr(p, "id");
     std::string name = jstr(p, "name");
     if (name.empty()) name = id;
-    os << "    " << id << "  " << name;
+    os << "    " << Style::BoldGreen(id) << "  " << Style::Cyan(name);
     const std::string version = jstr(p, "version");
-    if (!version.empty()) os << " v" << version;
-    os << "  " << (jbool(p, "loaded") ? "已加载" : "未加载");
+    if (!version.empty()) os << Style::Dim(" v" + version);
+    os << "  " << (jbool(p, "loaded") ? Style::Green("已加载") : Style::Yellow("未加载"));
     const std::string err = jstr(p, "error");
-    if (!err.empty()) os << "  error=" << utf8_prefix(oneline(err), 80);
+    if (!err.empty()) os << "  " << Style::Red("error=") << utf8_prefix(oneline(err), 80);
     const std::string author = jstr(p, "author");
-    if (!author.empty()) os << "  author=" << author;
+    if (!author.empty()) os << "  " << Style::Dim("author=" + author);
     const std::string desc = jstr(p, "description");
-    if (!desc.empty()) os << "  " << utf8_prefix(oneline(desc), 60);
+    if (!desc.empty()) os << "  " << Style::Dim(utf8_prefix(oneline(desc), 60));
     os << "\n";
 }
 
@@ -1088,7 +1151,7 @@ void append_records(std::ostringstream& os, const Command& c, const json& data) 
     static const char* preferred[] = {"title", "content", "showTxt", "desc", "type"};
     long long shown = 0;
     for (auto it = data.begin(); it != data.end() && shown < c.limit; ++it, ++shown) {
-        os << it.key();
+        os << Style::BoldGreen(it.key());
         const json& rec = it.value();
         if (rec.is_object()) {
             std::vector<std::string> cols;
@@ -1101,17 +1164,20 @@ void append_records(std::ostringstream& os, const Command& c, const json& data) 
             }
             for (auto& col : cols) {
                 if (col.size() > 120) col = utf8_prefix(col, 60) + "…";
-                os << '\t' << col;
+                os << '\t' << Style::Cyan(col);
             }
         } else {
             std::string v = scalar_or_dump(rec);
             if (v.size() > 120) v = utf8_prefix(v, 60) + "…";
-            os << '\t' << v;
+            os << '\t' << Style::Cyan(v);
         }
         os << '\n';
     }
     long long total = static_cast<long long>(data.size());
-    if (total > c.limit) os << "... " << (total - c.limit) << " more (use --json)\n";
+    if (total > c.limit)
+        os << Style::Dim("... " + std::to_string(total - c.limit) +
+                         " more (use --json)")
+           << "\n";
 }
 
 }  // namespace
@@ -1126,17 +1192,20 @@ std::string format_text(const Command& c, const json& body) {
     switch (c.kind) {
         case Kind::ModsList: {
             std::string selected = str_at("selected");
-            os << "selected: " << (selected.empty() ? "(none)" : selected) << "\n";
+            os << Style::Dim("selected: ")
+               << (selected.empty() ? Style::Dim("(none)") : Style::BoldGreen(selected)) << "\n";
             if (body.contains("mods") && body["mods"].is_array()) {
-                os << "mods: " << body["mods"].size() << "\n";
+                os << Style::Bold("mods: " + std::to_string(body["mods"].size())) << "\n";
                 for (const auto& m : body["mods"]) {
                     std::string name = m.value("name", "");
-                    os << (name == selected ? "*   " : "    ") << name;
+                    os << (name == selected ? Style::Green("*") : " ") << "   "
+                       << Style::BoldGreen(name);
                     std::string mt = m.value("manifest_title", "");
-                    if (!mt.empty()) os << "  («" << mt << "»)";
+                    if (!mt.empty()) os << "  " << Style::Cyan("«" + mt + "»");
                     if (m.contains("cfg_files") && m["cfg_files"].is_array())
-                        os << "  cfgs=" << m["cfg_files"].size();
-                    os << "  " << m.value("root", "") << "\n";
+                        os << "  " << Style::Dim("cfgs=" +
+                                                 std::to_string(m["cfg_files"].size()));
+                    os << "  " << Style::Dim(m.value("root", "")) << "\n";
                 }
             }
             break;
@@ -1154,37 +1223,41 @@ std::string format_text(const Command& c, const json& body) {
             break;
         }
         case Kind::ModsRemove:
-            os << "ok: removed\n";
+            os << Style::Green("ok:") << " removed\n";
             break;
         case Kind::CfgList: {
-            os << "mod: " << str_at("mod") << "\n";
+            os << Style::Dim("mod:") << " " << Style::BoldGreen(str_at("mod")) << "\n";
             if (body.contains("cfg_files") && body["cfg_files"].is_array()) {
-                os << "cfgs: " << body["cfg_files"].size() << "\n";
-                for (const auto& f : body["cfg_files"]) os << "    " << scalar_or_dump(f) << "\n";
+                os << Style::Bold("cfgs: " + std::to_string(body["cfg_files"].size())) << "\n";
+                for (const auto& f : body["cfg_files"])
+                    os << "    " << Style::Cyan(scalar_or_dump(f)) << "\n";
             }
             break;
         }
         case Kind::CfgGet: {
-            os << "cfg: " << str_at("cfg")
-               << "  exists=" << (body.value("exists", false) ? "true" : "false")
-               << "  mtime_ns: "
+            os << Style::Dim("cfg:") << " " << Style::BoldGreen(str_at("cfg"))
+               << "  " << Style::Dim(std::string("exists=") +
+                                     (body.value("exists", false) ? "true" : "false"))
+               << "  " << Style::Dim("mtime_ns: ")
                << sa_core::py_str(body.contains("mtime_ns") ? body.at("mtime_ns") : json())
                << "\n";
             if (body.contains("keys") && body["keys"].is_array()) {
-                for (const auto& k : body["keys"]) os << "    " << scalar_or_dump(k) << "\n";
+                for (const auto& k : body["keys"])
+                    os << "    " << Style::Cyan(scalar_or_dump(k)) << "\n";
                 break;
             }
             if (!body.contains("data") || !body["data"].is_object()) {
                 if (body.contains("count"))
-                    os << "records: " << body.value("count", 0) << "\n";
+                    os << Style::Bold("records: " + std::to_string(body.value("count", 0)))
+                       << "\n";
                 break;
             }
             const json& data = body["data"];
-            os << "records: " << data.size() << "\n";
+            os << Style::Bold("records: " + std::to_string(data.size())) << "\n";
             if (!c.id.empty()) {
                 auto it = data.find(c.id);
                 if (it == data.end()) {
-                    os << "no such id: " << c.id << "\n";
+                    os << Style::Red("no such id: " + c.id) << "\n";
                     break;
                 }
                 if (!c.field.empty()) {
@@ -1207,27 +1280,33 @@ std::string format_text(const Command& c, const json& body) {
         }
         case Kind::CfgSet:
         case Kind::CfgPatch: {
-            os << "ok: " << str_at("cfg") << "  mtime_ns: "
+            os << Style::Green("ok:") << " " << Style::BoldGreen(str_at("cfg"))
+               << "  " << Style::Dim("mtime_ns: ")
                << sa_core::py_str(body.contains("mtime_ns") ? body.at("mtime_ns") : json())
                << "\n";
             if (body.contains("applied_set") || body.contains("applied_remove")) {
-                os << "applied_set: " << body.value("applied_set", 0)
-                   << "  applied_remove: " << body.value("applied_remove", 0) << "\n";
+                os << Style::Dim("applied_set: " + std::to_string(body.value("applied_set", 0)) +
+                                 "  applied_remove: " +
+                                 std::to_string(body.value("applied_remove", 0)))
+                   << "\n";
             }
             break;
         }
         case Kind::CfgHistory: {
             if (body.contains("entries") && body["entries"].is_array()) {
-                os << "cfg: " << str_at("cfg")
-                   << "  snapshots: " << body["entries"].size() << "\n";
+                os << Style::Dim("cfg:") << " " << Style::BoldGreen(str_at("cfg"))
+                   << "  " << Style::Bold("snapshots: " +
+                                          std::to_string(body["entries"].size()))
+                   << "\n";
                 for (const auto& e : body["entries"]) {
-                    os << "    " << e.value("file", "")
+                    os << "    " << Style::Cyan(e.value("file", ""))
                        << "  ts=" << sa_core::py_str(e.contains("ts") ? e.at("ts") : json())
                        << "  size=" << sa_core::py_str(e.contains("size") ? e.at("size") : json())
                        << "\n";
                 }
             } else {
-                os << "ok: " << str_at("cfg") << "  mtime_ns: "
+                os << Style::Green("ok:") << " " << Style::BoldGreen(str_at("cfg"))
+                   << "  " << Style::Dim("mtime_ns: ")
                    << sa_core::py_str(body.contains("mtime_ns") ? body.at("mtime_ns") : json())
                    << "\n";
             }
@@ -1236,16 +1315,24 @@ std::string format_text(const Command& c, const json& body) {
         case Kind::Validate: {
             if (body.contains("issues") && body["issues"].is_array()) {
                 for (const auto& it : body["issues"]) {
-                    os << "[" << it.value("level", "?") << "] ";
+                    std::string level = it.value("level", "?");
+                    std::string tag = "[" + level + "] ";
+                    os << (level == "error"   ? Style::Red(tag)
+                           : level == "warn"  ? Style::Yellow(tag)
+                                              : Style::Cyan(tag));
                     std::string rid = it.value("rid", "");
                     if (!rid.empty()) os << rid << ": ";
                     os << it.value("msg", "") << "\n";
                 }
             }
             if (body.contains("counts") && body["counts"].is_object()) {
-                os << "counts: error=" << body["counts"].value("error", 0)
-                   << " warn=" << body["counts"].value("warn", 0)
-                   << " info=" << body["counts"].value("info", 0) << "\n";
+                os << Style::Dim("counts:") << " "
+                   << Style::Red("error=" + std::to_string(body["counts"].value("error", 0)))
+                   << " "
+                   << Style::Yellow("warn=" + std::to_string(body["counts"].value("warn", 0)))
+                   << " "
+                   << Style::Cyan("info=" + std::to_string(body["counts"].value("info", 0)))
+                   << "\n";
             }
             break;
         }
@@ -1300,12 +1387,13 @@ std::string format_text(const Command& c, const json& body) {
             break;
         }
         case Kind::PluginUninstall:
-            os << "ok: uninstalled\n";
+            os << Style::Green("ok:") << " uninstalled\n";
             break;
         case Kind::PluginReload: {
             const json* arr =
                 body.contains("plugins") && body["plugins"].is_array() ? &body["plugins"] : nullptr;
-            os << "ok: reloaded  plugins: " << (arr ? arr->size() : 0) << "\n";
+            os << Style::Green("ok:") << " reloaded  "
+               << Style::Bold("plugins: " + std::to_string(arr ? arr->size() : 0)) << "\n";
             if (arr)
                 for (const auto& p : *arr) append_plugin_row(os, p);
             break;
@@ -1362,7 +1450,8 @@ std::string format_text(const Command& c, const json& body) {
         }
         case Kind::CloudRemove:
         case Kind::CloudTest:
-            os << (c.kind == Kind::CloudRemove ? "ok: removed" : "ok: connection ok") << "\n";
+            os << Style::Green("ok:")
+               << (c.kind == Kind::CloudRemove ? " removed" : " connection ok") << "\n";
             break;
         case Kind::CloudStatus: {
             os << "running: " << (body.value("running", false) ? "true" : "false")
@@ -1475,7 +1564,7 @@ std::string format_text(const Command& c, const json& body) {
             break;
         }
         case Kind::AiSet: {
-            os << "ok: settings updated\n";
+            os << Style::Green("ok:") << " settings updated\n";
             if (body.contains("settings") && body["settings"].is_object())
                 os << "permissionMode: " << jstr(body["settings"], "permissionMode") << "\n";
             break;
@@ -1518,14 +1607,50 @@ std::string format_text(const Command& c, const json& body) {
             break;
         }
         case Kind::OobeDone:
-            os << "ok: oobe completed\n";
+            os << Style::Green("ok:") << " oobe completed\n";
             break;
         case Kind::OobeSetup: {
-            os << "ok\nworkspace_root: " << str_at("workspace_root") << "\n";
+            os << Style::Green("ok") << "\n"
+               << Style::Dim("workspace_root:") << " " << str_at("workspace_root") << "\n";
             std::string m = str_at("mod_name");
-            if (!m.empty()) os << "mod_name: " << m << "\n";
+            if (!m.empty()) os << Style::Dim("mod_name:") << " " << m << "\n";
             if (body.contains("mods") && body["mods"].is_array())
-                os << "mods: " << body["mods"].size() << "\n";
+                os << Style::Bold("mods: " + std::to_string(body["mods"].size())) << "\n";
+            break;
+        }
+        case Kind::Search: {
+            const json* arr =
+                body.contains("results") && body["results"].is_array() ? &body["results"] : nullptr;
+            os << Style::Bold("hits: " + std::to_string(arr ? arr->size() : 0)) << "\n";
+            if (arr) {
+                long long shown = 0;
+                for (const auto& r : *arr) {
+                    if (shown++ >= c.limit && c.limit > 0) {
+                        os << Style::Dim("... (use --json)") << "\n";
+                        break;
+                    }
+                    std::string src = jstr(r, "src");
+                    std::string talk = jstr(r, "talk_id");
+                    std::string title = jstr(r, "evt_title");
+                    std::string content = jstr(r, "content");
+                    os << "    " << Style::Cyan("[" + src + "] ") << Style::BoldGreen(talk)
+                       << " " << Style::Dim("(" + title + ")") << ": "
+                       << utf8_prefix(oneline(content), 100) << "\n";
+                }
+            }
+            break;
+        }
+        case Kind::SettingsNoCode: {
+            bool known = false;
+            const bool on = parse_no_code_mode(body, &known);
+            if (!known) {
+                os << sa_core::py_dumps(body) << "\n";
+                break;
+            }
+            // show 只报当前值；on/off 是写操作，前置一个 ok: 标记（REPL 的
+            // /settings 复用同一渲染）。
+            if (c.setting_value != "show") os << Style::Green("ok:") << " ";
+            os << "no-code: " << (on ? Style::BoldGreen("on") : Style::Dim("off")) << "\n";
             break;
         }
         case Kind::EnvGet:
@@ -1593,6 +1718,636 @@ bool zip_entry_reject(const std::string& entry) {
         pos = slash + 1;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Interactive mode (「类 Claude Code」 REPL) — pure line handling
+// ---------------------------------------------------------------------------
+
+ReplLine classify_repl_line(const std::string& line) {
+    size_t b = line.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return ReplLine{ReplLine::Empty, ""};
+    std::string rest = line.substr(b);
+    if (rest[0] == '!') return ReplLine{ReplLine::Shell, rest.substr(1)};
+    if (rest[0] == '/') {
+        std::string word = rest.substr(1);
+        size_t sp = word.find_first_of(" \t");
+        std::string head = sp == std::string::npos ? word : word.substr(0, sp);
+        if (head == "exit" || head == "quit" || head == "q")
+            return ReplLine{ReplLine::Quit, ""};
+        return ReplLine{ReplLine::Slash, word};
+    }
+    // Bare exit words quit too (the Python REPL accepted Ctrl+D//exit; a
+    // typed "exit" must never reach the grammar as an unknown command).
+    {
+        size_t sp = rest.find_first_of(" \t");
+        std::string head = sp == std::string::npos ? rest : rest.substr(0, sp);
+        if (sp == std::string::npos &&
+            (head == "exit" || head == "quit" || head == "q"))
+            return ReplLine{ReplLine::Quit, ""};
+    }
+    return ReplLine{ReplLine::Command, rest};
+}
+
+std::vector<std::string> split_repl_tokens(const std::string& line) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < line.size()) {
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r' ||
+                                   line[i] == '\n'))
+            ++i;
+        if (i >= line.size()) break;
+        char quote = line[i] == '"' || line[i] == '\'' ? line[i] : 0;
+        std::string tok;
+        if (quote) ++i;
+        while (i < line.size()) {
+            if (quote) {
+                if (line[i] == quote) {
+                    ++i;
+                    break;
+                }
+            } else if (line[i] == ' ' || line[i] == '\t' || line[i] == '\r' ||
+                       line[i] == '\n') {
+                break;
+            }
+            tok += line[i++];
+        }
+        out.push_back(std::move(tok));
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// 无代码模式 + 自动补全（M3）— see p7_cli_logic.h
+//
+// 这里的表都是 wire_app 命令树的纯数据镜像（改命令时两边一起改）：补全菜单
+// 不解析 CLI11，只按 token 词法槽查表选池，所以整个分流逻辑可以在 sa_tests
+// 里直接驱动。REPL 负责把 HTTP 池（usage / effect_suggest / roles）灌进
+// CompletionCtx，本文件不发起任何 IO。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using FlagRow = std::pair<const char*, const char*>;
+
+// 顶层命令 + 中文说明（补全菜单主显示）。
+const std::vector<FlagRow>& top_command_rows() {
+    static const std::vector<FlagRow> kRows = {
+        {"mods", "模组管理"},      {"cfg", "配置表 CRUD"},
+        {"validate", "schema+跨表校验"}, {"bugfix", "逻辑 bug 扫描/修复"},
+        {"story", "剧情文本导入导出"},   {"oobe", "首次使用引导状态"},
+        {"env", "editor_env.json 键值"}, {"plugin", "插件管理"},
+        {"cloud", "云同步"},       {"ai", "AI 设置"},
+        {"search", "全局搜索对白"}, {"settings", "编辑器共享设置（无代码模式）"},
+        {"repl", "进入交互模式"},
+    };
+    return kRows;
+}
+
+// 命令 -> 子命令（wire_app 的一一镜像）。
+const std::map<std::string, std::vector<std::string>>& subcommand_table() {
+    static const std::map<std::string, std::vector<std::string>> kTable = {
+        {"mods", {"list", "create", "add", "select", "remove"}},
+        {"cfg", {"list", "get", "set", "patch", "history"}},
+        {"bugfix", {"scan", "fix"}},
+        {"story", {"export", "import"}},
+        {"oobe", {"status", "done", "setup"}},
+        {"env", {"get", "set"}},
+        {"plugin", {"list", "install", "uninstall", "reload", "tools"}},
+        {"cloud", {"providers", "add", "update", "remove", "test", "sync", "status",
+                   "drivers", "local", "remote"}},
+        {"ai", {"settings", "set"}},
+        {"settings", {"no-code"}},
+    };
+    return kTable;
+}
+
+// 全局 flag：任何位置（含子命令之后）都可用，CLI11 fallthrough 的镜像。
+const std::vector<FlagRow>& global_flag_rows() {
+    static const std::vector<FlagRow> kRows = {
+        {"--url", "打已运行的后端实例"}, {"--data-root", "数据根目录"},
+        {"--workspace", "工作区目录"},   {"--mod", "本次命令使用的模组"},
+        {"--json", "原样输出后端 JSON"}, {"--color", "强制彩色"},
+        {"--no-color", "禁用彩色"},      {"--timeout", "HTTP 超时秒数"},
+    };
+    return kRows;
+}
+
+// "命令 子命令" -> 该层 flag（不含全局 flag）。
+const std::map<std::string, std::vector<FlagRow>>& flag_table() {
+    static const std::map<std::string, std::vector<FlagRow>> kTable = {
+        {"mods create", {{"--desc", "描述"}}},
+        {"mods add",
+         {{"--desc", "描述"}, {"--path", "已有模组目录"}, {"--zip", "模组 zip"},
+          {"--name", "导入后的模组名"}}},
+        {"mods select", {{"--root", "显式模组目录"}}},
+        {"cfg get",
+         {{"--id", "只看一条记录"}, {"--field", "只看一个字段"}, {"--keys", "只要键列表"},
+          {"--meta", "只要元信息"}, {"--prefix", "键前缀过滤"}, {"--suffix", "前缀尾截长度"},
+          {"--limit", "显示行数上限"}}},
+        {"cfg set",
+         {{"--data", "整表 JSON"}, {"--file", "整表 JSON 文件"},
+          {"--expect-mtime", "并发检测（ns）"}, {"--force", "跳过冲突检测"}}},
+        {"cfg patch",
+         {{"--set", "行补丁 JSON"}, {"--set-file", "行补丁文件"}, {"--remove", "删除行 id"},
+          {"--if-match", "期望值 JSON"}, {"--expect-mtime", "并发检测（ns）"},
+          {"--force", "跳过冲突检测"}}},
+        {"cfg history", {{"--undo", "撤销上一次写入"}, {"--redo", "重做"}}},
+        {"validate",
+         {{"--data", "待校验整表 JSON"}, {"--file", "待校验 JSON 文件"},
+          {"--strict", "有 error 时 exit 1"}}},
+        {"bugfix fix", {{"--from-file", "scan 输出 JSON"}}},
+        {"story export",
+         {{"--evt", "EvtCfg id 列表"}, {"--out", "写入文件"}, {"--dual", "选项显示 both|option|talk"},
+          {"--opts", "透传 opts JSON"}}},
+        {"story import",
+         {{"--start-id", "起始事件 id"}, {"--text", "剧情文本"}, {"--file", "剧情文本文件"},
+          {"--write", "落库（默认仅预览）"}, {"--append", "追加而非替换"}}},
+        {"oobe setup",
+         {{"--workspace", "工作区目录"}, {"--mod", "顺手新建的模组名"}, {"--desc", "模组描述"},
+          {"--no-mark-done", "不标记 OOBE 完成"}, {"--ai", "AI 设置 JSON"},
+          {"--cloud-provider", "云盘 Provider JSON"}}},
+        {"env set", {{"--json-value", "值按 JSON 解析后存"}}},
+        {"plugin install", {{"--name", "zip 文件名（推导插件 id）"}}},
+        {"cloud add",
+         {{"--name", "Provider 名称"}, {"--type", "驱动类型"}, {"--config", "驱动配置 JSON"},
+          {"--config-file", "驱动配置文件"}, {"--remote-root", "远端根目录"}}},
+        {"cloud update",
+         {{"--name", "新名称"}, {"--type", "新驱动类型"}, {"--config", "配置补丁 JSON"},
+          {"--config-file", "配置补丁文件"}, {"--remote-root", "新远端根目录"}}},
+        {"cloud test", {{"--type", "临时驱动类型"}, {"--config", "临时驱动配置 JSON"}}},
+        {"cloud sync",
+         {{"--direction", "upload|download|sync|delete_remote|delete_local"},
+          {"--mod", "模组名"}, {"--files", "只同步这些相对路径"}, {"--folder", "整文件夹同步"},
+          {"--dry-run", "只预览不写入"}, {"--delete-extra", "清理对端多余文件"}}},
+        {"cloud local", {{"--mod", "模组名"}}},
+        {"cloud remote", {{"--mod", "模组名"}, {"--path", "远端子目录"}}},
+        {"ai set",
+         {{"--mode", "permissionMode confirm|full"}, {"--data", "设置补丁 JSON"},
+          {"--file", "设置补丁文件"}}},
+    };
+    return kTable;
+}
+
+bool HasSubcommands(const std::string& cmd) { return subcommand_table().count(cmd) != 0; }
+
+std::vector<CompletionItem> RowsToItems(const std::vector<FlagRow>& rows) {
+    std::vector<CompletionItem> out;
+    out.reserve(rows.size());
+    for (const auto& r : rows) out.push_back(CompletionItem{r.first, r.second});
+    return out;
+}
+
+// 布尔 flag：其后一个 token 不是它的值（决定位置参数计数）。
+bool IsBooleanFlag(const std::string& f) {
+    static const std::set<std::string> kBool = {
+        "--json", "--color", "--no-color", "--keys", "--meta", "--force", "--strict",
+        "--undo", "--redo", "--write", "--append", "--no-mark-done", "--folder",
+        "--dry-run", "--delete-extra", "--json-value"};
+    return kBool.count(f) != 0;
+}
+
+// JSON 值键 -> suggest mode（与 TUI p8_cfg.cpp:197-207 FieldSuggestMode 同表；
+// "role" 走人物池，其余是 /api/effect_suggest 的 mode）。
+std::string JsonValueMode(const std::string& key) {
+    const std::string f = lower_ascii(key);
+    if (f == "roles" || f == "roleids" || f == "speaker") return "role";
+    if (f == "screeneffect") return "screen";
+    if (f == "cost") return "cost";
+    if (f == "condition" || f == "cond" || f == "precondition" || f == "check")
+        return "condition";
+    if (f.find("effect") != std::string::npos) return "effect";
+    return {};
+}
+
+// 去掉成对引号（token 保留原样引号，做命令/表名比较时用）。
+std::string Unquote(const std::string& w) {
+    if (w.size() >= 2 && (w.front() == '"' || w.front() == '\'') && w.back() == w.front())
+        return w.substr(1, w.size() - 2);
+    return w;
+}
+
+std::string StripDashes(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == '-') ++i;
+    return s.substr(i);
+}
+
+// 输入行扫描：完整 token（原样保留引号）+ 正在输入的尾词。
+struct InputScan {
+    std::vector<std::string> done;  // 已完成的 token
+    std::string tail;               // 正在输入的 token（可空）
+    size_t tail_start = 0;          // tail 在 buffer 中的起点
+    char quote = 0;                 // tail 处于未闭合引号中时的引号字符
+};
+
+InputScan ScanInput(const std::string& buffer) {
+    InputScan s;
+    std::string cur;
+    bool in_tok = false;
+    char quote = 0;
+    for (char ch : buffer) {
+        if (quote) {
+            cur += ch;
+            if (ch == quote) quote = 0;
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            quote = ch;
+            cur += ch;
+            in_tok = true;
+            continue;
+        }
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+            if (in_tok) {
+                s.done.push_back(cur);
+                cur.clear();
+                in_tok = false;
+            }
+            continue;
+        }
+        cur += ch;
+        in_tok = true;
+    }
+    if (quote) s.quote = quote;
+    if (in_tok) {
+        s.tail = cur;
+        s.tail_start = buffer.size() - cur.size();
+    } else {
+        s.tail.clear();
+        s.tail_start = buffer.size();
+    }
+    return s;
+}
+
+// 前缀里最后一个 `"key":`（其后只允许空白）；无则空串。
+std::string LastJsonKey(const std::string& prefix) {
+    size_t end = prefix.size();
+    while (end > 0 && (prefix[end - 1] == ' ' || prefix[end - 1] == '\t')) --end;
+    if (end == 0 || prefix[end - 1] != ':') return {};
+    size_t p = end - 1;
+    while (p > 0 && (prefix[p - 1] == ' ' || prefix[p - 1] == '\t')) --p;
+    if (p == 0 || prefix[p - 1] != '"') return {};
+    const size_t close = p - 1;
+    if (close == 0) return {};
+    const size_t open = prefix.rfind('"', close - 1);
+    if (open == std::string::npos || open + 1 >= close) return {};
+    return prefix.substr(open + 1, close - open - 1);
+}
+
+// 词法槽判定结果（内部）。
+struct SlotInfo {
+    CompletionSlot slot = CompletionSlot::None;
+    std::string group;                 // Literal 组
+    std::string effect_mode;           // Effect 的 suggest mode
+    std::string query;                 // 匹配查询串
+    size_t replace_start = 0;          // 整行替换起点
+    std::string wrap_left, wrap_right; // 插入包裹（JSON 引号）
+};
+
+// 位置参数槽（settings no-code 的 on|off|show 是唯一的固定枚举位置槽）。
+SlotInfo PositionalSlot(const std::string& cmd, const std::string& sub, size_t pos) {
+    SlotInfo si;
+    if (cmd == "settings" && sub == "no-code" && pos == 0) {
+        si.slot = CompletionSlot::Literal;
+        si.group = "no_code";
+        return si;
+    }
+    if (cmd == "cfg" && pos == 0 &&
+        (sub == "get" || sub == "set" || sub == "patch" || sub == "history" ||
+         sub == "validate"))
+        si.slot = CompletionSlot::Table;
+    else if (cmd == "mods" && pos == 0 && (sub == "select" || sub == "remove"))
+        si.slot = CompletionSlot::Mod;
+    return si;
+}
+
+// flag 值槽；`literal_group` 非空表示固定枚举池。
+SlotInfo FlagValueSlot(const std::string& cmd, const std::string& sub, const std::string& flag) {
+    SlotInfo si;
+    const std::string f = lower_ascii(flag);
+    if (f == "--mod") {
+        si.slot = CompletionSlot::Mod;
+    } else if (f == "--path" || f == "--zip" || f == "--file" || f == "--set-file" ||
+               f == "--config-file" || f == "--from-file" || f == "--out" || f == "--root" ||
+               f == "--workspace") {
+        si.slot = CompletionSlot::Path;
+    } else if (f == "--direction") {
+        si.slot = CompletionSlot::Literal;
+        si.group = "direction";
+    } else if (f == "--dual") {
+        si.slot = CompletionSlot::Literal;
+        si.group = "dual";
+    } else if (f == "--mode" && cmd == "ai" && sub == "set") {
+        si.slot = CompletionSlot::Literal;
+        si.group = "ai_mode";
+    } else if (f == "--text" && cmd == "story" && sub == "import") {
+        si.slot = CompletionSlot::Effect;
+        si.effect_mode = "effect";
+    }
+    return si;
+}
+
+// 完整分流：先判命令/子命令/flag，再判 JSON 值槽与位置/flag 值槽。
+SlotInfo Classify(const std::string& buffer, const InputScan& s) {
+    SlotInfo si;
+    si.replace_start = s.tail_start;
+    // @提及：@role: 人物 / @表 / @模组（先于命令判定，首词位置也生效）。
+    if (!s.tail.empty() && s.tail[0] == '@') {
+        si.slot = CompletionSlot::Mention;
+        std::string body = s.tail.substr(1);
+        if (lower_ascii(body).rfind("role:", 0) == 0) {
+            si.group = "role";
+            si.query = body.substr(5);
+        } else {
+            si.query = body;
+        }
+        return si;
+    }
+    // 首词：空行 Tab 用高频池，其余用命令池（slash 走斜杠池）。
+    if (s.done.empty()) {
+        if (s.tail.empty()) {
+            si.slot = CompletionSlot::Recent;
+        } else if (s.tail[0] == '/') {
+            si.slot = CompletionSlot::SlashCommand;
+            si.query = s.tail;
+        } else {
+            si.slot = CompletionSlot::Command;
+            si.query = s.tail;
+        }
+        return si;
+    }
+
+    std::string cmd = lower_ascii(Unquote(s.done[0]));
+    if (!cmd.empty() && cmd[0] == '/') cmd = cmd.substr(1);
+    std::string sub;
+    if (s.done.size() >= 2 && !s.done[1].empty() && s.done[1][0] != '-')
+        sub = lower_ascii(Unquote(s.done[1]));
+
+    const size_t arg_start = HasSubcommands(cmd) ? 2 : 1;
+    // 子命令位置（第二个词）。
+    if (s.done.size() == 1 && HasSubcommands(cmd)) {
+        si.slot = CompletionSlot::Subcommand;
+        si.query = s.tail;
+        return si;
+    }
+
+    // JSON 值槽：尾词在未闭合引号里（`"effect":"移除`），或 buffer 以
+    // `"key":` 结尾（`"effect":` 后直接 Tab）。键决定 mode。
+    auto json_slot = [&](const std::string& key) -> bool {
+        const std::string mode = JsonValueMode(key);
+        if (mode.empty()) return false;
+        if (mode == "role") {
+            si.slot = CompletionSlot::Role;
+        } else {
+            si.slot = CompletionSlot::Effect;
+            si.effect_mode = mode;
+        }
+        return true;
+    };
+    if (s.quote) {
+        // 尾词里最后一个未闭合引号 = 值字符串的起点；键在它前面。
+        const size_t qpos = s.tail.rfind(s.quote);
+        if (qpos != std::string::npos) {
+            const std::string key = LastJsonKey(buffer.substr(0, s.tail_start + qpos));
+            if (!key.empty() && json_slot(key)) {
+                si.query = s.tail.substr(qpos + 1);
+                si.replace_start = s.tail_start + qpos;
+                si.wrap_left = si.wrap_right = std::string(1, s.quote);
+                return si;
+            }
+        }
+    } else if (!s.tail.empty() && s.tail.size() >= 2 &&
+               (s.tail.front() == '"' || s.tail.front() == '\'') &&
+               s.tail.back() == s.tail.front()) {
+        // 已闭合的 JSON 字符串（重新 Tab 调整）。
+        const std::string key = LastJsonKey(buffer.substr(0, s.tail_start));
+        if (!key.empty() && json_slot(key)) {
+            si.query = s.tail.substr(1, s.tail.size() - 2);
+            si.replace_start = s.tail_start;
+            si.wrap_left = si.wrap_right = std::string(1, s.tail.front());
+            return si;
+        }
+    } else {
+        // `"key":` 之后的值：空（`"effect":` / `"effect": `）、没加引号的部分值
+        // （`"effect":移除`）或已闭合的引号串（`"effect":"判定"` 重选）。
+        const size_t end = buffer.find_last_not_of(" \t");
+        const size_t colon =
+            end == std::string::npos ? std::string::npos : buffer.rfind(':', end);
+        if (colon != std::string::npos) {
+            const std::string key = LastJsonKey(buffer.substr(0, colon + 1));
+            if (!key.empty() && json_slot(key)) {
+                size_t vstart = colon + 1;
+                while (vstart < buffer.size() &&
+                       (buffer[vstart] == ' ' || buffer[vstart] == '\t'))
+                    ++vstart;
+                if (vstart >= buffer.size()) {
+                    si.query.clear();
+                    si.replace_start = buffer.size();  // 键后只有空白：行尾追加
+                    si.wrap_left = si.wrap_right = "\"";
+                } else {
+                    const char q = buffer[vstart] == '"' || buffer[vstart] == '\'' ? buffer[vstart]
+                                                                                  : 0;
+                    if (q && end > vstart && buffer[end] == q) {
+                        // 已经写成 "…"：只换内容，引号原样保留。
+                        si.query = buffer.substr(vstart + 1, end - vstart - 1);
+                        si.replace_start = vstart;
+                        si.wrap_left = si.wrap_right = std::string(1, q);
+                    } else {
+                        si.query = buffer.substr(vstart);
+                        si.replace_start = vstart;
+                        si.wrap_left = si.wrap_right = "\"";
+                    }
+                }
+                return si;
+            }
+        }
+    }
+
+    // `--flag=value`：值部分照常补全，前缀原样保留。
+    if (s.tail.size() > 2 && s.tail[0] == '-' && s.tail[1] == '-') {
+        const size_t eq = s.tail.find('=');
+        if (eq != std::string::npos) {
+            SlotInfo fs = FlagValueSlot(cmd, sub, s.tail.substr(0, eq));
+            if (fs.slot != CompletionSlot::None) {
+                fs.replace_start = s.tail_start + eq + 1;
+                fs.query = s.tail.substr(eq + 1);
+                return fs;
+            }
+        }
+    }
+
+    // flag 本身（`-` 前缀）。
+    if (!s.tail.empty() && s.tail[0] == '-') {
+        si.slot = CompletionSlot::Flag;
+        si.query = s.tail;
+        return si;
+    }
+
+    // 参数游走：确定尾词是某个 flag 的值，还是第几个位置参数。
+    std::string pending_flag;
+    size_t pos = 0;
+    for (size_t i = arg_start; i < s.done.size(); ++i) {
+        const std::string& w = s.done[i];
+        if (w.size() > 1 && w[0] == '-') {
+            const size_t eq = w.find('=');
+            const std::string flag = eq == std::string::npos ? w : w.substr(0, eq);
+            pending_flag = IsBooleanFlag(lower_ascii(flag)) ? std::string() : flag;
+            continue;
+        }
+        if (!pending_flag.empty()) {
+            pending_flag.clear();  // 这是上一个 flag 的值
+            continue;
+        }
+        ++pos;
+    }
+    if (!pending_flag.empty()) {
+        SlotInfo fs = FlagValueSlot(cmd, sub, pending_flag);
+        fs.replace_start = s.tail_start;
+        fs.query = s.tail;
+        return fs;
+    }
+    si = PositionalSlot(cmd, sub, pos);
+    si.replace_start = s.tail_start;
+    si.query = s.tail;
+    return si;
+}
+
+// @提及混合池：@role: 人物 + @表 + @模组。
+std::vector<CompletionItem> MentionPool(const CompletionCtx& ctx, bool role_only) {
+    std::vector<CompletionItem> out;
+    for (const auto& r : ctx.roles) {
+        const std::string name = r.hint.empty() ? r.value : r.hint;
+        out.push_back(CompletionItem{"@role:" + name, r.hint});
+    }
+    if (role_only) return out;
+    for (const auto& t : ctx.tables)
+        out.push_back(CompletionItem{"@" + t.value, t.hint.empty() ? "表" : t.hint});
+    for (const auto& m : ctx.mods)
+        out.push_back(CompletionItem{"@" + m.value, m.hint.empty() ? "模组" : m.hint});
+    return out;
+}
+
+}  // namespace
+
+int FuzzyScore(const std::string& query, const std::string& candidate) {
+    if (query.empty()) return 1;      // 空查询 = 全命中（最低分）
+    if (candidate.empty()) return 0;
+    const std::string q = lower_ascii(query);
+    const std::string c = lower_ascii(candidate);
+    if (c.rfind(q, 0) == 0) return 100;             // 前缀
+    if (c.find(q) != std::string::npos) return 60;  // 包含（中文整段字节）
+    size_t qi = 0;                                  // 子序列
+    for (size_t ci = 0; ci < c.size() && qi < q.size(); ++ci)
+        if (c[ci] == q[qi]) ++qi;
+    return qi == q.size() ? 30 : 0;
+}
+
+std::vector<CompletionItem> top_level_commands() { return RowsToItems(top_command_rows()); }
+
+std::vector<CompletionItem> command_subcommands(const std::string& command) {
+    auto it = subcommand_table().find(lower_ascii(command));
+    if (it == subcommand_table().end()) return {};
+    std::vector<CompletionItem> out;
+    out.reserve(it->second.size());
+    for (const auto& s : it->second) out.push_back(CompletionItem{s, ""});
+    return out;
+}
+
+std::vector<CompletionItem> command_flags(const std::string& command,
+                                          const std::string& subcommand) {
+    std::vector<CompletionItem> out;
+    const std::string key = lower_ascii(command) + " " + lower_ascii(subcommand);
+    auto it = flag_table().find(key);
+    if (it != flag_table().end())
+        for (const auto& r : it->second) out.push_back(CompletionItem{r.first, r.second});
+    for (const auto& r : global_flag_rows()) out.push_back(CompletionItem{r.first, r.second});
+    return out;
+}
+
+std::vector<CompletionItem> literal_values(const std::string& group) {
+    if (group == "no_code")
+        return {{"on", "开启无代码模式"}, {"off", "关闭无代码模式"}, {"show", "查看当前值"}};
+    if (group == "direction")
+        return {{"upload", "上传到远端"},
+                {"download", "下载到本地"},
+                {"sync", "双向同步（mtime 新者胜）"},
+                {"delete_remote", "删除远端多余文件"},
+                {"delete_local", "删除本地多余文件"}};
+    if (group == "dual")
+        return {{"both", "选项与对白都显示"}, {"option", "只显示选项"}, {"talk", "只显示对白"}};
+    if (group == "ai_mode")
+        return {{"confirm", "变更前确认（默认）"}, {"full", "不再确认，AI 直接修改"}};
+    return {};
+}
+
+CompletionPlan plan_completion(const std::string& buffer) {
+    const InputScan s = ScanInput(buffer);
+    const SlotInfo si = Classify(buffer, s);
+    CompletionPlan p;
+    p.slot = si.slot;
+    p.effect_mode = si.effect_mode;
+    p.json_string = !si.wrap_left.empty();
+    p.json_bare = si.slot != CompletionSlot::None && !si.wrap_left.empty() &&
+                  si.replace_start == buffer.size();
+    return p;
+}
+
+std::vector<ReplCompletion> ReplComplete(const std::string& buffer, const CompletionCtx& ctx) {
+    const InputScan s = ScanInput(buffer);
+    const SlotInfo si = Classify(buffer, s);
+    std::vector<CompletionItem> pool;
+    bool strip_dashes = false;
+    switch (si.slot) {
+        case CompletionSlot::Recent:
+            pool = ctx.recent.empty() ? ctx.commands : ctx.recent;
+            break;
+        case CompletionSlot::Command: pool = ctx.commands; break;
+        case CompletionSlot::SlashCommand: pool = ctx.slash_commands; break;
+        case CompletionSlot::Subcommand: pool = ctx.subcommands; break;
+        case CompletionSlot::Flag:
+            pool = ctx.flags;
+            strip_dashes = true;
+            break;
+        case CompletionSlot::Literal: pool = literal_values(si.group); break;
+        case CompletionSlot::Table: pool = ctx.tables; break;
+        case CompletionSlot::Mod: pool = ctx.mods; break;
+        case CompletionSlot::Path: pool = ctx.paths; break;
+        case CompletionSlot::Effect: pool = ctx.effects; break;
+        case CompletionSlot::Role: pool = ctx.roles; break;
+        case CompletionSlot::Mention: pool = MentionPool(ctx, si.group == "role"); break;
+        case CompletionSlot::None: return {};
+    }
+    if (pool.empty()) return {};
+
+    struct Scored {
+        int score = 0;
+        size_t order = 0;
+        const CompletionItem* item = nullptr;
+    };
+    std::vector<Scored> hits;
+    const std::string q = strip_dashes ? StripDashes(si.query) : si.query;
+    for (size_t i = 0; i < pool.size(); ++i) {
+        const CompletionItem& it = pool[i];
+        const std::string value = strip_dashes ? StripDashes(it.value) : it.value;
+        const std::string hint = strip_dashes ? StripDashes(it.hint) : it.hint;
+        const int sc = std::max(FuzzyScore(q, value), FuzzyScore(q, hint));
+        if (sc == 0) continue;
+        hits.push_back(Scored{sc, i, &it});
+    }
+    std::stable_sort(hits.begin(), hits.end(),
+                     [](const Scored& a, const Scored& b) { return a.score > b.score; });
+
+    std::vector<ReplCompletion> out;
+    std::set<std::string> seen;
+    out.reserve(hits.size());
+    for (const auto& h : hits) {
+        std::string text = buffer.substr(0, si.replace_start) + si.wrap_left + h.item->value +
+                           si.wrap_right;
+        if (!seen.insert(text).second) continue;  // 去重（同 text 只留最高分）
+        out.push_back(ReplCompletion{std::move(text), h.item->hint});
+    }
+    return out;
 }
 
 }  // namespace sa_cli

@@ -12,6 +12,7 @@
 #include <fstream>
 
 #include "p7_cli_logic.h"
+#include "p7_color.h"
 
 #include "sa_core/paths.h"
 
@@ -1045,4 +1046,412 @@ TEST_CASE("p7 format_text: ai settings + bugfix flag grouping", "[p7]") {
                                    {"remaining", json::array({b1})}});
     CHECK(fs.find("fixed: 1  remaining: 1") != std::string::npos);
     CHECK(fs.find("remaining [LOGIC] T#1.k") != std::string::npos);
+}
+
+// ------------------------------------------------ Alpha-v0.3 UI restoration
+TEST_CASE("p7 parse: search command plans GET /api/search/talk", "[p7]") {
+    auto s = run({"search", "你好"});
+    REQUIRE(s.r == ParseResult::Ok);
+    REQUIRE(s.c.kind == Kind::Search);
+    Planned p;
+    p.ok = make_plan(s.c, p.reqs, p.err);
+    REQUIRE(p.ok);
+    REQUIRE(p.reqs.size() == 1);
+    REQUIRE(p.reqs[0].method == "GET");
+    REQUIRE(p.reqs[0].path == "/api/search/talk");
+    REQUIRE(p.reqs[0].query.size() == 1);
+    REQUIRE(p.reqs[0].query[0].first == "q");
+    REQUIRE(p.reqs[0].query[0].second == "你好");
+
+    // The renderer lists hits (src/talk_id/title/content) and respects --limit.
+    Command sc = s.c;
+    json body{{"results",
+               json::array({json{{"src", "Mod"},
+                                 {"evt_id", "101"},
+                                 {"evt_title", "开学"},
+                                 {"talk_id", "101001"},
+                                 {"content", "你好，同学"}}})}};
+    auto out = format_text(sc, body);
+    CHECK(out.find("hits: 1") != std::string::npos);
+    CHECK(out.find("[Mod]") != std::string::npos);
+    CHECK(out.find("101001") != std::string::npos);
+    CHECK(out.find("你好，同学") != std::string::npos);
+}
+
+TEST_CASE("p7 parse: repl is a first-class subcommand", "[p7]") {
+    auto s = run({"repl"});
+    REQUIRE(s.r == ParseResult::Ok);
+    REQUIRE(s.c.kind == Kind::Repl);
+}
+
+TEST_CASE("p7 color: --color/--no-color set the mode flag", "[p7]") {
+    auto on = run({"--color", "mods", "list"});
+    REQUIRE(on.r == ParseResult::Ok);
+    REQUIRE(on.g.color == 1);
+    auto off = run({"--no-color", "mods", "list"});
+    REQUIRE(off.r == ParseResult::Ok);
+    REQUIRE(off.g.color == 0);
+    // Auto (absent) stays -1; the TTY probe happens in Style::Init at runtime.
+    auto auto_ = run({"mods", "list"});
+    REQUIRE(auto_.g.color == -1);
+}
+
+TEST_CASE("p7 color: disabled styling is the identity, forced styling wraps",
+          "[p7]") {
+    // Tests and pipes run with styling off: plain text must stay byte-identical.
+    REQUIRE(Style::Enabled() == false);
+    CHECK(Style::Green("ok") == "ok");
+    CHECK(Style::BoldGreen("id") == "id");
+    CHECK(Style::Wrap("1", "") == "");
+
+    Style::Init(1);  // force on
+    CHECK(Style::Enabled());
+    CHECK(Style::Green("ok") == "\x1b[32mok\x1b[0m");
+    CHECK(Style::BoldCyan("›") == "\x1b[1;36m›\x1b[0m");
+    Style::Init(0);  // force off again — later cases keep seeing plain text
+    CHECK_FALSE(Style::Enabled());
+    CHECK(Style::Green("ok") == "ok");
+}
+
+TEST_CASE("p7 repl: classify_repl_line sorts the input vocabulary", "[p7]") {
+    auto empty = classify_repl_line("   ");
+    CHECK(empty.kind == ReplLine::Empty);
+
+    auto quit1 = classify_repl_line("/exit");
+    CHECK(quit1.kind == ReplLine::Quit);
+    CHECK(classify_repl_line("/quit").kind == ReplLine::Quit);
+    CHECK(classify_repl_line("/q").kind == ReplLine::Quit);
+    CHECK(classify_repl_line("exit").kind == ReplLine::Quit);
+    CHECK(classify_repl_line("quit").kind == ReplLine::Quit);
+    CHECK(classify_repl_line("q").kind == ReplLine::Quit);
+
+    auto shell = classify_repl_line("  !git status");
+    CHECK(shell.kind == ReplLine::Shell);
+    CHECK(shell.payload == "git status");
+
+    auto slash = classify_repl_line("/mods list");
+    CHECK(slash.kind == ReplLine::Slash);
+    CHECK(slash.payload == "mods list");
+
+    auto plain = classify_repl_line("mods list --all");
+    CHECK(plain.kind == ReplLine::Command);
+    CHECK(plain.payload == "mods list --all");
+}
+
+TEST_CASE("p7 repl: split_repl_tokens is quote-aware", "[p7]") {
+    CHECK(split_repl_tokens("").empty());
+    auto a = split_repl_tokens("mods create \"我的 模组\" --desc x");
+    REQUIRE(a.size() == 5);
+    CHECK(a[0] == "mods");
+    CHECK(a[1] == "create");
+    CHECK(a[2] == "我的 模组");
+    CHECK(a[3] == "--desc");
+    CHECK(a[4] == "x");
+    auto b = split_repl_tokens("  spaced\t tokens  ");
+    REQUIRE(b.size() == 2);
+    CHECK(b[0] == "spaced");
+    CHECK(b[1] == "tokens");
+    auto c = split_repl_tokens("'quoted arg'");
+    REQUIRE(c.size() == 1);
+    CHECK(c[0] == "quoted arg");
+}
+
+// ---------------------------------------------------------------------------
+// 无代码模式 + 自动补全（M3）：settings 命令族 + ReplComplete 词法槽分流
+// ---------------------------------------------------------------------------
+
+TEST_CASE("p7 parse: settings no-code on|off|show", "[p7]") {
+    auto on = run({"settings", "no-code", "on"});
+    REQUIRE(on.r == ParseResult::Ok);
+    CHECK(on.c.kind == Kind::SettingsNoCode);
+    CHECK(on.c.setting_value == "on");
+
+    // 别名 nocode + 大小写归一。
+    auto off = run({"settings", "nocode", "OFF"});
+    REQUIRE(off.r == ParseResult::Ok);
+    CHECK(off.c.setting_value == "off");
+    CHECK(run({"settings", "no-code", "show"}).c.setting_value == "show");
+
+    CHECK(run({"settings", "no-code"}).r == ParseResult::UsageError);   // 缺取值
+    CHECK(run({"settings", "no-code", "maybe"}).r == ParseResult::UsageError);
+    CHECK(run({"settings"}).r == ParseResult::UsageError);              // 缺子命令
+}
+
+TEST_CASE("p7 plan: settings no-code is a GET or a flat PUT", "[p7]") {
+    auto show = run({"settings", "no-code", "show"});
+    auto ps = plan(show.c);
+    REQUIRE(ps.ok);
+    REQUIRE(ps.reqs.size() == 1);
+    CHECK(ps.reqs[0].method == "GET");
+    CHECK(ps.reqs[0].path == "/api/settings/editor");
+    CHECK(ps.reqs[0].body.is_null());
+
+    auto on = run({"settings", "no-code", "on"});
+    auto po = plan(on.c);
+    REQUIRE(po.ok);
+    REQUIRE(po.reqs.size() == 1);
+    CHECK(po.reqs[0].method == "PUT");
+    CHECK(po.reqs[0].path == "/api/settings/editor");
+    CHECK(po.reqs[0].body == json{{"noCodeMode", true}});
+
+    auto off = run({"settings", "no-code", "off"});
+    auto pf = plan(off.c);
+    REQUIRE(pf.ok);
+    CHECK(pf.reqs[0].body == json{{"noCodeMode", false}});
+
+    // 纯请求构造器（REPL /settings 复用）。
+    CHECK(editor_settings_get_request().path == "/api/settings/editor");
+    CHECK(editor_settings_put_request(true).body == json{{"noCodeMode", true}});
+    CHECK(editor_settings_put_request(false).body == json{{"noCodeMode", false}});
+}
+
+TEST_CASE("p7 format_text: settings no-code shows the current value", "[p7]") {
+    auto show = run({"settings", "no-code", "show"});
+    auto on = run({"settings", "no-code", "on"});
+    CHECK(format_text(show.c, json{{"settings", json{{"noCodeMode", true}}}}) == "no-code: on\n");
+    CHECK(format_text(show.c, json{{"settings", json{{"noCodeMode", false}}}}) ==
+          "no-code: off\n");
+    CHECK(format_text(on.c, json{{"ok", true}, {"settings", json{{"noCodeMode", true}}}}) ==
+          "ok: no-code: on\n");
+    CHECK(format_text(on.c, json{{"settings", json{{"noCodeMode", false}}}}) ==
+          "ok: no-code: off\n");
+    // 响应不是 settings 信封：原样 dump，不假装知道。
+    CHECK(format_text(show.c, json{{"weird", 1}}).find("weird") != std::string::npos);
+
+    bool known = true;
+    CHECK(parse_no_code_mode(json{{"settings", json{{"noCodeMode", true}}}}, &known) == true);
+    CHECK(known);
+    CHECK(parse_no_code_mode(json{{"settings", json{{"noCodeMode", "yes"}}}}, &known) == false);
+    CHECK_FALSE(known);
+    CHECK(parse_no_code_mode(json::object(), nullptr) == false);
+}
+
+TEST_CASE("p7 completion: FuzzyScore ranks prefix > substring > subsequence", "[p7]") {
+    CHECK(FuzzyScore("cf", "cfg") == 100);
+    CHECK(FuzzyScore("fg", "cfg") == 60);
+    CHECK(FuzzyScore("cg", "cfg") == 30);  // 子序列
+    CHECK(FuzzyScore("xyz", "cfg") == 0);
+    CHECK(FuzzyScore("", "cfg") == 1);  // 空查询 = 全命中（最低分）
+    CHECK(FuzzyScore("CFG", "cfg") == 100);  // ASCII 大小写不敏感
+    CHECK(FuzzyScore("Cfg", "CFG") == 100);
+    // 中文按 UTF-8 字节：前缀 / 包含 / 跨码点子序列 / 不匹配。
+    CHECK(FuzzyScore("移除", "移除状态") == 100);
+    CHECK(FuzzyScore("除状", "移除状态") == 60);
+    CHECK(FuzzyScore("状态移", "移除状态") == 0);
+    CHECK(FuzzyScore("不存在", "移除状态") == 0);
+}
+
+TEST_CASE("p7 completion: command tree mirrors wire_app", "[p7]") {
+    auto has = [](const std::vector<CompletionItem>& v, const std::string& s) {
+        for (const auto& i : v)
+            if (i.value == s) return true;
+        return false;
+    };
+    auto cmds = top_level_commands();
+    CHECK(has(cmds, "cfg"));
+    CHECK(has(cmds, "settings"));
+    CHECK(has(command_subcommands("cfg"), "patch"));
+    CHECK(has(command_subcommands("settings"), "no-code"));
+    CHECK(has(command_subcommands("cloud"), "providers"));
+    CHECK(command_subcommands("nope").empty());
+    // flag 池含命令自己的 flag + 全局 fallthrough flag。
+    CHECK(has(command_flags("cfg", "get"), "--id"));
+    CHECK(has(command_flags("cfg", "get"), "--json"));
+    CHECK(has(command_flags("settings", "no-code"), "--mod"));
+    CHECK(has(literal_values("no_code"), "on"));
+    CHECK(has(literal_values("direction"), "upload"));
+}
+
+TEST_CASE("p7 completion: ReplComplete routes lexical slots to the right pool", "[p7]") {
+    CompletionCtx ctx;
+    ctx.commands = {{"cfg", "配置表"}, {"mods", "模组管理"}, {"story", "剧情"}};
+    ctx.slash_commands = {{"/cfg", "配置表 CRUD"}, {"/mods", "模组管理"}};
+    ctx.subcommands = {{"get", "读取"}, {"set", "写入"}, {"patch", "补丁"}};
+    ctx.flags = {{"--id", "只看一条"}, {"--field", "只看字段"}, {"--json", "JSON"}};
+    ctx.recent = {{"cfg", "配置表"}, {"mods", "模组管理"}};
+    ctx.tables = {{"TalkCfg", "对白表"}, {"EvtCfg", "事件表"}};
+    ctx.mods = {{"Imported", ""}, {"ZipMod", ""}};
+    ctx.paths = {{"table.json", "文件"}};
+    ctx.effects = {{"[1, 1, @ATTR@, V]", "移除状态"}};
+    ctx.roles = {{"101", "小美"}};
+
+    // 首词 → 命令池。
+    auto c1 = ReplComplete("c", ctx);
+    REQUIRE(c1.size() == 1);
+    CHECK(c1[0].text == "cfg");
+    CHECK(c1[0].hint == "配置表");
+
+    // 空行 Tab → 高频命令池（hint 保留说明）。
+    auto c0 = ReplComplete("", ctx);
+    REQUIRE(c0.size() == 2);
+    CHECK(c0[0].text == "cfg");
+    CHECK(c0[1].text == "mods");
+
+    // 斜杠首词 → 斜杠池。
+    auto cs = ReplComplete("/mo", ctx);
+    REQUIRE(cs.size() == 1);
+    CHECK(cs[0].text == "/mods");
+
+    // `cfg <sub>` → 子命令池。
+    auto c2 = ReplComplete("cfg g", ctx);
+    REQUIRE(c2.size() == 1);
+    CHECK(c2[0].text == "cfg get");
+
+    // `-` 前缀 → 当前命令 flag 池（匹配忽略前导横线）。
+    auto c3 = ReplComplete("cfg get --i", ctx);
+    REQUIRE(c3.size() == 2);
+    CHECK(c3[0].text == "cfg get --id");
+    CHECK(c3[0].hint == "只看一条");
+    CHECK(c3[1].text == "cfg get --field");  // 包含匹配排在前缀后面
+
+    // 值槽 → cfg 表名池。
+    auto c4 = ReplComplete("cfg get Ta", ctx);
+    REQUIRE(c4.size() == 1);
+    CHECK(c4[0].text == "cfg get TalkCfg");
+    CHECK(c4[0].hint == "对白表");
+
+    // 模组槽。
+    auto c5 = ReplComplete("mods select Zi", ctx);
+    REQUIRE(c5.size() == 1);
+    CHECK(c5[0].text == "mods select ZipMod");
+
+    // 枚举槽（settings no-code on|off|show）。
+    auto c6 = ReplComplete("settings no-code o", ctx);
+    REQUIRE(c6.size() == 3);
+    CHECK(c6[0].text == "settings no-code on");
+    CHECK(c6[1].text == "settings no-code off");
+    CHECK(c6[2].text == "settings no-code show");  // 包含匹配垫底
+
+    // 路径槽（--out）。
+    auto c7 = ReplComplete("story export --evt 101 --out tab", ctx);
+    REQUIRE(c7.size() == 1);
+    CHECK(c7[0].text == "story export --evt 101 --out table.json");
+
+    // 不补全的槽（自由文本 / 数值 id）返回空。
+    CHECK(ReplComplete("search 你", ctx).empty());
+    CHECK(ReplComplete("cfg get TalkCfg --id 9", ctx).empty());
+}
+
+TEST_CASE("p7 completion: JSON 值槽接 effect / role 池并保留引号", "[p7]") {
+    CompletionCtx ctx;
+    ctx.effects = {{"[1, 1, @ATTR@, V]", "移除状态"}, {"[0, 1, V]", "判定"}};
+    ctx.roles = {{"101", "小美"}};
+
+    // 字符串内（未闭合）：中文 desc 命中，插入代码且补齐引号。
+    auto e1 = ReplComplete("cfg patch TalkCfg --set {\"1\":{\"effect\":\"移除", ctx);
+    REQUIRE(e1.size() == 1);
+    CHECK(e1[0].text == "cfg patch TalkCfg --set {\"1\":{\"effect\":\"[1, 1, @ATTR@, V]\"");
+    CHECK(e1[0].hint == "移除状态");
+
+    // `"effect":` 后直接 Tab（无空格）：空查询给整池，并补一对引号。
+    auto e2 = ReplComplete("cfg patch TalkCfg --set {\"1\":{\"effect\":", ctx);
+    REQUIRE(e2.size() == 2);
+    CHECK(e2[0].text == "cfg patch TalkCfg --set {\"1\":{\"effect\":\"[1, 1, @ATTR@, V]\"");
+    CHECK(e2[1].text == "cfg patch TalkCfg --set {\"1\":{\"effect\":\"[0, 1, V]\"");
+    auto p2 = plan_completion("cfg patch TalkCfg --set {\"1\":{\"effect\":");
+    CHECK(p2.json_string);
+    CHECK(p2.json_bare);
+
+    // `"effect": ` 带空格：保留空格在行尾追加。
+    auto e2b = ReplComplete("cfg patch TalkCfg --set {\"1\":{\"effect\": ", ctx);
+    REQUIRE(e2b.size() == 2);
+    CHECK(e2b[0].text ==
+          "cfg patch TalkCfg --set {\"1\":{\"effect\": \"[1, 1, @ATTR@, V]\"");
+
+    // 没加引号的部分值：替换掉它（键后空白原样保留）。
+    auto e2c = ReplComplete("cfg patch TalkCfg --set {\"1\":{\"effect\":移除", ctx);
+    REQUIRE(e2c.size() == 1);
+    CHECK(e2c[0].text == "cfg patch TalkCfg --set {\"1\":{\"effect\":\"[1, 1, @ATTR@, V]\"");
+    auto p2c = plan_completion("cfg patch TalkCfg --set {\"1\":{\"effect\":移除");
+    CHECK(p2c.json_string);
+    CHECK_FALSE(p2c.json_bare);  // 已经写了值，只替换不追加
+
+    // 已闭合的字符串可重选。
+    auto e3 = ReplComplete("cfg patch TalkCfg --set {\"1\":{\"effect\":\"判定\"", ctx);
+    REQUIRE(e3.size() == 1);
+    CHECK(e3[0].text == "cfg patch TalkCfg --set {\"1\":{\"effect\":\"[0, 1, V]\"");
+    CHECK(plan_completion("cfg patch TalkCfg --set {\"1\":{\"effect\":\"判定\"").json_string);
+
+    // 人物槽（roleIds/speaker）→ roles 池，value=id、hint=名字。
+    auto r1 = ReplComplete("cfg patch PersonCfg --set {\"101\":{\"roleIds\":\"小", ctx);
+    REQUIRE(r1.size() == 1);
+    CHECK(r1[0].text == "cfg patch PersonCfg --set {\"101\":{\"roleIds\":\"101\"");
+    CHECK(r1[0].hint == "小美");
+
+    // 键不映射到任何池（title 等自由文本）：不补全。
+    CHECK(ReplComplete("cfg patch TalkCfg --set {\"1\":{\"title\":\"你", ctx).empty());
+}
+
+TEST_CASE("p7 completion: plan_completion names the pool the REPL must fetch", "[p7]") {
+    CHECK(plan_completion("").slot == CompletionSlot::Recent);
+    CHECK(plan_completion("cf").slot == CompletionSlot::Command);
+    CHECK(plan_completion("/cf").slot == CompletionSlot::SlashCommand);
+    CHECK(plan_completion("cfg ").slot == CompletionSlot::Subcommand);
+    CHECK(plan_completion("cfg get --i").slot == CompletionSlot::Flag);
+    CHECK(plan_completion("cfg get Ta").slot == CompletionSlot::Table);
+    CHECK(plan_completion("mods select Im").slot == CompletionSlot::Mod);
+    CHECK(plan_completion("story export --out x").slot == CompletionSlot::Path);
+    CHECK(plan_completion("settings no-code o").slot == CompletionSlot::Literal);
+    CHECK(plan_completion("@ro").slot == CompletionSlot::Mention);
+
+    auto fx = plan_completion("cfg patch T --set {\"1\":{\"effect\":\"移除");
+    CHECK(fx.slot == CompletionSlot::Effect);
+    CHECK(fx.effect_mode == "effect");
+    auto fc = plan_completion("cfg patch T --set {\"1\":{\"condition\":\"");
+    CHECK(fc.slot == CompletionSlot::Effect);
+    CHECK(fc.effect_mode == "condition");
+    auto fsc = plan_completion("cfg patch T --set {\"1\":{\"screenEffect\":\"");
+    CHECK(fsc.effect_mode == "screen");
+    auto fr = plan_completion("cfg patch T --set {\"1\":{\"speaker\":\"小");
+    CHECK(fr.slot == CompletionSlot::Role);
+    CHECK(plan_completion("cfg patch T --set {\"1\":{\"title\":\"x").slot ==
+          CompletionSlot::None);
+    // story import --text 是 effect-like 值槽（mode=effect）。
+    auto ft = plan_completion("story import --start-id 1 --text 移");
+    CHECK(ft.slot == CompletionSlot::Effect);
+    CHECK(ft.effect_mode == "effect");
+}
+
+TEST_CASE("p7 completion: @提及扩展 @role: 并混入表/模组", "[p7]") {
+    CompletionCtx ctx;
+    ctx.roles = {{"101", "小美"}};
+    ctx.tables = {{"TalkCfg", ""}};
+    ctx.mods = {{"Imported", ""}};
+
+    auto m1 = ReplComplete("@ro", ctx);
+    REQUIRE(m1.size() == 1);
+    CHECK(m1[0].text == "@role:小美");
+    CHECK(m1[0].hint == "小美");
+
+    auto m2 = ReplComplete("@role:小", ctx);
+    REQUIRE(m2.size() == 1);
+    CHECK(m2[0].text == "@role:小美");
+
+    auto m3 = ReplComplete("@Tal", ctx);
+    REQUIRE(m3.size() == 1);
+    CHECK(m3[0].text == "@TalkCfg");
+
+    auto m4 = ReplComplete("@Imp", ctx);
+    REQUIRE(m4.size() == 1);
+    CHECK(m4[0].text == "@Imported");
+}
+
+TEST_CASE("p7 completion: ReplComplete sorts by score and dedupes by text", "[p7]") {
+    CompletionCtx ctx;
+    ctx.commands = {{"cfg", ""}, {"cfgmod", ""}, {"mycfg", ""}};
+    auto a = ReplComplete("cf", ctx);
+    REQUIRE(a.size() == 3);
+    CHECK(a[0].text == "cfg");     // 前缀（池内顺序保持）
+    CHECK(a[1].text == "cfgmod");  // 前缀
+    CHECK(a[2].text == "mycfg");   // 包含
+
+    CompletionCtx dup;
+    dup.tables = {{"Dup", ""}, {"Dup", ""}, {"Dup2", ""}};
+    auto b = ReplComplete("cfg get Du", dup);
+    REQUIRE(b.size() == 2);
+    CHECK(b[0].text == "cfg get Dup");
+    CHECK(b[1].text == "cfg get Dup2");
+
+    // 空池 = 无候选（不抛、不编造）。
+    CHECK(ReplComplete("cfg get Ta", CompletionCtx{}).empty());
 }

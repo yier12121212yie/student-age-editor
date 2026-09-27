@@ -6,7 +6,10 @@
 #include <catch_amalgamated.hpp>
 
 #include <filesystem>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "p8_agent.h"
 #include "p8_api.h"
@@ -32,10 +35,11 @@ AppState NavState() {
     return s;
 }
 
-// A browse page seeded with rows and the keyboard on the rows pane.
+// A browse screen seeded with rows and the keyboard on the rows pane.
+// (Page::Main is the Alpha-v0.3 three-pane home; the rest are modals.)
 AppState RowsState() {
     AppState s;
-    s.page = Page::Table;
+    s.page = Page::Main;
     s.focus = Focus::Rows;
     s.table.name = "TalkCfg";
     s.table.exists = true;
@@ -44,14 +48,37 @@ AppState RowsState() {
 }  // namespace
 
 // ---------------------------------------------------------------- view model
-TEST_CASE("HandleKey: mods navigation clamps and Enter selects", "[p8]") {
+TEST_CASE("HandleKey: tree navigation clamps and Enter selects + expands", "[p8]") {
     AppState s = NavState();
+    REQUIRE(s.TreeItems().size() == 2);  // two mod nodes, nothing expanded yet
     REQUIRE(HandleKey(s, K(KeyInput::Down)) == Intent::None);
-    REQUIRE(s.mod_sel == 1);
+    REQUIRE(s.tree_sel == 1);
     HandleKey(s, K(KeyInput::Down));  // clamp at bottom
-    REQUIRE(s.mod_sel == 1);
+    REQUIRE(s.tree_sel == 1);
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::SelectMod);
     REQUIRE(s.selected_mod == "B");
+    REQUIRE(s.expanded_mod == 1);  // the newly selected mod shows its cfgs
+}
+
+TEST_CASE("HandleKey: cfg node Enter loads the table; Left collapses", "[p8]") {
+    AppState s = NavState();
+    s.tables = {"TalkCfg", "ItemCfg"};
+    s.expanded_mod = 0;  // selected mod "A" renders its cfg children
+    auto items = s.TreeItems();
+    REQUIRE(items.size() == 4);  // A, TalkCfg, ItemCfg (expanded) + the B node
+    s.tree_sel = 1;              // TalkCfg
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::LoadTable);
+    REQUIRE(s.table.name == "TalkCfg");
+    REQUIRE(s.focus == Focus::Rows);
+    // Left from a cfg node walks back to its mod node.
+    s.focus = Focus::Tables;
+    s.tree_sel = 2;
+    HandleKey(s, K(KeyInput::Left));
+    REQUIRE(s.tree_sel == 0);  // the mod node index
+    // Enter again on the selected+expanded node collapses it.
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.expanded_mod == -1);
+    REQUIRE(s.TreeItems().size() == 2);
 }
 
 TEST_CASE("HandleKey: table page edit + remove + save intent", "[p8]") {
@@ -97,48 +124,90 @@ TEST_CASE("HandleKey: agent send chat and empty guard", "[p8]") {
     REQUIRE(s.chat_input.empty());
 }
 
-TEST_CASE("HandleKey: global ctrl page jumps and quit", "[p8]") {
+TEST_CASE("HandleKey: modal openers, Esc closes, Ctrl-Q quits", "[p8]") {
     AppState s = NavState();
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'b')) == Intent::ScanBugs);
+    // a/c/p/b open the Alpha modals over the browse view (no auto-refresh —
+    // the modal's own r key triggers it).
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "b")) == Intent::None);
     REQUIRE(s.page == Page::Bugfix);
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'a')) == Intent::None);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE(s.page == Page::Main);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "a")) == Intent::None);
     REQUIRE(s.page == Page::Agent);
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 't')) == Intent::RefreshTables);
-    REQUIRE(s.page == Page::Table);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);  // one modal at a time
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "c")) == Intent::None);
+    REQUIRE(s.page == Page::Cloud);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "p")) == Intent::None);
+    REQUIRE(s.page == Page::Plugins);
+    // Ctrl-Q quits from anywhere.
     REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'q')) == Intent::Quit);
 }
 
-TEST_CASE("HandleKey: filter typing narrows visible rows", "[p8]") {
+TEST_CASE("HandleKey: / enters filter mode which captures every key", "[p8]") {
     AppState s = RowsState();
     s.table.rows = {TableRow{"apple", "1", "1"}, TableRow{"banana", "2", "2"}};
-    HandleKey(s, K(KeyInput::Char, "app"));
+    // '/' starts capturing; letters are filter text, not commands.
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "/")) == Intent::None);
+    REQUIRE(s.filtering);
+    HandleKey(s, K(KeyInput::Char, "a"));
+    HandleKey(s, K(KeyInput::Char, "p"));
     auto vis = s.VisibleRows();
     REQUIRE(vis.size() == 1);
     REQUIRE(s.table.rows[vis[0]].key == "apple");
+    // Enter keeps the filter and releases the keys; Esc clears it.
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE_FALSE(s.filtering);
+    REQUIRE(s.filter == "ap");
+    HandleKey(s, K(KeyInput::Char, "/"));
+    HandleKey(s, K(KeyInput::Char, "x"));
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE_FALSE(s.filtering);
+    REQUIRE(s.filter.empty());
 }
 
-TEST_CASE("HandleKey: Tab cycles browse panes and tables Enter loads", "[p8]") {
+TEST_CASE("HandleKey: q quits clean but confirms over unsaved changes", "[p8]") {
+    AppState s = RowsState();
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "q")) == Intent::Quit);
+    s.table.edits["1"] = "\"b\"";
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "q")) == Intent::None);
+    REQUIRE(s.confirm.active);  // Alpha behaviour: guard the dirty quit
+    REQUIRE(s.confirm.pending == Intent::Quit);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::Quit);
+}
+
+TEST_CASE("HandleKey: Tab/Shift+Tab cycles browse panes; tree Enter loads", "[p8]") {
     AppState s;
-    s.page = Page::Table;
-    REQUIRE(s.focus == Focus::Tables);  // browse starts on the tables pane
+    s.page = Page::Main;
+    REQUIRE(s.focus == Focus::Tables);  // browse starts on the tree pane
+    s.mods = {ModEntry{"A", "r/A"}};
+    s.selected_mod = "A";
+    s.expanded_mod = 0;
     s.tables = {"TalkCfg", "ItemCfg"};
-    s.table_filter = "talk";  // only TalkCfg visible
-    // Tab: Tables -> Rows -> Detail -> Tables.
+    s.tree_sel = 1;  // TalkCfg under A
+    // Tab: Tables -> Rows -> Detail -> Tables; Shift+Tab walks back.
     REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
     REQUIRE(s.focus == Focus::Rows);
     REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
     REQUIRE(s.focus == Focus::Detail);
     REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
     REQUIRE(s.focus == Focus::Tables);
-    // Enter on the tables pane loads the selected (visible) table.
+    REQUIRE(HandleKey(s, K(KeyInput::ShiftTab)) == Intent::None);
+    REQUIRE(s.focus == Focus::Detail);
+    REQUIRE(HandleKey(s, K(KeyInput::ShiftTab)) == Intent::None);
+    REQUIRE(s.focus == Focus::Rows);
+    REQUIRE(HandleKey(s, K(KeyInput::ShiftTab)) == Intent::None);
+    REQUIRE(s.focus == Focus::Tables);
+    // Enter on the cfg node loads it and lands on the rows pane.
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::LoadTable);
     REQUIRE(s.table.name == "TalkCfg");
     REQUIRE(s.focus == Focus::Rows);
-    // Esc on rows goes back to tables, Esc on tables leaves to mods.
+    // Esc walks rows -> tables and stops there (Main is the top level).
     REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
     REQUIRE(s.focus == Focus::Tables);
     REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
-    REQUIRE(s.page == Page::Mods);
+    REQUIRE(s.focus == Focus::Tables);
+    REQUIRE(s.page == Page::Main);
 }
 
 TEST_CASE("HandleKey: n/y append rows, d toggles removal", "[p8]") {
@@ -176,7 +245,11 @@ TEST_CASE("HandleKey: n/y append rows, d toggles removal", "[p8]") {
 TEST_CASE("HandleKey: n under an active filter clears it and targets the new row", "[p8]") {
     AppState s = RowsState();
     s.table.rows = {TableRow{"1", "apple", "\"apple\""}, TableRow{"2", "banana", "\"banana\""}};
-    HandleKey(s, K(KeyInput::Char, "app"));  // filter -> only row 1 visible
+    HandleKey(s, K(KeyInput::Char, "/"));    // filter capture
+    HandleKey(s, K(KeyInput::Char, "a"));    // -> only row 1 visible
+    HandleKey(s, K(KeyInput::Char, "p"));
+    HandleKey(s, K(KeyInput::Char, "p"));
+    HandleKey(s, K(KeyInput::Enter));        // keep filter, release the keys
     REQUIRE(s.VisibleRows().size() == 1);
     HandleKey(s, K(KeyInput::Char, "n"));    // append row "3"
     REQUIRE(s.filter.empty());               // filter cleared: selection is unambiguous
@@ -188,18 +261,23 @@ TEST_CASE("HandleKey: n under an active filter clears it and targets the new row
     REQUIRE_FALSE(s.table.edits.count("1"));  // the filtered base row untouched
 }
 
-TEST_CASE("HandleKey: page jumps drop edit state; Ctrl-S saves from any pane", "[p8]") {
+TEST_CASE("HandleKey: opening a modal drops edit state; Ctrl-S saves from any pane", "[p8]") {
     AppState s = RowsState();
     s.permission_mode = "full";  // ungated: this case asserts the raw intents
     s.table.rows = {TableRow{"1", "a", "\"a\""}};
     s.table.edits["1"] = "\"b\"";
     HandleKey(s, K(KeyInput::Enter));  // open the row editor
     REQUIRE(s.editing);
-    HandleKey(s, K(KeyInput::CtrlChar, "", 'b'));  // switch to Bugfix mid-edit
+    // While the editor is up it swallows letters, so the escape hatch is
+    // Ctrl-K (or Ctrl-Q): a global key that clears the transient state.
+    HandleKey(s, K(KeyInput::CtrlChar, "", 'k'));
     REQUIRE_FALSE(s.editing);
+    REQUIRE(s.search.active);
+    HandleKey(s, K(KeyInput::Escape));
+    HandleKey(s, K(KeyInput::Char, "b"));  // now the Bug 扫描 modal opens
     REQUIRE(s.page == Page::Bugfix);
-    // Back on the browse page, Ctrl-S works from Tables/Detail focus too.
-    s.page = Page::Table;
+    s.page = Page::Main;
+    // Back on the browse screen, Ctrl-S works from Tables/Detail focus too.
     s.focus = Focus::Tables;
     REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 's')) == Intent::SaveTable);
     s.focus = Focus::Detail;
@@ -475,7 +553,7 @@ TEST_CASE("HandleKey: Ctrl-M toggles permission mode and asks for a persist", "[
 
 TEST_CASE("Confirm gate: confirm mode defers save, y approves and releases it", "[p8]") {
     AppState s;
-    s.page = Page::Table;
+    s.page = Page::Main;
     s.focus = Focus::Rows;
     s.table.name = "TalkCfg";
     s.table.rows = {TableRow{"1", "a", "\"a\""}};
@@ -502,7 +580,7 @@ TEST_CASE("Confirm gate: confirm mode defers save, y approves and releases it", 
 
 TEST_CASE("Confirm gate: n and Esc reject and clear the deferred intent", "[p8]") {
     AppState s;
-    s.page = Page::Table;
+    s.page = Page::Main;
     s.focus = Focus::Rows;
     s.table.name = "TalkCfg";
     s.table.rows = {TableRow{"1", "a", "\"a\""}};
@@ -523,7 +601,7 @@ TEST_CASE("Confirm gate: n and Esc reject and clear the deferred intent", "[p8]"
 
 TEST_CASE("Confirm gate: full mode runs the write straight through", "[p8]") {
     AppState s;
-    s.page = Page::Table;
+    s.page = Page::Main;
     s.focus = Focus::Rows;
     s.table.name = "TalkCfg";
     s.permission_mode = "full";
@@ -549,10 +627,11 @@ TEST_CASE("Confirm gate: bugfix fix-all is gated too", "[p8]") {
     REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::ScanBugs);
 }
 
-TEST_CASE("HandleKey: Ctrl-P opens plugins, and the page drives its actions", "[p8]") {
+TEST_CASE("HandleKey: p opens the plugins modal and drives its actions", "[p8]") {
     AppState s = NavState();
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'p')) == Intent::RefreshPlugins);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "p")) == Intent::None);
     REQUIRE(s.page == Page::Plugins);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::RefreshPlugins);
     s.plugins = {PluginEntry{"demo", "Demo", "1", "", "", "", true},
                  PluginEntry{"other", "Other", "1", "", "", "", true}};
     s.plugins_loaded = true;
@@ -577,25 +656,30 @@ TEST_CASE("HandleKey: Ctrl-P opens plugins, and the page drives its actions", "[
     REQUIRE(s.confirm.detail == "C:/tmp/p.zip");
     REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::InstallPlugin);
 
-    // Esc leaves the page.
+    // Esc closes the modal back onto the browse view.
     REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
-    REQUIRE(s.page == Page::Mods);
+    REQUIRE(s.page == Page::Main);
 }
 
-TEST_CASE("HandleKey: Ctrl-P jump abandons a half-typed install path", "[p8]") {
+TEST_CASE("HandleKey: Ctrl-K over the plugins modal abandons the half-typed path", "[p8]") {
     AppState s = NavState();
     s.page = Page::Plugins;
     HandleKey(s, K(KeyInput::Char, "i"));
     HandleKey(s, K(KeyInput::Char, "x"));
     REQUIRE(s.plugin_input_active);
-    HandleKey(s, K(KeyInput::CtrlChar, "", 't'));
+    // Ctrl-K opens the search overlay on top; the transient input state does
+    // not survive it (ClearTransient), and Esc returns to the plugins modal.
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'k')) == Intent::None);
+    REQUIRE(s.search.active);
     REQUIRE_FALSE(s.plugin_input_active);
-    REQUIRE(s.page == Page::Table);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE_FALSE(s.search.active);
+    REQUIRE(s.page == Page::Plugins);
 }
 
-TEST_CASE("HandleKey: Ctrl-L opens cloud; direction/DryRun and gated sync", "[p8]") {
+TEST_CASE("HandleKey: c opens the cloud modal; direction/DryRun and gated sync", "[p8]") {
     AppState s = NavState();
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'l')) == Intent::RefreshCloudProviders);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "c")) == Intent::None);
     REQUIRE(s.page == Page::Cloud);
     s.providers = {CloudProvider{"p_1", "Drive", "webdav", "mods"}};
 
@@ -727,4 +811,416 @@ TEST_CASE("ParsePermissionMode defaults to confirm on anything unusable", "[p8]"
             "confirm");
     REQUIRE(BackendApi::ParsePermissionMode(Json::object()) == "confirm");
     REQUIRE(BackendApi::ParsePermissionMode(Json()) == "confirm");
+}
+
+// ------------------------------------------------------------ no-code mode (M2)
+namespace {
+
+bool Has(const std::string& hay, const std::string& needle) {
+    return hay.find(needle) != std::string::npos;
+}
+
+// The plain (slot-free) effect candidate the intent runner writes back after a
+// FetchFieldSuggestions on TalkCfg.effect: {"effect":"","id":1}, field 0.
+FieldSuggestion PlainCand() {
+    return FieldSuggestion{"4015", "屏幕效果：模糊", "4015", {}};
+}
+// The slotted candidate: ATTR dict pool + V free number.
+FieldSuggestion SlottedCand() {
+    return FieldSuggestion{"[1,1,ATTR,V]", "属性增加", "[1,1,@ATTR@,V]",
+                           {SuggestionSlot{"dict", "ATTR", "ATTR", "属性", 1},
+                            SuggestionSlot{"number", "V", "", "数值", 1}}};
+}
+
+// Detail-pane form editing TalkCfg row "1" field `effect`, no-code on.
+AppState EffectEditor() {
+    AppState s;
+    s.page = Page::Main;
+    s.focus = Focus::Detail;
+    s.detail_mode = DetailMode::Form;
+    s.no_code_mode = true;
+    s.table.name = "TalkCfg";
+    s.table.exists = true;
+    s.table.rows = {TableRow{"1", "空效果", R"({"effect":"","id":1})"}};
+    s.row_sel = 0;
+    s.field_sel = 0;
+    return s;
+}
+
+// Mirror of the app's FetchFieldSuggestions write-back (p8_view_model never
+// talks to the network; this is what the intent runner does with the result).
+void WriteBackCandidates(AppState& s) {
+    s.sug.all = {PlainCand(), SlottedCand()};
+    s.sug.shown = FilterSuggestions(s.sug.all, "");
+    s.sug.sel = 0;
+    s.sug.query.clear();
+    s.sug.active = !s.sug.all.empty();
+}
+
+}  // namespace
+
+TEST_CASE("HandleKey: Ctrl-N toggles no-code mode and drops stale candidates", "[p8]") {
+    AppState s = NavState();
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'n')) == Intent::SetNoCodeMode);
+    REQUIRE(s.no_code_mode);
+    REQUIRE(Has(s.status, "无代码模式: 开（选效果/人物）"));
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'n')) == Intent::SetNoCodeMode);
+    REQUIRE_FALSE(s.no_code_mode);
+    REQUIRE(Has(s.status, "无代码模式: 关（手输代码）"));
+
+    // Turning it off with an open list must clear the whole sug cache.
+    AppState t = EffectEditor();
+    REQUIRE(HandleKey(t, K(KeyInput::Enter)) == Intent::FetchFieldSuggestions);
+    WriteBackCandidates(t);
+    REQUIRE(t.sug.active);
+    REQUIRE_FALSE(t.sug.all.empty());
+    REQUIRE(HandleKey(t, K(KeyInput::CtrlChar, "", 'n')) == Intent::SetNoCodeMode);
+    REQUIRE_FALSE(t.no_code_mode);
+    REQUIRE(t.sug.all.empty());
+    REQUIRE_FALSE(t.sug.active);
+    REQUIRE(t.sug.mode.empty());
+    REQUIRE_FALSE(t.sug.slot_mode);
+}
+
+TEST_CASE("HandleKey: entering a suggestable field in no-code mode fetches candidates", "[p8]") {
+    AppState s = EffectEditor();
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::FetchFieldSuggestions);
+    REQUIRE(s.editing_field);
+    REQUIRE(s.field_name == "effect");
+    REQUIRE(s.sug.mode == "effect");
+    REQUIRE_FALSE(s.sug.active);  // the fetcher opens the list once items land
+
+    // A field with no suggestion source just opens the plain editor.
+    AppState t = EffectEditor();
+    t.field_sel = 1;  // id
+    REQUIRE(HandleKey(t, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(t.editing_field);
+    REQUIRE(t.field_name == "id");
+    REQUIRE(t.sug.mode.empty());
+
+    // Outside no-code mode nothing is fetched, but editing still opens.
+    AppState u = EffectEditor();
+    u.no_code_mode = false;
+    REQUIRE(HandleKey(u, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(u.editing_field);
+    REQUIRE(u.sug.mode.empty());
+}
+
+TEST_CASE("HandleKey: candidate list cycles, filters locally, reopens and submits", "[p8]") {
+    AppState s = EffectEditor();
+    HandleKey(s, K(KeyInput::Enter));
+    WriteBackCandidates(s);
+    REQUIRE(s.sug.shown.size() == 2);
+
+    // Tab/Down cycle with wraparound; Up wraps backwards.
+    REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
+    REQUIRE(s.sug.sel == 1);
+    HandleKey(s, K(KeyInput::Down));
+    REQUIRE(s.sug.sel == 0);
+    HandleKey(s, K(KeyInput::Up));
+    REQUIRE(s.sug.sel == 1);
+
+    // Typing feeds the buffer AND the query — pure local filtering, zero GETs.
+    HandleKey(s, K(KeyInput::Char, "4"));
+    REQUIRE(s.field_buffer == "4");  // seed was the empty preview, buffer grows raw
+    REQUIRE(s.sug.query == "4");
+    REQUIRE(s.sug.shown.size() == 1);
+    REQUIRE(s.sug.shown[0] == 0);   // only "4015" contains the 4
+    REQUIRE(s.sug.all.size() == 2);  // the cache is untouched
+    REQUIRE(s.sug.sel == 0);
+
+    // Backspace pops the typed char and the list returns to the full cache.
+    HandleKey(s, K(KeyInput::Backspace));
+    REQUIRE(s.field_buffer.empty());
+    REQUIRE(s.sug.query.empty());
+    REQUIRE(s.sug.shown.size() == 2);
+    REQUIRE(s.sug.active);
+
+    HandleKey(s, K(KeyInput::Escape));  // close the list, keep the editor open
+    REQUIRE_FALSE(s.sug.active);
+    REQUIRE(s.sug.query.empty());
+    REQUIRE(s.editing_field);
+    REQUIRE(s.field_buffer.empty());  // the edit buffer survived the close
+
+    HandleKey(s, K(KeyInput::Tab));  // reopen from the cache — no intent
+    REQUIRE(s.sug.active);
+    REQUIRE(s.sug.shown.size() == 2);
+    REQUIRE(s.sug.sel == 0);
+
+    HandleKey(s, K(KeyInput::Escape));  // close again, then hand-submit
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE_FALSE(s.editing_field);
+    REQUIRE(s.table.edits.count("1") == 1);  // ApplyFieldEdit wrote back
+    REQUIRE(Has(s.status, "标记修改字段 effect"));
+}
+
+TEST_CASE("HandleKey: Backspace pops the last UTF-8 code point in every editor", "[p8]") {
+    // Regression: PopCodepoint used to erase from the *last code point's lead
+    // byte* (`s.erase(i)`), which is a no-op for an ASCII tail and leaves a
+    // dangling lead byte (invalid UTF-8) for a CJK tail. One helper backs every
+    // text field, so probe the candidate list, the field editor and the row
+    // editor.
+    AppState s = EffectEditor();
+    HandleKey(s, K(KeyInput::Enter));
+    WriteBackCandidates(s);
+    HandleKey(s, K(KeyInput::Char, "4"));
+    CHECK(s.field_buffer == "4");
+    CHECK(s.sug.shown.size() == 1);
+    HandleKey(s, K(KeyInput::Backspace));
+    CHECK(s.field_buffer.empty());
+    CHECK(s.sug.shown.size() == 2);  // the filter rolls back with the character
+    // CJK tail: the whole code point goes, never a partial byte sequence.
+    AppState c = EffectEditor();
+    HandleKey(c, K(KeyInput::Enter));
+    WriteBackCandidates(c);
+    HandleKey(c, K(KeyInput::Char, "模"));
+    CHECK(c.field_buffer == "模");
+    HandleKey(c, K(KeyInput::Backspace));
+    CHECK(c.field_buffer.empty());
+    // The row editor shares the same helper.
+    AppState r = RowsState();
+    r.table.rows = {TableRow{"1", "x", "\"x\""}};
+    HandleKey(r, K(KeyInput::Enter));
+    HandleKey(r, K(KeyInput::Char, "a"));
+    HandleKey(r, K(KeyInput::Backspace));
+    CHECK(r.edit_buffer == "\"x\"");
+}
+
+TEST_CASE("HandleKey: Enter accepts a slot-free candidate and reports usage", "[p8]") {
+    AppState s = EffectEditor();
+    HandleKey(s, K(KeyInput::Enter));
+    WriteBackCandidates(s);
+    REQUIRE(s.sug.sel == 0);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::ReportUsage);
+    REQUIRE(s.field_buffer == "\"4015\"");  // merged into the JSON buffer quoted
+    REQUIRE_FALSE(s.sug.active);
+    REQUIRE(s.sug.pending_kind == "effect");
+    REQUIRE(s.sug.pending_key == "4015");
+    REQUIRE(s.editing_field);  // accepted into the buffer; Enter submits later
+    REQUIRE(Has(s.status, "已补全: 4015"));
+}
+
+TEST_CASE("HandleKey: slotted candidate drives the slot fill-in flow to ReportUsage", "[p8]") {
+    AppState s = EffectEditor();
+    HandleKey(s, K(KeyInput::Enter));
+    WriteBackCandidates(s);
+    HandleKey(s, K(KeyInput::Down));
+    REQUIRE(s.sug.sel == 1);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::FetchSlotEntries);
+    REQUIRE(s.sug.slot_mode);
+    REQUIRE(s.sug.cand == 1);
+    REQUIRE(s.sug.slot_i == 0);
+    REQUIRE(s.status == "选择属性");
+    REQUIRE(s.field_buffer.empty());  // nothing merged yet
+
+    // app write-back for the ATTR dict pool
+    s.sug.slot_entries = {{"1", "智力"}, {"7", "魅力"}};
+    s.sug.entry_shown = FilterEntries(s.sug.slot_entries, "");
+    s.sug.entry_sel = 0;
+
+    HandleKey(s, K(KeyInput::Down));
+    REQUIRE(s.sug.entry_sel == 1);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);  // V is free-typed
+    REQUIRE(s.sug.slot_i == 1);
+    REQUIRE(s.sug.slot_values["ATTR"] == "7");
+    REQUIRE(Has(s.status, "输入数值（Enter 下一槽）"));
+
+    HandleKey(s, K(KeyInput::Char, "3"));
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::ReportUsage);
+    REQUIRE(s.field_buffer == "\"[1,1,7,3]\"");
+    REQUIRE_FALSE(s.sug.slot_mode);
+    REQUIRE_FALSE(s.sug.active);
+    REQUIRE(s.sug.pending_kind == "effect");
+    REQUIRE(s.sug.pending_key == "[1,1,@ATTR@,V]");  // usage keys on the template
+    REQUIRE(Has(s.status, "已补全: [1,1,7,3]"));
+}
+
+TEST_CASE("HandleKey: Esc inside the slot flow cancels without touching the buffer", "[p8]") {
+    AppState s = EffectEditor();
+    HandleKey(s, K(KeyInput::Enter));
+    WriteBackCandidates(s);
+    HandleKey(s, K(KeyInput::Down));
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::FetchSlotEntries);
+    s.sug.slot_entries = {{"1", "智力"}, {"7", "魅力"}};
+    s.sug.entry_shown = FilterEntries(s.sug.slot_entries, "");
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE_FALSE(s.sug.slot_mode);
+    REQUIRE_FALSE(s.sug.active);
+    REQUIRE(s.field_buffer.empty());  // still the initial "" seed
+    REQUIRE(s.editing_field);         // hand typing remains possible
+    REQUIRE(s.status == "已取消补全");
+}
+
+TEST_CASE("HandleKey: speaker field offers roles and reports role usage", "[p8]") {
+    AppState s = EffectEditor();
+    s.table.rows = {TableRow{"1", "无说话人", R"({"speaker":"","effect":""})"}};
+    s.field_sel = 0;
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::FetchFieldSuggestions);
+    REQUIRE(s.field_name == "speaker");
+    REQUIRE(s.sug.mode == "role");
+
+    // app write-back for GET /api/roles
+    s.sug.all = {FieldSuggestion{"10", "林晓", "10", {}}};
+    s.sug.shown = FilterSuggestions(s.sug.all, "");
+    s.sug.active = true;
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::ReportUsage);
+    REQUIRE(s.field_buffer == "\"10\"");
+    REQUIRE(s.sug.pending_kind == "role");
+    REQUIRE(s.sug.pending_key == "10");
+}
+
+// ---------------------------------------------------------------- pure helpers
+
+TEST_CASE("FieldSuggestMode maps cfg/field onto the candidate source", "[p8]") {
+    REQUIRE(FieldSuggestMode("TalkCfg", "roles") == "action");
+    REQUIRE(FieldSuggestMode("ItemCfg", "roles") == "role");
+    REQUIRE(FieldSuggestMode("TalkCfg", "speaker") == "role");
+    REQUIRE(FieldSuggestMode("EvtCfg", "roleIds") == "role");
+    REQUIRE(FieldSuggestMode("TalkCfg", "screenEffect") == "screen");
+    REQUIRE(FieldSuggestMode("ItemCfg", "cost") == "cost");
+    REQUIRE(FieldSuggestMode("TalkCfg", "check") == "condition");
+    REQUIRE(FieldSuggestMode("TalkCfg", "xxEffect") == "effect");
+    REQUIRE(FieldSuggestMode("TalkCfg", "content").empty());
+}
+
+TEST_CASE("ParseCodeSlots: dict placeholders, standalone letters, merging", "[p8]") {
+    auto a = ParseCodeSlots("[1,1,@ATTR@,V]");
+    REQUIRE(a.size() == 2);
+    REQUIRE(a[0].kind == "dict");
+    REQUIRE(a[0].name == "ATTR");
+    REQUIRE(a[0].dict == "ATTR");
+    REQUIRE(a[1].kind == "number");
+    REQUIRE(a[1].name == "V");
+    REQUIRE(a[1].count == 1);
+
+    auto b = ParseCodeSlots("[N,1001,0,S]");
+    REQUIRE(b.size() == 2);
+    REQUIRE(b[0].kind == "number");
+    REQUIRE(b[0].name == "N");
+    REQUIRE(b[1].name == "S");
+
+    auto c = ParseCodeSlots("[V,0,V]");
+    REQUIRE(c.size() == 1);  // repeats merge into one slot
+    REQUIRE(c[0].name == "V");
+    REQUIRE(c[0].count == 2);
+
+    auto d = ParseCodeSlots("[1,AVG,V]");
+    REQUIRE(d.size() == 1);  // AVG is a word, not three letter slots
+    REQUIRE(d[0].name == "V");
+}
+
+TEST_CASE("NormalizeForMatch: upper-case, space-strip, math-sign folding", "[p8]") {
+    REQUIRE(NormalizeForMatch(" a≥b＜c ") == "A>=B<C");
+    REQUIRE(NormalizeForMatch("≤") == "<=");
+    REQUIRE(NormalizeForMatch("＞") == ">");
+    REQUIRE(NormalizeForMatch("").empty());
+}
+
+TEST_CASE("FilterSuggestions: normalized desc/code contains, order kept", "[p8]") {
+    std::vector<FieldSuggestion> all = {PlainCand(), SlottedCand()};
+    REQUIRE(FilterSuggestions(all, "") == std::vector<int>({0, 1}));  // doc order
+    REQUIRE(FilterSuggestions(all, "模糊") == std::vector<int>({0}));  // desc hit
+    REQUIRE(FilterSuggestions(all, "attr") == std::vector<int>({1}));  // case-insensitive
+    REQUIRE(FilterSuggestions(all, "1, 1") == std::vector<int>({1}));  // spaces folded
+    REQUIRE(FilterSuggestions(all, "不存在的词").empty());
+}
+
+TEST_CASE("FilterEntries: id or name substring, empty query keeps all", "[p8]") {
+    std::vector<std::pair<std::string, std::string>> e = {{"1", "智力"}, {"7", "魅力"}};
+    REQUIRE(FilterEntries(e, "7") == std::vector<int>({1}));    // by id
+    REQUIRE(FilterEntries(e, "魅") == std::vector<int>({1}));   // by name
+    REQUIRE(FilterEntries(e, "") == std::vector<int>({0, 1}));  // all, in order
+    REQUIRE(FilterEntries(e, "9").empty());
+}
+
+TEST_CASE("AssembleEffectCode: dict wholesale, letters standalone, gaps kept", "[p8]") {
+    const std::vector<SuggestionSlot> slots = SlottedCand().slots;
+    REQUIRE(AssembleEffectCode("[1,1,@ATTR@,V]", slots, {{"ATTR", "7"}, {"V", "3"}}) ==
+            "[1,1,7,3]");
+    REQUIRE(AssembleEffectCode("[1,1,@ATTR@,V]", slots, {{"V", "3"}}) == "[1,1,@ATTR@,3]");
+    // The V inside AVG must not be hit by the V slot.
+    const auto s2 = ParseCodeSlots("[1,AVG,V]");
+    REQUIRE(AssembleEffectCode("[1,AVG,V]", s2, {{"V", "5"}}) == "[1,AVG,5]");
+}
+
+TEST_CASE("MergeCodeIntoBuffer: seed / append / replace rules", "[p8]") {
+    REQUIRE(MergeCodeIntoBuffer("", "code") == "\"code\"");
+    REQUIRE(MergeCodeIntoBuffer("\"\"", "code") == "\"code\"");
+    REQUIRE(MergeCodeIntoBuffer("\"a\"", "code") == "\"a, code\"");
+    REQUIRE(MergeCodeIntoBuffer("123", "code") == "\"code\"");  // non-string replaced
+    REQUIRE(MergeCodeIntoBuffer("null", "code") == "\"code\"");
+    REQUIRE(MergeCodeIntoBuffer("  \"x\"  ", "y") == "\"x, y\"");  // trimmed first
+}
+
+TEST_CASE("SlotPoolDictKey: upper-cases, known pools only", "[p8]") {
+    REQUIRE(SlotPoolDictKey("ATTR") == "attrs");
+    REQUIRE(SlotPoolDictKey("ROLE") == "roles");
+    REQUIRE(SlotPoolDictKey("attr") == "attrs");
+    REQUIRE(SlotPoolDictKey("FOO").empty());
+    REQUIRE(SlotPoolDictKey("").empty());
+}
+
+// ------------------------------------------------------------------- parsers
+
+TEST_CASE("ParseNoCodeMode reads wrapped and flat shapes, rejects junk", "[p8]") {
+    REQUIRE(BackendApi::ParseNoCodeMode(
+        Json::parse(R"({"settings":{"noCodeMode":true}})")));
+    REQUIRE(BackendApi::ParseNoCodeMode(Json::parse(R"({"noCodeMode":true})")));
+    REQUIRE_FALSE(BackendApi::ParseNoCodeMode(
+        Json::parse(R"({"settings":{"noCodeMode":false}})")));
+    REQUIRE_FALSE(BackendApi::ParseNoCodeMode(Json::parse(R"({"noCodeMode":"yes"})")));
+    REQUIRE_FALSE(BackendApi::ParseNoCodeMode(Json::parse(R"({"settings":{}})")));
+    REQUIRE_FALSE(BackendApi::ParseNoCodeMode(Json()));
+}
+
+TEST_CASE("ParseSuggestions: full shape, slots, template_, fallback parse, drops", "[p8]") {
+    Json body = Json::parse(
+        R"({"items":[
+  {"code":"[1,1,ATTR,V]","desc":"属性增加","raw_code":"[1,1,@ATTR@,V]","slots":[
+     {"kind":"dict","name":"ATTR","dict":"ATTR","label":"属性","count":1},
+     {"kind":"number","name":"V","label":"数值","count":2},
+     {"name":"Z","label":"值"},
+     {"kind":"number","name":""}]},
+  {"code":"4015","desc":"屏幕效果：模糊"},
+  {"code":"","desc":"空 code 必须被丢弃"},
+  {"code":"[1,1,ATTR,V]","desc":"旧后端无 slots","raw_code":"[1,1,@ATTR@,V]"}]})");
+    auto v = BackendApi::ParseSuggestions(body);
+    REQUIRE(v.size() == 3);  // the empty-code item is dropped
+    REQUIRE(v[0].code == "[1,1,ATTR,V]");
+    REQUIRE(v[0].desc == "属性增加");
+    REQUIRE(v[0].template_ == "[1,1,@ATTR@,V]");  // raw_code wins
+    REQUIRE(v[0].slots.size() == 3);              // name-empty slot dropped
+    REQUIRE(v[0].slots[0].kind == "dict");
+    REQUIRE(v[0].slots[0].name == "ATTR");
+    REQUIRE(v[0].slots[0].dict == "ATTR");
+    REQUIRE(v[0].slots[0].label == "属性");
+    REQUIRE(v[0].slots[0].count == 1);
+    REQUIRE(v[0].slots[1].kind == "number");
+    REQUIRE(v[0].slots[1].dict.empty());
+    REQUIRE(v[0].slots[1].count == 2);
+    REQUIRE(v[0].slots[2].kind == "number");  // kind defaults to number
+    REQUIRE(v[1].template_ == "4015");        // no raw_code -> code
+    REQUIRE(v[1].slots.empty());
+    // Old backend: no slots + '@' in the template -> ParseCodeSlots fallback.
+    REQUIRE(v[2].slots.size() == 2);
+    REQUIRE(v[2].slots[0].kind == "dict");
+    REQUIRE(v[2].slots[0].name == "ATTR");
+    REQUIRE(v[2].slots[1].kind == "number");
+    REQUIRE(v[2].slots[1].name == "V");
+    REQUIRE(BackendApi::ParseSuggestions(Json::object()).empty());
+    REQUIRE(BackendApi::ParseSuggestions(Json()).empty());
+}
+
+TEST_CASE("ParseRoles folds id/name into insertable candidates", "[p8]") {
+    auto v = BackendApi::ParseRoles(Json::parse(
+        R"({"roles":[{"id":10,"name":"林晓"},{"id":"-1"},{"name":"无id丢弃"}]})"));
+    REQUIRE(v.size() == 2);  // the id-less entry is dropped
+    REQUIRE(v[0].code == "10");              // numeric id stringified
+    REQUIRE(v[0].desc == "林晓");
+    REQUIRE(v[0].template_ == "10");
+    REQUIRE(v[1].code == "-1");
+    REQUIRE(v[1].desc == "角色 -1");  // missing name -> placeholder label
+    REQUIRE(BackendApi::ParseRoles(Json::parse(R"({"roles":[]})")).empty());
+    REQUIRE(BackendApi::ParseRoles(Json::object()).empty());
+    REQUIRE(BackendApi::ParseRoles(Json()).empty());
 }

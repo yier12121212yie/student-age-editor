@@ -2,6 +2,7 @@
 #include "p8_cfg.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace p8 {
 namespace {
@@ -159,6 +160,200 @@ Json TableDataForValidate(const std::vector<TableRow>& rows,
         }
     }
     return data;
+}
+
+// ---- no-code mode / field suggestions -------------------------------------
+
+namespace {
+
+std::string ascii_lower(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+bool is_word_byte(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// Replace every standalone occurrence of the single letter `name` (not part of
+// a larger word — same boundaries as the GUI's assembleEffectCode regex).
+std::string replace_standalone(const std::string& src, const std::string& name,
+                               const std::string& value) {
+    if (name.size() != 1) return src;
+    std::string out;
+    for (size_t i = 0; i < src.size(); ++i) {
+        if (src[i] == name[0] && (i == 0 || !is_word_byte(src[i - 1])) &&
+            (i + 1 == src.size() || !is_word_byte(src[i + 1]))) {
+            out += value;
+        } else {
+            out += src[i];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string FieldSuggestMode(const std::string& cfg, const std::string& field) {
+    const std::string f = ascii_lower(field);
+    if (cfg == "TalkCfg" && f == "roles") return "action";
+    if (f == "screeneffect") return "screen";
+    if (f == "cost") return "cost";
+    if (f == "condition" || f == "cond" || f == "precondition" || f == "check")
+        return "condition";
+    if (f == "roles" || f == "roleids" || f == "speaker") return "role";
+    if (f.find("effect") != std::string::npos) return "effect";
+    return "";
+}
+
+std::vector<SuggestionSlot> ParseCodeSlots(const std::string& code) {
+    std::vector<SuggestionSlot> out;
+    auto find_slot = [&](const std::string& kind, const std::string& name) -> SuggestionSlot* {
+        for (auto& s : out)
+            if (s.kind == kind && s.name == name) return &s;
+        return nullptr;
+    };
+    // "@NAME@" placeholders; mask the span so letters inside never count as
+    // bare number slots.
+    std::string masked = code;
+    size_t pos = 0;
+    while ((pos = masked.find('@', pos)) != std::string::npos) {
+        const size_t end = masked.find('@', pos + 1);
+        if (end == std::string::npos) break;
+        const std::string name = code.substr(pos + 1, end - pos - 1);
+        bool ok = !name.empty();
+        for (char c : name)
+            if (!is_word_byte(c)) ok = false;
+        if (ok) {
+            std::string pool = name;
+            for (auto& c : pool)
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            if (SuggestionSlot* s = find_slot("dict", pool)) {
+                s->count++;
+            } else {
+                out.push_back(SuggestionSlot{"dict", pool, pool, pool, 1});
+            }
+        }
+        for (size_t i = pos; i <= end && i < masked.size(); ++i) masked[i] = ' ';
+        pos = end;
+    }
+    // Bare A-Z letters outside placeholders.
+    for (size_t i = 0; i < masked.size(); ++i) {
+        const char c = masked[i];
+        if (c < 'A' || c > 'Z') continue;
+        if ((i > 0 && is_word_byte(masked[i - 1])) ||
+            (i + 1 < masked.size() && is_word_byte(masked[i + 1])))
+            continue;
+        const std::string name(1, c);
+        if (SuggestionSlot* s = find_slot("number", name)) {
+            s->count++;
+        } else {
+            out.push_back(SuggestionSlot{"number", name, "", "", 1});
+        }
+    }
+    return out;
+}
+
+std::string NormalizeForMatch(const std::string& s) {
+    std::string t;
+    for (char c : s) {
+        if (c == ' ') continue;
+        t += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    auto rep = [&t](const std::string& a, const std::string& b) {
+        size_t p = 0;
+        while ((p = t.find(a, p)) != std::string::npos) {
+            t.replace(p, a.size(), b);
+            p += b.size();
+        }
+    };
+    rep("\xE2\x89\xA5", ">=");  // ≥
+    rep("\xE2\x89\xA4", "<=");  // ≤
+    rep("\xEF\xBC\x9E", ">");   // ＞
+    rep("\xEF\xBC\x9C", "<");   // ＜
+    return t;
+}
+
+std::vector<int> FilterSuggestions(const std::vector<FieldSuggestion>& all,
+                                   const std::string& query) {
+    // NormalizeForMatch strips spaces, so a blank query normalizes to "" = keep
+    // document order (which is the backend's score order).
+    const std::string q = NormalizeForMatch(query);
+    std::vector<int> out;
+    for (size_t i = 0; i < all.size(); ++i) {
+        if (q.empty() || NormalizeForMatch(all[i].desc).find(q) != std::string::npos ||
+            NormalizeForMatch(all[i].code).find(q) != std::string::npos)
+            out.push_back(static_cast<int>(i));
+    }
+    return out;
+}
+
+std::vector<int> FilterEntries(const std::vector<std::pair<std::string, std::string>>& entries,
+                               const std::string& q) {
+    std::vector<int> out;
+    const std::string needle = ascii_lower(q);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (needle.empty() || !q.empty() && entries[i].second.find(q) != std::string::npos ||
+            ascii_lower(entries[i].first).find(needle) != std::string::npos ||
+            ascii_lower(entries[i].second).find(needle) != std::string::npos)
+            out.push_back(static_cast<int>(i));
+    }
+    return out;
+}
+
+std::string AssembleEffectCode(const std::string& tmpl,
+                               const std::vector<SuggestionSlot>& slots,
+                               const std::map<std::string, std::string>& values) {
+    std::string out = tmpl;
+    for (const auto& s : slots) {
+        auto it = values.find(s.name);
+        if (it == values.end() || it->second.empty()) continue;
+        if (s.kind == "dict") {
+            const std::string ph = "@" + s.name + "@";
+            std::string rebuilt;
+            size_t pos = 0;
+            while (true) {
+                const size_t hit = out.find(ph, pos);
+                if (hit == std::string::npos) {
+                    rebuilt += out.substr(pos);
+                    break;
+                }
+                rebuilt += out.substr(pos, hit - pos) + it->second;
+                pos = hit + ph.size();
+            }
+            out = std::move(rebuilt);
+        } else {
+            out = replace_standalone(out, s.name, it->second);
+        }
+    }
+    return out;
+}
+
+std::string MergeCodeIntoBuffer(const std::string& buf, const std::string& code) {
+    std::string t = buf;
+    while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+    while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
+    const std::string quoted = "\"" + code + "\"";
+    if (t.empty() || t == "\"\"" || t == "null") return quoted;
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"') {
+        const std::string inner = t.substr(1, t.size() - 2);
+        if (inner.empty()) return quoted;
+        return "\"" + inner + ", " + code + "\"";
+    }
+    return quoted;
+}
+
+std::string SlotPoolDictKey(const std::string& pool) {
+    static const std::map<std::string, std::string> kMap = {
+        {"ATTR", "attrs"},         {"ROLE", "roles"},     {"ITEM", "items"},
+        {"RELATION", "relations"}, {"MAP", "maps"},       {"JOB", "jobs"},
+        {"BG", "bgs"},             {"STATE", "states"},   {"TEXT", "texts"},
+        {"GAME", "games"},
+    };
+    std::string key;
+    for (char c : pool) key += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    auto it = kMap.find(key);
+    return it == kMap.end() ? std::string() : it->second;
 }
 
 }  // namespace p8

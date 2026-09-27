@@ -266,6 +266,38 @@ def main():
               rc == 0 and "ZipMod" not in [m.get("name") for m in lst2.get("mods", [])],
               str(lst2)[:200])
 
+        # -- settings no-code on -> show -> off roundtrip (M3) --
+        rc, body, _, err = ctx.run("settings", "no-code", "show")
+        check("settings no-code show defaults off",
+              rc == 0 and ((body or {}).get("settings") or {}).get("noCodeMode") is False,
+              str(body) + err)
+        rc, _, out, err = ctx.run("settings", "no-code", "show", json_out=False)
+        check("settings no-code show human text",
+              rc == 0 and out.strip() == "no-code: off", repr(out) + err)
+        rc, body, _, err = ctx.run("settings", "no-code", "on")
+        check("settings no-code on",
+              rc == 0 and body.get("ok") is True
+              and body.get("settings", {}).get("noCodeMode") is True, str(body) + err)
+        rc, _, out, err = ctx.run("settings", "no-code", "on", json_out=False)
+        check("settings no-code on human text",
+              rc == 0 and out.strip() == "ok: no-code: on", repr(out) + err)
+        rc, body, _, err = ctx.run("settings", "no-code", "show")
+        check("settings no-code show after on",
+              rc == 0 and body.get("settings", {}).get("noCodeMode") is True, str(body) + err)
+        with open(os.path.join(data, "editor_env.json"), encoding="utf-8-sig") as f:
+            env_disk = json.load(f)
+        check("no_code_mode persisted in editor_env.json",
+              env_disk.get("no_code_mode") is True, str(env_disk))
+        rc, body, _, err = ctx.run("settings", "no-code", "off")
+        check("settings no-code off",
+              rc == 0 and body.get("ok") is True
+              and body.get("settings", {}).get("noCodeMode") is False, str(body) + err)
+        rc, body, _, err = ctx.run("settings", "no-code", "show")
+        check("settings no-code show after off",
+              rc == 0 and body.get("settings", {}).get("noCodeMode") is False, str(body) + err)
+        rc, _, _, _ = ctx.run("settings", "no-code", "maybe", expect_rc=2, json_out=False)
+        check("settings no-code invalid -> exit 2", rc == 2)
+
         # -- error envelopes ride stdout with --json, exit 1 --
         rc, body, out, err = ctx.run("cfg", "get", "a:b", expect_rc=1)
         check("sandbox error keeps envelope + exit 1",
@@ -279,6 +311,45 @@ def main():
               str(body) + err)
         rc, _, _, err = ctx.run("--mod", "GhostMod", "cfg", "list", expect_rc=1)
         check("--mod missing -> exit 1", rc == 1)
+
+        # -- interactive REPL (piped stdin: non-TTY fallback, plain output) --
+        def repl_run(stdin_text):
+            cmd = [cli, "--data-root", ctx.data, "--workspace", ctx.ws, "--no-color"]
+            p = subprocess.run(cmd, env=ctx.env, capture_output=True, timeout=120,
+                               input=stdin_text.encode("utf-8"))
+            return (p.returncode, (p.stdout or b"").decode("utf-8", "replace"),
+                    (p.stderr or b"").decode("utf-8", "replace"))
+
+        rc, out, err = repl_run("/help\nexit\n")
+        check("repl banner + /help + exit", rc == 0
+              and "Editor CLI" in out and "可用命令" in out
+              and "再见" in out, (out + err)[-300:])
+        rc, out, err = repl_run("/mods list\n/status\nexit\n")
+        check("repl /mods list + /status", rc == 0 and "selected:" in out
+              and "mods:" in out and "Workspace:" in out, (out + err)[-300:])
+        rc, out, err = repl_run("@EvtCfg:101\nexit\n")
+        check("repl @mention reads the record", rc == 0 and "records:" in out
+              and "测试事件" in out, (out + err)[-300:])
+        rc, out, err = repl_run("/use Imported\n"
+                                '/cfg set TalkCfg --data {"101":{"id":101,"content":"你好同学"}}\n'
+                                "/search 你好\nexit\n")
+        check("repl /use + cfg set + /search hits", rc == 0 and "hits: 1" in out
+              and "你好同学" in out and "Imported" in out, (out + err)[-300:])
+
+        # -- REPL /settings: bare = show; no-code on/off flips /status (M3) --
+        rc, out, err = repl_run("/settings\nexit\n")
+        check("repl /settings shows no-code", rc == 0 and "no-code: off" in out,
+              (out + err)[-300:])
+        rc, out, err = repl_run("/settings no-code on\n/status\n"
+                                "/settings no-code off\n/status\nexit\n")
+        i_off = out.find("无代码模式: 关")
+        i_on = out.find("无代码模式: 开")
+        check("repl /settings no-code on|off flips /status",
+              rc == 0 and i_off != -1 and i_on > i_off
+              and "no-code: on" in out and "no-code: off" in out, (out + err)[-400:])
+        rc, out, err = repl_run("/status\nexit\n")
+        check("repl banner/status reads no-code once",
+              rc == 0 and out.count("无代码模式: 关") >= 2, (out + err)[-300:])
 
         # -- transport failure exit 3 (nothing listens on 8789) --
         rc, _, _, err = ctx.run("mods", "list", expect_rc=3,

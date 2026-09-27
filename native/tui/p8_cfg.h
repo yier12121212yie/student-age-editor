@@ -64,4 +64,46 @@ Json TableDataForValidate(const std::vector<TableRow>& rows,
                           const std::map<std::string, std::string>& edits,
                           const std::vector<std::string>& removes);
 
+// ---- no-code mode / field suggestions (mirrors the GUI's field_meta +
+// effect_slot_form.dart; pure + unit-testable) ------------------------------
+
+// Candidate mode for one form field, or "" when it has no suggestion source.
+// Same mapping as the GUI (TalkCfg.roles -> action, screenEffect -> screen,
+// cost/condition aliases, *effect* -> effect; role-ish refs -> role).
+std::string FieldSuggestMode(const std::string& cfg, const std::string& field);
+
+// Parse parameter slots from a raw code template (fallback for backends that
+// do not ship items[].slots): "@NAME@" -> dict slot, lone A-Z -> number slot;
+// repeated letters merge into one slot with a count.
+std::vector<SuggestionSlot> ParseCodeSlots(const std::string& code);
+
+// Match normalization: upper-case, spaces stripped, ≥/≤/＞/＜ folded to ASCII
+// (same algorithm as the backend's norm_for_match).
+std::string NormalizeForMatch(const std::string& s);
+
+// Indices of candidates whose normalized desc/code contains the normalized
+// query (empty query keeps document order = backend score order).
+std::vector<int> FilterSuggestions(const std::vector<FieldSuggestion>& all,
+                                   const std::string& query);
+
+// Entries filter for the slot fill-in list: (id, name) pairs whose id or name
+// contains q (ASCII case-insensitive; substring otherwise).
+std::vector<int> FilterEntries(const std::vector<std::pair<std::string, std::string>>& entries,
+                               const std::string& q);
+
+// Assemble a code from template + slot values: @NAME@ replaced wholesale, lone
+// letters replaced as independent tokens; an unfilled slot keeps its raw text.
+std::string AssembleEffectCode(const std::string& tmpl,
+                               const std::vector<SuggestionSlot>& slots,
+                               const std::map<std::string, std::string>& values);
+
+// Insert a suggested code into a field's JSON edit buffer (the buffers hold
+// compact JSON text): empty/`""` -> "\"code\""; a quoted string -> appended
+// with ", " inside the quotes; anything else -> replaced with "\"code\"".
+std::string MergeCodeIntoBuffer(const std::string& buf, const std::string& code);
+
+// Slot pool name (ATTR/ROLE/ITEM/...) -> /api/dicts game_dicts key. Empty when
+// the pool has no lookup source (the slot then takes a typed value).
+std::string SlotPoolDictKey(const std::string& pool);
+
 }  // namespace p8

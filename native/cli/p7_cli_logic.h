@@ -63,8 +63,11 @@ enum class Kind {
     CloudRemote,    // GET  /api/cloud/list
     AiSettings,     // GET  /api/ai/settings
     AiSet,          // PUT  /api/ai/settings
+    Search,         // GET  /api/search/talk?q=<kw> (Python CLI parity)
+    SettingsNoCode, // GET/PUT /api/settings/editor (M3 无代码模式开关)
     EnvGet,         // local editor_env.json (no HTTP route exists)
     EnvSet,
+    Repl,           // interactive mode (handled by p7_repl.cpp, never planned)
     None,
 };
 
@@ -74,6 +77,7 @@ struct GlobalFlags {
     std::string workspace;    // --workspace -> init_state workspace_root
     std::string mod;          // --mod: explicit mod selection (Python parity)
     bool json = false;        // --json raw output
+    int color = -1;           // --color / --no-color: 1 / 0; -1 = auto (tty)
     double timeout = 30.0;    // --timeout seconds
 };
 
@@ -97,6 +101,7 @@ struct Command {
     std::string start_id, text, out, dual;  // story
     std::string evt_ids;       // story export, comma separated
     std::string env_key, env_value;         // env get/set
+    std::string setting_value;              // settings no-code: on|off|show
 
     json data;                 // cfg set body / validate --data / story --text file? no
     bool has_data = false;     // --data|--file supplied (cfg set, validate)
@@ -197,6 +202,15 @@ HttpRequestSpec mod_select_request(const std::string& name, const std::string& r
 // POST /api/state reader for workspace resolution in --url mode.
 HttpRequestSpec state_request();
 
+// GET /api/settings/editor ({"settings":{"noCodeMode":bool}}) and its PUT
+// counterpart (flat {"noCodeMode":bool} — the route accepts both shapes).
+HttpRequestSpec editor_settings_get_request();
+HttpRequestSpec editor_settings_put_request(bool no_code);
+
+// /api/settings/editor response -> noCodeMode. `known` (optional) reports
+// whether the envelope carried a boolean; callers show 未知 on false.
+bool parse_no_code_mode(const json& body, bool* known = nullptr);
+
 // ---------------------------------------------------------------------------
 // Output / exit policy
 // ---------------------------------------------------------------------------
@@ -216,6 +230,112 @@ std::string format_text(const Command& c, const json& body);
 
 // env get rendering: scalars via Python str(), containers via indent dump.
 std::string env_value_text(const json& value);
+
+// ---------------------------------------------------------------------------
+// Interactive mode (「类 Claude Code」 REPL) — pure line handling
+// ---------------------------------------------------------------------------
+
+// One REPL input line, classified. The interactive loop in p7_repl.cpp acts on
+// it; sa_tests drives this function directly.
+struct ReplLine {
+    enum Kind {
+        Empty,    // "" / whitespace: repeat the previous command
+        Quit,     // /exit /quit /q
+        Repeat,   // ↻ sentinel: caller re-runs last non-empty line
+        Shell,    // "!<cmd>" / "!shell <cmd>": pass through to the OS shell
+        Slash,    // "/<word> ...": payload keeps the words (no leading slash)
+        Command,  // a plain CLI command line
+    } kind = Empty;
+    std::string payload;
+};
+
+ReplLine classify_repl_line(const std::string& line);
+
+// Quote-aware token split for REPL input (double/single quotes group, "!"
+// and "@提及" stay ordinary tokens; the REPL interprets them afterwards).
+std::vector<std::string> split_repl_tokens(const std::string& line);
+
+// ---------------------------------------------------------------------------
+// 无代码模式 + 自动补全（M3）
+//
+// ReplComplete is the pure half of the REPL's Tab key: every candidate pool
+// (commands / subcommands / flags / paths / 最近使用 / effect_suggest / roles)
+// is injected through CompletionCtx, so the whole lexical-slot routing is
+// unit-testable without a terminal or a socket. p7_repl.cpp only fills the
+// pools (HTTP fetches, cached per REPL session) and renders the numbered menu.
+// ---------------------------------------------------------------------------
+
+// 模糊匹配打分：前缀 100 > 包含 60 > 子序列 30，0 = 不匹配；空 query 记 1
+// （"全命中"的最低分，便于调用方区分空查询与不匹配）。ASCII 大小写不敏感；
+// 中文按 UTF-8 字节包含匹配（整段字节连续出现即算包含）。
+int FuzzyScore(const std::string& query, const std::string& candidate);
+
+// 一个补全候选：text = 接受后整行输入的新内容；hint = 候选行的中文主显示
+// （effect 的 desc / 人物名；空则显示插入值本身）。
+struct ReplCompletion {
+    std::string text;
+    std::string hint;
+};
+
+// 补全池条目：value = 插入文本，hint = 中文说明（可为空）。
+struct CompletionItem {
+    std::string value;
+    std::string hint;
+};
+
+// 词法槽类型：决定 ReplComplete 用哪个池、REPL 需要按需拉哪个 HTTP 池。
+enum class CompletionSlot {
+    None,         // 不补全（自由文本 / 数值 id）
+    Recent,       // 空行 Tab：高频命令 top-N
+    Command,      // 顶层命令
+    SlashCommand, // 斜杠命令
+    Subcommand,   // 当前顶层命令的子命令
+    Flag,         // 当前命令的 flag
+    Literal,      // 固定枚举值（on|off|show、--direction 等）
+    Table,        // cfg 表名
+    Mod,          // 模组名
+    Path,         // 文件 / 目录路径
+    Effect,       // effect_suggest 效果候选（value=code，hint=desc）
+    Role,         // /api/roles 人物候选（value=id，hint=名字）
+    Mention,      // @提及：@role: 人物 + @表 + @模组
+};
+
+// 当前输入行需要的补全槽（REPL 据此决定拉哪个池；纯函数）。
+struct CompletionPlan {
+    CompletionSlot slot = CompletionSlot::None;
+    std::string effect_mode;   // slot==Effect 时的 suggest mode
+    bool json_string = false;  // 值槽位于 JSON 字符串内（插入保留引号）
+    bool json_bare = false;    // 值槽紧跟 `"key":`（插入自动补引号）
+};
+CompletionPlan plan_completion(const std::string& buffer);
+
+// ReplComplete 的全部输入池（REPL 会话级缓存注入；函数本身零 IO）。
+struct CompletionCtx {
+    std::vector<CompletionItem> commands;        // 顶层命令（非斜杠）
+    std::vector<CompletionItem> slash_commands;  // 斜杠命令（含 "/"）
+    std::vector<CompletionItem> subcommands;     // 当前命令的子命令
+    std::vector<CompletionItem> flags;           // 当前命令的 flag
+    std::vector<CompletionItem> recent;          // 高频命令 top-N
+    std::vector<CompletionItem> tables;          // cfg 表名
+    std::vector<CompletionItem> mods;            // 模组名
+    std::vector<CompletionItem> paths;           // 文件 / 目录路径
+    std::vector<CompletionItem> effects;         // 效果候选
+    std::vector<CompletionItem> roles;           // 人物候选
+};
+
+// 按 token 词法槽分流：首词→命令池；`cfg <sub>`→子命令池；`-`前缀→当前命令
+// flag 池；值槽（cfg 表名 / 模组名 / 路径 / 枚举值 / effect-like 值 / 人物
+// id）→对应池；`@` 提及扩展 `@role:`。返回按分数降序、按 text 去重后的候选
+// （唯一候选即直接补全）。
+std::vector<ReplCompletion> ReplComplete(const std::string& buffer, const CompletionCtx& ctx);
+
+// wire_app 命令树的纯数据镜像（补全用；无子命令/flag 时返回空表）。
+std::vector<CompletionItem> top_level_commands();
+std::vector<CompletionItem> command_subcommands(const std::string& command);
+std::vector<CompletionItem> command_flags(const std::string& command, const std::string& subcommand);
+
+// 固定枚举值槽的取值表（settings no-code / --direction / --dual / ai --mode）。
+std::vector<CompletionItem> literal_values(const std::string& group);
 
 // ---------------------------------------------------------------------------
 // Pure helpers behind the local import steps

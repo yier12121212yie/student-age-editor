@@ -1,13 +1,51 @@
 // native/tui/p8_api.cpp
 #include "p8_api.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+
 #include "p8_cfg.h"
 #include "sa_core/http_client.h"
+#include "sa_core/paths.h"
 
 namespace p8 {
 
 using sa_core::http::Request;
 using sa_core::http::Response;
+
+namespace {
+// 安全批次 B：后端进程令牌（.backend_token 与 backend 可执行文件同目录；
+// 发行包/构建产物里 TUI 与 backend 同目录，兜底 cwd）。空串 = 未找到（旧包
+// 后端未启用令牌）。仅对 loopback base 注入。
+std::string read_backend_token() {
+    std::vector<std::string> dirs;
+    std::error_code ec;
+    dirs.push_back(sa_core::paths::exe_dir());
+    dirs.push_back(sa_core::paths::path_to_utf8(std::filesystem::current_path(ec)));
+    for (const auto& dir : dirs) {
+        if (dir.empty()) continue;
+        std::ifstream f(sa_core::paths::to_path(dir) / ".backend_token",
+                        std::ios::binary);
+        if (!f) continue;
+        std::string t((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ' ||
+                              t.back() == '\t'))
+            t.pop_back();
+        if (!t.empty()) return t;
+    }
+    return {};
+}
+
+bool is_loopback_base(const std::string& base) {
+    return base.rfind("http://127.0.0.1", 0) == 0 || base.rfind("http://localhost", 0) == 0 ||
+           base.rfind("http://[::1]", 0) == 0;
+}
+}  // namespace
 
 std::string BackendApi::JoinUrl(const std::string& base, const std::string& path) {
     std::string b = base;
@@ -230,6 +268,79 @@ std::string BackendApi::ParsePermissionMode(const Json& body) {
     return "confirm";  // the backend's own default
 }
 
+bool BackendApi::ParseNoCodeMode(const Json& body) {
+    if (!body.is_object()) return false;
+    const Json* s = body.contains("settings") && body.at("settings").is_object()
+                        ? &body.at("settings")
+                        : &body;
+    return s->contains("noCodeMode") && s->at("noCodeMode").is_boolean() &&
+           s->at("noCodeMode").get<bool>();
+}
+
+std::vector<FieldSuggestion> BackendApi::ParseSuggestions(const Json& body) {
+    std::vector<FieldSuggestion> out;
+    if (!body.is_object() || !body.contains("items") || !body.at("items").is_array())
+        return out;
+    auto str = [](const Json& o, const char* key) {
+        return o.contains(key) && o.at(key).is_string() ? o.at(key).get<std::string>()
+                                                        : std::string();
+    };
+    for (const Json& e : body.at("items")) {
+        if (!e.is_object()) continue;
+        FieldSuggestion f;
+        f.code = str(e, "code");
+        f.desc = str(e, "desc");
+        f.template_ = e.contains("raw_code") && !str(e, "raw_code").empty()
+                          ? str(e, "raw_code")
+                          : f.code;
+        if (e.contains("slots") && e.at("slots").is_array()) {
+            for (const Json& sl : e.at("slots")) {
+                if (!sl.is_object()) continue;
+                SuggestionSlot s;
+                s.kind = sl.contains("kind") && sl.at("kind").is_string()
+                             ? sl.at("kind").get<std::string>()
+                             : std::string("number");
+                s.name = str(sl, "name");
+                s.dict = str(sl, "dict");
+                s.label = str(sl, "label");
+                if (sl.contains("count") && sl.at("count").is_number())
+                    s.count = sl.at("count").get<int>();
+                if (!s.name.empty()) f.slots.push_back(std::move(s));
+            }
+        }
+        // Old backends ship no slots field — parse the template as fallback.
+        if (f.slots.empty() && f.template_.find('@') != std::string::npos)
+            f.slots = ParseCodeSlots(f.template_);
+        if (!f.code.empty()) out.push_back(std::move(f));
+    }
+    return out;
+}
+
+std::vector<FieldSuggestion> BackendApi::ParseRoles(const Json& body) {
+    std::vector<FieldSuggestion> out;
+    if (!body.is_object() || !body.contains("roles") || !body.at("roles").is_array())
+        return out;
+    for (const Json& e : body.at("roles")) {
+        if (!e.is_object()) continue;
+        std::string id;
+        if (e.contains("id")) {
+            const Json& jid = e.at("id");
+            if (jid.is_string()) id = jid.get<std::string>();
+            else if (jid.is_number_integer()) id = std::to_string(jid.get<long long>());
+            else if (jid.is_number()) id = std::to_string(jid.get<double>());
+        }
+        if (id.empty()) continue;
+        FieldSuggestion f;
+        f.code = id;
+        f.template_ = id;
+        const std::string name =
+            e.contains("name") && e.at("name").is_string() ? e.at("name").get<std::string>() : "";
+        f.desc = name.empty() ? ("角色 " + id) : name;
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
 SaveResult BackendApi::InterpretSave(int http_status, const Json& body) {
     SaveResult r;
     std::string code =
@@ -270,6 +381,12 @@ Json BackendApi::Call(const std::string& method, const std::string& path, const 
     req.headers.emplace_back("Content-Type", "application/json");
     req.timeout_seconds = 30.0;
     if (body) req.body = body->dump();
+    // 安全批次 B：连桌面后端（loopback）时携带进程令牌。
+    if (is_loopback_base(base_)) {
+        static const std::string kBackendToken = read_backend_token();
+        if (!kBackendToken.empty())
+            req.headers.emplace_back("X-Backend-Token", kBackendToken);
+    }
     Response resp = sa_core::http::request(req);
     if (status) *status = resp.status;
     if (!resp.transport_ok()) {
@@ -304,6 +421,25 @@ bool BackendApi::SelectMod(const std::string& name, std::string* err) {
     if (status != 200) {
         *err = "选择模组失败: " + resp.value("error", std::string("HTTP " + std::to_string(status)));
         return false;
+    }
+    return true;
+}
+
+bool BackendApi::CreateMod(const std::string& title, std::string* name_out, std::string* err) {
+    Json body = Json::object();
+    body["title"] = title;
+    body["desc"] = "";
+    int status = 0;
+    Json resp = Call("POST", "/api/mods/create", &body, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = "创建模组失败: " + resp.value("error", std::string("HTTP " + std::to_string(status)));
+        return false;
+    }
+    if (name_out) {
+        const Json mod = resp.contains("mod") && resp.at("mod").is_object() ? resp.at("mod")
+                                                                           : Json::object();
+        *name_out = mod.value("name", resp.value("name", title));
     }
     return true;
 }
@@ -572,6 +708,104 @@ bool BackendApi::SavePermissionMode(const std::string& mode, std::string* err) {
         return false;
     }
     return true;
+}
+
+bool BackendApi::LoadNoCodeMode(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/settings/editor", nullptr, &status, err);
+    // An old backend without the route must not block the TUI: off is the safe
+    // default and matches every pre-M0 build.
+    if (!err->empty() || status != 200 || !body.is_object()) return false;
+    return ParseNoCodeMode(body);
+}
+
+bool BackendApi::SaveNoCodeMode(bool on, std::string* err) {
+    if (err) err->clear();
+    Json req = Json::object();
+    req["noCodeMode"] = on;
+    int status = 0;
+    Json body = Call("PUT", "/api/settings/editor", &req, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = body.value("error",
+                          std::string("保存无代码模式失败 (HTTP " + std::to_string(status) + ")"));
+        return false;
+    }
+    return true;
+}
+
+std::vector<FieldSuggestion> BackendApi::EffectSuggest(const std::string& mode,
+                                                       const std::string& q,
+                                                       std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    const std::string path = "/api/effect_suggest?mode=" + sa_core::http::quote_component(mode) +
+                             "&q=" + sa_core::http::quote_component(q);
+    Json body = Call("GET", path, nullptr, &status, err);
+    if (!err->empty() || status != 200) {
+        if (err && err->empty())
+            *err = "获取候选失败 (HTTP " + std::to_string(status) + ")";
+        return {};
+    }
+    return ParseSuggestions(body);
+}
+
+std::vector<FieldSuggestion> BackendApi::RoleSuggest(const std::string& q, std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/roles?q=" + sa_core::http::quote_component(q), nullptr, &status,
+                     err);
+    if (!err->empty() || status != 200) {
+        if (err && err->empty()) *err = "获取人物目录失败 (HTTP " + std::to_string(status) + ")";
+        return {};
+    }
+    return ParseRoles(body);
+}
+
+std::vector<std::pair<std::string, std::string>> BackendApi::DictEntries(
+    const std::string& dict_key, std::string* err) {
+    std::vector<std::pair<std::string, std::string>> out;
+    if (err) err->clear();
+    if (dict_key.empty()) return out;
+    int status = 0;
+    Json body = Call("GET", "/api/dicts", nullptr, &status, err);
+    if (!err->empty() || status != 200 || !body.is_object()) {
+        if (err && err->empty()) *err = "读取字典失败 (HTTP " + std::to_string(status) + ")";
+        return out;
+    }
+    if (!body.contains("game_dicts") || !body.at("game_dicts").is_object()) return out;
+    const Json& gd = body.at("game_dicts");
+    if (!gd.contains(dict_key) || !gd.at(dict_key).is_object()) return out;
+    for (auto it = gd.at(dict_key).begin(); it != gd.at(dict_key).end(); ++it) {
+        std::string name;
+        const Json& v = it.value();
+        if (v.is_string()) name = v.get<std::string>();
+        else if (v.is_array() && !v.empty() && v.front().is_string())
+            name = v.front().get<std::string>();
+        else if (!v.is_null()) name = v.dump();
+        out.emplace_back(it.key(), std::move(name));
+    }
+    // Stable nav order like the GUI's option list: numeric ids ascending.
+    std::sort(out.begin(), out.end(),
+              [](const std::pair<std::string, std::string>& a,
+                 const std::pair<std::string, std::string>& b) {
+                  const long long na = atoll(a.first.c_str());
+                  const long long nb = atoll(b.first.c_str());
+                  if (na == nb) return a.first < b.first;
+                  return na < nb;
+              });
+    return out;
+}
+
+void BackendApi::ReportUsage(const std::string& kind, const std::string& key) {
+    // Fire-and-forget: a failed report must never surface in the editor flow.
+    Json req = Json::object();
+    req["kind"] = kind;
+    req["key"] = key;
+    int status = 0;
+    std::string err;
+    Call("POST", "/api/usage", &req, &status, &err);
 }
 
 void BackendApi::Shutdown() {

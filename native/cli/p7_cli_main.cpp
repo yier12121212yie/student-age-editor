@@ -33,6 +33,8 @@
 #endif
 
 #include "p7_cli_logic.h"
+#include "p7_color.h"
+#include "p7_repl.h"
 
 #include "p3b_miniz_config.h"  // vendored reader-only miniz (linked via sa_server)
 
@@ -111,12 +113,50 @@ struct Executed {
     std::string transport_error;
 };
 
+// 安全批次 B：读取后端进程令牌（.backend_token 与 backend 可执行文件同目录，
+// 发行包/构建产物里 CLI 与 backend 同目录，兜底 cwd）。空串 = 未找到（后端
+// 可能是未启用令牌的旧包）。
+std::string read_backend_token() {
+    std::vector<std::string> dirs;
+    std::error_code ec;
+    dirs.push_back(sa_core::paths::exe_dir());
+    dirs.push_back(sa_core::paths::path_to_utf8(std::filesystem::current_path(ec)));
+    for (const auto& dir : dirs) {
+        if (dir.empty()) continue;
+        std::ifstream f(sa_core::paths::to_path(dir) / ".backend_token",
+                        std::ios::binary);
+        if (!f) continue;
+        std::string t((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ' ||
+                              t.back() == '\t'))
+            t.pop_back();
+        if (!t.empty()) return t;
+    }
+    return {};
+}
+
+// 安全批次 B：仅对 loopback base 注入令牌（云命令的 https base 不携带）。
+bool is_loopback_base(const std::string& base) {
+    return base.rfind("http://127.0.0.1", 0) == 0 || base.rfind("http://localhost", 0) == 0 ||
+           base.rfind("http://[::1]", 0) == 0;
+}
+
 Executed do_http(const std::string& base_url, const HttpRequestSpec& spec, double timeout) {
     Executed ex;
     sa_core::http::Request req;
     req.method = spec.method;
     req.url = build_url(base_url, spec);
     req.timeout_seconds = timeout;
+    req.follow_redirects = true;  // CLI 旧行为保持：urllib 语义跟随 3xx
+    // 安全批次 B：--url 客户端模式连桌面后端时携带进程令牌（.backend_token
+    // 在 backend 可执行文件同目录；发行包/构建产物里 CLI 与 backend 同目录，
+    // 兜底 cwd）。仅对 loopback base 注入——云命令等出站 base 绝不带本机
+    // 令牌。内嵌自服务模式（默认）后端未启用令牌，此头为多余但无害。
+    if (is_loopback_base(base_url)) {
+        static const std::string backend_token = read_backend_token();
+        if (!backend_token.empty())
+            req.headers.emplace_back("X-Backend-Token", backend_token);
+    }
     if (!spec.body.is_null()) {
         req.body = sa_core::py_dumps(spec.body);
         req.headers.emplace_back("Content-Type", "application/json");
@@ -368,63 +408,52 @@ void print_utf8_err(const std::string& s) {
     std::fflush(stderr);
 }
 
-int real_main(int argc, char** argv) {
-#ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-#endif
-    sa_cli::GlobalFlags g;
-    Command c;
-    std::string err;
-    ParseResult pr = parse_command_line(utf8_args(argc, argv), g, c, err);
-    if (pr == ParseResult::Help) {
-        print_utf8(err);  // help text carried in err
-        return 0;
+// Start the embedded server when no --url was given (idempotent env-var setup
+// included). base_url always ends up usable on true.
+bool EnsureBackend(const sa_cli::GlobalFlags& g, Embedded& embedded, std::string* base_url) {
+    if (!g.url.empty()) {
+        *base_url = g.url;
+        return true;
     }
-    if (pr == ParseResult::UsageError) {
-        print_utf8_err("error: " + err + "\n(try --help)\n");
-        return 2;
+    if (embedded.active) {
+        *base_url = embedded.base_url;
+        return true;
     }
-    if (!g.data_root.empty()) {
-        // CLI flag wins over the ambient environment (CONVENTIONS 11).
+    // The main-tree schema loader (system_routes) only probes exe_dir/.. and
+    // cwd; the CLI exe lives in build/bin, so point EDITOR_ASSETS_ROOT at the
+    // assets dir p1's deeper search finds.
+    if (!getenv("EDITOR_ASSETS_ROOT")) {
+        std::string asset = sa::p1::find_asset("schema.json");
+        if (!asset.empty()) {
 #ifdef _WIN32
-        _putenv_s("EDITOR_DATA_ROOT", g.data_root.c_str());
+            _putenv_s("EDITOR_ASSETS_ROOT", sa_core::paths::dirname(asset).c_str());
 #else
-        setenv("EDITOR_DATA_ROOT", g.data_root.c_str(), 1);
+            setenv("EDITOR_ASSETS_ROOT", sa_core::paths::dirname(asset).c_str(), 1);
 #endif
+        }
     }
+    std::string bind_err;
+    if (!embedded.start(g.workspace, &bind_err)) {
+        print_utf8_err("error: cannot start embedded server: " + bind_err + "\n");
+        return false;
+    }
+    *base_url = embedded.base_url;
+    return true;
+}
 
-    if (c.kind == Kind::EnvGet || c.kind == Kind::EnvSet) return run_env(c, g);
-
+// Execute one fully-parsed command against `embedded`/base_url and print the
+// answer like a one-shot run. Shared by real_main and the REPL (p7_repl.cpp
+// reaches it through ReplHost::run_tokens). Returns the process exit code.
+// `c` is mutable: make_plan may materialize --file/--set-file inputs into it.
+int RunParsed(const sa_cli::GlobalFlags& g, Command& c, const Embedded& embedded,
+              const std::string& base_url) {
+    std::string err;
     // Build the pure plan first: plan errors are usage errors and must not
     // spin up a server.
     std::vector<HttpRequestSpec> plan;
     if (!make_plan(c, plan, err)) {
         print_utf8_err("error: " + err + "\n");
         return 2;
-    }
-
-    std::string base_url = g.url;
-    Embedded embedded;
-    if (base_url.empty()) {
-        // The main-tree schema loader (system_routes) only probes exe_dir/..
-        // and cwd; the CLI exe lives in build/bin, so point
-        // EDITOR_ASSETS_ROOT at the assets dir p1's deeper search finds.
-        if (!getenv("EDITOR_ASSETS_ROOT")) {
-            std::string asset = sa::p1::find_asset("schema.json");
-            if (!asset.empty()) {
-#ifdef _WIN32
-                _putenv_s("EDITOR_ASSETS_ROOT", sa_core::paths::dirname(asset).c_str());
-#else
-                setenv("EDITOR_ASSETS_ROOT", sa_core::paths::dirname(asset).c_str(), 1);
-#endif
-            }
-        }
-        std::string bind_err;
-        if (!embedded.start(g.workspace, &bind_err)) {
-            print_utf8_err("error: cannot start embedded server: " + bind_err + "\n");
-            return 1;
-        }
-        base_url = embedded.base_url;
     }
 
     auto exec = [&](const HttpRequestSpec& spec) { return do_http(base_url, spec, g.timeout); };
@@ -594,6 +623,85 @@ int real_main(int argc, char** argv) {
         print_utf8_err(error_text(last.body) + "\n");
     }
     return compute_exit(last.status, last.body, c);
+}
+
+int real_main(int argc, char** argv) {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+    std::vector<std::string> args = utf8_args(argc, argv);
+    sa_cli::GlobalFlags g;
+    Command c;
+    std::string err;
+    ParseResult pr = parse_command_line(args, g, c, err);
+    if (pr == ParseResult::UsageError &&
+        (args.empty() || err.find("subcommand is required") != std::string::npos)) {
+        // No arguments (or only global flags): the Alpha-v0.3 default is the
+        // interactive mode, not a usage error (require_subcommand(1) rejected
+        // the argv before any subcommand matched).
+        pr = ParseResult::Ok;
+        c.kind = Kind::Repl;
+    }
+    if (pr == ParseResult::Help) {
+        print_utf8(err);  // help text carried in err
+        return 0;
+    }
+    if (pr == ParseResult::UsageError) {
+        print_utf8_err("error: " + err + "\n(try --help)\n");
+        return 2;
+    }
+    if (!g.data_root.empty()) {
+        // CLI flag wins over the ambient environment (CONVENTIONS 11).
+#ifdef _WIN32
+        _putenv_s("EDITOR_DATA_ROOT", g.data_root.c_str());
+#else
+        setenv("EDITOR_DATA_ROOT", g.data_root.c_str(), 1);
+#endif
+    }
+    Style::Init(g.color);
+
+    // No arguments (or an explicit `repl`): the Alpha-v0.3 interactive mode.
+    if (args.empty() || c.kind == Kind::Repl) {
+        Embedded embedded;
+        std::string base_url;
+        if (!EnsureBackend(g, embedded, &base_url)) return 1;
+        sa_cli::ReplHost host;
+        host.run_tokens = [&g, &embedded, base_url](const std::vector<std::string>& tokens) {
+            sa_cli::GlobalFlags line_flags = g;  // per-line flags may override
+            Command line_cmd;
+            std::string line_err;
+            if (parse_command_line(tokens, line_flags, line_cmd, line_err) !=
+                ParseResult::Ok) {
+                print_utf8_err("error: " + line_err + "\n");
+                return 2;
+            }
+            if (!line_flags.data_root.empty()) {
+#ifdef _WIN32
+                _putenv_s("EDITOR_DATA_ROOT", line_flags.data_root.c_str());
+#else
+                setenv("EDITOR_DATA_ROOT", line_flags.data_root.c_str(), 1);
+#endif
+            }
+            if (line_cmd.kind == Kind::EnvGet || line_cmd.kind == Kind::EnvSet)
+                return run_env(line_cmd, line_flags);
+            return RunParsed(line_flags, line_cmd, embedded, base_url);
+        };
+        host.http = [&g, base_url](const HttpRequestSpec& spec, int* status) {
+            Executed ex = do_http(base_url, spec, g.timeout);
+            if (status) *status = ex.transport_ok ? ex.status : 0;
+            return ex.body;
+        };
+        host.history_path =
+            sa_core::paths::join(sa::editor_root(), ".editor_cli_history");
+        return sa_cli::RunRepl(g, host);
+    }
+
+    if (c.kind == Kind::EnvGet || c.kind == Kind::EnvSet) return run_env(c, g);
+
+    Embedded embedded;
+    std::string base_url;
+    if (!EnsureBackend(g, embedded, &base_url)) return 1;
+    return RunParsed(g, c, embedded, base_url);
 }
 
 }  // namespace

@@ -16,10 +16,18 @@ namespace p8 {
 
 using Json = nlohmann::ordered_json;
 
-// Table is the three-pane browser (表列表 / 记录 / 详情) — the old separate
-// "Tables" page was absorbed into its left pane (Python TUI parity). Plugins and
-// Cloud mirror the desktop frontend's plugins/cloud pages.
-enum class Page { Mods, Table, Bugfix, Agent, Plugins, Cloud };
+// Main is the Alpha-v0.3 home screen: the three-pane browser (📦 Mods / Cfgs
+// two-level tree | 📋 Records | 📝 Detail). The rest are the centered modal
+// dialogs the Alpha opened over it (a/c/p/b keys) — `page` doubles as the
+// "which modal is up" selector, None == Main.
+enum class Page { Main, Bugfix, Agent, Plugins, Cloud };
+
+// One flat row of the left pane's two-level tree: a mod node (table_index<0)
+// or, under the expanded+selected mod, one of its Cfg tables.
+struct TreeItem {
+    int mod_index = -1;
+    int table_index = -1;  // index into `tables` (the selected mod's cfg list)
+};
 
 // Which pane of the browse page owns the keyboard.
 enum class Focus { Tables, Rows, Detail };
@@ -50,8 +58,13 @@ enum class Intent {
     LoadCloudFiles,// GET /api/cloud/local_files + /api/cloud/list
     CloudSync,     // POST /api/cloud/sync
     CloudTest,     // POST /api/cloud/test
+    CreateMod,     // POST /api/mods/create {title} (N on the tree pane)
     LoadAiSettings,// GET /api/ai/settings (seeds permission_mode)
     SetPermissionMode, // PUT /api/ai/settings {permissionMode}
+    SetNoCodeMode,     // PUT /api/settings/editor {noCodeMode} (Ctrl-N)
+    FetchFieldSuggestions, // GET /api/effect_suggest?mode&q= (or /api/roles)
+    FetchSlotEntries,  // dict-pool / role entries for the active slot
+    ReportUsage,       // POST /api/usage {kind,key} (accepted candidate)
     Quit,
 };
 
@@ -146,6 +159,49 @@ struct ValidateOverlay {
     std::string error;  // transport / HTTP failure text (empty on success)
 };
 
+// A parameter slot of a suggested code (backend /api/effect_suggest items[].slots).
+// kind=="dict": @NAME@ placeholder filled from a pool (dict); kind=="number":
+// a lone-letter numeric slot. `count` is the number of occurrences (same value
+// fills them all). Mirrors the GUI's SuggestionSlot.
+struct SuggestionSlot {
+    std::string kind;   // "dict" | "number"
+    std::string name;   // ATTR / V ...
+    std::string dict;   // pool name (ATTR/ROLE/...); empty = no lookup pool
+    std::string label;  // Chinese label (属性/数值...)
+    int count = 1;
+};
+
+// One field-editing candidate: an effect code (with optional slots) or a role.
+// For roles code==id, desc==name, template_==id.
+struct FieldSuggestion {
+    std::string code;        // insertable text (rendered form)
+    std::string desc;        // human description (primary line)
+    std::string template_;   // raw_code with placeholders — stable usage key
+    std::vector<SuggestionSlot> slots;
+};
+
+// No-code-mode in-place candidate list + the slot fill-in sub-list shown while
+// editing a form field. Pure state machine: fetches are issued as intents.
+struct FieldSuggestState {
+    bool active = false;      // candidate list visible (during editing_field)
+    std::string mode;         // effect|condition|cost|action|screen|role ("" = none)
+    std::string query;        // typed filter over the cached candidates
+    std::vector<FieldSuggestion> all;  // cached from the fetch (no per-key GET)
+    std::vector<int> shown;            // FilterSuggestions(all, query)
+    int sel = 0;
+    // ---- slot fill-in (accept a slotted candidate -> fill every slot) ----
+    bool slot_mode = false;
+    int cand = 0;             // index into `all` for the candidate being filled
+    int slot_i = 0;           // slot currently being filled
+    std::string slot_q;       // filter over slot_entries
+    std::vector<std::pair<std::string, std::string>> slot_entries;  // (id, name)
+    std::vector<int> entry_shown;                                  // filtered
+    int entry_sel = 0;
+    std::map<std::string, std::string> slot_values;  // slot name -> chosen value
+    // ---- usage report payload (consumed + cleared by the intent runner) ----
+    std::string pending_kind, pending_key;
+};
+
 // One browsable row of a cfg table: the row key, a flattened value preview for
 // display, and the compact JSON text used to seed the cell editor.
 struct TableRow {
@@ -171,24 +227,31 @@ struct Table {
 // A single, normalized keypress. The interactive layer maps ftxui::Event onto
 // this so the state machine is testable without a terminal.
 struct KeyInput {
-    enum Kind { None, Up, Down, Left, Right, Enter, Escape, Tab, Backspace,
+    enum Kind { None, Up, Down, Left, Right, Enter, Escape, Tab, ShiftTab, Backspace,
                 Char, Home, End, PageUp, PageDown, CtrlChar } kind = None;
     std::string text;  // for Char: the typed UTF-8 sequence (one grapheme)
     char ctrl = 0;     // for CtrlChar: the control letter (e.g. 'r', 'q')
 };
 
 struct AppState {
-    Page page = Page::Mods;
+    Page page = Page::Main;
 
-    // mods
+    // mods + the left pane's two-level tree (mod node -> cfg nodes). The tree
+    // cursor addresses TreeItems(); `expanded_mod` marks which mod node shows
+    // its cfg list (only the selected mod has one — that is what the backend
+    // lists). <0 = collapsed.
     std::vector<ModEntry> mods;
-    int mod_sel = 0;
+    int tree_sel = 0;
+    int expanded_mod = -1;
+    int mod_sel = 0;  // index of the selected mod within mods
+    bool mod_input_active = false;  // N: typing a title for POST /api/mods/create
+    std::string mod_input;
     std::string selected_mod;
 
     // tables (left pane of the browse page)
     std::vector<std::string> tables;
-    int table_sel = 0;
-    std::string table_filter;
+    std::string table_filter;  // `/` filter over the tree's cfg nodes
+    bool filtering = false;    // `/` filter capture: every char feeds the filter
 
     // current table (middle pane: browse + edit)
     Table table;
@@ -239,12 +302,18 @@ struct AppState {
     std::string permission_mode = "confirm";  // "confirm" | "full"
     ConfirmOverlay confirm;
 
+    // shared editor setting (backend GET/PUT /api/settings/editor): picking
+    // roles/effects without hand-writing code DSL. Ctrl-N toggles.
+    bool no_code_mode = false;
+    FieldSuggestState sug;  // live while editing_field (see p8_cfg.h helpers)
+
     // overlays
     SearchOverlay search;      // Ctrl-K global talk search
     ValidateOverlay validate;  // v: validate the open table
 
     // shared chrome
     std::string status;   // one-line transient status / error
+    std::string agent_label;  // "provider · model" for the AI modal title
     bool show_help = false;
 
     // helpers --------------------------------------------------------------
@@ -253,6 +322,9 @@ struct AppState {
     std::vector<int> VisibleRows() const;
     // Tables currently visible after the table filter (indices into tables).
     std::vector<int> VisibleTables() const;
+    // The left pane's flat tree rows: every mod, then (under the expanded
+    // selected mod) its filter-visible cfgs.
+    std::vector<TreeItem> TreeItems() const;
     // Chat transcript rows for the current message list (used by render too).
 };
 

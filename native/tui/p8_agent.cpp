@@ -108,6 +108,7 @@ std::string AgentClient::SendTurn(const std::string& system, const std::vector<C
     req.headers.emplace_back("Accept", "text/event-stream");
     req.headers.emplace_back("Authorization", "Bearer " + settings_.api_key);
     req.timeout_seconds = 120.0;
+    req.follow_redirects = true;  // AI 上游：保持跟随语义（跨源跳自动剥离凭据）
     req.body = BuildChatBody(settings_.model, settings_.temperature, system, history).dump();
 
     Response resp = sa_core::http::request(req);
