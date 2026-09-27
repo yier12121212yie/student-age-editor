@@ -1,0 +1,50 @@
+# 「学生时代模组编辑器」自托管网关 systemd 单元（示例，按需修改）
+#
+# 安装：
+#   sudo cp editor-gateway.service /etc/systemd/system/editor-gateway.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now editor-gateway
+# 观察：
+#   systemctl status editor-gateway
+#   journalctl -u editor-gateway -f          # 标准输出/错误都进 journald
+#
+# 前置（见 README-部署.md）：
+#   - server-linux 包已解压到 /opt/editor（含 backend 与 backend_gateway），
+#     且两者属主为 editor（或至少 editor 可读可执行）；
+#   - /etc/editor/gateway.json 已写好且 editor 可读（建议 600、属主 editor）；
+#   - user_data_root（示例 /srv/editor-data）属主 editor。
+
+[Unit]
+Description=StudentAge Editor Gateway (backend_gateway, 自托管在线服务)
+# 仅依赖网络可达；TLS 由前置的 Caddy 终结，本服务不需要等它。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 专用非登录系统用户（useradd -r -m editor 创建，组同名）。
+User=editor
+Group=editor
+WorkingDirectory=/opt/editor
+ExecStart=/opt/editor/backend_gateway --config /etc/editor/gateway.json
+# 安全建议：前面已有 Caddy 反向代理时，8770 不应直接暴露公网。
+# backend_gateway 默认绑定 0.0.0.0（见 native/gateway/main.cpp），可改用：
+#   ExecStart=/opt/editor/backend_gateway --config /etc/editor/gateway.json --host 127.0.0.1
+# 或者在防火墙上拒相对外访问 8770（见 README-部署.md 步骤 6）。
+Restart=always
+RestartSec=3
+
+# ---- 沙箱加固（示例，按需收紧/放宽） --------------------------------------
+NoNewPrivileges=true
+# 整个文件系统对进程只读（/dev /proc /sys 除外），仅 ReadWritePaths 可写。
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# /srv/editor-data 需要可写：user_data_root、账号工作区、默认状态目录
+# <user_data_root>/.gateway（会话/用量/实例日志）都在其下。
+# 若在 gateway.json 里把 state_dir 或某账号 data_dir 指到别处（如换盘到
+# /mnt/...），必须在这里追加对应的 ReadWritePaths=，否则启动/写盘会失败。
+ReadWritePaths=/srv/editor-data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# 「学生时代模组编辑器」自托管网关 · Caddy 反向代理配置（示例，按需修改）
+#
+# 用法：把下面站点块并入 /etc/caddy/Caddyfile（或 include 独立文件），
+#       将 editor.example.com 换成你的公网域名（A/AAAA 记录先指向本机），
+#       然后：caddy validate --config /etc/caddy/Caddyfile
+#             sudo systemctl reload caddy
+# Caddy 会自动申请并续期 Let's Encrypt 证书，无需手工配置 TLS。
+
+editor.example.com {
+	# ---- 基础安全头（示例，按需修改） --------------------------------------
+	# HSTS：确认全站 HTTPS 稳定后再考虑加 includeSubDomains / preload。
+	# nosniff / DENY / Referrer-Policy 为常规加固，不影响编辑器功能；
+	# 若确有 iframe 内嵌需求，改用 CSP frame-ancestors 精确放行。
+	# 注意：跨域放行（CORS）由网关按 gateway.json 的 trusted_origins 处理，
+	#       不要在这里再加 Access-Control-Allow-*，否则会产生重复响应头。
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# ---- 压缩 -----------------------------------------------------------------
+	# 网页静态产物（main.dart.js 等大文件）与 JSON API 响应都受益。
+	encode gzip
+
+	# ---- 反向代理到网关 --------------------------------------------------------
+	# 127.0.0.1:8770 = gateway.json 的 listen_port（默认 8770，改动需同步）；
+	# 配了 --host 127.0.0.1 的 systemd 单元时，只有 Caddy 能到达网关。
+	reverse_proxy 127.0.0.1:8770
+}

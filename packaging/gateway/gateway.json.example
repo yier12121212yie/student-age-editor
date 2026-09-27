@@ -1,0 +1,33 @@
+{
+  "user_data_root": "/srv/editor-data",
+  "web_root": "/opt/editor/web",
+  "listen_port": 8770,
+  "trusted_origins": [
+    "https://editor.example.com"
+  ],
+  "session_ttl_hours": 24,
+  "instance": {
+    "max": 8,
+    "idle_minutes": 30
+  },
+  "state_dir": "/srv/editor-data/.gateway",
+  "accounts": [
+    {
+      "name": "alice",
+      "salt": "0123456789abcdef0123456789abcdef",
+      "password_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "disabled": false
+    }
+  ],
+  "ai_relay": {
+    "enabled": false,
+    "provider": "openai_compatible",
+    "base_url": "https://api.example.com/v1",
+    "api_key": "",
+    "model": "example-model",
+    "models": [
+      "example-model"
+    ],
+    "daily_limit": 0
+  }
+}
