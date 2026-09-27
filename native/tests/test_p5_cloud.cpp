@@ -1779,7 +1779,15 @@ TEST_CASE("P5 cloud routes: providers list masks secrets + drivers order", "[p5]
     json info;
     info["id"] = "mask1";
     info["type"] = "webdav";
-    info["config"] = json{{"url", "http://x"}, {"token", "abc"}, {"password", ""}, {"passphrase", "pp"}};
+    info["config"] = json{{"url", "http://x"},
+                          {"token", "abc"},
+                          {"password", ""},
+                          {"passphrase", "pp"},
+                          {"client_id", "cid-visible"},
+                          {"client_secret", "cs-top"},
+                          {"access_key", "AK"},
+                          {"api_key", "api"},
+                          {"credential", "cred"}};
     sa::cloud::add_provider(info);
 
     sa::Router r;
@@ -1792,6 +1800,24 @@ TEST_CASE("P5 cloud routes: providers list masks secrets + drivers order", "[p5]
     CHECK(p["config"]["token"] == "***");
     CHECK(p["config"]["password"] == "");   // falsy masked to ""
     CHECK(p["config"]["passphrase"] == "***");
+    // Widened keyword set: the secret-family keys providers actually store.
+    CHECK(p["config"]["client_secret"] == "***");
+    CHECK(p["config"]["access_key"] == "***");
+    CHECK(p["config"]["api_key"] == "***");
+    CHECK(p["config"]["credential"] == "***");
+    CHECK(p["config"]["client_id"] == "cid-visible");  // not a secret keyword
+    // The masked config round-trips: PUT-ing it back verbatim restores every
+    // "***" value from the stored provider (the edit-save flow's contract).
+    auto rt = sat::call_router(r, "PUT", "/api/cloud/providers/mask1", {},
+                               json{{"config", p["config"]}});
+    REQUIRE(rt.status == 200);
+    auto stored = sa::cloud::get_provider("mask1");
+    REQUIRE(stored.has_value());
+    CHECK((*stored)["config"]["client_secret"] == "cs-top");
+    CHECK((*stored)["config"]["access_key"] == "AK");
+    CHECK((*stored)["config"]["api_key"] == "api");
+    CHECK((*stored)["config"]["credential"] == "cred");
+    CHECK((*stored)["config"]["token"] == "abc");
     CHECK(resp.json_payload["drivers"].get<std::vector<std::string>>() ==
           std::vector<std::string>{"local", "webdav", "openlist", "alist", "baidu_netdisk",
                                    "baidu", "123", "123pan", "google_drive", "gdrive",
@@ -1807,6 +1833,35 @@ TEST_CASE("P5 cloud routes: providers list masks secrets + drivers order", "[p5]
     CHECK(keys_of(st.json_payload) == std::vector<std::string>{"running", "provider", "action",
                                                                "progress", "total", "last",
                                                                "error", "history"});
+}
+
+TEST_CASE("P5 cloud routes: /test restore_from fills masked values", "[p5][cloud][routes]") {
+    CloudFixture fx("routes_tst");
+    json info;
+    info["id"] = "loc1";
+    info["type"] = "local";
+    info["config"] = json{{"root", fx.remote()}, {"client_secret", "cs-top"}};
+    sa::cloud::add_provider(info);
+
+    sa::Router r;
+    sa::register_cloud_routes(r);
+
+    // Without restore_from the driver sees the literal sentinel.
+    auto bare = sat::call_router(r, "POST", "/api/cloud/test", {},
+        json{{"type", "local"}, {"config", json{{"root", "***"}}}});
+    REQUIRE(bare.status == 400);
+    CHECK(bare.json_payload["error"].get<std::string>().find("local root not found") == 0);
+
+    // With restore_from the "***" is filled from the stored provider first.
+    auto restored = sat::call_router(r, "POST", "/api/cloud/test", {},
+        json{{"type", "local"}, {"config", json{{"root", "***"}}}, {"restore_from", "loc1"}});
+    REQUIRE(restored.status == 200);
+    CHECK(restored.json_payload["ok"] == true);
+
+    // Unknown provider id: pre-pass is a silent no-op (mirrors PUT's try/except).
+    auto ghost = sat::call_router(r, "POST", "/api/cloud/test", {},
+        json{{"type", "local"}, {"config", json{{"root", fx.remote()}}}, {"restore_from", "ghost"}});
+    REQUIRE(ghost.status == 200);
 }
 
 TEST_CASE("P5 cloud routes: provider CRUD envelopes", "[p5][cloud][routes]") {

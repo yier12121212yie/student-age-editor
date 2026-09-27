@@ -110,6 +110,12 @@ class Driver {
     virtual void mkdir(const std::string& remote_path) = 0;
     virtual json config_schema() { return json::object(); }
 
+    // 全量同步逐文件传输能否并发（性能 P1）。Local/WebDAV/OpenList 每次
+    // put/get 都是无状态请求，可并发；网盘驱动会懒刷新 token（就地写
+    // token_ / config_，且百度等刷新会轮换 refresh_token，多实例并发刷新
+    // 会被服务商判作重放），保持串行。
+    virtual bool parallel_transfers() const { return false; }
+
     json& config() { return config_; }
 
   protected:
@@ -144,6 +150,12 @@ json add_provider(const json& info);       // add_provider (ValueError on bad ty
 json update_provider(const std::string& pid, const json& patch);
 void remove_provider(const std::string& pid);
 std::optional<json> get_provider(const std::string& pid);  // None -> nullopt
+
+// 托管模式 SSRF 护栏（安全批次 A）：置 true 后云同步唯一出站漏斗
+// http_request() 会把非公网 http(s) URL 全部以 ValueError 拒绝。由
+// run_server() 在 --cloud-public-only 时开启（网关 fork 的 backend 默认
+// 带此参数）；桌面端默认 false —— 局域网 NAS/WebDAV 是合法场景。
+void set_public_only(bool on);
 
 // ---------------------------------------------------------------------------
 // Sync engine (cloud_sync.py:1836-2346)

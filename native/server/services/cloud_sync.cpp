@@ -4,6 +4,7 @@
 #include "cloud_sync.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -16,6 +17,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <thread>
 
 #include "sa_core/atomic_io.h"
 #include "sa_core/http_client.h"
@@ -217,9 +219,116 @@ struct HttpResult {
     std::vector<std::pair<std::string, std::string>> headers;
 };
 
+// ---------------------------------------------------------------------------
+// 托管模式 SSRF 护栏（安全批次 A）：--cloud-public-only（网关 fork 的
+// backend 默认带）时，云同步出站 URL 必须是公网 http(s) 地址。这里做
+// 文本层校验：主机字面量（RFC1918/环回/链路本地/ULA/CGNAT/组播等）与
+// 惯用内网主机名（localhost/.local/…）一律拒绝；普通域名放行 —— DNS
+// 解析后逐地址复核（rebinding 防御）列入批次 C 待办。
+// ---------------------------------------------------------------------------
+std::atomic<bool> g_cloud_public_only{false};
+
+bool host_is_public_http(std::string h, std::string* why) {
+    h = sp::trim(sp::lower(std::move(h)));
+    // IPv6 字面量去掉方括号。
+    if (h.size() >= 2 && h.front() == '[' && h.back() == ']')
+        h = h.substr(1, h.size() - 2);
+    if (h.empty()) {
+        *why = "empty host";
+        return false;
+    }
+    if (h == "localhost" || h == "ip6-localhost" || h == "metadata" ||
+        sp::ends_with(h, ".localhost") || sp::ends_with(h, ".local") ||
+        sp::ends_with(h, ".internal") || sp::ends_with(h, ".lan") ||
+        sp::ends_with(h, ".home") || sp::ends_with(h, ".corp")) {
+        *why = "internal hostname: " + h;
+        return false;
+    }
+    // 点分 IPv4 字面量：逐段解析后按保留网段拒绝。
+    auto ipv4_parts = [](const std::string& s, int out[4]) -> bool {
+        int idx = 0, val = 0, digits = 0;
+        for (char c : s) {
+            if (c >= '0' && c <= '9') {
+                val = val * 10 + (c - '0');
+                if (++digits > 3 || val > 255) return false;
+            } else if (c == '.') {
+                if (digits == 0 || idx == 3) return false;
+                out[idx++] = val;
+                val = 0;
+                digits = 0;
+            } else {
+                return false;
+            }
+        }
+        if (digits == 0 || idx != 3) return false;
+        out[3] = val;
+        return true;
+    };
+    int ip[4];
+    if (ipv4_parts(h, ip)) {
+        const int a = ip[0], b = ip[1];
+        bool bad =
+            a == 0 ||                                            // 0.0.0.0/8
+            a == 10 ||                                           // RFC1918
+            a == 127 ||                                          // loopback
+            (a == 169 && b == 254) ||                            // link-local + metadata
+            (a == 172 && b >= 16 && b <= 31) ||                  // RFC1918
+            (a == 192 && b == 168) ||                            // RFC1918
+            (a == 100 && b >= 64 && b <= 127) ||                 // CGNAT
+            (a == 192 && b == 0) ||                              // IETF protocol
+            (a == 198 && (b == 18 || b == 19)) ||                // benchmark
+            a >= 224;                                            // multicast/reserved
+        if (bad) {
+            *why = "private/reserved IPv4: " + h;
+            return false;
+        }
+        return true;
+    }
+    if (h.find(':') != std::string::npos) {
+        // IPv6 字面量：::1 / :: / 链路本地 fe80::/10 / ULA fc00::/7 / 组播
+        // ff00::/8 一律拒绝；IPv4 映射 ::ffff:a.b.c.d 递归按 v4 判断；
+        // 其余仅放行全球单播 2000::/3。
+        std::string lower6 = h;
+        if (lower6.rfind("::ffff:", 0) == 0) return host_is_public_http(lower6.substr(7), why);
+        if (lower6 == "::" || lower6 == "::1") {
+            *why = "IPv6 loopback/unspecified: " + h;
+            return false;
+        }
+        if (lower6.rfind("fe8", 0) == 0 || lower6.rfind("fe9", 0) == 0 ||
+            lower6.rfind("fea", 0) == 0 || lower6.rfind("feb", 0) == 0 ||
+            lower6.rfind("fc", 0) == 0 || lower6.rfind("fd", 0) == 0 ||
+            lower6.rfind("ff", 0) == 0) {
+            *why = "IPv6 link-local/ULA/multicast: " + h;
+            return false;
+        }
+        if (lower6[0] != '2') {
+            *why = "IPv6 not in 2000::/3 global range: " + h;
+            return false;
+        }
+        return true;
+    }
+    return true;  // 普通域名：文本层放行（DNS 复核见上注）
+}
+
+bool url_is_public_http(const std::string& url, std::string* why) {
+    sa_core::http::Url u;
+    if (!sa_core::http::parse_url(url, &u)) {
+        *why = "malformed or non-http(s) URL: " + url;
+        return false;
+    }
+    return host_is_public_http(u.host, why);
+}
+
 HttpResult http_request(const std::string& url, const std::string& method,
                         std::vector<std::pair<std::string, std::string>> headers,
                         const std::string* data, double timeout) {
+    // SSRF 护栏在唯一出站漏斗统一执行：驱动层（WebDAV/OpenList/网盘直连）
+    // 拼出的每个 URL 都会路过这里。
+    if (g_cloud_public_only.load(std::memory_order_relaxed)) {
+        std::string why;
+        if (!url_is_public_http(url, &why))
+            raise_typed("ValueError", "blocked by cloud-public-only: " + why);
+    }
     // urllib carries headers in a dict: assigning the same key twice means
     // LAST WINS and exactly one header line goes on the wire (at the FIRST
     // insertion position). The vector ports (e.g. OpenListDriver.put:
@@ -265,6 +374,14 @@ HttpResult http_request(const std::string& url, const std::string& method,
     req.headers = std::move(headers);
     if (data) req.body = *data;
     req.timeout_seconds = timeout;
+    // 云驱动（WebDAV/网盘）依赖 3xx 拿 CDN 下载地址；护栏因此延伸到重定向链
+    // 每一跳——恶意/被劫持的云服务器可以把 302 指向内网地址。
+    req.follow_redirects = true;
+    req.redirect_allowed = [](const std::string& u) {
+        if (!g_cloud_public_only.load(std::memory_order_relaxed)) return true;
+        std::string why;
+        return url_is_public_http(u, &why);
+    };
     sa_core::http::Response resp = sa_core::http::request(req);
     // urlopen transport failures re-raise; type/str mirror urllib's shapes.
     switch (resp.error) {
@@ -614,6 +731,8 @@ class LocalDriver : public Driver {
   public:
     using Driver::Driver;
 
+    bool parallel_transfers() const override { return true; }
+
     std::string root() const {
         std::string r = json_str_or(config_, "root");
         if (r.empty()) r = json_str_or(config_, "path");
@@ -731,6 +850,8 @@ bool digits_only(const std::string& s) {
 class WebDAVDriver : public Driver {
   public:
     using Driver::Driver;
+
+    bool parallel_transfers() const override { return true; }
 
     std::string base() const {
         std::string u = p4::strip(json_str_or(config_, "url"));
@@ -909,6 +1030,8 @@ class WebDAVDriver : public Driver {
 class OpenListDriver : public Driver {
   public:
     using Driver::Driver;
+
+    bool parallel_transfers() const override { return true; }
 
     std::string base() const {
         std::string u = p4::strip(json_str_or(config_, "url"));
@@ -3348,6 +3471,44 @@ void push_history(const std::string& provider_id, const std::string& mod_name,
 std::string local_maybe_str(const json& v) {
     return v.is_string() ? v.get<std::string>() : sa_core::py_str(v);
 }
+
+// ---------------------------------------------------------------------------
+// 全量同步并发 Worker（性能 P1）：消除逐文件串行上传/下载的网络往返瓶颈。
+// 固定 4 个出站并发；如需进一步提速可在 4~8 区间上调本常量（WebDAV/NAS 对
+// 8 并发普遍友好，网盘直连 API 普遍有 QPS 惩罚，>8 容易触发限频，且
+// sa_core::http 连接池为进程级复用，4 并发已吃掉逐文件 RTT 串行的大头）。
+// 实现：std::thread + 原子下标游标的固定大小简易池 —— 任务集合在进入前已
+// 静态确定（all_rels / paths），无需 condition_variable 任务队列；结果经
+// per-index slot 回填，join 后按既定顺序重组（见两处调用点）。
+// ---------------------------------------------------------------------------
+constexpr size_t kCloudSyncWorkers = 4;
+
+// 把 [0, count) 的下标分派给至多 nthreads 个线程执行 fn(worker_idx, i)，
+// join 全部线程后返回。fn 抛出的异常不得逃逸（worker 内部必须自行捕获，
+// 否则 std::thread 会 std::terminate）。worker_idx 对线程恒定且互斥，可用于
+// 每线程的独占资源槽（如 worker 本地 Driver 实例）。
+template <typename Fn>
+void run_parallel_for(size_t count, size_t nthreads, Fn&& fn) {
+    if (count == 0) return;
+    if (nthreads > count) nthreads = count;
+    if (nthreads <= 1) {  // 少量文件直接内联，免线程创建开销
+        for (size_t i = 0; i < count; ++i) fn(size_t{0}, i);
+        return;
+    }
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> threads;
+    threads.reserve(nthreads);
+    for (size_t w = 0; w < nthreads; ++w) {
+        threads.emplace_back([w, count, &next, &fn]() {
+            for (;;) {
+                size_t i = next.fetch_add(1, std::memory_order_relaxed);
+                if (i >= count) return;
+                fn(w, i);
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+}
 }  // namespace
 
 json sync_status() {
@@ -3665,33 +3826,45 @@ json sync_mod_folder(const std::string& provider_id, const std::string& directio
             res["message"] = "未发现文件：本地与远端均为空或 Mod 为空，请确认 Mod 名称与远端路径";
             return res;
         }
-        json results = json::array();
-        long long idx = 0;
-        for (const auto& rel : all_rels) {
-            set_sync_state(json{{"progress", idx + 1}, {"last", rel}});
-            ++idx;
-            bool has_local = local_map.count(rel) != 0;
-            bool has_remote = remote_map.count(rel) != 0;
-            std::optional<std::string> local_full =
-                rel.empty() ? std::optional<std::string>(mod_dir)
-                            : safe_rel_join(mod_dir, rel);
-            if (!local_full.has_value()) {
-                json e;
-                e["rel"] = rel;
-                e["ok"] = false;
-                e["action"] = "skip_unsafe_path";
-                e["error"] = "远端路径不安全（含 .. 或盘符），已跳过";
-                results.push_back(e);
-                continue;
-            }
-            try {
+        // 逐文件传输并发化（性能 P1，kCloudSyncWorkers）：结果经 per-index
+        // slot 回填、join 后按 all_rels 既定顺序重组——信封 result 顺序与串行
+        // 版一致。循环内唯一的共享可变结构是 local_map（懒 sha 回写；每个
+        // rel 只被处理一次、回写无读者，仅为保持 Python 语义），所有触碰统一
+        // 走 map_mu。网盘驱动会懒刷新 token（多实例并发刷新会被服务商判作
+        // 重放），仅对 parallel_transfers()==true 的驱动开并发。进度
+        // progress 改为已完成计数、"last" 不再是处理顺序——两者都只是
+        // /api/cloud/status 的 UI 提示，不在返回信封内。
+        std::vector<std::string> rels(all_rels.begin(), all_rels.end());
+        std::vector<json> slots(rels.size());
+        std::mutex map_mu;
+        std::atomic<long long> done{0};
+        run_parallel_for(
+            rels.size(), driver->parallel_transfers() ? kCloudSyncWorkers : 1,
+            [&](size_t, size_t i) {
+                const std::string& rel = rels[i];
+                json& e = slots[i];
+                bool has_local;
+                {
+                    std::lock_guard<std::mutex> lk(map_mu);
+                    has_local = local_map.count(rel) != 0;
+                }
+                bool has_remote = remote_map.count(rel) != 0;
+                std::optional<std::string> local_full =
+                    rel.empty() ? std::optional<std::string>(mod_dir)
+                                : safe_rel_join(mod_dir, rel);
+                if (!local_full.has_value()) {
+                    e["rel"] = rel;
+                    e["ok"] = false;
+                    e["action"] = "skip_unsafe_path";
+                    e["error"] = "远端路径不安全（含 .. 或盘符），已跳过";
+                    return;
+                }
                 auto push_action = [&](const std::string& action) {
-                    json e;
                     e["rel"] = rel;
                     e["ok"] = true;
                     e["action"] = action;
-                    results.push_back(e);
                 };
+                try {
                 if (direction == "upload") {
                     if (!has_local) {
                         if (delete_extra && has_remote) {
@@ -3704,12 +3877,18 @@ json sync_mod_folder(const std::string& provider_id, const std::string& directio
                         if (!dry_run) driver->put(*local_full, remote_base + "/" + rel);
                         push_action("upload_new");
                     } else {
-                        auto [ls, lm, lh] = local_map[rel];
+                        long long ls, lm;
+                        std::string lh;
+                        {
+                            std::lock_guard<std::mutex> lk(map_mu);
+                            std::tie(ls, lm, lh) = local_map[rel];
+                        }
                         const Obj& ro = remote_map[rel];
                         long long rs = ro.size, rm = ro.mtime;
                         std::string rsha = ro.sha1;
                         if (lh.empty() && ls == rs) {
                             lh = lazy_sha(*local_full);
+                            std::lock_guard<std::mutex> lk(map_mu);
                             local_map[rel] = {ls, lm, lh};
                         }
                         if (need_sync(ls, lm, lh, rs, rm, rsha, *local_full)) {
@@ -3729,12 +3908,18 @@ json sync_mod_folder(const std::string& provider_id, const std::string& directio
                         }
                         push_action("download_new");
                     } else {
-                        auto [ls, lm, lh] = local_map[rel];
+                        long long ls, lm;
+                        std::string lh;
+                        {
+                            std::lock_guard<std::mutex> lk(map_mu);
+                            std::tie(ls, lm, lh) = local_map[rel];
+                        }
                         const Obj& ro = remote_map[rel];
                         long long rs = ro.size, rm = ro.mtime;
                         std::string rsha = ro.sha1;
                         if (lh.empty() && ls == rs && !rsha.empty()) {
                             lh = lazy_sha(*local_full);
+                            std::lock_guard<std::mutex> lk(map_mu);
                             local_map[rel] = {ls, lm, lh};
                         }
                         if (need_sync(ls, lm, lh, rs, rm, rsha, *local_full)) {
@@ -3758,12 +3943,18 @@ json sync_mod_folder(const std::string& provider_id, const std::string& directio
                         if (!dry_run) driver->put(*local_full, remote_base + "/" + rel);
                         push_action("sync_upload");
                     } else if (has_local && has_remote) {
-                        auto [ls, lm, lh] = local_map[rel];
+                        long long ls, lm;
+                        std::string lh;
+                        {
+                            std::lock_guard<std::mutex> lk(map_mu);
+                            std::tie(ls, lm, lh) = local_map[rel];
+                        }
                         const Obj& ro = remote_map[rel];
                         long long rs = ro.size, rm = ro.mtime;
                         std::string rsha = ro.sha1;
                         if (lh.empty() && ls == rs && !rsha.empty()) {
                             lh = lazy_sha(*local_full);
+                            std::lock_guard<std::mutex> lk(map_mu);
                             local_map[rel] = {ls, lm, lh};
                         }
                         if (need_sync(ls, lm, lh, rs, rm, rsha, *local_full)) {
@@ -3785,14 +3976,24 @@ json sync_mod_folder(const std::string& provider_id, const std::string& directio
                 } else {
                     raise_value_error("unknown direction");
                 }
-            } catch (const std::exception& e) {
-                json err;
-                err["rel"] = rel;
-                err["ok"] = false;
-                err["error"] = exception_repr_full(e);
-                results.push_back(err);
-            }
-        }
+                } catch (const std::exception& ex) {
+                    e["rel"] = rel;
+                    e["ok"] = false;
+                    e["error"] = exception_repr_full(ex);
+                } catch (...) {
+                    // 串行版会把非 std 异常抛给外层 catch(...)（整体失败）；
+                    // 并发下异常逃出 worker 等于 std::terminate，只能降级为
+                    // per-file 错误记录。现有代码全部抛 std 派生异常，此分支
+                    // 纯为兜底。
+                    e["rel"] = rel;
+                    e["ok"] = false;
+                    e["error"] = "RuntimeError: unknown";
+                }
+                set_sync_state(
+                    json{{"progress", done.fetch_add(1) + 1}, {"last", rel}});
+            });
+        json results = json::array();
+        for (auto& s : slots) results.push_back(std::move(s));
         set_sync_state(json{{"running", false}, {"progress", total}});
         push_history(provider_id, mod_name, "folder_" + direction,
                      static_cast<long long>(results.size()));
@@ -3965,25 +4166,37 @@ json sync_mod_files(const std::string& provider_id, const std::string& direction
                         {"error", ""}});
     json results = json::array();
     try {
-        for (size_t i = 0; i < paths.size(); ++i) {
-            const std::string& rel = paths[i];
-            set_sync_state(
-                json{{"progress", static_cast<long long>(i + 1)}, {"last", rel}});
-            try {
-                json r = sync_single_file(provider_id, direction, mod_name, rel, dry_run);
+        // 逐文件传输并发化（性能 P1）：sync_single_file 每次调用内部各自
+        // get_driver（token 状态互不共享），网盘驱动也可安全并发；结果按
+        // paths 既定顺序经 slot 回填重组，信封与串行版一致。进度同全量同步：
+        // 改为已完成计数（UI 提示，不在信封内）。
+        std::vector<json> slots(paths.size());
+        std::atomic<long long> done{0};
+        run_parallel_for(
+            paths.size(), kCloudSyncWorkers, [&](size_t, size_t i) {
+                const std::string& rel = paths[i];
                 json e;
-                e["rel"] = rel;
-                e["ok"] = true;
-                e["result"] = r;
-                results.push_back(e);
-            } catch (const std::exception& e) {
-                json err;
-                err["rel"] = rel;
-                err["ok"] = false;
-                err["error"] = exception_repr_full(e);
-                results.push_back(err);
-            }
-        }
+                try {
+                    json r = sync_single_file(provider_id, direction, mod_name, rel, dry_run);
+                    e["rel"] = rel;
+                    e["ok"] = true;
+                    e["result"] = std::move(r);
+                } catch (const std::exception& ex) {
+                    e["rel"] = rel;
+                    e["ok"] = false;
+                    e["error"] = exception_repr_full(ex);
+                } catch (...) {
+                    // 并发下异常逃出 worker 等于 std::terminate；现有代码全部
+                    // 抛 std 派生异常，此分支纯为兜底。
+                    e["rel"] = rel;
+                    e["ok"] = false;
+                    e["error"] = "RuntimeError: unknown";
+                }
+                slots[i] = std::move(e);
+                set_sync_state(
+                    json{{"progress", done.fetch_add(1) + 1}, {"last", rel}});
+            });
+        for (auto& s : slots) results.push_back(std::move(s));
         set_sync_state(
             json{{"running", false}, {"progress", static_cast<long long>(paths.size())}});
         push_history(provider_id, mod_name, direction,
@@ -4005,6 +4218,11 @@ json sync_mod_files(const std::string& provider_id, const std::string& direction
         throw;
     }
 }
+
+// 外部链接（cloud_sync.h 声明；run_server 启动时注入 --cloud-public-only）。
+// 注意不能放进本文件前面的匿名命名空间：那里会变成内部链接。实现引用的
+// g_cloud_public_only 在匿名命名空间里，对本命名空间其余部分仍可见。
+void set_public_only(bool on) { g_cloud_public_only.store(on, std::memory_order_relaxed); }
 
 }  // namespace cloud
 }  // namespace sa
