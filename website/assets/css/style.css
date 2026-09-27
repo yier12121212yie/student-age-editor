@@ -273,6 +273,16 @@ html[data-theme="light"] .stat b{background:linear-gradient(120deg,#5a49d6,#b886
 .dl-note code{display:inline-block;margin-top:6px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:var(--card2);color:var(--txt);font-size:12px;word-break:break-all}
 .dl-note code::before{content:'$ ';color:var(--faint)}
 
+/* 网页版区块：复用 .dl-grid / .dl-card，仅加宽为双列 */
+.dl-sub{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-top:44px;font-size:18px}
+.dl-sub span{color:var(--muted);font-size:13px;font-weight:400}
+.dl-grid.web{grid-template-columns:repeat(2,minmax(0,1fr))}
+.dl-card small code{font-size:11px;color:var(--pri-ink);word-break:break-all}
+.dl-card small a{color:var(--pri-ink)}
+.dl-card small a:hover{text-decoration:underline}
+.dl-card ul a[data-todo]{color:var(--faint);cursor:help}
+.dl-card ul a[data-todo]::after{content:'·待发布';font-size:10.5px;opacity:.8}
+
 /* ================= 快速上手 ================= */
 .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:44px;counter-reset:step}
 .step{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;position:relative}
@@ -380,7 +390,7 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:46px 0 40p
   .cta-row .btn{flex:1;justify-content:center}
   .stats-grid{grid-template-columns:repeat(2,1fr);gap:14px}
   .pipe{grid-template-columns:1fr}
-  .dl-grid{grid-template-columns:1fr}
+  .dl-grid,.dl-grid.web{grid-template-columns:1fr}
   .float-chip.fc1{top:-26px;right:0}
   .float-chip.fc2{display:none}
 }

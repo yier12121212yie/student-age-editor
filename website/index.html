@@ -348,6 +348,27 @@
       <small>暂未规划发行</small>
     </div>
   </div>
+  <h3 class="dl-sub">网页版<span>免安装，浏览器里用同一套编辑器 · 两种形态</span></h3>
+  <div class="dl-grid web">
+    <div class="dl-card">
+      <div class="dico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+      <h3>本机浏览器版</h3>
+      <ul>
+        <li><a href="#" data-todo="web-app 发布后挂 CDN 链接">web-app.zip（网页前端 · 尚未发布）</a></li>
+        <li><a href="#download">对应平台桌面包（提供 backend，见上方）</a></li>
+      </ul>
+      <small>解压后运行 <code>backend --web-root &lt;解压目录&gt;</code>，浏览器打开即用，数据不出本机</small>
+    </div>
+    <div class="dl-card">
+      <div class="dico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
+      <h3>自托管服务</h3>
+      <ul>
+        <li>Linux 服务器部署 backend_gateway，账号鉴权、工作区彼此隔离</li>
+        <li>多账号在线编辑，浏览器直接访问团队共用实例</li>
+      </ul>
+      <small>部署步骤见 <a href="https://github.com/yier12121212yie/student-age-editor/blob/main/WEB_GUIDE.md" target="_blank" rel="noopener">WEB_GUIDE.md</a></small>
+    </div>
+  </div>
   <a class="dl-gh" href="https://github.com/yier12121212yie/student-age-editor/releases" target="_blank" rel="noopener">GitHub Releases 备用行：所有平台的历史版本、资产与自动生成的发行说明都在这里 →</a>
   <p class="dl-note">macOS 用户注意：本版本为 ad hoc 签名、未做 Apple 公证，从浏览器下载后首次打开可能被 Gatekeeper 拦截。若提示「已损坏，无法打开」，这不是文件损坏，请勿移到废纸篓——在「终端」执行下面一行去除隔离标记后再打开（路径按实际安装位置调整）：<br>
     <code>xattr -dr com.apple.quarantine "/Applications/学生时代模组编辑器.app"</code></p>

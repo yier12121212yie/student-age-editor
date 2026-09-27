@@ -79,6 +79,11 @@ service 自描述拉取/代理已落地（`server/services/plugin_service.{h,cpp
   `follow_redirects=false`（3xx 跳到非 loopback 等于绕过白名单）。
 - 生命周期：后端**不**负责拉起/杀掉服务进程（与旧引擎 enable/disable 语义不同，写进文档避免误解）。
 
+自托管网页形态（`backend_gateway`，见仓库根 `WEB_GUIDE.md`）下，网关**不代理**本节
+service 插件：`/api/plugins/service/*`、`/api/plugins/agent/*` 一律返回 403——
+loopback 服务进程在服务器上不随账号实例存在，代理无从谈起。声明型贡献（flow card、
+markdown 面板）不经代理、不受影响。
+
 ## 5. /api/plugins* 端点对齐表与待办
 
 | 端点 | Python 语义 | C++ 现状 | 目标（波次 3 合并后实现） |
