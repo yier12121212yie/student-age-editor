@@ -4,12 +4,23 @@
 流程：构建后端 → Flutter 构建前端 → 组装发行版目录 → 打 zip
       → 用平台安装器构建安装包（Windows Inno / Linux deb+AppImage / macOS DMG+PKG）。
 用法：
-    python build_release.py [--target windows|macos|linux] [--version Alpha-v0.1]
+    python build_release.py [--target windows|macos|linux|web|server-linux]
+                            [--version Alpha-v0.1]
                             [--skip-backend] [--skip-frontend]
                             [--prebuilt-backend DIR]
                             [--installer] [--no-installer]
+                            [--check-only]
 
 说明：
+- web / server-linux 为「网页版」独立发行目标（M3.1）：
+  web → flutter build web，产物打 dist/web-app-<版本>.zip（根级含
+    README-网页版.txt）；server-linux（仅 Linux）→ native CMake 构建
+    backend + backend_gateway 两目标，连同 packaging/gateway/ 示例资产
+    与 README-服务器版.txt 打 dist/editor-server-linux-<版本>.zip。
+    两者均为独立发行物，绝不进任何桌面安装包/APK；桌面 zip 打包后置
+    断言清单不得含 Web 特征文件（flutter_service_worker/main.dart.js/
+    index.html）。backend_gateway 目标缺失（native/gateway 未落地）时
+    报错退出码 2。--check-only 跑纯逻辑自测（不触碰工具链）。
 - 后端构建通道全平台 native（波次 4/5）：
   windows → C++ native 后端：调用 CMake（优先 PATH，其次 vswhere 探测
     Visual Studio 自带 cmake/ninja 与 vcvars64）构建 native/，产物三件套
@@ -77,7 +88,30 @@ APP_NAME = "学生时代模组编辑器"
 # 文件名开头的非 ASCII（中文）前缀整体剥离；中文名仅保留在 zip 内部目录、
 # 安装器显示名、DMG 卷名等非文件名处。
 APP_FILE_BASE = "student-age-editor"
-TARGETS = ("windows", "macos", "linux")
+# web / server-linux 为网页版独立发行目标（M3.1）：产物是独立发行物，绝不
+# 进任何桌面安装包/APK（用户硬约束），桌面通道由 _assert_no_desktop_web_pollution
+# 在 zip 后做特征文件断言兜底。
+TARGETS = ("windows", "macos", "linux", "web", "server-linux")
+
+# ------------------------- 网页版独立发行目标（M3.1） -------------------------
+WEB_DIST = os.path.join(FRONTEND, "build", "web")
+WEB_STAGING = os.path.join(ROOT, "build", "release", "web_staging")
+SERVER_STAGING = os.path.join(ROOT, "build", "release", "server_staging")
+# 在线托管发行物源目录名（zip 内部根）与 README 文件名（zip 内部，非外部
+# 文件名，不受 artifact 上传链路剥离非 ASCII 文件名的限制）
+SERVER_ROOT_NAME = "editor-server-linux"
+WEB_README_NAME = "README-网页版.txt"
+SERVER_README_NAME = "README-服务器版.txt"
+WEB_README_SOURCE = os.path.join(ROOT, "packaging", "web", "README.txt")
+# gateway 在线部署示例资产（systemd unit / Caddyfile 等，由 native/gateway
+# 子项目提供）；缺失时跳过并在包内 README 清单注明，不报错
+GATEWAY_PACKAGING_DIR = os.path.join(ROOT, "packaging", "gateway")
+# server-linux 独立构建目录（与桌面 POSIX 构建互不干扰）
+NATIVE_SERVER_BUILD_DIR = os.path.join(NATIVE_DIR, "build-server")
+NATIVE_SERVER_BINS = ("backend", "backend_gateway")
+# Web 特征文件（构建产物级）：桌面 zip/APK 与服务器包清单断言用
+WEB_FINGERPRINT_TOKENS = ("flutter_service_worker", "main.dart.js",
+                          "index.html")
 
 # ----------------------------- Windows 安装包 -----------------------------
 SETUP_ISS = os.path.join(ROOT, "packaging", "installer", "setup.iss")
@@ -420,6 +454,265 @@ def _embed_official_pack(base_dir, rel=""):
     _ensure_official_pack_dir()
     shutil.copytree(OFFICIAL_PACK_DIR,
                     os.path.join(target, "official_pack", OFFICIAL_PACK_ID))
+
+
+# ---------------------------------------------------- 网页版独立发行目标 ----
+
+def _path_has_web_fingerprint(name):
+    """路径任一层级为 Web 产物特征（flutter build web 特有，桌面/服务器
+    发行物出现即视为污染）。flutter_service_worker 用前缀匹配
+    （flutter_service_worker.js 等变体），其余按文件名精确匹配。"""
+    for part in name.replace("\\", "/").split("/"):
+        if part.startswith("flutter_service_worker") or part in ("main.dart.js",
+                                                                 "index.html"):
+            return True
+    return False
+
+
+def _web_fingerprint_hits(names):
+    return [n for n in names if _path_has_web_fingerprint(n)]
+
+
+def _zip_entry_names(zip_path):
+    """zip 清单条目名。"""
+    with zipfile.ZipFile(zip_path) as z:
+        return z.namelist()
+
+
+def _zip_flat(src_dir, zip_path):
+    """把 src_dir 打包为 zip，条目名相对 src_dir（暂存目录已备好所需的
+    内部层级与 README；zipfile 通道与 make_zip 一致，不用 ditto——Web/
+    服务器产物无签名与扩展属性诉求）。"""
+    os.makedirs(DIST_ROOT, exist_ok=True)
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED,
+                         compresslevel=6) as z:
+        for root, dirs, files in os.walk(src_dir):
+            for name in sorted(dirs) + sorted(files):
+                p = os.path.join(root, name)
+                if os.path.isdir(p):
+                    continue
+                z.write(p, os.path.relpath(p, src_dir))
+    return zip_path
+
+
+def _assert_no_desktop_web_pollution(zip_path):
+    """桌面打包后置断言：便携 zip 不得混入 Web 产物。
+
+    桌面组装（assemble_*）只拷各平台 Flutter 桌面 bundle 目录
+    （build/windows|linux|macos 下），从不拷 build/web/，本断言仅作
+    防回归护栏，不改变打包行为。"""
+    hits = _web_fingerprint_hits(_zip_entry_names(zip_path))
+    assert not hits, (
+        "硬约束违反：桌面发行包 %s 混入 Web 产物特征文件（%s）。"
+        "网页版只能以独立发行物发布（dist/web-app-*.zip），"
+        "绝不进任何桌面安装包/APK。"
+        % (os.path.basename(zip_path), ", ".join(hits[:5])))
+
+
+def _copy_web_root_flat(src, dst):
+    """把 Web 产物目录的「内容」拷入暂存目录（zip 根级为 index.html、
+    main.dart.js、flutter_service_worker.js、assets/ 等 + README）。"""
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        s = os.path.join(src, name)
+        d = os.path.join(dst, name)
+        if os.path.isdir(s):
+            shutil.copytree(s, d, dirs_exist_ok=True)
+        else:
+            shutil.copy2(s, d)
+
+
+def _stage_web_readme(dst_dir):
+    """网页包根级 README-网页版.txt：首选入库的 packaging/web/README.txt，
+    缺失时兜底生成精简文案（README 位于 zip 内部，中文名不受文件名限制）。"""
+    dst = os.path.join(dst_dir, WEB_README_NAME)
+    if os.path.isfile(WEB_README_SOURCE):
+        shutil.copy2(WEB_README_SOURCE, dst)
+        return
+    print("    提示：未找到 %s，已兜底生成精简版说明。" % WEB_README_SOURCE)
+    with io.open(dst, "w", encoding="utf-8") as f:
+        f.write("网页版使用说明（精简版，完整版见仓库 WEB_GUIDE.md）\n\n"
+                "1. 解压本 zip 得到网页资源目录（含 index.html）。\n"
+                "2. 下载对应平台的桌面发行包，在其目录下执行：\n"
+                "       backend --web-root <本目录>\n"
+                "   随后浏览器打开后端提示的本地地址即可使用。\n")
+
+
+def build_web_release(version, skip_frontend=False):
+    """web 目标：flutter build web → dist/web-app-<版本>.zip（独立发行物）。
+
+    版本注入沿用 build_frontend 的惯例（现有通道不传 --dart-define，构建
+    版本号由 pubspec 承担）；跨平台可构建，产物不进任何桌面包。"""
+    global _TOTAL_STEPS
+    _TOTAL_STEPS = 2
+    _step(1, "构建 Flutter Web 前端 ...")
+    if not skip_frontend:
+        cmd = _flutter_cmd()
+        if cmd is None:
+            raise SystemExit("错误：未找到 flutter 命令。"
+                             "请安装 Flutter SDK 并将其加入 PATH。")
+        subprocess.run(cmd + ["build", "web", "--release"],
+                       cwd=FRONTEND, check=True)
+    else:
+        assert os.path.isfile(os.path.join(WEB_DIST, "index.html")), \
+            "--skip-frontend 但找不到 Web 构建产物 %s" % WEB_DIST
+
+    _step(2, "组装并打包 Web 发行版 ...")
+    if not os.path.isdir(WEB_DIST):
+        raise SystemExit("错误：未找到 flutter build web 产物目录 %s"
+                         "（先不带 --skip-frontend 构建一次）。" % WEB_DIST)
+    if os.path.isdir(WEB_STAGING):
+        shutil.rmtree(WEB_STAGING)
+    _copy_web_root_flat(WEB_DIST, WEB_STAGING)
+    _stage_web_readme(WEB_STAGING)
+    zip_path = os.path.join(DIST_ROOT, "web-app-%s.zip" % version)
+    _zip_flat(WEB_STAGING, zip_path)
+    names = _zip_entry_names(zip_path)
+    assert WEB_README_NAME in names, \
+        "Web 发行包缺少根级 %s" % WEB_README_NAME
+    print("完成：%s (%.1f MB)" % (zip_path, os.path.getsize(zip_path) / 1048576))
+
+
+def _find_cmake_target_in_source(token):
+    """在 native/ 源码树的 CMakeLists.txt 中寻找 target token（跳过构建
+    子树）。backend_gateway 的 add_executable 可能出现在 native/CMakeLists
+    或 native/gateway/CMakeLists，仅扫顶层会漏报。"""
+    for dirpath, dirs, files in os.walk(NATIVE_DIR):
+        dirs[:] = [d for d in dirs if not d.startswith("build")]
+        if "CMakeLists.txt" in files:
+            try:
+                with io.open(os.path.join(dirpath, "CMakeLists.txt"), "r",
+                             encoding="utf-8", errors="replace") as f:
+                    if re.search(r"\b%s\b" % token, f.read()):
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+def _write_server_readme(dst_dir, version, gateway_assets, has_assets):
+    """生成包内 README-服务器版.txt，兼作发行物清单：缺目录只提示不报错。"""
+    notes = []
+    if not gateway_assets:
+        notes.append("- 提示：未找到 packaging/gateway/（systemd/Caddy 示例资产），"
+                     "本次未随包——需 native/gateway 子项目落地后补齐。")
+    if not has_assets:
+        notes.append("- 提示：未找到 native/assets/（词典/模式资源），"
+                     "backend 的 /api/dicts 将退化为空字典。")
+    lines = [
+        "%s 在线托管发行物（Linux x86_64）  版本 %s" % (APP_NAME, version),
+        "",
+        "包内容：",
+        "  backend              后端主程序（提供 API 与网页资源托管）",
+        "  backend_gateway      在线托管网关（POSIX-only）",
+        "  assets/              词典与模式资源（backend 按可执行文件目录上溯查找）",
+    ]
+    if gateway_assets:
+        lines.append("  gateway/             systemd / Caddy 部署示例资产")
+    lines += [
+        "",
+        "一、在线托管形态：",
+        "  1. 将本包解压到服务器（如 /opt/student-age-editor-server）。",
+        "  2. 用 systemd 分别拉起 backend 与 backend_gateway"
+        "（示例 service 见 gateway/ 目录）。",
+        "  3. Caddy 反向代理到 backend 并启用 TLS（示例 Caddyfile 见 gateway/"
+        "；缺 gateway/ 时参考仓库 WEB_GUIDE.md 的在线托管章节）。",
+        "  4. 前端网页产物（web-app-<版本>.zip 解压内容）由 backend --web-root"
+        " 托管或由 Caddy 直接服务。",
+        "",
+        "二、本机浏览器形态（无需本包之外的服务器）：",
+        "  下载 web-app-<版本>.zip 与对应平台桌面发行包，在桌面包目录执行"
+        "「backend --web-root <web-app 解压目录>」。",
+        "",
+        "完整指南见仓库 WEB_GUIDE.md。",
+    ]
+    if notes:
+        lines += ["", "打包清单备注："] + notes
+    with io.open(os.path.join(dst_dir, SERVER_README_NAME), "w",
+                 encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def build_server_linux_release(version):
+    """server-linux 目标：在线托管发行物（backend + backend_gateway +
+    gateway 示例资产 + README），仅 Linux 上构建，产物独立于桌面通道。"""
+    global _TOTAL_STEPS
+    _TOTAL_STEPS = 2
+    if not sys.platform.startswith("linux"):
+        raise SystemExit("错误：server-linux 发行物必须在 Linux 上构建"
+                         "（backend_gateway 为 POSIX-only 二进制）。")
+    cmake = shutil.which("cmake")
+    if not cmake:
+        raise SystemExit("错误：未找到 cmake。\n解决：apt install cmake "
+                         "ninja-build（CI 已自动安装）。")
+    ninja = shutil.which("ninja")
+    if not ninja:
+        raise SystemExit("错误：未找到 Ninja（本通道按 CMake+Ninja 约定构建）。\n"
+                         "解决：apt install ninja-build 或安装到 PATH。")
+    # configure 前置校验：旧树（native/gateway 未落地）无该 target 时给出
+    # 清晰报错并以退出码 2 终止（与一般构建失败退出码 1 区分，CI 可据此
+    # 判定「通道尚未启用」而非「构建坏了」）
+    if not _find_cmake_target_in_source("backend_gateway"):
+        sys.stderr.write(
+            "错误：native/ 源码树未发现 backend_gateway 构建目标，"
+            "需 native/gateway 落地后启用 server-linux 通道。\n")
+        raise SystemExit(2)
+
+    _step(1, "构建在线托管后端（backend + backend_gateway）...")
+    os.makedirs(NATIVE_SERVER_BUILD_DIR, exist_ok=True)
+    subprocess.run([cmake, "-S", NATIVE_DIR, "-B", NATIVE_SERVER_BUILD_DIR,
+                    "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"],
+                   cwd=ROOT, check=True)
+    subprocess.run([cmake, "--build", NATIVE_SERVER_BUILD_DIR,
+                    "--target", "backend", "backend_gateway"],
+                   cwd=ROOT, check=True)
+
+    _step(2, "组装并打包在线托管发行版 ...")
+    if os.path.isdir(SERVER_STAGING):
+        shutil.rmtree(SERVER_STAGING)
+    os.makedirs(SERVER_STAGING)
+    stage_root = os.path.join(SERVER_STAGING, SERVER_ROOT_NAME)
+    os.makedirs(stage_root)
+    missing = []
+    for name in NATIVE_SERVER_BINS:
+        p = _find_native_bin(NATIVE_SERVER_BUILD_DIR, name)
+        if not p:
+            missing.append(name)
+            continue
+        dst = os.path.join(stage_root, name)
+        shutil.copy2(p, dst)
+        _make_executable(dst)
+        print("    %s ← %s" % (name, os.path.relpath(p, ROOT)))
+    if missing:
+        raise SystemExit(
+            "错误：构建产物缺少 %s（构建目录 %s）。若为 backend_gateway，"
+            "需 native/gateway 落地后启用。" % (", ".join(missing),
+                                               NATIVE_SERVER_BUILD_DIR))
+    # assets 必须随包：后端按可执行文件目录上溯查找 assets/（native/core/
+    # assets.cpp），缺失时 /api/dicts 返回空字典（同 _copy_native_backend_bundle）
+    has_assets = os.path.isdir(NATIVE_ASSETS_DIR)
+    if has_assets:
+        shutil.copytree(NATIVE_ASSETS_DIR, os.path.join(stage_root, "assets"))
+    # gateway 示例资产（systemd/Caddy，packaging/gateway/ 子项目）：缺目录
+    # 时跳过并在 README 清单注明，不因缺文件报错
+    gateway_assets = os.path.isdir(GATEWAY_PACKAGING_DIR)
+    if gateway_assets:
+        shutil.copytree(GATEWAY_PACKAGING_DIR,
+                        os.path.join(stage_root, "gateway"))
+    else:
+        print("    提示：未找到 %s，示例部署资产本次不随包。"
+              % GATEWAY_PACKAGING_DIR)
+    _write_server_readme(stage_root, version, gateway_assets, has_assets)
+    zip_path = os.path.join(DIST_ROOT, "editor-server-linux-%s.zip" % version)
+    print("    打包 zip %s ..." % os.path.basename(zip_path))
+    _zip_flat(SERVER_STAGING, zip_path)
+    server_hits = _web_fingerprint_hits(_zip_entry_names(zip_path))
+    assert not server_hits, \
+        "服务器发行包混入 Web 产物（应仅含二进制/资产/README）：%s" % ", ".join(
+            server_hits[:3])
+    print("完成：%s (%.1f MB)" % (zip_path, os.path.getsize(zip_path) / 1048576))
 
 
 # ---------------------------------------------------------------- 后端 ----
@@ -944,6 +1237,7 @@ def make_zip(out_dir, zip_name):
     # zipfile（Windows/Linux 产物无签名，无需 xattr）。
     if sys.platform == "darwin":
         _make_zip_ditto(out_dir, zip_path)
+        _assert_no_desktop_web_pollution(zip_path)
         size_mb = os.path.getsize(zip_path) / 1048576
         print("完成：%s (%.1f MB)" % (zip_path, size_mb))
         return
@@ -965,6 +1259,8 @@ def make_zip(out_dir, zip_name):
                     _zip_symlink(z, out_dir, p)
                 else:
                     z.write(p, os.path.relpath(p, DIST_ROOT))
+    # 桌面便携 zip 后置断言：防 Web 产物混入（网页版只能独立发行）
+    _assert_no_desktop_web_pollution(zip_path)
     size_mb = os.path.getsize(zip_path) / 1048576
     print("完成：%s (%.1f MB)" % (zip_path, size_mb))
 
@@ -997,11 +1293,73 @@ ASSEMBLERS = {
 }
 
 
+def run_self_check():
+    """--check-only：纯逻辑级自测（不触碰 flutter/cmake，不跑真实 release）。
+
+    验证：① 目标注册表完整；② 桌面打包的反 Web 污染断言用临时假清单
+    验证正/反例；③ 桌面 zip/APK 与 Web/服务器发行物命名规则符合约定。
+    全部通过打印 PASS 并返回 0，否则打印 FAIL 返回 1。"""
+    failures = []
+
+    # ① 目标注册表：桌面三目标有组装器，web/server-linux 有独立入口函数
+    for t in ("windows", "macos", "linux"):
+        if t not in ASSEMBLERS:
+            failures.append("ASSEMBLERS 缺少桌面目标 %s" % t)
+    for fn, name in ((build_web_release, "build_web_release"),
+                     (build_server_linux_release,
+                      "build_server_linux_release")):
+        if not callable(fn):
+            failures.append("%s 不可调用" % name)
+
+    # ② 反 Web 污染断言（纯清单级，不读 zip）：正例放行、反例拦截
+    clean_manifest = ["%s-9.9.9/%s.exe" % (APP_NAME, APP_NAME),
+                      "%s-9.9.9/data/flutter_assets/APP" % APP_NAME,
+                      "%s-9.9.9/assets/dicts.json" % APP_NAME]
+    polluted_manifest = ["student-age-editor-9.9.9/main.dart.js",
+                         "web/flutter_service_worker.js",
+                         "nested/dir/index.html"]
+    hits = _web_fingerprint_hits(clean_manifest)
+    if hits:
+        failures.append("断言误伤桌面正常清单：%s" % ", ".join(hits))
+    hits = _web_fingerprint_hits(polluted_manifest)
+    if len(hits) != len(polluted_manifest):
+        failures.append("断言未完全拦截污染清单（期望 %d 项，实际 %d 项：%s）"
+                        % (len(polluted_manifest), len(hits), ", ".join(hits)))
+
+    # ③ 命名规则：web/server 有独立发行名（不与桌面 zip 同名冲突）
+    version = "9.9.9"
+    version = "9.9.9"
+    expects = {
+        "windows": "%s-%s.zip" % (APP_FILE_BASE, version),
+        "linux": "%s-%s-linux.zip" % (APP_FILE_BASE, version),
+        "macos": "%s-%s-macos.zip" % (APP_FILE_BASE, version),
+        "web": "web-app-%s.zip" % version,
+        "server-linux": "editor-server-linux-%s.zip" % version,
+    }
+    print("目标注册表：")
+    for t in TARGETS:
+        print("  %-12s → dist/%s" % (t, expects[t]))
+        if t not in expects:
+            failures.append("目标 %s 缺少发行物命名约定" % t)
+    for name in (WEB_README_NAME, SERVER_README_NAME):
+        print("  发行物内说明：%s" % name)
+
+    if failures:
+        for msg in failures:
+            print("FAIL: %s" % msg)
+        print("自测未通过（%d 项）" % len(failures))
+        return 1
+    print("PASS")
+    return 0
+
+
 def main():
     global _TOTAL_STEPS
     ap = argparse.ArgumentParser(description="构建学生时代模组编辑器发行版")
     ap.add_argument("--target", default="windows", choices=TARGETS,
-                    help="构建目标平台（须与当前系统一致）")
+                    help="构建目标平台（桌面目标须与当前系统一致；"
+                         "web/server-linux 为网页版独立发行物，"
+                         "server-linux 仅 Linux）")
     ap.add_argument("--version", default=None,
                     help="发行版本号（默认取 frontend/pubspec.yaml）")
     ap.add_argument("--skip-backend", action="store_true", help="跳过后端打包（复用上次产物）")
@@ -1014,7 +1372,14 @@ def main():
                     help="构建安装包（各目标默认已开启，保留参数以兼容旧脚本）")
     ap.add_argument("--no-installer", action="store_true",
                     help="跳过安装包构建（Windows Inno / Linux deb+AppImage / macOS DMG+PKG）")
+    ap.add_argument("--check-only", action="store_true",
+                    help="只做纯逻辑级自测（目标注册表、桌面打包反 Web 污染"
+                         "断言正/反例、发行物命名），不触碰构建工具链；"
+                         "全部通过打印 PASS 并以 0 退出")
     args = ap.parse_args()
+
+    if args.check_only:
+        sys.exit(run_self_check())
 
     if args.target == "windows" and not _is_windows():
         raise SystemExit("错误：Windows 包必须在 Windows 上构建。")
@@ -1025,6 +1390,14 @@ def main():
     if not version:
         raise SystemExit("错误：未能从 frontend/pubspec.yaml 解析版本号，"
                          "请用 --version x.y.z 显式指定。")
+
+    # 网页版独立发行目标：不走桌面管线（无安装包步骤，产物不进桌面包）
+    if args.target == "web":
+        build_web_release(version, skip_frontend=args.skip_frontend)
+        return
+    if args.target == "server-linux":
+        build_server_linux_release(version)
+        return
 
     # 各目标默认构建安装包（--no-installer 跳过）：
     # windows → Inno Setup；linux → deb + AppImage；macos → DMG + PKG

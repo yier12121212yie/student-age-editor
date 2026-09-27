@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "CI 资产哈希 pin（安全批次 A，供应链强校验）。",
+    "release.yml 下载 ci-assets Release 的资产前从这里取 pin 哈希传给",
+    "packaging/fetch_bundled.py --expect-sha256；资产字节有任何变化都会",
+    "导致 SHA-256 校验失败并中止构建，防止 Release asset 被替换后静默",
+    "进入发行物（资源包最终会被解包进安装包/内嵌 assets）。",
+    "",
+    "维护流程：官方资产更新后，本地核对内容无误，然后重算哈希并更新本文件：",
+    "  python packaging/fetch_bundled.py --asset <name> --tag ci-assets --out <file> --repo <owner/repo>",
+    "  python -c \"import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())\" <file>",
+    "把得到的 64 位十六进制串填入对应条目的 \"sha256\"。",
+    "",
+    "sha256 为 null 表示尚未 pin：release.yml 会放行下载并打印 loud warning",
+    "（附上实测哈希与填写指引），但不会阻塞 —— 首个版本由维护者手动 pin。"
+  ],
+  "official_pack_cache.zip": {
+    "sha256": null,
+    "used_by": ["release.yml: windows/linux/macos 还原官方资源包缓存"]
+  },
+  "bundled_preview.zip": {
+    "sha256": null,
+    "used_by": ["release.yml: android 注入内置资源包"]
+  }
+}

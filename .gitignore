@@ -30,9 +30,11 @@ backup.zip
 .reasonix/
 *.log
 
-# 本机配置与缓存（editor_env.json / .editor_ai.json 含敏感信息不入库）
+# 本机配置与缓存（editor_env.json / .editor_ai.json / .editor_cloud.json
+# 含敏感信息不入库：云同步账号与访问令牌落在 .editor_cloud.json）
 editor_env.json
 .editor_ai.json
+.editor_cloud.json
 .editor_cli_history
 _cache/
 
@@ -40,9 +42,16 @@ _cache/
 .agents/
 .codex/
 .zcode/
+.zcodeignore
 .opensquilla/
 .opensquilla-cache/
 .pytest_cache/
+
+# 本地构建 / 工具产物（bug-hunt 与基线快照等，均不入库）
+build-native/
+.ghcache/
+.head-baseline/
+_bughunt/
 
 # Flutter Windows 构建临时目录
 frontend/windows/flutter/ephemeral/

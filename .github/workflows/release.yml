@@ -53,8 +53,12 @@ jobs:
           echo "C:\Program Files\Inno Setup 6" >> "$GITHUB_PATH"
       - name: 解析版本号
         shell: bash
+        env:
+          # 注入修复（安全批次 A）：workflow input 一律经 env 映射后以 "$VAR"
+          # 引用，绝不直接内插进 run 脚本，防止 input 内容被当作 shell 源码。
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
-          VER="${{ github.event.inputs.version }}"
+          VER="$VERSION_INPUT"
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/Alpha-v* ]]; then VER="$GITHUB_REF_NAME"; fi
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
           if [ -z "$VER" ]; then
@@ -65,19 +69,35 @@ jobs:
             exit 1
           fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
-      - name: 还原官方资源包缓存（ci-assets Release）
+      - name: 还原官方资源包缓存（ci-assets Release，SHA-256 强校验）
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
-            --out build/cache/official_pack_cache.zip || true
+          # 供应链强校验（安全批次 A）：资产哈希 pin 在 packaging/ci_assets.lock.json，
+          # fetch_bundled.py 下载后立即重算比对；哈希不匹配（退出码 3）直接中止发布，
+          # 防止 Release asset 被替换后静默进入发行物。网络失败（退出码 1）沿用旧
+          # 语义降级为不带内嵌资源继续构建。pin 为 null 时放行并回显实测哈希，
+          # 提醒维护者补 pin。
+          PIN="$(python -c "import json;print((json.load(open('packaging/ci_assets.lock.json',encoding='utf-8')).get('official_pack_cache.zip') or {}).get('sha256') or '')")"
+          ARGS=(--asset official_pack_cache.zip --tag ci-assets --out build/cache/official_pack_cache.zip)
+          [ -z "$PIN" ] || ARGS+=(--expect-sha256 "$PIN")
+          RC=0
+          python packaging/fetch_bundled.py "${ARGS[@]}" || RC=$?
+          if [ "$RC" -eq 3 ]; then
+            echo "::error::official_pack_cache.zip SHA-256 与 packaging/ci_assets.lock.json 不匹配，中止构建" >&2
+            exit 1
+          fi
           if [ -f build/cache/official_pack_cache.zip ]; then
+            if [ "$RC" -eq 0 ] && [ -z "$PIN" ]; then
+              ACTUAL="$(python -c "import hashlib;print(hashlib.sha256(open('build/cache/official_pack_cache.zip','rb').read()).hexdigest())")"
+              echo "::warning::official_pack_cache.zip 尚未在 packaging/ci_assets.lock.json pin SHA-256（当前实测 $ACTUAL），请核对资产后补 pin"
+            fi
             python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
             echo "已加载官方资源包缓存"
           else
             echo "提示：未找到官方资源包缓存（ci-assets 缺少 official_pack_cache.zip），安装包将不包含内嵌资源"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 native C++ 后端（CMake，VS 生成器免 vcvars）
         shell: bash
         run: |
@@ -136,8 +156,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
       - name: 解析版本号
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
-          VER="${{ github.event.inputs.version }}"
+          VER="$VERSION_INPUT"
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/Alpha-v* ]]; then VER="$GITHUB_REF_NAME"; fi
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
           if [ -z "$VER" ]; then
@@ -154,18 +176,31 @@ jobs:
           curl -fL -o build/tools/appimagetool-x86_64.AppImage \
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x build/tools/appimagetool-x86_64.AppImage
-      - name: 还原官方资源包缓存（ci-assets Release）
+      - name: 还原官方资源包缓存（ci-assets Release，SHA-256 强校验）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
-            --out build/cache/official_pack_cache.zip || true
+          # 与 Windows job 同款供应链强校验：哈希 pin 在 packaging/ci_assets.lock.json，
+          # 哈希不匹配（退出码 3）中止；网络失败（退出码 1）降级为不带内嵌资源继续。
+          PIN="$(python -c "import json;print((json.load(open('packaging/ci_assets.lock.json',encoding='utf-8')).get('official_pack_cache.zip') or {}).get('sha256') or '')")"
+          ARGS=(--asset official_pack_cache.zip --tag ci-assets --out build/cache/official_pack_cache.zip)
+          [ -z "$PIN" ] || ARGS+=(--expect-sha256 "$PIN")
+          RC=0
+          python packaging/fetch_bundled.py "${ARGS[@]}" || RC=$?
+          if [ "$RC" -eq 3 ]; then
+            echo "::error::official_pack_cache.zip SHA-256 与 packaging/ci_assets.lock.json 不匹配，中止构建" >&2
+            exit 1
+          fi
           if [ -f build/cache/official_pack_cache.zip ]; then
+            if [ "$RC" -eq 0 ] && [ -z "$PIN" ]; then
+              ACTUAL="$(python -c "import hashlib;print(hashlib.sha256(open('build/cache/official_pack_cache.zip','rb').read()).hexdigest())")"
+              echo "::warning::official_pack_cache.zip 尚未在 packaging/ci_assets.lock.json pin SHA-256（当前实测 $ACTUAL），请核对资产后补 pin"
+            fi
             python -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
             echo "已加载官方资源包缓存"
           else
             echo "提示：未找到官方资源包缓存（ci-assets 缺少 official_pack_cache.zip），安装包将不包含内嵌资源"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 native C++ 后端（CMake + Ninja）
         shell: bash
         run: |
@@ -205,8 +240,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
       - name: 解析版本号
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
-          VER="${{ github.event.inputs.version }}"
+          VER="$VERSION_INPUT"
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/Alpha-v* ]]; then VER="$GITHUB_REF_NAME"; fi
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
           if [ -z "$VER" ]; then
@@ -217,18 +254,30 @@ jobs:
             exit 1
           fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
-      - name: 还原官方资源包缓存（ci-assets Release）
+      - name: 还原官方资源包缓存（ci-assets Release，SHA-256 强校验）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 packaging/fetch_bundled.py --asset official_pack_cache.zip --tag ci-assets \
-            --out build/cache/official_pack_cache.zip || true
+          # 与 Windows job 同款供应链强校验（packaging/ci_assets.lock.json pin）。
+          PIN="$(python3 -c "import json;print((json.load(open('packaging/ci_assets.lock.json',encoding='utf-8')).get('official_pack_cache.zip') or {}).get('sha256') or '')")"
+          ARGS=(--asset official_pack_cache.zip --tag ci-assets --out build/cache/official_pack_cache.zip)
+          [ -z "$PIN" ] || ARGS+=(--expect-sha256 "$PIN")
+          RC=0
+          python3 packaging/fetch_bundled.py "${ARGS[@]}" || RC=$?
+          if [ "$RC" -eq 3 ]; then
+            echo "::error::official_pack_cache.zip SHA-256 与 packaging/ci_assets.lock.json 不匹配，中止构建" >&2
+            exit 1
+          fi
           if [ -f build/cache/official_pack_cache.zip ]; then
+            if [ "$RC" -eq 0 ] && [ -z "$PIN" ]; then
+              ACTUAL="$(python3 -c "import hashlib;print(hashlib.sha256(open('build/cache/official_pack_cache.zip','rb').read()).hexdigest())")"
+              echo "::warning::official_pack_cache.zip 尚未在 packaging/ci_assets.lock.json pin SHA-256（当前实测 $ACTUAL），请核对资产后补 pin"
+            fi
             python3 -c "import zipfile; zipfile.ZipFile('build/cache/official_pack_cache.zip').extractall('backend/_cache')"
             echo "已加载官方资源包缓存"
           else
             echo "提示：未找到官方资源包缓存（ci-assets 缺少 official_pack_cache.zip），安装包将不包含内嵌资源"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建 native C++ 后端（CMake + Ninja）
         shell: bash
         run: |
@@ -277,8 +326,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
       - name: 解析版本号
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
-          VER="${{ github.event.inputs.version }}"
+          VER="$VERSION_INPUT"
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/Alpha-v* ]]; then VER="$GITHUB_REF_NAME"; fi
           if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
           if [ -z "$VER" ]; then
@@ -292,19 +343,81 @@ jobs:
       - name: 交叉编译 native 后端（NDK，产物落 jniLibs/<abi>/）
         shell: bash
         run: bash native/android/android_build.sh
-      - name: 注入内置资源包（可选，从 GitHub Release 下载）
+      - name: 注入内置资源包（可选，从 GitHub Release 下载，SHA-256 强校验）
         shell: bash
-        run: |
-          python packaging/fetch_bundled.py \
-            --asset bundled_preview.zip \
-            --tag ci-assets \
-            --out frontend/android/app/src/main/assets/bundled/resource_pack.zip \
-          || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 供应链强校验（安全批次 A）：哈希 pin 在 packaging/ci_assets.lock.json。
+          # 哈希不匹配（退出码 3）中止 —— 该 zip 会被解包进 APK assets，绝不能
+          # 让被替换的资产进发行物；网络失败（退出码 1）沿用旧语义跳过注入。
+          PIN="$(python -c "import json;print((json.load(open('packaging/ci_assets.lock.json',encoding='utf-8')).get('bundled_preview.zip') or {}).get('sha256') or '')")"
+          ARGS=(--asset bundled_preview.zip --tag ci-assets
+                --out frontend/android/app/src/main/assets/bundled/resource_pack.zip)
+          [ -z "$PIN" ] || ARGS+=(--expect-sha256 "$PIN")
+          RC=0
+          python packaging/fetch_bundled.py "${ARGS[@]}" || RC=$?
+          if [ "$RC" -eq 3 ]; then
+            echo "::error::bundled_preview.zip SHA-256 与 packaging/ci_assets.lock.json 不匹配，中止构建" >&2
+            exit 1
+          fi
+          if [ "$RC" -eq 0 ] && [ -z "$PIN" ] && [ -f frontend/android/app/src/main/assets/bundled/resource_pack.zip ]; then
+            ACTUAL="$(python -c "import hashlib;print(hashlib.sha256(open('frontend/android/app/src/main/assets/bundled/resource_pack.zip','rb').read()).hexdigest())")"
+            echo "::warning::bundled_preview.zip 尚未在 packaging/ci_assets.lock.json pin SHA-256（当前实测 $ACTUAL），请核对资产后补 pin"
+          fi
+      # 供应链护栏：keystore 不入库，release 通道必须由 secrets 注入。
+      # 缺失即 fail —— build.gradle.kts 本地可回落 debug 签名（调试方便），
+      # 但发到 GitHub Release 的包绝不允许是 debug 签名（任何人可用通用
+      # debug key 产出签名一致的"更新"）。
+      - name: 部署 release keystore（缺 secrets 则 fail）
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::缺少 ANDROID_RELEASE_KEYSTORE_BASE64 / ANDROID_RELEASE_KEYSTORE_PASSWORD"
+            echo "release 通道禁止回落 debug 签名；请在仓库 secrets 配置正式 keystore。" >&2
+            exit 1
+          fi
+          [ -n "$KEY_ALIAS" ] || KEY_ALIAS="studentage"
+          mkdir -p frontend/android/keystore
+          printf '%s' "$KEYSTORE_B64" | base64 -d > frontend/android/keystore/release.keystore
+          # 逐行 printf 而非 heredoc（安全批次 A）：无引号 heredoc 会对内容做
+          # 参数展开/命令替换，密码含 $ 或反引号时会被 shell 吃掉甚至执行；
+          # printf 的 %s 只做值替换，密码原样落盘。
+          {
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+          } > frontend/android/keystore/key.properties
       - name: 构建 Android APK
         working-directory: frontend
         run: flutter build apk --release --target-platform android-arm64,android-x64
+      - name: 校验 APK 为正式签名（防 debug/空签名混入 release）
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=frontend/build/app/outputs/flutter-apk/app-release.apk
+          SIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | head -1)
+          # apksigner verify 非零退出码 = 签名校验失败（签名缺失/损坏/校验器
+          # 报错一律 fail，安全批次 A：不再只盯 debug 证书一种形态）。
+          if ! "$SIGNER" verify --print-certs "$APK" > /tmp/apk_certs.txt 2>&1; then
+            echo "::error::apksigner verify 失败（退出码 $?），APK 签名无效："
+            cat /tmp/apk_certs.txt >&2
+            exit 1
+          fi
+          if [ ! -s /tmp/apk_certs.txt ]; then
+            echo "::error::apksigner 未报告任何签名证书（空签名），中止发布" >&2
+            exit 1
+          fi
+          if grep -qi "CN=Android Debug" /tmp/apk_certs.txt; then
+            echo "::error::release 产物是 debug 签名，中止发布" >&2
+            exit 1
+          fi
+          echo "APK 签名校验通过："
+          sed -n '1,5p' /tmp/apk_certs.txt
       - name: 整理 APK 命名
         run: |
           mkdir -p dist
@@ -316,9 +429,105 @@ jobs:
           name: android
           path: dist/*.apk
 
+  build-web:
+    name: Web（网页版）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # web 通道无需 pip 依赖：backend_dist/桌面包完全不参与，脚本仅用标准库
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - name: 解析版本号
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          VER="$VERSION_INPUT"
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/Alpha-v* ]]; then VER="$GITHUB_REF_NAME"; fi
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?)(\+[0-9]+)?[[:space:]]*$/\1/p' frontend/pubspec.yaml | head -n1)"
+          fi
+          if [ -z "$VER" ]; then
+            echo "错误：无法解析版本号（workflow_dispatch 输入、tag 名、pubspec.yaml 均未提供）" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+      - name: 构建网页版独立发行物（dist/web-app-<版本>.zip）
+        # 走 build_release.py web 通道：flutter build web + 根级
+        # README-网页版.txt 组装 + 打包断言（桌面包反污染另有 make_zip 护栏）
+        run: python build_release.py --target web --version $RELEASE_VERSION
+      - name: 校验 Web 产物就位
+        run: ls -l dist/web-app-*.zip
+      - name: 上传 Web 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-app
+          path: dist/web-app-*.zip
+
+  build-server-linux:
+    name: Server Linux（在线托管）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装服务端构建依赖
+        # 与 Linux 桌面 job 保持独立（不装 GTK/桌面依赖），apt 安装互不踩踏
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: 解析版本号
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          VER="$VERSION_INPUT"
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/Alpha-v* ]]; then VER="$GITHUB_REF_NAME"; fi
+          if [ -z "$VER" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; fi
+          if [ -z "$VER" ]; then
+            VER="$(sed -nE 's/^version:[[:space:]]*([0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.-]+)?)(\+[0-9]+)?[[:space:]]*$/\1/p' frontend/pubspec.yaml | head -n1)"
+          fi
+          if [ -z "$VER" ]; then
+            echo "错误：无法解析版本号（workflow_dispatch 输入、tag 名、pubspec.yaml 均未提供）" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+      - name: configure 并构建 backend/backend_gateway（sa_tests 门禁）
+        id: gateway
+        run: |
+          # 构建目录与 build_release.py server-linux 通道一致（native/build-server），
+          # 本步跑测试门禁，脚本复用同一目录增量编译秒级完成。
+          # backend_gateway 为 POSIX-only 新二进制（native/gateway 子项目）；
+          # 旧树缺该 target 时本次跳过完整打包，不阻塞其余发布通道。
+          cmake -G Ninja -S native -B native/build-server -DCMAKE_BUILD_TYPE=Release
+          if grep -rsw --include=CMakeLists.txt --exclude-dir='build*' backend_gateway native; then
+            cmake --build native/build-server --target backend backend_gateway sa_tests
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::未发现 backend_gateway 目标（native/gateway 未落地），本次跳过 server-linux 完整打包"
+            cmake --build native/build-server --target backend sa_tests
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+          # 门禁：sa_tests 全量用例（含 [gateway] 标签）必须在打包前全绿
+          native/build-server/bin/sa_tests
+      - name: 构建在线托管发行物（dist/editor-server-linux-<版本>.zip）
+        if: steps.gateway.outputs.enabled == 'true'
+        run: python build_release.py --target server-linux --version $RELEASE_VERSION
+      - name: 上传 Server Linux 产物
+        if: steps.gateway.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: dist/editor-server-linux-*.zip
+
   release:
     name: 发布到 GitHub Release
-    needs: [windows, linux, macos, android]
+    needs: [windows, linux, macos, android, build-web, build-server-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -335,5 +544,9 @@ jobs:
             artifacts/linux/*
             artifacts/macos/*
             artifacts/android/*
+            # 网页版独立发行物（文件名沿用 dist/* 命名规则）；server-linux
+            # 通道未启用（gateway 未落地）时无 artifact，glob 空匹配不影响
+            artifacts/web-app/*
+            artifacts/server-linux/*
           draft: false
           generate_release_notes: true

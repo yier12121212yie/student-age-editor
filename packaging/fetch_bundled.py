@@ -4,14 +4,20 @@
 用法:
   python packaging/fetch_bundled.py --out <保存路径>
           [--asset bundled_preview.zip] [--repo owner/repo] [--tag latest]
+          [--expect-sha256 <hex>]
 
 - --repo 默认取环境变量 GITHUB_REPOSITORY（CI 自动注入）；缺省时报错退出。
 - --tag latest 自动解析最新 release（releases/latest），也可指定版本标签。
 - 用 urllib（零第三方依赖），可选 GITHUB_TOKEN 增加 Authorization 头。
+- --expect-sha256: 供应链强校验（安全批次 A）。给定 64 位十六进制摘要时，
+  下载完成后立即重算 SHA-256，不一致则删除落盘文件并退出码 1 —— CI 中
+  应把官方资产的哈希 pin 在 packaging/ci_assets.lock.json 并把该值传进来，
+  防止 Release asset 被替换后静默进入发行物。
 - 404 / 缺少对应 asset 视为「无包可注入」，打印明确原因并退出码 0，
   便于 CI 中可选注入而不让 job 失败；其余网络/IO 错误退出码 1。
 """
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -27,6 +33,14 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 _USER_AGENT = "StudentAge-editor-release-bot/1.0"
+
+# 退出码约定：0 成功/无包跳过；1 网络/IO 错误（CI 可降级为不带资源继续）；
+# 3 SHA-256 强校验失败（供应链告警，CI 必须中止）。
+EXIT_HASH_MISMATCH = 3
+
+
+class HashMismatch(RuntimeError):
+    pass
 
 
 def _request(url, token=None, timeout=30):
@@ -95,6 +109,30 @@ def download(url, out_path, token, repo=None, asset_id=None):
     return out_path
 
 
+def sha256_of(path):
+    """流式计算文件 SHA-256（资源包可达数百 MB，不能整读进内存）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def verify_sha256(out_path, expect):
+    """供应链强校验：摘要不匹配删除落盘文件并抛 HashMismatch（退出码 3）。"""
+    actual = sha256_of(out_path)
+    if actual.lower() != expect.strip().lower():
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        raise HashMismatch(
+            "SHA-256 校验失败：期望 %s，实际 %s（文件已删除）。"
+            "若上游资产为官方更新，请同步更新 packaging/ci_assets.lock.json"
+            % (expect.strip().lower(), actual))
+    print("SHA-256 校验通过：%s" % actual)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="从 GitHub Release 下载官方预解码资源包（无游戏构建机用）")
@@ -105,6 +143,9 @@ def main():
                     help="owner/repo（默认取环境变量 GITHUB_REPOSITORY）")
     ap.add_argument("--tag", default="latest",
                     help="Release 标签；latest 自动解析最新 Release")
+    ap.add_argument("--expect-sha256", default="",
+                    help="期望的 SHA-256（64 位十六进制）；给定后下载完成即强校验，"
+                         "不一致删除文件并退出 1。CI 从 packaging/ci_assets.lock.json 取值")
     args = ap.parse_args()
 
     if not args.repo:
@@ -120,6 +161,10 @@ def main():
         if not found or not url:
             return 0  # 无包 → 跳过，不视为失败
         download(url, args.out, token, repo=args.repo, asset_id=asset_id)
+        if args.expect_sha256:
+            verify_sha256(args.out, args.expect_sha256)
+    except HashMismatch:
+        raise
     except Exception as e:
         print("获取资源包失败：%s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 1
@@ -127,4 +172,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except HashMismatch as e:
+        print("供应链校验失败：%s" % e, file=sys.stderr)
+        sys.exit(EXIT_HASH_MISMATCH)
