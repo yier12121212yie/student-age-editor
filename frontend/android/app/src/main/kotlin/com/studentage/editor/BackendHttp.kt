@@ -26,7 +26,9 @@ import java.util.concurrent.atomic.AtomicLong
  *  - (c) 错误分类靠异常类名（SocketTimeout / SSL / UnknownHost|Connect|Socket /
  *    Malformed|Protocol）映射，C++ 侧完成。
  *  - (d) >=400 不是错误：读 errorStream 正常返回。
- *  - (e) instanceFollowRedirects = true。
+ *  - (e) instanceFollowRedirects = false：3xx 由 C++ 共享重定向层手动逐跳处理
+ *    （跨源剥离 Authorization/Cookie、8 跳上限，见 core/http_client.cpp），
+ *    Java 传输层永不自行跟随——传输层跟随会把凭据带去 Location 指向的任意主机。
  *  - (f) 系统 CA（平台网络栈）；每次请求独立连接对象，多线程安全。
  *  - (g) 请求体以 ByteArray 传输（fixed-length streaming），可含 NUL 二进制。
  */
@@ -44,7 +46,7 @@ object BackendHttp {
         body: ByteArray?, connectMs: Int, readMs: Int,
     ): Long {
         val conn = URL(url).openConnection() as HttpURLConnection
-        conn.instanceFollowRedirects = true
+        conn.instanceFollowRedirects = false
         conn.connectTimeout = connectMs
         conn.readTimeout = readMs
         conn.useCaches = false

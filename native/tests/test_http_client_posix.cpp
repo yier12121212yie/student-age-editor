@@ -5,8 +5,10 @@
 // network. The transport runs on the caller thread and speaks real HTTP over a
 // loopback socket, so these cover the exact shapes the services rely on:
 // method/header/body passthrough (incl. binary bodies and the WinHTTP default
-// Accept), 404-is-not-an-error, redirect following (WINHTTP_OPTION_
-// REDIRECT_POLICY_ALWAYS parity), the connect+read timeout mapping to
+// Accept), 404-is-not-an-error, opt-in redirect following (安全批次 A: the
+// transport NEVER follows on its own; the shared layer follows manually with
+// cross-origin Authorization/Cookie stripping, 8-hop cap and the urllib
+// POST->GET fold), the connect+read timeout mapping to
 // Error::Timeout, request_stream's per-chunk cadence + accumulation, and the
 // early-abort contract (partial body, Error stays None). Custom verbs
 // (PROPFIND/MKCOL — the WebDAV path) are covered against p5mock, the one mock
@@ -130,22 +132,110 @@ TEST_CASE("posix http: POST/PUT method + body passthrough (incl. binary NUL)",
     }
 }
 
-TEST_CASE("posix http: 302 redirect is followed (WINHTTP REDIRECT_POLICY_ALWAYS parity)",
+TEST_CASE("posix http: 302 redirect is followed only when follow_redirects is set",
           "[http_client][posix-only]") {
     p4mock::Server srv;
+    bool dest_hit = false;
     srv.server().Get(R"(/start)", [](const httplib::Request&, httplib::Response& res) {
         res.set_redirect("/dest", 302);
     });
-    srv.server().Get(R"(/dest)", [](const httplib::Request&, httplib::Response& res) {
+    srv.server().Get(R"(/dest)", [&](const httplib::Request&, httplib::Response& res) {
+        dest_hit = true;
+        res.set_content("landed", "text/plain");
+    });
+    srv.start();
+
+    // 默认（安全批次 A）：传输层永不自行跟随，3xx 原样交还调用方。
+    {
+        http::Request r;
+        r.url = srv.base() + "/start";
+        http::Response resp = http::request(r);
+        CHECK(resp.transport_ok());
+        CHECK(resp.status == 302);
+        CHECK(resp.header("Location").find("/dest") != std::string::npos);
+        CHECK_FALSE(dest_hit);
+    }
+    // 显式开启：共享重定向层手动逐跳跟随。
+    {
+        http::Request r;
+        r.url = srv.base() + "/start";
+        r.follow_redirects = true;
+        http::Response resp = http::request(r);
+        CHECK(resp.transport_ok());
+        CHECK(resp.status == 200);            // final, not 302
+        CHECK(resp.body == "landed");
+        CHECK(dest_hit);
+    }
+}
+
+TEST_CASE("posix http: cross-origin redirect strips Authorization/Cookie, same-origin keeps",
+          "[http_client][posix-only]") {
+    p4mock::Server a, b;
+    b.start();   // 先起 B，A 的跨源跳转目标需要它的 base
+    const std::string b_base = b.base();
+    std::string a_auth, b_auth, b_cookie;
+    a.server().Get(R"(/same)", [](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect("/dest", 302);   // 同源跳（同 host:port）
+    });
+    a.server().Get(R"(/dest)", [&](const httplib::Request& req, httplib::Response& res) {
+        a_auth = req.get_header_value("Authorization");
+        res.set_content("same-origin", "text/plain");
+    });
+    a.server().Get(R"(/cross)", [b_base](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect(b_base + "/dest", 302);   // 跨源跳（端口不同）
+    });
+    b.server().Get(R"(/dest)", [&](const httplib::Request& req, httplib::Response& res) {
+        b_auth = req.get_header_value("Authorization");
+        b_cookie = req.get_header_value("Cookie");
+        res.set_content("cross-origin", "text/plain");
+    });
+    a.start();
+
+    http::Request r;
+    r.url = a.base() + "/same";
+    r.follow_redirects = true;
+    r.headers = {{"Authorization", "Bearer secret"}, {"Cookie", "sid=xyz"}};
+    http::Response resp = http::request(r);
+    CHECK(resp.transport_ok());
+    CHECK(resp.status == 200);
+    CHECK(resp.body == "same-origin");
+    CHECK(a_auth == "Bearer secret");      // 同源跳保留凭据
+
+    http::Request r2;
+    r2.url = a.base() + "/cross";
+    r2.follow_redirects = true;
+    r2.headers = {{"Authorization", "Bearer secret"}, {"Cookie", "sid=xyz"}};
+    http::Response resp2 = http::request(r2);
+    CHECK(resp2.transport_ok());
+    CHECK(resp2.status == 200);
+    CHECK(resp2.body == "cross-origin");
+    CHECK(b_auth.empty());                 // 跨源跳剥离 Authorization
+    CHECK(b_cookie.empty());               // 跨源跳剥离 Cookie
+}
+
+TEST_CASE("posix http: 302 folds POST into GET and drops the body (urllib parity)",
+          "[http_client][posix-only]") {
+    p4mock::Server srv;
+    std::string dest_method, dest_body;
+    srv.server().Post(R"(/start)", [](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect("/dest", 302);
+    });
+    srv.server().Get(R"(/dest)", [&](const httplib::Request& req, httplib::Response& res) {
+        dest_method = req.method;
+        dest_body = req.body;
         res.set_content("landed", "text/plain");
     });
     srv.start();
     http::Request r;
+    r.method = "POST";
     r.url = srv.base() + "/start";
+    r.body = "payload=1";
+    r.follow_redirects = true;
     http::Response resp = http::request(r);
     CHECK(resp.transport_ok());
-    CHECK(resp.status == 200);            // final, not 302
-    CHECK(resp.body == "landed");
+    CHECK(resp.status == 200);
+    CHECK(dest_method == "GET");           // 301/302/303 把 POST 折成 GET
+    CHECK(dest_body.empty());              // 且丢弃 body
 }
 
 TEST_CASE("posix http: stalled response maps to Error::Timeout", "[http_client][posix-only]") {

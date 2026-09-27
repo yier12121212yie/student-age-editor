@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwctype>
+#include <mutex>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -244,16 +246,6 @@ std::string Response::header(std::string_view name) const {
 namespace {
 
 // RAII wrappers ---------------------------------------------------------------
-struct Session {
-    HINTERNET h = nullptr;
-    Session(const wchar_t* ua, DWORD access) { h = WinHttpOpen(ua, access, nullptr, nullptr, 0); }
-    ~Session() {
-        if (h) WinHttpCloseHandle(h);
-    }
-    Session(const Session&) = delete;
-    explicit operator bool() const { return h != nullptr; }
-};
-
 struct Hdl {
     HINTERNET h = nullptr;
     Hdl() = default;
@@ -328,7 +320,22 @@ Response error_for_last_win32(const char* what) {
 
 constexpr wchar_t kUserAgent[] = L"student-age-editor";
 
-Response do_request(const Request& req, const ChunkHandler* on_chunk) {
+// 进程级共享 WinHTTP 会话（性能 P1：连接复用）。WinHTTP 的 keep-alive 连接
+// 缓存挂在 session 上，此前每请求 WinHttpOpen 新会话等于每个请求都重走完整
+// TCP+TLS 握手；现在按 proxy 模式缓存两个会话全进程复用。单请求的超时与重
+// 定向策略相应改设到 request 句柄上，不再写共享会话（避免并发请求互相污染）。
+// 进程退出时不关闭（OS 统一回收，避免静态析构顺序与他线程在途请求竞态）。
+HINTERNET shared_session(bool bypass_proxy) {
+    static HINTERNET s_default =
+        WinHttpOpen(kUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
+    static HINTERNET s_no_proxy =
+        WinHttpOpen(kUserAgent, WINHTTP_ACCESS_TYPE_NO_PROXY, nullptr, nullptr, 0);
+    return bypass_proxy ? s_no_proxy : s_default;
+}
+
+// 传输层单跳（3xx 永不跟随）：重定向由文件尾 request_following_redirects 共享
+// 层手动逐跳处理（跨源剥离敏感头、8 跳上限）。
+Response do_request_platform(const Request& req, const ChunkHandler* on_chunk) {
     Url u;
     if (!parse_url(req.url, &u)) {
         return fail(Response::Error::BadInput, "unsupported or malformed URL: " + req.url);
@@ -336,24 +343,10 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
     // bypass_proxy -> NO_PROXY: loopback endpoints (§4 plugin services) must not
     // be routed through a system proxy, which would answer them with the
     // proxy's own error page instead of the plugin's.
-    Session session(kUserAgent, req.bypass_proxy ? WINHTTP_ACCESS_TYPE_NO_PROXY
-                                                 : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY);
+    HINTERNET session = shared_session(req.bypass_proxy);
     if (!session) return fail(Response::Error::Other, "WinHttpOpen failed");
 
-    DWORD t_ms = static_cast<DWORD>(std::max<double>(0.5, req.timeout_seconds) * 1000.0);
-    // resolve, connect, send, receive — per-operation budget like socket timeout
-    if (!WinHttpSetTimeouts(session.h, static_cast<int>(t_ms), static_cast<int>(t_ms),
-                            static_cast<int>(t_ms), static_cast<int>(t_ms))) {
-        return error_for_last_win32("WinHttpSetTimeouts");
-    }
-    // Follow 3xx like urllib (best effort; option unsupported on older stacks).
-    // NEVER leaves the 3xx response itself in front of the caller, which is
-    // what the §4 loopback whitelist needs (no off-host hop).
-    DWORD redir = req.follow_redirects ? WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS
-                                       : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-    WinHttpSetOption(session.h, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof(redir));
-
-    Hdl connect(WinHttpConnect(session.h, to_wide(u.host).c_str(),
+    Hdl connect(WinHttpConnect(session, to_wide(u.host).c_str(),
                                static_cast<INTERNET_PORT>(u.port), 0));
     if (!connect) return error_for_last_win32("WinHttpConnect");
 
@@ -373,6 +366,19 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
         connect.h, to_wide(method).c_str(), target.c_str(), nullptr, WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES, u.https ? WINHTTP_FLAG_SECURE : 0));
     if (!request_handle) return error_for_last_win32("WinHttpOpenRequest");
+
+    DWORD t_ms = static_cast<DWORD>(std::max<double>(0.5, req.timeout_seconds) * 1000.0);
+    // resolve, connect, send, receive — per-operation budget, set on the REQUEST
+    // handle: the session is process-shared, so a per-request timeout must not
+    // leak into (or race with) concurrent requests on the same session.
+    if (!WinHttpSetTimeouts(request_handle.h, static_cast<int>(t_ms), static_cast<int>(t_ms),
+                            static_cast<int>(t_ms), static_cast<int>(t_ms))) {
+        return error_for_last_win32("WinHttpSetTimeouts");
+    }
+    // 3xx 一律 NEVER：跟随逻辑在 request_following_redirects 共享层做（跨源剥
+    // 离 Authorization/Cookie）。选项不支持的老系统上默认行为同样不跟随。
+    DWORD redir = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    WinHttpSetOption(request_handle.h, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof(redir));
 
     std::wstring headers;
     bool has_accept = false;
@@ -468,12 +474,6 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
 }
 
 }  // namespace
-
-Response request(const Request& req) { return do_request(req, nullptr); }
-
-Response request_stream(const Request& req, const ChunkHandler& on_chunk) {
-    return do_request(req, &on_chunk);
-}
 
 #else  // !_WIN32 --------------------------------------------------------------
 //
@@ -758,20 +758,52 @@ size_t header_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return n;
 }
 
-// RAII wrapper for the easy handle + header slist (both freed on every exit).
+// 进程级 easy-handle 池（性能 P1：连接复用）。curl 的 keep-alive 连接缓存挂
+// 在 easy handle 上，此前每请求 init/cleanup 等于每个请求都重走完整 TCP+TLS
+// 握手；现在取出/归还复用句柄。归还的句柄下次使用前全量重设选项（见
+// do_request_platform 内的无条件 setopt）；perform 失败的句柄直接丢弃不回流。
+// 池上限 8 与 httpd 工作线程量级匹配；进程退出时不清理（OS 回收，避免静态
+// 析构顺序与他线程在途请求竞态）。
+struct HandlePool {
+    std::mutex mu;
+    std::vector<CurlHandle*> idle;
+};
+
+HandlePool& handle_pool() {
+    static HandlePool pool;
+    return pool;
+}
+
+// RAII wrapper for the easy handle + header slist: the slist is freed on every
+// exit, the easy handle goes back to the process pool (or is destroyed when a
+// failed perform flagged it discard).
 struct HandleGuard {
     const CurlApi& api;
     CurlHandle* h = nullptr;
     CurlSList* slist = nullptr;
+    bool discard = false;
     explicit HandleGuard(const CurlApi& a) : api(a) {}
     ~HandleGuard() {
         if (slist) api.slist_free_all(slist);
-        if (h) api.cleanup(h);
+        if (!h) return;
+        if (discard) {
+            api.cleanup(h);
+            return;
+        }
+        bool keep = false;
+        {
+            std::lock_guard<std::mutex> lk(handle_pool().mu);
+            keep = handle_pool().idle.size() < 8;
+            if (keep) handle_pool().idle.push_back(h);
+        }
+        if (!keep) api.cleanup(h);
     }
     HandleGuard(const HandleGuard&) = delete;
 };
 
-Response do_request(const Request& req, const ChunkHandler* on_chunk) {
+// 传输层单跳（3xx 永不跟随）：重定向由文件尾 request_following_redirects 共享
+// 层手动逐跳处理（跨源剥离敏感头、8 跳上限）。
+Response do_request_platform(const Request& req, const ChunkHandler* on_chunk) {
     Url u;
     if (!parse_url(req.url, &u)) {
         return fail(Response::Error::BadInput, "unsupported or malformed URL: " + req.url);
@@ -782,7 +814,14 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
                     "outbound HTTP on non-Windows: " + api.why);
     }
     HandleGuard g(api);
-    g.h = api.init();
+    {
+        std::lock_guard<std::mutex> lk(handle_pool().mu);
+        if (!handle_pool().idle.empty()) {
+            g.h = handle_pool().idle.back();
+            handle_pool().idle.pop_back();
+        }
+    }
+    if (!g.h) g.h = api.init();
     if (!g.h) return fail(Response::Error::Other, "curl_easy_init failed");
 
     Response resp;
@@ -814,16 +853,15 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
     // trust store on curl). Leave verification ON — the endpoints are real.
     api.setopt(g.h, kOptSslVerifyPeer, 1L);
 
-    // Redirect policy ALWAYS, like WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS /
-    // urllib. -1 == unbounded, matching WinHTTP's follow-all; a loop is broken
-    // by the server, not by a client cap. follow_redirects=false leaves the 3xx
-    // in front of the caller (§4 loopback whitelist: no off-host hop).
-    api.setopt(g.h, kOptFollowLocation, req.follow_redirects ? 1L : 0L);
-    api.setopt(g.h, kOptMaxRedirs, -1L);
-    // PROXY="" disables proxy usage wholesale (curl's WINHTTP_ACCESS_TYPE_
-    // NO_PROXY equivalent), so loopback §4 plugin services stay reachable
-    // through http_proxy/https_proxy.
-    if (req.bypass_proxy) api.setopt(g.h, kOptProxy, "");
+    // Redirect policy: transport NEVER follows (0/0). 3xx handling lives in the
+    // shared request_following_redirects layer (cross-origin sensitive-header
+    // stripping). Pool-resident handles must have this reset unconditionally.
+    api.setopt(g.h, kOptFollowLocation, 0L);
+    api.setopt(g.h, kOptMaxRedirs, 0L);
+    // PROXY 每请求显式重设（池化句柄会残留上次 bypass 状态）："" 禁用代理
+    // wholesale（curl 的 WINHTTP_ACCESS_TYPE_NO_PROXY 等价，loopback §4 插件
+    // 服务因此不被 http_proxy/https_proxy 截走）；nullptr 回退默认 env 探测。
+    api.setopt(g.h, kOptProxy, req.bypass_proxy ? "" : static_cast<const char*>(nullptr));
 
     // Timeouts: WinHTTP gives resolve/connect/send/receive each the per-op
     // budget `timeout_seconds` (max(0.5, t)). Connect+resolve map cleanly to
@@ -848,14 +886,15 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
     // attached when non-empty (so GET/HEAD/DELETE-without-body stay bodyless).
     const std::string method = req.method.empty() ? "GET" : req.method;
     api.setopt(g.h, kOptCustomRequest, method.c_str());
+    // POST 系选项无条件全量重设：池化句柄会残留上一次请求的 body/POST 标志。
+    api.setopt(g.h, kOptPost, method == "POST" ? 1L : 0L);
     if (!req.body.empty()) {
         api.setopt(g.h, kOptPostFields, req.body.data());
         api.setopt(g.h, kOptPostFieldSize, static_cast<long>(req.body.size()));
-    } else if (method == "POST") {
+    } else {
         // Mirror WinHTTP: a POST always carries a (possibly empty) body and a
         // Content-Length: 0.
-        api.setopt(g.h, kOptPost, 1L);
-        api.setopt(g.h, kOptPostFields, "");
+        api.setopt(g.h, kOptPostFields, nullptr);
         api.setopt(g.h, kOptPostFieldSize, 0L);
     }
 
@@ -873,7 +912,9 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
         CurlSList* appended = api.slist_append(g.slist, "Accept: */*");
         if (appended) g.slist = appended;
     }
-    if (g.slist) api.setopt(g.h, kOptHttpHeader, g.slist);
+    // 无条件设置（含 nullptr）：池化句柄会残留上一次请求的 slist 指针——若本
+    // 次没有自定义头而上次有，残留指针已在上次析构时释放，等于 use-after-free。
+    api.setopt(g.h, kOptHttpHeader, g.slist);
 
     // Callbacks: status + headers are parsed before the first body chunk fires
     // (curl invokes HEADERFUNCTION for the response headers, then WRITEFUNCTION
@@ -885,6 +926,7 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
 
     CurlCode code = api.perform(g.h);
     if (ctx.overflow) {
+        g.discard = true;  // 异常中止的句柄不回流池中
         return fail(Response::Error::Other, "response body too large");
     }
     if (code == kCurWriteError && ctx.aborted) {
@@ -894,6 +936,7 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
         code = kCurOk;
     }
     if (code != kCurOk) {
+        g.discard = true;  // 连接级失败的句柄不回流（可能持有半死连接状态）
         return error_for_curl(code);
     }
 
@@ -906,15 +949,160 @@ Response do_request(const Request& req, const ChunkHandler* on_chunk) {
 
 }  // namespace
 
-Response request(const Request& req) { return do_request(req, nullptr); }
-
-Response request_stream(const Request& req, const ChunkHandler& on_chunk) {
-    return do_request(req, &on_chunk);
-}
-
 #endif  // __ANDROID__ / POSIX curl
 
 #endif  // _WIN32
+
+// ---------------------------------------------------------------------------
+// 共享重定向层（_WIN32 / POSIX curl / Android JNI 桥共用）。
+// 三个平台分支的传输层都钉死「永不自行跟随 3xx」，这里手动逐跳处理：
+//  - follow_redirects == false（默认）：3xx 原样返回调用方——§4 回环白名单、
+//    cloud-public-only 的 SSRF 护栏都依赖「传输层不自动出站」这一语义。
+//  - true：最多 8 跳；跨源跳（scheme/host/port 任一变化）剥离 Authorization/
+//    Cookie/Proxy-Authorization，防止 3xx 把凭据带去第三方主机；301/302 把
+//    POST 折叠为 GET 并丢 body、303 非 HEAD 折成 GET（urllib 语义），307/308
+//    保留方法与 body；每跳目标先过 Request::redirect_allowed（调用方策略，
+//    cloud_sync 用它把 SSRF 护栏延伸到重定向链）。
+// ---------------------------------------------------------------------------
+#if !defined(__ANDROID__) || defined(SA_ANDROID_HTTP_BRIDGE)
+
+#if defined(__ANDROID__) && defined(SA_ANDROID_HTTP_BRIDGE)
+// Android JNI 桥（http_jni_bridge.cpp）提供的单跳传输实现；_WIN32/POSIX 下
+// 同名定义在各自平台分支的匿名命名空间里，无需声明。
+Response do_request_platform(const Request& req, const ChunkHandler* on_chunk);
+#endif
+
+namespace {
+
+constexpr int kMaxRedirectHops = 8;
+
+// 独立命名（平台分支的匿名命名空间里已有各自的 fail）：未命名命名空间在同一
+// 作用域可重开，重名会变成重定义。
+Response redirect_fail(Response::Error kind, const std::string& msg) {
+    Response r;
+    r.error = kind;
+    r.error_message = msg;
+    return r;
+}
+
+bool is_redirect_status(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 ||
+           status == 308;
+}
+
+bool is_sensitive_header(const std::string& name) {
+    const std::string l = lower_ascii(name);
+    return l == "authorization" || l == "cookie" || l == "cookie2" ||
+           l == "proxy-authorization";
+}
+
+// Location 解析：绝对 URL 原样；"/path" 挂当前源；相对路径按当前 path 目录
+// 归一化（处理 ./ 与 ../）。失败返回空串。
+std::string resolve_redirect_url(const std::string& base, const std::string& loc_raw) {
+    Url b;
+    if (!parse_url(base, &b)) return {};
+    std::string loc = loc_raw;
+    size_t ls = loc.find_first_not_of(" \t\r\n");
+    if (ls == std::string::npos) return {};
+    loc = loc.substr(ls);
+    while (!loc.empty() && (loc.back() == ' ' || loc.back() == '\t' ||
+                            loc.back() == '\r' || loc.back() == '\n')) {
+        loc.pop_back();
+    }
+    if (loc.rfind("http://", 0) == 0 || loc.rfind("https://", 0) == 0) return loc;
+    std::string prefix = std::string(b.https ? "https://" : "http://") + b.host;
+    if (b.port != (b.https ? 443 : 80)) prefix += ":" + std::to_string(b.port);
+    if (loc[0] != '/') {
+        std::string dir = b.path.substr(0, b.path.find_last_of('/') + 1);
+        loc = (dir.empty() ? std::string("/") : dir) + loc;
+    }
+    std::string query;
+    std::string path = loc;
+    auto q = path.find('?');
+    if (q != std::string::npos) {
+        query = path.substr(q);
+        path = path.substr(0, q);
+    }
+    std::vector<std::string> segs;
+    size_t i = 0;
+    while (i < path.size()) {
+        size_t slash = path.find('/', i);
+        std::string seg =
+            path.substr(i, slash == std::string::npos ? std::string::npos : slash - i);
+        if (seg == "..") {
+            if (!segs.empty()) segs.pop_back();
+        } else if (!seg.empty() && seg != ".") {
+            segs.push_back(std::move(seg));
+        }
+        if (slash == std::string::npos) break;
+        i = slash + 1;
+    }
+    std::string out;
+    for (const auto& s : segs) {
+        out += "/";
+        out += s;
+    }
+    if (out.empty()) out = "/";
+    return prefix + out + query;
+}
+
+bool same_origin(const Url& a, const Url& b) {
+    return a.https == b.https && a.host == b.host && a.port == b.port;
+}
+
+Response request_following_redirects(const Request& req0, const ChunkHandler* on_chunk) {
+    Request cur = req0;
+    for (int hop = 0;; ++hop) {
+        Response resp = do_request_platform(cur, on_chunk);
+        if (!req0.follow_redirects) return resp;
+        if (resp.error != Response::Error::None) return resp;
+        if (!is_redirect_status(resp.status)) return resp;
+        std::string loc = resp.header("Location");
+        if (loc.empty()) return resp;  // 无 Location 的 3xx：原样交还调用方
+        if (hop >= kMaxRedirectHops) {
+            return redirect_fail(Response::Error::Other,
+                                 "too many redirects (>" + std::to_string(kMaxRedirectHops) +
+                                     ")");
+        }
+        std::string next = resolve_redirect_url(cur.url, loc);
+        if (next.empty()) {
+            return redirect_fail(Response::Error::BadInput,
+                                 "malformed redirect Location: " + loc);
+        }
+        if (req0.redirect_allowed && !req0.redirect_allowed(next)) {
+            return redirect_fail(Response::Error::Other,
+                                 "redirect blocked by caller policy: " + next);
+        }
+        Url from;
+        Url to;
+        const bool have_endpoints = parse_url(cur.url, &from) && parse_url(next, &to);
+        if (have_endpoints && !same_origin(from, to)) {
+            cur.headers.erase(std::remove_if(cur.headers.begin(), cur.headers.end(),
+                                             [](const auto& h) {
+                                                 return is_sensitive_header(h.first);
+                                             }),
+                              cur.headers.end());
+        }
+        const bool fold_to_get =
+            (resp.status == 303 && cur.method != "HEAD") ||
+            ((resp.status == 301 || resp.status == 302) && cur.method == "POST");
+        if (fold_to_get) {
+            cur.method = "GET";
+            cur.body.clear();
+        }
+        cur.url = next;
+    }
+}
+
+}  // namespace
+
+Response request(const Request& req) { return request_following_redirects(req, nullptr); }
+
+Response request_stream(const Request& req, const ChunkHandler& on_chunk) {
+    return request_following_redirects(req, &on_chunk);
+}
+
+#endif  // !__ANDROID__ / SA_ANDROID_HTTP_BRIDGE
 
 }  // namespace http
 }  // namespace sa_core

@@ -74,10 +74,19 @@ struct Request {
     // DEFAULT_PROXY a corporate proxy swallows requests to 127.0.0.1, which
     // would make every PLUGIN_SPEC §4 service plugin look dead.
     bool bypass_proxy = false;
-    // 3xx handling. Default true keeps urllib/WinHTTP parity; the §4 service
-    // fetches/proxy set false, because following a redirect to a non-loopback
-    // host is exactly the escape its 127.0.0.1-only URL whitelist forbids.
-    bool follow_redirects = true;
+    // 3xx handling (安全批次 A 调整默认值)：默认 false —— 3xx 原样返回给
+    // 调用方。默认 true 的旧行为会让任何配置的 URL 把 Authorization 头
+    // 带去 3xx Location 指向的任意主机（凭据收割链）。需要跟随重定向的
+    // 调用方显式置 true：此时客户端在共享层做手动逐跳处理 —— 每跳最多
+    // 8 次，跨源跳（scheme/host/port 任一变化）自动剥离 Authorization/
+    // Cookie/Proxy-Authorization，301/302/303 把 POST 折叠成 GET（urllib
+    // 语义），307/308 保留方法与 body。
+    bool follow_redirects = false;
+
+    // 3xx 逐跳跟随时的出站校验（可选）：每个重定向目标在跟随前回调；返回
+    // false 以 Error::Other 中止。防止「首跳已验、次跳 302 绕过护栏」的 SSRF
+    // 旁路——cloud_sync 用它把 cloud-public-only 校验延伸到重定向链每一跳。
+    std::function<bool(const std::string& redirect_url)> redirect_allowed;
 };
 
 struct Response {

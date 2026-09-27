@@ -402,17 +402,17 @@ sa_core::http::Response do_request(const sa_core::http::Request& req,
 }  // namespace android_http
 }  // namespace sa
 
-// The sa_core::http entry points the Android build links in place of the
-// core/http_client.cpp stub (SA_ANDROID_HTTP_BRIDGE, see that file).
+// The Android build links core/http_client.cpp's SHARED redirect layer in place
+// of the per-platform request()/request_stream() (SA_ANDROID_HTTP_BRIDGE, see
+// that file). This file provides the single-hop transport under the same
+// do_request_platform name as the _WIN32/POSIX branches; the shared layer
+// handles 3xx manually (cross-origin sensitive-header stripping, hop cap) —
+// which is why BackendHttp.kt pins instanceFollowRedirects = false.
 namespace sa_core {
 namespace http {
 
-Response request(const Request& req) {
-    return sa::android_http::detail::do_request(req, nullptr);
-}
-
-Response request_stream(const Request& req, const ChunkHandler& on_chunk) {
-    return sa::android_http::detail::do_request(req, &on_chunk);
+Response do_request_platform(const Request& req, const ChunkHandler* on_chunk) {
+    return sa::android_http::detail::do_request(req, on_chunk);
 }
 
 }  // namespace http
