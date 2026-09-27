@@ -1,9 +1,11 @@
 // wip/P3a/content_routes.cpp —— POST /api/story/export|import、POST /api/preview/event、
-// GET /api/search/talk、/api/ai/stage/{dicts,roles,encode}（api.py 路由体逐一移植）。
+// GET /api/search/talk、/api/ai/stage/{dicts,roles,encode}（api.py 路由体逐一移植）、
+// GET /api/live2d/models + POST /api/live2d/render（live2d_renderer 离线渲染接线）。
 //
 // 错误信封（CONVENTIONS 2.1）：SandboxError -> 400 {"error": msg}；服务内
 // ApiError(type,msg) 经 Router::dispatch 转 500 {"error":"type: msg"}，与 Python
 // `except Exception: 500 {"error":"%s: %s" % (type(e).__name__, e)}` 同形。
+// live2d 端点例外：契约要求结构化 {"ok":bool,...} 信封（见路由处 doc）。
 #include "content_routes.h"
 
 #include <algorithm>
@@ -11,12 +13,16 @@
 #include <vector>
 
 #include "preview_service.h"
+#include "sa_core/env_store.h"
+#include "sa_core/http_client.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
+#include "sa_core/steam_paths.h"
 #include "sa_core/util.h"
 #include "server/api_router.h"
 #include "server/cfg_cache.h"
 #include "server/cfg_store.h"
+#include "server/live2d_renderer.h"
 #include "server/services/stores_api.h"
 #include "server/state.h"
 #include "stage_service.h"
@@ -228,6 +234,86 @@ Resp search_talk(const Req& req) {
     return Resp::Json(200, std::move(out));
 }
 
+// ---------------------------------------------------------------------------
+// /api/live2d/* —— Live2D 模型浏览 / 表情离线渲染（live2d_renderer 接线）
+// ---------------------------------------------------------------------------
+
+// 游戏根解析链（第一个命中即返回；live2d_renderer 约定 game_root 下挂
+// DLC/DLC_L2DModels/<模型目录>）：
+//   1. 环境变量 EDITOR_GAME_ROOT（与 EDITOR_DATA_ROOT / EDITOR_DECODED_PACK_DIR
+//      同一 EDITOR_* 注入约定，测试与绿色便携版用）；
+//   2. editor_env.json "game_root"（与 "base_data_dir"/"decoded_pack_dir" 同层
+//      配置，读法同 base_store::base_artifact_dir）；
+//   3. steam_paths::game_install_dirs() 自动探测（与 aa 扫描的
+//      detect_game_aa_dir 同源 Steam 库枚举）：优先取第一个含
+//      DLC/DLC_L2DModels 的安装目录，退化取第一个存在的安装目录。
+// 全部落空返回 ""（list_models 得到空表，models 端点照常 200 空列表）。
+std::string resolve_live2d_game_root() {
+    if (std::string env = sa_core::paths::getenv_utf8("EDITOR_GAME_ROOT"); !env.empty())
+        return env;
+    json env_cfg = sa_core::env_store::read_editor_env(sa::editor_root());
+    if (env_cfg.contains("game_root") && env_cfg.at("game_root").is_string()) {
+        std::string d = content::py_strip(env_cfg.at("game_root").get<std::string>());
+        if (!d.empty()) return d;
+    }
+    std::string fallback;
+    for (const auto& dir : sa_core::steam_paths::game_install_dirs()) {
+        if (!sa_core::paths::is_dir(dir)) continue;
+        if (fallback.empty()) fallback = dir;
+        if (sa_core::paths::is_dir(sa_core::paths::join(
+                sa_core::paths::join(dir, "DLC"), "DLC_L2DModels")))
+            return dir;
+    }
+    return fallback;
+}
+
+// 正整数尺寸取值：缺省/非法/非正一律回退默认（契约默认 512x512）。
+int dim_or_default(const json& v, int def) {
+    auto n = content::as_ll(v);
+    if (!n || *n <= 0 || *n > 16384) return def;
+    return static_cast<int>(*n);
+}
+
+Resp live2d_models(const Req&) {
+    // 进程级单例复用：live2d_renderer 命名空间态（g_game_root + 渲染缓存 map）
+    // 即「renderer 单例」，这里每次只刷新根路径，不重建任何渲染资源。
+    sa::live2d_renderer::set_game_root(resolve_live2d_game_root());
+    json arr = json::array();
+    for (const auto& m : sa::live2d_renderer::list_models()) {
+        json row = json::object();
+        row["path"] = m.path;
+        row["name"] = sa_core::paths::basename(m.path);
+        row["expressions"] = m.expressions;
+        arr.push_back(std::move(row));
+    }
+    return Resp::Json(200, json{{"models", std::move(arr)}});
+}
+
+Resp live2d_render(const Req& req) {
+    const json& body = body_obj(req);
+    std::string model = bstr(body, "model");
+    if (model.empty())
+        return Resp::Json(400, json{{"ok", false}, {"error", "model required"}});
+    std::string expr;
+    if (const json& e = bget(body, "expression"); content::py_truthy(e))
+        expr = content::story_str(e);  // null/缺省 -> 无表情（渲染基准姿势）
+    int width = dim_or_default(bget(body, "width"), 512);
+    int height = dim_or_default(bget(body, "height"), 512);
+
+    sa::live2d_renderer::set_game_root(resolve_live2d_game_root());
+    std::string png_path =
+        sa::live2d_renderer::render_expression(model, expr, width, height);
+    auto bytes = sa_core::paths::read_bytes(png_path);
+    if (!bytes) {
+        // 渲染核未就绪（Cubism 动态库/光栅化占位期）或产物缺失：结构化错误、
+        // 200 信封，前端按 ok=false 降级为占位图。
+        return Resp::Json(200, json{{"ok", false}, {"error", "renderer unavailable"}});
+    }
+    return Resp::Json(200, json{{"ok", true},
+                                {"mime", "image/png"},
+                                {"data", sa_core::http::b64_encode(*bytes)}});
+}
+
 }  // namespace
 
 void register_content_routes(Router& r) {
@@ -408,6 +494,26 @@ void register_content_routes(Router& r) {
             return Resp::Json(400, json{{"error", e.what()}});
         }
     });
+
+    // ---------- /api/live2d/* —— Live2D 表情离线渲染（live2d_renderer 接线） ----------
+    // GET /api/live2d/models →
+    //   {"models":[{"path":"<模型目录绝对路径>","name":"<目录名>",
+    //              "expressions":["表情名(= .moc3 主名)", ...]}]}
+    //   数据源 live2d_renderer::list_models()；game root 解析链见
+    //   resolve_live2d_game_root()（EDITOR_GAME_ROOT / editor_env.json
+    //   "game_root" / steam 自动探测）。未探得或无 DLC 目录 -> 200 空列表。
+    r.get(R"(/api/live2d/models)",
+          [](const Req& req) -> Resp { return live2d_models(req); });
+
+    // POST /api/live2d/render
+    //   入参 {"model":"<路径>","expression":"<名>"|null,"width":512,"height":512}
+    //   成功   {"ok":true,"mime":"image/png","data":"<PNG 字节 base64>"}
+    //   失败   {"ok":false,"error":"..."}（model 缺失 -> 400；渲染核不可用/
+    //          产物缺失 -> 200 "renderer unavailable"，与邻端「结构化信封」约定）。
+    // 渲染产物由 live2d_renderer 内部按 model:expression:WxH 键缓存，路由侧
+    // 复用进程级单例，不做冷启动重建。
+    r.post(R"(/api/live2d/render)",
+           [](const Req& req) -> Resp { return live2d_render(req); });
 }
 
 }  // namespace sa

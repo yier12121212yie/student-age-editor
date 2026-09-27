@@ -101,23 +101,28 @@ void set_workspace_root(const std::string& root) {
     g_cache_valid = false;
 }
 
+// 锁边界约定：g_revision_mu 只保护元数据（root/缓存/计数），绝不跨磁盘 IO
+// 持有，且本文件内不存在任何"持锁再调用会加锁的函数"的路径——非递归 mutex
+// 重入即自死锁（compute_revision_cached 曾在持锁状态下调 compute_revision，
+// 后者再次加锁，命中 force/失效缓存路径时无条件挂死）。
 std::string compute_revision() {
     auto start = std::chrono::high_resolution_clock::now();
 
-    if (g_workspace_root.empty()) {
-        return "";
-    }
-
+    std::string root;
     std::vector<std::string> files;
     {
         std::lock_guard<std::mutex> lk(g_revision_mu);
-        files = collect_target_files(g_workspace_root);
+        root = g_workspace_root;
+        if (root.empty()) {
+            return "";
+        }
+        files = collect_target_files(root);
+        g_files_scanned_count = files.size();
     }
 
     std::string combined_hash;
-    g_files_scanned_count = files.size();
 
-    // Hash each file's content sequentially
+    // Hash each file's content sequentially (锁外磁盘 IO)
     for (const auto& filepath : files) {
         auto hash_opt = sha256_of_file(filepath);
         if (hash_opt) {
@@ -127,24 +132,34 @@ std::string compute_revision() {
 
     // Final hash over the combined content hashes
     std::string final_hash = sha256_hex(combined_hash);
-    
+
     // Return first 20 characters for performance
     auto end = std::chrono::high_resolution_clock::now();
-    g_last_compute_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    {
+        std::lock_guard<std::mutex> lk(g_revision_mu);
+        g_last_compute_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    }
 
     return final_hash.substr(0, 20);
 }
 
 std::string compute_revision_cached(bool force_refresh) {
-    std::lock_guard<std::mutex> lk(g_revision_mu);
-
-    if (force_refresh || !g_cache_valid) {
-        g_cached_revision = compute_revision();
-        g_cache_valid = true;
-        g_cache_refresh_requested = false;
-        g_revision_cv.notify_all();
+    {
+        std::lock_guard<std::mutex> lk(g_revision_mu);
+        if (!force_refresh && g_cache_valid) {
+            return g_cached_revision;
+        }
     }
 
+    // 计算在锁外进行，结果再原子落缓存（并发重算时后写者胜，语义与原
+    // "force 即重算"一致）。
+    std::string revision = compute_revision();
+
+    std::lock_guard<std::mutex> lk(g_revision_mu);
+    g_cached_revision = revision;
+    g_cache_valid = true;
+    g_cache_refresh_requested = false;
+    g_revision_cv.notify_all();
     return g_cached_revision;
 }
 

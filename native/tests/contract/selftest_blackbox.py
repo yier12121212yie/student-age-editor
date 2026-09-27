@@ -151,9 +151,20 @@ class BackendApiTest(unittest.TestCase):
         self.assertEqual(status, 403)
 
     def test_local_origin_allowed(self):
+        # C++ 后端把 Origin 收紧为「主机+端口与 Host 精确一致」（阶段 1c）；
+        # 带真实端口的同源 Origin 在两个后端下都放行。
         status, _ = _call(self.port, "GET", "/api/ping",
-                          headers={"Origin": "http://127.0.0.1"})
+                          headers={"Origin": "http://127.0.0.1:%d" % self.port})
         self.assertEqual(status, 200)
+
+    def test_foreign_local_port_origin_rejected_cpp_only(self):
+        # 仅对端口校验成立的 C++ 后端记录偏差：Python 只比主机名，此用例
+        # 在 Python 下会得 200，故默认跳过，设 SA_CPP_ORIGIN_PORT=1 启用。
+        if os.environ.get("SA_CPP_ORIGIN_PORT") != "1":
+            self.skipTest("C++ 后端端口收紧专用")
+        status, _ = _call(self.port, "GET", "/api/ping",
+                          headers={"Origin": "http://127.0.0.1:1"})
+        self.assertEqual(status, 403)
 
     # ---------- 模组生命周期 ----------
     def test_mod_create_title_injection_blocked(self):

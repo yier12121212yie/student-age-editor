@@ -208,6 +208,7 @@ HttpJson http_json(const std::string& method, const std::string& url, const std:
     req.headers = std::move(headers);
     req.body = body;
     req.timeout_seconds = timeout;
+    req.follow_redirects = true;  // TTS 上游：保持跟随语义
     http::Response r = http::request(req);
     if (!r.transport_ok()) {
         if (r.error == http::Response::Error::Timeout)
@@ -434,6 +435,7 @@ std::pair<std::string, std::string> synthesize(const std::string& provider_in,
     req.url = url;
     req.body = sa_core::py_dumps(body);
     req.timeout_seconds = kTimeoutSynth;
+    req.follow_redirects = true;  // DashScope SSE 上游：保持跟随语义
     req.headers = {{"Authorization", "Bearer " + key},
                    {"Content-Type", "application/json"},
                    {"X-DashScope-SSE", "enable"}};
@@ -515,6 +517,7 @@ std::pair<std::string, std::string> synthesize(const std::string& provider_in,
                     dr.method = "GET";
                     dr.url = dl;
                     dr.timeout_seconds = 60;
+                    dr.follow_redirects = true;  // 音频下载 CDN 跳转
                     dr.headers = {{"User-Agent", "student-age-editor"}};
                     http::Response d = http::request(dr);
                     if (d.transport_ok() && d.status < 400) {
@@ -985,11 +988,10 @@ json save_audio(const std::string& mod_root, const std::string& audio, const std
     return out;
 }
 
-long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
-                             const std::string& title) {
+long long register_audio_cfg_url(const std::string& cfg_dir, const std::string& rel_url,
+                                 const std::string& title) {
     if (cfg_dir.empty()) throw TtsStoreError("未选择模组，无法登记 AudioCfg");
     std::lock_guard<std::mutex> lk(g_cfg_lock);
-    std::string k = safe_key(key);
     std::string path = sa_core::paths::join(cfg_dir, "AudioCfg.json");
     json data = json::object();
     std::optional<long long> expect;
@@ -1020,12 +1022,17 @@ long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
     }
     long long new_id = max_id + 1;
     std::string summary = p4::strip(title);
-    if (summary.empty()) summary = "配音 " + k;
+    if (summary.empty()) {
+        // URL 变体的空 title 摘要兜底名：取 rel_url 的 basename 去扩展名 ->
+        // "音频 <stem>"（key 变体沿用调用方预先算好的 "配音 <key>"，见下）。
+        const std::string stem = p4::split_ext(p4::basename(rel_url)).first;
+        summary = "音频 " + stem;
+    }
     if (p4::utf8_len(summary) > 24) summary = trunc_chars(summary, 24);
     json row;
     row["id"] = new_id;
     row["name"] = summary;
-    row["url"] = std::string(kAudioDir) + "/" + k;
+    row["url"] = rel_url;
     row["type"] = 0;
     row["volumn"] = 0;
     row["group"] = json::array();
@@ -1039,6 +1046,18 @@ long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
     if (!result.value("ok", false))
         throw TtsStoreError("登记 AudioCfg 失败: " + result.value("error", std::string("未知错误")));
     return new_id;
+}
+
+long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
+                             const std::string& title) {
+    // 委托到 URL 变体，对外行为完全不变：url 仍是 kAudioDir + "/" + safe_key(key)。
+    // safe_key 的产物只含 [A-Za-z0-9_-]（无点号 -> 无扩展名），URL 变体的空 title
+    // 兜底规则会给出 "音频 <key>"，与历史的 "配音 <key>" 分叉，故这里把兜底名先在
+    // 委托前算成历史文案再传入（非空 title 原样透传，由被调方二次 strip）。
+    const std::string k = safe_key(key);
+    std::string eff_title = title;
+    if (p4::strip(eff_title).empty()) eff_title = "配音 " + k;
+    return register_audio_cfg_url(cfg_dir, std::string(kAudioDir) + "/" + k, eff_title);
 }
 
 json bind_talk_audio(const std::string& mod_root, const std::string& talk_id_in, long long audio_cfg_id) {
@@ -1211,7 +1230,7 @@ void register_tts_routes(Router& r) {
     });
 
     // POST /api/tts/test.
-    r.post(R"(/api/tts/test)", [](const Req& req) -> Resp {
+    r.post(R"(/api/tts/test)", sa::wrap_async_job([](const Req& req) -> Resp {
         try {
             json settings = req.body.is_object() && req.body.contains("settings")
                                 ? req.body.at("settings")
@@ -1223,7 +1242,7 @@ void register_tts_routes(Router& r) {
         } catch (const std::exception& e) {
             return Resp::Json(500, json{{"error", std::string("Exception: ") + e.what()}});
         }
-    });
+    }));
 
     // GET /api/tts/voices.
     r.get(R"(/api/tts/voices)", [](const Req& req) -> Resp {
@@ -1242,7 +1261,7 @@ void register_tts_routes(Router& r) {
     });
 
     // POST /api/tts/synthesize.
-    r.post(R"(/api/tts/synthesize)", [](const Req& req) -> Resp {
+    r.post(R"(/api/tts/synthesize)", sa::wrap_async_job([](const Req& req) -> Resp {
         try {
             json settings = read_settings();
             std::string provider = body_str(req.body, "provider");
@@ -1259,7 +1278,7 @@ void register_tts_routes(Router& r) {
         } catch (const TtsError& e) {
             return tts_error(e);
         }
-    });
+    }));
 
     // POST /api/tts/save.
     r.post(R"(/api/tts/save)", [](const Req& req) -> Resp {

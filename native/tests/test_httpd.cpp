@@ -232,7 +232,38 @@ TEST_CASE("origin/host validation (httpd.py:76-115)", "[httpd][B12]") {
         CHECK(sa::json::parse(res->body)["error"] == "forbidden origin");
     }
     {
+        // 阶段 1c 收紧：loopback Origin 还必须与 Host 端口一致才放行。
+        httplib::Headers h{{"Origin", fx.base}};  // 127.0.0.1:<bound port>
+        auto res = cli.Get("/api/ping", h);
+        REQUIRE(res);
+        CHECK(res->status == 200);
+    }
+    {
+        // 本机其它端口的页面：简单请求（无 Origin 差异可挡）也被拒。
         httplib::Headers h{{"Origin", "http://127.0.0.1:51234"}};
+        auto res = cli.Get("/api/ping", h);
+        REQUIRE(res);
+        CHECK(res->status == 403);
+        CHECK(sa::json::parse(res->body)["error"] == "origin/host mismatch");
+    }
+    {
+        // 默认端口归一：Origin/Host 均省略端口（:80）时视为一致。
+        httplib::Headers h{{"Host", "localhost"}, {"Origin", "http://localhost"}};
+        auto res = cli.Get("/api/ping", h);
+        REQUIRE(res);
+        CHECK(res->status == 200);
+    }
+    {
+        // Origin 省略端口而 Host 非 80 → 不一致。
+        httplib::Headers h{{"Origin", "http://127.0.0.1"}};
+        auto res = cli.Get("/api/ping", h);
+        REQUIRE(res);
+        CHECK(res->status == 403);
+    }
+    {
+        // 无 Origin 头的本机其它端口页面仍按 Host 校验放行（CLI/桌面客户端
+        // 语义不变），端口收紧只作用于带 Origin 的浏览器请求。
+        httplib::Headers h;
         auto res = cli.Get("/api/ping", h);
         REQUIRE(res);
         CHECK(res->status == 200);
@@ -252,8 +283,15 @@ TEST_CASE("origin/host validation (httpd.py:76-115)", "[httpd][B12]") {
         CHECK(res->status == 200);
     }
     {
+        // IPv6 带括号的 Origin 与 Host 精确匹配 + 默认端口裁剪。
+        httplib::Headers h{{"Host", "[::1]"}, {"Origin", "http://[::1]:80"}};
+        auto res = cli.Get("/api/ping", h);
+        REQUIRE(res);
+        CHECK(res->status == 200);
+    }
+    {
         // OPTIONS preflight shares the same check (B12) but passes -> 204
-        httplib::Headers h{{"Origin", "http://localhost:3000"}};
+        httplib::Headers h{{"Origin", fx.base}};
         auto res = cli.Options("/api/ping", h);
         REQUIRE(res);
         CHECK(res->status == 204);
@@ -267,6 +305,13 @@ TEST_CASE("origin/host validation (httpd.py:76-115)", "[httpd][B12]") {
         auto res = cli.Options("/api/ping", h);
         REQUIRE(res);
         CHECK(res->status == 403);  // B12: preflight is validated too
+    }
+    {
+        // 跨端口 preflight（另一本地开发服务）也被拒：403 不带 CORS 头。
+        httplib::Headers h{{"Origin", "http://localhost:3000"}};
+        auto res = cli.Options("/api/ping", h);
+        REQUIRE(res);
+        CHECK(res->status == 403);
     }
 }
 
@@ -349,8 +394,12 @@ TEST_CASE("bytes 直发: handler bytes payload goes out verbatim", "[httpd][S1]"
     CHECK(res->body == payload);  // no re-serialization: byte-for-byte
 }
 
-TEST_CASE("503 bare response when the 64-slot pool is saturated (B13)", "[httpd][B13]") {
+TEST_CASE("503 bare response when the slot pool is saturated (B13)", "[httpd][B13]") {
     ServerFixture fx;
+    // 性能 P1 把传输层默认槽位提到 192；本测试钉住 64 显式验证 503 路径
+    // （set_max_slots 本身也是被测对象；try_acquire 逐连接读取，start 后设置
+    // 仍生效），不再依赖默认值。
+    fx.server.set_max_slots(64);
     std::atomic<bool> hold{true};
     std::atomic<int> arrived{0};
     fx.router.get(R"(/api/slow)", [&hold, &arrived](const sa::Req&) {

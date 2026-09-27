@@ -2,8 +2,9 @@
 //
 //  * _TABLE_CACHE  — hot big-table bodies for the zero-parse/zero-dump GET path
 //    (api.py:466-591, CONVENTIONS 5.1): key = absolute path, value =
-//    {mtime_ns, size, data, body_bytes, lossy}; max 3 entries, only bodies
-//    >= 256KB are stored, FIFO eviction, write-after seeding (S1).
+//    {mtime_ns, size, data, body_bytes, lossy}; max 16 entries, only bodies
+//    >= 256KB are stored, LRU eviction (P2: was 3-slot FIFO), write-after
+//    seeding (S1).
 //  * _MOD_CFGS_CACHE — per-table fingerprint whole-mod cache (api.py:333-456,
 //    CONVENTIONS 5.2): read-only views (shared_ptr<const json>), per-table
 //    (mtime_ns,size) fingerprints so one write only re-parses one table, B16
@@ -12,7 +13,10 @@
 //
 // Lock discipline (CONVENTIONS 6): L3 = table cache, L4 = mod-cfgs cache;
 // independent shared_mutexes, never nested. Shared lock for reads, exclusive
-// for writes, and no disk IO while a cache lock is held.
+// for writes. P2: a READ that HITS the table cache promotes the entry to
+// most-recently-used (LRU touch), so the three hit paths take the exclusive
+// lock — the scan is <= 16 entries and stays trivially short. No disk IO while
+// a cache lock is held.
 #pragma once
 
 #include <memory>

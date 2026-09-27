@@ -448,6 +448,68 @@ TEST_CASE("workspace set validates dir and refreshes mods", "[p2][workspace]") {
 }
 
 // --------------------------------------------------------------------------
+// 阶段 1c：workspace root 敏感目录拒绝（任意落点写 → Startup 链护栏）
+// --------------------------------------------------------------------------
+
+TEST_CASE("workspace set/oobe refuse system-sensitive roots", "[p2][workspace][security]") {
+    P2Fixture fx;
+#ifdef _WIN32
+    {
+        auto resp = fx.call("POST", "/api/workspace", json{{"root", "C:\\"}});
+        REQUIRE(resp.status == 400);
+        CHECK(resp.json_payload["error"].get<std::string>().find("drive root") !=
+              std::string::npos);
+    }
+    std::string sensitive = "C:\\Windows\\System32";
+    {
+        // 校验先于 is_dir：即使探测不到该目录也必须拒绝。
+        auto resp = fx.call("POST", "/api/workspace", json{{"root", sensitive}});
+        REQUIRE(resp.status == 400);
+        CHECK(resp.json_payload["error"].get<std::string>().find("system/program") !=
+              std::string::npos);
+    }
+    {
+        // Roaming 根"包住" Start Menu（Startup 落点所在）→ 拒绝。
+        std::string roaming = sa_core::paths::getenv_utf8("APPDATA");
+        REQUIRE(!roaming.empty());
+        auto resp = fx.call("POST", "/api/workspace", json{{"root", roaming}});
+        REQUIRE(resp.status == 400);
+        CHECK(resp.json_payload["error"].get<std::string>().find("Start Menu") !=
+              std::string::npos);
+    }
+#else
+    {
+        auto resp = fx.call("POST", "/api/workspace", json{{"root", "/"}});
+        REQUIRE(resp.status == 400);
+        CHECK(resp.json_payload["error"].get<std::string>().find("filesystem root") !=
+              std::string::npos);
+    }
+    std::string sensitive = "/etc";
+    {
+        auto resp = fx.call("POST", "/api/workspace", json{{"root", sensitive}});
+        REQUIRE(resp.status == 400);
+        CHECK(resp.json_payload["error"].get<std::string>().find("system directory") !=
+              std::string::npos);
+    }
+#endif
+    {
+        // /api/oobe/setup 走同一护栏，且先于 mkdir（不在系统目录下建目录）。
+        auto resp = fx.call("POST", "/api/oobe/setup", json{{"workspace", sensitive}});
+        REQUIRE(resp.status == 400);
+        CHECK(resp.json_payload["error"].get<std::string>().find("must not") !=
+              std::string::npos);
+    }
+    {
+        // 正常工作目录仍然可用（回归不误伤）。
+        auto ok_root = sat::make_temp_dir("p2ws-safe");
+        std::string ok = sa_core::paths::path_to_utf8(ok_root);
+        auto resp = fx.call("POST", "/api/workspace", json{{"root", ok}});
+        REQUIRE(resp.status == 200);
+        CHECK(resp.json_payload["workspace_root"] == ok);
+    }
+}
+
+// --------------------------------------------------------------------------
 // 多根 list_mods + 创意工坊沙箱/只读
 // --------------------------------------------------------------------------
 

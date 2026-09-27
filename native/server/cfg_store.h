@@ -50,6 +50,32 @@ struct LossyRead {
 };
 LossyRead read_lossy(const std::string& abs_path);
 
+// ---------------------------------------------------------------------------
+// Workspace write gate (TOCTOU hardening for revision-checked writes).
+//
+// All cfg write entries (write_cfg/apply_patch/undo/redo) hold a shared
+// recursive mutex BEFORE their per-path lock, fixing lock order as
+// gate -> path -> revision-lock (never the reverse). Route handlers that do
+// "verify_revision then write" construct a WorkspaceWriteGuard before the
+// verification and keep it until the write returns, making the two steps one
+// critical section: two concurrent PUTs carrying the same revision can no
+// longer both pass verification and silently lose one update behind the path
+// lock. Re-entrant within the same thread by design (entries re-acquire).
+// Out-of-band writers that bypass cfg_store (e.g. /api/tools/write on cfg
+// files) deliberately stay outside the gate: their writes are exactly what
+// "external modification" detection must keep reporting.
+class WorkspaceWriteGuard {
+public:
+    WorkspaceWriteGuard();
+    ~WorkspaceWriteGuard();
+    WorkspaceWriteGuard(const WorkspaceWriteGuard&) = delete;
+    WorkspaceWriteGuard& operator=(const WorkspaceWriteGuard&) = delete;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // write_cfg / apply_patch / undo / redo return Python dicts:
 //   {"ok": true, "mtime_ns": int|null, "snapshot": str|null,
 //    "unchanged": bool, "lossy": bool}                    (write_cfg success)

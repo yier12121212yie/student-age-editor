@@ -362,7 +362,10 @@ json scan_bugs(const json& mod_data, const json& base_data, const std::set<std::
         return bugs;
     }
     const json& m = mod_data;
-    json b = base_data.is_object() ? base_data : json::object();
+    // base 全程只读：绑共享空对象的引用即可。原写法 `json b = ...` 会让三目
+    // 落回 prvalue，每次扫描把整棵 base 树深拷一遍（scan/fix 两条路由都付）。
+    static const json kEmptyBase = json::object();
+    const json& b = base_data.is_object() ? base_data : kEmptyBase;
     std::set<std::string> array_shape_seen;
     auto skip = [&](const std::string& cfg) { return only_tables && !only_tables->count(cfg); };
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <shared_mutex>
@@ -25,7 +26,11 @@ namespace cs = sa_core::paths;
 // _TABLE_CACHE (api.py:466-591, CONVENTIONS 5.1 / S1 免序列化三零)
 // ---------------------------------------------------------------------------
 
-constexpr size_t kTableCacheMax = 3;                // _TABLE_CACHE_MAX
+// P2 快赢：3 槽 FIFO -> 16 槽 LRU。多开几个大表的工作集（如同时浏览
+// OptionCfg/BgCfg/EffectCfg 加几张常用表）不再互相踩踏；命中即提升为最近
+// 使用，淘汰队首（最久未用）。对外接口与失效语义（mtime+size 指纹、写后
+// seeding、invalidate）保持不变。
+constexpr size_t kTableCacheMax = 16;               // _TABLE_CACHE_MAX
 constexpr size_t kTableCacheMinBody = 256 * 1024;   // _TABLE_CACHE_MIN_BODY
 
 struct TableEntry {
@@ -38,7 +43,18 @@ struct TableEntry {
 };
 
 std::shared_mutex g_table_mu;  // L3
+// deque 尾部 = 最近使用，头部 = 最久未用（pop_front 即 LRU 淘汰）。
 std::deque<TableEntry> g_table;
+
+// LRU 触碰：把 it 指向的条目移到队尾（最近使用端），返回它的新位置。
+// 调用方必须已持有 g_table_mu 的独占锁。
+std::deque<TableEntry>::iterator lru_touch(std::deque<TableEntry>& dq,
+                                           std::deque<TableEntry>::iterator it) {
+    TableEntry e = std::move(*it);
+    dq.erase(it);
+    dq.push_back(std::move(e));
+    return std::prev(dq.end());
+}
 
 // Byte-identical to py_dumps({"cfg","data","exists","mtime_ns"[,"lossy"]}) but
 // without materializing a second copy of the (40MB) data tree: the response
@@ -61,13 +77,14 @@ std::string build_table_body(const std::string& cfg_name, const json& data, long
 void table_store(const std::string& key, long long mtime_ns, long long size,
                  std::shared_ptr<const json> data, std::string body, bool lossy) {
     std::unique_lock<std::shared_mutex> lk(g_table_mu);
-    for (auto& e : g_table) {
-        if (e.key == key) {  // in-place refresh keeps FIFO insertion position
-            e.mtime_ns = mtime_ns;
-            e.size = size;
-            e.data = std::move(data);
-            e.body = std::move(body);
-            e.lossy = lossy;
+    for (auto it = g_table.begin(); it != g_table.end(); ++it) {
+        if (it->key == key) {  // 已存在的键：就地刷新并提升为最近使用（LRU put 语义）
+            it->mtime_ns = mtime_ns;
+            it->size = size;
+            it->data = std::move(data);
+            it->body = std::move(body);
+            it->lossy = lossy;
+            lru_touch(g_table, it);
             return;
         }
     }
@@ -79,7 +96,7 @@ void table_store(const std::string& key, long long mtime_ns, long long size,
     e.body = std::move(body);
     e.lossy = lossy;
     g_table.push_back(std::move(e));
-    while (g_table.size() > kTableCacheMax) g_table.pop_front();  // FIFO, not LRU
+    while (g_table.size() > kTableCacheMax) g_table.pop_front();  // 队首 = 最久未用
 }
 
 // ---------------------------------------------------------------------------
@@ -114,14 +131,17 @@ TableLoad load_table_cached(const std::string& path, const std::string& cfg_name
 
     const std::string key = cs::path_key(path);
     {
-        std::shared_lock<std::shared_mutex> lk(g_table_mu);
-        for (const auto& e : g_table) {
-            if (e.key == key && e.mtime_ns == fp->mtime_ns && e.size == fp->size) {
+        // 命中要把条目提升为最近使用（写共享状态），因此用独占锁；16 个条目
+        // 的线性扫描开销可忽略。
+        std::unique_lock<std::shared_mutex> lk(g_table_mu);
+        for (auto it = g_table.begin(); it != g_table.end(); ++it) {
+            if (it->key == key && it->mtime_ns == fp->mtime_ns && it->size == fp->size) {
+                auto hit_it = lru_touch(g_table, it);
                 TableLoad hit;
                 hit.state = "ok";
-                hit.data = e.data;
+                hit.data = hit_it->data;
                 hit.mtime_ns = fp->mtime_ns;
-                hit.lossy = e.lossy;
+                hit.lossy = hit_it->lossy;
                 return hit;
             }
         }
@@ -217,9 +237,12 @@ std::optional<std::string> table_cache_body_for(const std::string& path, long lo
     // cfg_read's bytes 直发 check (api.py:1004-1009): entry present, matching
     // mtime, non-empty body. NO cfg.dumps bump here — that's the S1 point.
     const std::string key = cs::path_key(path);
-    std::shared_lock<std::shared_mutex> lk(g_table_mu);
-    for (const auto& e : g_table) {
-        if (e.key == key && e.mtime_ns == mtime_ns && !e.body.empty()) return e.body;
+    // 命中同样要 LRU 提升，独占锁的理由见 load_table_cached。
+    std::unique_lock<std::shared_mutex> lk(g_table_mu);
+    for (auto it = g_table.begin(); it != g_table.end(); ++it) {
+        if (it->key == key && it->mtime_ns == mtime_ns && !it->body.empty()) {
+            return lru_touch(g_table, it)->body;
+        }
     }
     return std::nullopt;
 }
@@ -229,12 +252,14 @@ std::optional<cfg_store::ProviderHit> cfgstore_parse_provider(const std::string&
     auto fp = stat_fp(abs_path);
     if (!fp) return std::nullopt;
     const std::string key = cs::path_key(abs_path);
-    std::shared_lock<std::shared_mutex> lk(g_table_mu);
-    for (const auto& e : g_table) {
-        if (e.key == key && e.mtime_ns == fp->mtime_ns && e.size == fp->size) {
+    // 命中同样要 LRU 提升，独占锁的理由见 load_table_cached。
+    std::unique_lock<std::shared_mutex> lk(g_table_mu);
+    for (auto it = g_table.begin(); it != g_table.end(); ++it) {
+        if (it->key == key && it->mtime_ns == fp->mtime_ns && it->size == fp->size) {
+            auto hit_it = lru_touch(g_table, it);
             cfg_store::ProviderHit hit;
-            hit.data = e.data;
-            hit.lossy = e.lossy;
+            hit.data = hit_it->data;
+            hit.lossy = hit_it->lossy;
             hit.mtime_ns = fp->mtime_ns;
             return hit;
         }

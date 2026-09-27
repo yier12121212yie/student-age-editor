@@ -348,10 +348,31 @@ LossyRead read_lossy(const std::string& abs_path) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace write gate — see cfg_store.h. Function-local static: C++11
+// guarantees thread-safe init; the mutex outlives every route thread.
+// ---------------------------------------------------------------------------
+namespace {
+std::recursive_mutex& workspace_gate() {
+    static std::recursive_mutex gate;
+    return gate;
+}
+}  // namespace
+
+struct cfg_store::WorkspaceWriteGuard::Impl {
+    std::lock_guard<std::recursive_mutex> lk;
+    Impl() : lk(workspace_gate()) {}
+};
+
+cfg_store::WorkspaceWriteGuard::WorkspaceWriteGuard()
+    : impl_(std::make_unique<Impl>()) {}
+cfg_store::WorkspaceWriteGuard::~WorkspaceWriteGuard() = default;
+
 json write_cfg(const std::string& abs_path, const json& data,
                std::optional<long long> expect_mtime_ns, const std::string* expect_digest,
                bool force, bool snapshot) {
     const std::string abs = cs::abs_path(abs_path);
+    const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
     std::lock_guard<std::recursive_mutex> lk(*path_lock_for(path_key(abs)));
     auto lr = read_lossy(abs);  // the single disk read (A7)
     return commit(abs, data, lr.raw, lr.lossy, expect_mtime_ns, expect_digest, force, snapshot);
@@ -361,6 +382,7 @@ json apply_patch(const std::string& abs_path, const json& set, const json& remov
                  const json* if_match, std::optional<long long> expect_mtime_ns,
                  const std::string* expect_digest, bool force) {
     const std::string abs = cs::abs_path(abs_path);
+    const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
     std::lock_guard<std::recursive_mutex> lk(*path_lock_for(path_key(abs)));
 
     // (1) current data: S1 parse provider first (40MB parse saving), falling
@@ -450,6 +472,7 @@ json apply_patch(const std::string& abs_path, const json& set, const json& remov
 json undo(const std::string& abs_path) {
     const std::string abs = cs::abs_path(abs_path);
     const std::string key = path_key(abs);
+    const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
     std::lock_guard<std::recursive_mutex> lk(*path_lock_for(key));
 
     StackEntry item;
@@ -516,6 +539,7 @@ json undo(const std::string& abs_path) {
 json redo(const std::string& abs_path) {
     const std::string abs = cs::abs_path(abs_path);
     const std::string key = path_key(abs);
+    const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
     std::lock_guard<std::recursive_mutex> lk(*path_lock_for(key));
 
     StackEntry item;

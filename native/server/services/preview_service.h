@@ -23,6 +23,19 @@ using json = content::json;
 // preview_service.preview_event(evt_id)。找不到事件/参数空 -> 抛 sa::SandboxError
 // （路由转 400）；数据形态引发的 Python 异常等价物抛 sa::ApiError（带类型名，
 // 路由转 500 "%s: %s"）。
+//
+// 响应契约（对前端 preview_models.dart 只增字段、不改不删）：既有
+// ok/evt_id/event/event_title/starts/talks/options/talk_count/meta 之外——
+//   "audios": {"<audioId>": {"url": 相对 mod 根路径, "name", "type": int}}
+//     覆盖本次 talks 引用到的全部 TalkCfg.audio（不含 -1/0）+ 每条 vocals 首项
+//     id + 舞台演进后的当前 BGM id；数据源 mod+本体合并 AudioCfg（合并表缺
+//     该 id 时不出键）。
+//   每条 talk 的 "stage" 增 "bgm": 当前 BGM id|null —— 状态机沿 BFS 访问序
+//     累积：TalkCfg.audio 命中 AudioCfg.type==1 -> 切；audio==-1 -> 清；
+//     type==2（音效）不改状态。talk 原始 audio/vocals/screenEffect 字段不动。
+//   顶层 "stage": {"bgm": 最终 BGM id|null}；
+//   顶层 "screen_effects": {"<talkId>": {code:int, args:[...]}|null} ——
+//     TalkCfg.screenEffect（1D 只取第 1 组，如 [4015, CGid]）的归一形式。
 json preview_event(const std::string& evt_id);
 
 // GET /api/preview/meta：只读合并元数据（mod+本体的 roles/bgs/bgKeys/charKeys），

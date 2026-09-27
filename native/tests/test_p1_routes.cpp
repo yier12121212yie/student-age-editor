@@ -4,6 +4,7 @@
 // 的 mod；绝不触碰真实 Mods。
 #include <catch_amalgamated.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -11,6 +12,7 @@
 
 #include "test_support.h"
 
+#include "sa_core/env_store.h"
 #include "sa_core/paths.h"
 #include "semantic_assets.h"
 #include "semantic_logic.h"
@@ -28,6 +30,20 @@ using sa::Req;
 using sa::Resp;
 
 namespace {
+
+// MSVC 的 _putenv_s / POSIX 的 setenv（同 test_assets_routes.cpp 写法），空值=清除。
+void putenv_portable(const char* k, const char* v) {
+#ifdef _WIN32
+    _putenv_s(k, v);
+#else
+    if (v && *v) setenv(k, v, 1);
+    else unsetenv(k);
+#endif
+}
+std::string getenv_portable(const char* k) {
+    const char* v = std::getenv(k);
+    return v ? std::string(v) : std::string();
+}
 
 // assets 定位：semantic_assets 的 exe-dir 向上查找（build-P1/bin → native/assets）
 // 已覆盖测试运行位置，无需 env 干预。
@@ -47,6 +63,11 @@ class P1Fixture {
             st.mod_root = with_mod ? sa_core::paths::path_to_utf8(mod_root_) : std::string();
             st.mod_name = with_mod ? "mod" : std::string();
         }
+        // editor_root 隔离：/api/usage 与 /api/settings/editor 的存储都落在
+        // <editor_root> 下，指到临时目录保证 golden（空 q 前 40）与用例互不污染。
+        saved_data_root_ = getenv_portable("EDITOR_DATA_ROOT");
+        putenv_portable("EDITOR_DATA_ROOT", "");
+        sa::detail::set_editor_root(sa_core::paths::path_to_utf8(root_ / "data"));
         sa::invalidate_table_cache_all();
         sa::invalidate_mod_cfgs_cache();
         sa::cfg_store::debug_reset_stacks();
@@ -61,6 +82,8 @@ class P1Fixture {
             st.mod_root = saved_mod_root_;
             st.mod_name = saved_mod_name_;
         }
+        sa::detail::set_editor_root("");
+        putenv_portable("EDITOR_DATA_ROOT", saved_data_root_.c_str());
         sa::invalidate_table_cache_all();
         sa::invalidate_mod_cfgs_cache();
         std::error_code ec;
@@ -83,9 +106,11 @@ class P1Fixture {
         return raw ? *raw : std::string();
     }
 
+    std::string data_root() const { return sa_core::paths::path_to_utf8(root_ / "data"); }
+
   private:
     fs::path root_, mod_root_, cfg_dir_;
-    std::string saved_ws_, saved_mod_root_, saved_mod_name_;
+    std::string saved_ws_, saved_mod_root_, saved_mod_name_, saved_data_root_;
     std::unique_ptr<sa::Router> router_;
 };
 
@@ -585,4 +610,236 @@ TEST_CASE("p1 routes: scan is read-only on cache (G3/B1)", "[p1][bugfix]") {
     REQUIRE(r.status == 200);
     // scan 不落盘：文件保持原样
     CHECK(fx.read_cfg_file("TalkCfg").find("\"option\": 1") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// 补全优化 + 无代码模式（M0 后端）：/api/settings/editor、/api/usage、
+// effect_suggest 的 slots/打分/最近置顶、/api/roles 人物目录。
+// P1Fixture 已把 editor_root 指到临时 data 目录，各用例互不污染。
+// ---------------------------------------------------------------------------
+TEST_CASE("p1 routes: /api/settings/editor no-code toggle", "[p1][routes][nocode]") {
+    P1Fixture fx;
+    auto g = fx.call("GET", "/api/settings/editor");
+    REQUIRE(g.status == 200);
+    CHECK(g.json_payload.at("settings").at("noCodeMode") == false);
+
+    auto p = fx.call("PUT", "/api/settings/editor", {}, json{{"noCodeMode", true}});
+    REQUIRE(p.status == 200);
+    CHECK(p.json_payload.at("ok") == true);
+    CHECK(p.json_payload.at("settings").at("noCodeMode") == true);
+    CHECK(fx.call("GET", "/api/settings/editor").json_payload.at("settings")
+              .at("noCodeMode") == true);
+
+    // 包裹形态 {"settings": {...}} 也可写。
+    auto p2 = fx.call("PUT", "/api/settings/editor", {},
+                      json{{"settings", json{{"noCodeMode", false}}}});
+    CHECK(p2.json_payload.at("settings").at("noCodeMode") == false);
+
+    // 非法值（非 bool）与未知键：忽略不改写。
+    auto p3 = fx.call("PUT", "/api/settings/editor", {}, json{{"noCodeMode", "yes"}});
+    CHECK(p3.json_payload.at("settings").at("noCodeMode") == false);
+    auto p4 = fx.call("PUT", "/api/settings/editor", {}, json{{"bogus", 1}});
+    CHECK(p4.json_payload.at("settings").at("noCodeMode") == false);
+
+    // 落盘在 editor_env.json 的 no_code_mode 键（与 oobe 等同库）。
+    fx.call("PUT", "/api/settings/editor", {}, json{{"noCodeMode", true}});
+    json env = sa_core::env_store::read_editor_env(fx.data_root());
+    CHECK(env.value("no_code_mode", false) == true);
+}
+
+TEST_CASE("p1 routes: /api/settings/editor appearance mode (白日模式)", "[p1][routes][appearance]") {
+    P1Fixture fx;
+
+    // 默认暗色；appearance_mode 从没写过 → explicit=false（GUI 据此把本地
+    // 已选外观种子上传，而不是被默认值覆盖）。
+    auto g = fx.call("GET", "/api/settings/editor");
+    REQUIRE(g.status == 200);
+    CHECK(g.json_payload.at("settings").at("appearanceMode") == "dark");
+    CHECK(g.json_payload.at("meta").at("appearanceModeExplicit") == false);
+
+    // PUT light 生效并转 explicit=true；noCodeMode 不受影响。
+    auto p = fx.call("PUT", "/api/settings/editor", {}, json{{"appearanceMode", "light"}});
+    REQUIRE(p.status == 200);
+    CHECK(p.json_payload.at("settings").at("appearanceMode") == "light");
+    CHECK(p.json_payload.at("meta").at("appearanceModeExplicit") == true);
+    CHECK(p.json_payload.at("settings").at("noCodeMode") == false);
+    CHECK(fx.call("GET", "/api/settings/editor").json_payload.at("settings")
+              .at("appearanceMode") == "light");
+
+    // 包裹形态 {"settings": {...}} 也可写；system 是合法枚举。
+    auto p2 = fx.call("PUT", "/api/settings/editor", {},
+                      json{{"settings", json{{"appearanceMode", "system"}}}});
+    CHECK(p2.json_payload.at("settings").at("appearanceMode") == "system");
+
+    // 两键互不覆盖：写 appearance 不动 noCode，反之亦然。
+    fx.call("PUT", "/api/settings/editor", {}, json{{"noCodeMode", true}});
+    auto p3 = fx.call("PUT", "/api/settings/editor", {}, json{{"appearanceMode", "dark"}});
+    CHECK(p3.json_payload.at("settings").at("noCodeMode") == true);
+    CHECK(p3.json_payload.at("settings").at("appearanceMode") == "dark");
+
+    // 非法值 / 非字符串 / 未知键：忽略不改写（仍是上一次的 dark）。
+    auto p4 = fx.call("PUT", "/api/settings/editor", {}, json{{"appearanceMode", "neon"}});
+    CHECK(p4.json_payload.at("settings").at("appearanceMode") == "dark");
+    CHECK(p4.json_payload.at("meta").at("appearanceModeExplicit") == true);
+    auto p5 = fx.call("PUT", "/api/settings/editor", {}, json{{"appearanceMode", 3}});
+    CHECK(p5.json_payload.at("settings").at("appearanceMode") == "dark");
+    auto p6 = fx.call("PUT", "/api/settings/editor", {}, json{{"bogus", 1}});
+    CHECK(p6.json_payload.at("settings").at("appearanceMode") == "dark");
+
+    // 落盘在 editor_env.json 的 appearance_mode 键。
+    json env = sa_core::env_store::read_editor_env(fx.data_root());
+    CHECK(env.value("appearance_mode", std::string()) == "dark");
+}
+
+TEST_CASE("p1 routes: /api/settings/editor theme color (用户主题色)", "[p1][routes][appearance]") {
+    P1Fixture fx;
+
+    // 默认品牌紫；theme_color 从没写过 → explicit=false（GUI 据此把本地
+    // 已选主题色种子上传，而不是被默认值覆盖）。
+    auto g = fx.call("GET", "/api/settings/editor");
+    REQUIRE(g.status == 200);
+    CHECK(g.json_payload.at("settings").at("themeColor") == "#6c5ce7");
+    CHECK(g.json_payload.at("meta").at("themeColorExplicit") == false);
+
+    // PUT 生效并转 explicit=true；大小写输入归一为小写落盘。
+    auto p = fx.call("PUT", "/api/settings/editor", {}, json{{"themeColor", "#0078D4"}});
+    REQUIRE(p.status == 200);
+    CHECK(p.json_payload.at("settings").at("themeColor") == "#0078d4");
+    CHECK(p.json_payload.at("meta").at("themeColorExplicit") == true);
+    CHECK(fx.call("GET", "/api/settings/editor").json_payload.at("settings")
+              .at("themeColor") == "#0078d4");
+
+    // 非法值 / 非字符串 / 未知键：忽略不改写（仍是上一次的 #0078d4）。
+    auto p2 = fx.call("PUT", "/api/settings/editor", {}, json{{"themeColor", "red"}});
+    CHECK(p2.json_payload.at("settings").at("themeColor") == "#0078d4");
+    auto p3 = fx.call("PUT", "/api/settings/editor", {}, json{{"themeColor", "#12345"}});
+    CHECK(p3.json_payload.at("settings").at("themeColor") == "#0078d4");
+    auto p4 = fx.call("PUT", "/api/settings/editor", {}, json{{"themeColor", 42}});
+    CHECK(p4.json_payload.at("settings").at("themeColor") == "#0078d4");
+
+    // 三键互不覆盖；落盘在 editor_env.json 的 theme_color 键。
+    auto p5 = fx.call("PUT", "/api/settings/editor", {},
+                      json{{"settings", json{{"themeColor", "#e5484d"}, {"appearanceMode", "light"}}}});
+    CHECK(p5.json_payload.at("settings").at("themeColor") == "#e5484d");
+    CHECK(p5.json_payload.at("settings").at("appearanceMode") == "light");
+    CHECK(p5.json_payload.at("settings").at("noCodeMode") == false);
+    json env = sa_core::env_store::read_editor_env(fx.data_root());
+    CHECK(env.value("theme_color", std::string()) == "#e5484d");
+}
+
+TEST_CASE("p1 routes: /api/usage record + top", "[p1][routes][nocode]") {
+    P1Fixture fx;
+    auto post = [&](const json& b) { return fx.call("POST", "/api/usage", {}, b); };
+    CHECK(post(json{{"kind", "command"}, {"key", "cfg"}}).json_payload.at("count") == 1);
+    CHECK(post(json{{"kind", "command"}, {"key", "cfg"}}).json_payload.at("count") == 2);
+    CHECK(post(json{{"kind", "command"}, {"key", "validate"}}).status == 200);
+
+    auto g = fx.call("GET", "/api/usage", {{"kind", "command"}});
+    REQUIRE(g.status == 200);
+    const json& items = g.json_payload.at("items");
+    REQUIRE(items.size() == 2);
+    CHECK(items[0].at("key") == "cfg");  // count 高者在前
+    CHECK(items[0].at("count") == 2);
+    CHECK(items[1].at("key") == "validate");
+
+    auto g1 = fx.call("GET", "/api/usage", {{"kind", "command"}, {"limit", "1"}});
+    CHECK(g1.json_payload.at("items").size() == 1);
+
+    CHECK(post(json{{"kind", "bogus"}, {"key", "x"}}).status == 400);
+    CHECK(post(json{{"kind", "command"}}).status == 400);
+    CHECK(fx.call("GET", "/api/usage").status == 400);
+}
+
+TEST_CASE("p1 routes: effect_suggest slots, scoring and recent-first", "[p1][routes][nocode]") {
+    P1Fixture fx;
+    {
+        auto r = fx.call("GET", "/api/effect_suggest", {{"mode", "effect"}, {"q", "属性"}});
+        const json& items = r.json_payload.at("items");
+        REQUIRE_FALSE(items.empty());
+        // desc 前缀命中排最前（score=100，同分时 usage 才 +≤5）。
+        CHECK(items[0].at("desc").get<std::string>().rfind("属性", 0) == 0);
+        CHECK(items[0].at("score").get<int>() >= 100);
+        const json* attrs = nullptr;
+        for (const auto& it : items)
+            if (it.at("raw_code") == "[1, 1, @ATTR@, V]") attrs = &it;
+        REQUIRE(attrs != nullptr);
+        const json& slots = attrs->at("slots");
+        REQUIRE(slots.size() == 2);
+        CHECK(slots[0].at("kind") == "dict");
+        CHECK(slots[0].at("name") == "ATTR");
+        CHECK(slots[0].at("dict") == "ATTR");
+        CHECK(slots[0].at("label") == "属性");
+        CHECK(slots[1].at("kind") == "number");
+        CHECK(slots[1].at("name") == "V");
+        CHECK(slots[1].at("count") == 1);
+    }
+    {
+        // action 指令行 [N, 1001, 0, S]：N/S 都是 number 槽。
+        auto r = fx.call("GET", "/api/effect_suggest", {{"mode", "action"}, {"q", "滑动入场"}});
+        bool found = false;
+        for (const auto& it : r.json_payload.at("items")) {
+            if (it.at("raw_code").get<std::string>().find("1001") != std::string::npos) {
+                found = true;
+                const json& slots = it.at("slots");
+                CHECK(std::any_of(slots.begin(), slots.end(), [](const json& s) {
+                    return s.at("kind") == "number" && s.at("name") == "N";
+                }));
+                CHECK(std::any_of(slots.begin(), slots.end(), [](const json& s) {
+                    return s.at("kind") == "number" && s.at("name") == "S";
+                }));
+            }
+        }
+        CHECK(found);
+    }
+    {
+        // 空 q：最近接受过的模板置顶（usage kind=mode key=raw_code），仍满 40 条。
+        CHECK(fx.call("POST", "/api/usage", {},
+                      json{{"kind", "condition"}, {"key", "[0, 1, V]"}}).status == 200);
+        auto r = fx.call("GET", "/api/effect_suggest", {{"mode", "condition"}, {"q", ""}});
+        const json& items = r.json_payload.at("items");
+        REQUIRE(items.size() == 40);
+        CHECK(items[0].at("raw_code") == "[0, 1, V]");
+        // 目录头部同样是它，但 used 去重后第二项顺延到目录第二条，不重复出现。
+        CHECK(items[1].at("raw_code") != "[0, 1, V]");
+        int dup = 0;
+        for (const auto& it : items)
+            if (it.at("raw_code") == "[0, 1, V]") ++dup;
+        CHECK(dup == 1);
+    }
+}
+
+TEST_CASE("p1 routes: /api/roles catalog (dict + PersonCfg merge)", "[p1][routes][nocode]") {
+    P1Fixture fx;
+    fx.write_cfg_file("PersonCfg",
+                      R"({"101": {"id": 101, "name": "小美", "gender": 0, "url": ["Role/xiaomei.png"]},)"
+                      R"("999": {"id": 999, "name": "自定义", "url2": ["Role2/z.png"]}})");
+    auto r = fx.call("GET", "/api/roles");
+    REQUIRE(r.status == 200);
+    CHECK(r.json_payload.at("total").get<int>() >= 200);
+    const json& roles = r.json_payload.at("roles");
+    auto find = [&](const std::string& id) -> const json* {
+        for (const auto& x : roles)
+            if (x.at("id") == id) return &x;
+        return nullptr;
+    };
+    const json* narr = find("-1");
+    REQUIRE(narr != nullptr);
+    CHECK(narr->at("name") == "旁白");
+    CHECK(narr->at("portrait") == "");
+    const json* xm = find("101");
+    REQUIRE(xm != nullptr);
+    CHECK(xm->at("name") == "小美");
+    CHECK(xm->at("gender") == 0);
+    CHECK(xm->at("portrait") == "Role/xiaomei.png");
+    const json* self = find("999");
+    REQUIRE(self != nullptr);
+    CHECK(self->at("portrait") == "Role2/z.png");  // url2 优先
+    // 数值 id 升序在前：第一个是 -1（旁白）。
+    CHECK(roles[0].at("id") == "-1");
+    // q 过滤：名字包含 / id 全等。
+    auto f = fx.call("GET", "/api/roles", {{"q", "小美"}});
+    REQUIRE(f.json_payload.at("roles").size() == 1);
+    CHECK(f.json_payload.at("roles")[0].at("id") == "101");
+    auto fid = fx.call("GET", "/api/roles", {{"q", "-1"}});
+    CHECK(fid.json_payload.at("roles")[0].at("name") == "旁白");
 }

@@ -602,3 +602,159 @@ TEST_CASE("p3a story export 检定链/汇合标记", "[p3a][story]") {
     CHECK(text.find("剧情汇合/跳转至已读剧情 ID: 9003") != std::string::npos);
     CHECK(text.find("开始") != std::string::npos);
 }
+
+TEST_CASE("p3a preview audios/bgm/screen_effects 响应增强", "[p3a][preview]") {
+    P3aFixture fx;
+    auto& r = fx.router();
+    {
+        auto row = [](long long id, const char* name, const char* url, long long type) {
+            json a;
+            a["id"] = id;
+            a["name"] = name;
+            a["url"] = url;
+            a["type"] = type;
+            return a;
+        };
+        json at;
+        at["1"] = row(1, "校门口BGM", "Audio/bgm1.mp3", 1);   // type=1 BGM
+        at["2"] = row(2, "铃声", "Audio/sfx2.ogg", 2);        // type=2 音效
+        at["3"] = row(3, "配音甲", "Audio/v3.ogg", 2);        // vocals 引用
+        at["5"] = row(5, "", "Audio/bgm5.mp3", 1);            // name 空 -> 兜底「音频 5」
+        put_cfg(r, "AudioCfg", at);
+    }
+    {
+        json evt;
+        evt["id"] = 9;
+        evt["title"] = "音频链路";
+        evt["talkId"] = iarr({9001});
+        json et;
+        et["9"] = evt;
+        put_cfg(r, "EvtCfg", et);
+    }
+    {
+        // 链：BGM(1) -> 结束(-1) -> 音效(2 不改状态) -> BGM(5) -> 未知 id(7777)
+        json t1;
+        t1["id"] = 9001;
+        t1["audio"] = 1;
+        t1["vocals"] = iarr({3});
+        t1["screenEffect"] = iarr({4015, 900});
+        t1["nextTalk"] = iarr({9002});
+        json t2;
+        t2["id"] = 9002;
+        t2["audio"] = -1;
+        t2["nextTalk"] = iarr({9003});
+        json t3;
+        t3["id"] = 9003;
+        t3["audio"] = 2;
+        t3["nextTalk"] = iarr({9004});
+        json t4;
+        t4["id"] = 9004;
+        t4["audio"] = 5;
+        t4["nextTalk"] = iarr({9005});
+        json t5;
+        t5["id"] = 9005;
+        t5["audio"] = 7777;  // 合并表不存在
+        t5["nextTalk"] = json::array();
+        json tt;
+        tt["9001"] = t1;
+        tt["9002"] = t2;
+        tt["9003"] = t3;
+        tt["9004"] = t4;
+        tt["9005"] = t5;
+        put_cfg(r, "TalkCfg", tt);
+    }
+
+    auto resp = call_router(r, "POST", "/api/preview/event", {}, json{{"evt_id", "9"}});
+    REQUIRE(resp.status == 200);
+    INFO(sa_core::py_dumps(resp.json_payload));
+    const json& data = resp.json_payload;
+    // 既有契约不回归
+    CHECK(data["ok"] == true);
+    CHECK(data["talk_count"] == 5);
+
+    // ---- stage.bgm 状态机（BFS 访问序累积）----
+    CHECK(data["talks"]["9001"]["stage"]["bgm"] == "1");
+    CHECK(data["talks"]["9002"]["stage"]["bgm"].is_null());  // -1 清
+    CHECK(data["talks"]["9003"]["stage"]["bgm"].is_null());  // 音效不改
+    CHECK(data["talks"]["9004"]["stage"]["bgm"] == "5");
+    CHECK(data["talks"]["9005"]["stage"]["bgm"] == "5");
+    CHECK(data["stage"]["bgm"] == "5");  // 顶层最终态
+
+    // ---- 原始字段不动 ----
+    CHECK(data["talks"]["9001"]["audio"] == 1);
+    CHECK(data["talks"]["9001"]["vocals"] == iarr({3}));
+    CHECK(data["talks"]["9001"]["screenEffect"] == iarr({4015, 900}));
+
+    // ---- 顶层 audios：引用集（audio 有效值 + vocals 首项 + 当前 BGM）----
+    const json& audios = data["audios"];
+    CHECK(audios["1"]["url"] == "Audio/bgm1.mp3");
+    CHECK(audios["1"]["name"] == "校门口BGM");
+    CHECK(audios["1"]["type"] == 1);
+    CHECK(audios["2"]["type"] == 2);
+    CHECK(audios["3"]["name"] == "配音甲");           // 来自 vocals 首项
+    CHECK(audios["5"]["name"] == "音频 5");           // 空名兜底
+    CHECK(audios["5"]["url"] == "Audio/bgm5.mp3");    // 来自最终 BGM
+    CHECK_FALSE(audios.contains("7777"));             // 合并表缺失 -> 不出键
+    CHECK_FALSE(audios.contains("-1"));
+
+    // ---- screen_effects 归一 ----
+    const json& se = data["screen_effects"];
+    CHECK(se.size() == 5);
+    CHECK(se["9001"]["code"] == 4015);
+    CHECK(se["9001"]["args"] == iarr({900}));
+    CHECK(se["9002"].is_null());
+    CHECK(se["9005"].is_null());
+}
+
+TEST_CASE("p3a live2d models/render 路由", "[p3a][live2d]") {
+    P3aFixture fx;
+    auto& r = fx.router();
+    namespace fs = std::filesystem;
+    auto models_dir = fx.root() / "game" / "DLC" / "DLC_L2DModels" / "girl";
+    fs::create_directories(models_dir);
+    {
+        std::ofstream f1(models_dir / "girl.moc3");
+        f1 << "moc3";
+        std::ofstream f2(models_dir / "angry.moc3");
+        f2 << "moc3";
+    }
+    std::string prev = sa_core::paths::getenv_utf8("EDITOR_GAME_ROOT");
+    sa_core::paths::setenv_utf8("EDITOR_GAME_ROOT", sa_core::paths::path_to_utf8(fx.root() / "game"));
+
+    auto resp = call_router(r, "GET", "/api/live2d/models", {});
+    REQUIRE(resp.status == 200);
+    const json& ms = resp.json_payload["models"];
+    REQUIRE(ms.size() == 1);
+    CHECK(ms[0]["name"] == "girl");
+    CHECK(ms[0]["expressions"] == sarr({"angry", "girl"}));  // listdir_sorted 字典序
+    const std::string model_path = ms[0]["path"].get<std::string>();
+
+    // 入参缺失 -> 400 结构化信封
+    auto bad = call_router(r, "POST", "/api/live2d/render", {}, json{{"expression", "angry"}});
+    CHECK(bad.status == 400);
+    CHECK(bad.json_payload["ok"] == false);
+    CHECK(bad.json_payload.contains("error"));
+
+    // 渲染核占位期无产物 -> 200 {"ok":false,"error":"renderer unavailable"}
+    auto miss = call_router(r, "POST", "/api/live2d/render", {},
+                            json{{"model", model_path}, {"expression", "angry"},
+                                 {"width", 512}, {"height", 512}});
+    CHECK(miss.status == 200);
+    CHECK(miss.json_payload["ok"] == false);
+    CHECK(miss.json_payload["error"] == "renderer unavailable");
+
+    // 预置 stub 产物（dirname(model)/_cached_<expr>.png，与 live2d_renderer.cpp
+    // 占位实现的缓存路径耦合）-> 成功信封携带 base64 PNG
+    {
+        std::ofstream f(models_dir.parent_path() / "_cached_happy.png", std::ios::binary);
+        f << "fakepng";
+    }
+    auto ok = call_router(r, "POST", "/api/live2d/render", {},
+                          json{{"model", model_path}, {"expression", "happy"}});
+    CHECK(ok.status == 200);
+    CHECK(ok.json_payload["ok"] == true);
+    CHECK(ok.json_payload["mime"] == "image/png");
+    CHECK(ok.json_payload["data"] == "ZmFrZXBuZw==");  // b64("fakepng")
+
+    sa_core::paths::setenv_utf8("EDITOR_GAME_ROOT", prev);  // 还原（prev 为空即清）
+}

@@ -133,6 +133,7 @@ RequestResult request_bytes(const std::string& url, const std::string& data,
     req.headers = std::move(headers);
     req.body = data;
     req.timeout_seconds = kImageTimeout;
+    req.follow_redirects = true;  // 图片服务上游：保持跟随语义
     http::Response r = http::request(req);
     if (!r.transport_ok()) {
         if (r.error == http::Response::Error::Timeout)
@@ -162,6 +163,7 @@ std::pair<std::string, std::string> download_to_b64(const std::string& url,
     req.method = "GET";
     req.url = url;
     req.timeout_seconds = 60;
+    req.follow_redirects = true;  // 生成图下载常跳 CDN（跨源跳自动剥离 Authorization）
     if (!api_key.empty()) req.headers = {{"Authorization", "Bearer " + api_key}};
     http::Response r = http::request(req);
     if (!r.transport_ok() || r.status >= 400)
@@ -426,6 +428,7 @@ json check_update(int timeout, const std::string& url_override, const std::strin
         req.method = "GET";
         req.url = url;
         req.timeout_seconds = timeout;
+        req.follow_redirects = true;  // GitHub release 检查更新：302 到 assets 是常态
         req.headers = {{"User-Agent", "student-age-editor-update-check"},
                        {"Accept", "application/vnd.github+json"}};
         http::Response r = http::request(req);
@@ -486,7 +489,8 @@ std::string bstr(const json& body, const char* key) { return j_get_str(body, key
 }  // namespace
 
 void register_ai_image_routes(Router& r) {
-    r.post(R"(/api/ai/image/generate)", [](const Req& req) -> Resp {
+    // 性能 P1：?async=1 走后台 job（202 {"job_id"}，GET /api/jobs/{id} 轮询）。
+    r.post(R"(/api/ai/image/generate)", sa::wrap_async_job([](const Req& req) -> Resp {
         const json& body = req.body;
         json n = body.is_object() && body.contains("n") ? body.at("n") : json(1);
         try {
@@ -497,8 +501,8 @@ void register_ai_image_routes(Router& r) {
         } catch (const ImageGenError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }
-    });
-    r.post(R"(/api/ai/image/edit)", [](const Req& req) -> Resp {
+    }));
+    r.post(R"(/api/ai/image/edit)", sa::wrap_async_job([](const Req& req) -> Resp {
         const json& body = req.body;
         json n = body.is_object() && body.contains("n") ? body.at("n") : json(1);
         std::string mime = bstr(body, "image_mime");
@@ -511,7 +515,7 @@ void register_ai_image_routes(Router& r) {
         } catch (const ImageGenError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }
-    });
+    }));
 }
 
 void register_update_routes(Router& r) {

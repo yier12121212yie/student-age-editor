@@ -16,6 +16,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "server/httpd.h"
 
@@ -27,6 +28,32 @@ struct ServerConfig {
     std::string workspace_root;      // CLI injection into init_state
     std::string mod_root;
     std::string mod_name;
+
+    // Web tiers (网页版计划 M1.1). Every field defaults to the desktop wire:
+    //   host empty            -> bind 127.0.0.1 exactly as before
+    //   trusted_origins empty -> default origin tier (loopback+Origin==Host)
+    //   web_root empty        -> no static hosting routes registered
+    std::string host;                      // --host (server/browser access)
+    std::vector<std::string> trusted_origins;  // repeatable --trusted-origin
+    std::string web_root;                  // --web-root: serve this dir at /
+
+    // 托管模式 SSRF 护栏（安全批次 A）：true 时云同步出站 URL 强校验公网
+    // 地址（sa::cloud::set_public_only）。网关 fork 的 backend 默认带
+    // --cloud-public-only；桌面端保持 false（局域网 NAS 是合法场景）。
+    bool cloud_public_only = false;
+
+    // 安全批次 B：后端进程令牌（X-Backend-Token）。enabled 时 run_server 确保
+    // 工作区根/.backend_token 存在（128-bit hex，POSIX 0600），并对除
+    // /api/ping、OPTIONS、静态资源外的 /api/* 强制等值校验。auth_token 非空
+    // 时直接采用该值（网关 fork 经 argv 内存注入），并同步写文件供
+    // CLI/TUI 读取。令牌文件不可写/工作区不可解析时降级为不启用（兼容旧包
+    // 与只读 FS，stderr 有告警）。
+    bool auth_token_enabled = true;
+    std::string auth_token;  // 非空 = 指定令牌（gw_pool fork 用）
+
+    // 安全批次 B / 性能 P1：请求体上限（字节）。0 == 桌面默认 256 MiB；
+    // 网关 fork 传 32 MiB。
+    long long max_body_bytes = 0;
 
     // Android/embedded distribution injection (server/__init__.py:22-27).
     // setdefault semantics throughout: a pre-set env var always wins.

@@ -5,11 +5,12 @@
 //
 // Cache model ("刷新驱动、读缓存零网络"): the cache is written ONLY by
 // refresh_all / refresh_one — triggered by run.cpp at startup,
-// POST /api/plugins/reload, and install/uninstall. Every GET endpoint reads
+// POST /api/plugins/reload, install/uninstall, and (since P2) by exec_tool's
+// cache-miss fallback, which runs the refresh on a detached background thread
+// and answers the caller from the cache immediately. Every GET endpoint reads
 // the cache without touching the network, so a dead service can never stall a
-// poll and no background thread races the test-suite temp roots. The proxy
-// deliberately bypasses the cache: it re-reads the manifest, so a running
-// service works even before any refresh happened.
+// poll. The proxy deliberately bypasses the cache: it re-reads the manifest,
+// so a running service works even before any refresh happened.
 //
 // Lifecycle (§4): the backend never starts or kills the plugin's process; it
 // only talks HTTP to <service.url> on loopback.
@@ -98,9 +99,15 @@ std::optional<ToolOwner> owner_of_tool(const std::string& name);
 // contributions are executed THROUGH the §4 service proxy). body is forwarded
 // verbatim (an empty body is replaced by {"name": <name>}); the upstream
 // response passes through untouched. 404 {"error":"unknown plugin tool: ..."}
-// when no cached description owns the name (one bounded inline refresh is
-// attempted before giving up).
+// when no cached description owns the name — since P2 the fallback refresh is
+// a DETACHED background thread (fully exception-guarded; the caller gets the
+// cached answer immediately, so a retry after it lands hits the tool).
 Resp exec_tool(const std::string& name, const std::string& raw_body);
+
+// Test hook: true while no background fallback refresh (exec_tool miss) is in
+// flight; lets the suite wait out the detached thread instead of racing the
+// next test case.
+bool bg_refresh_idle_for_test();
 
 // --- proxy ----------------------------------------------------------------
 

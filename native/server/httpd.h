@@ -24,6 +24,7 @@
 #include <memory>
 #include <regex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -42,6 +43,13 @@ struct Req {
     std::map<std::string, std::string> params;  // named regex groups ("kwargs")
     std::string host_header;         // raw Host header value
     std::string origin_header;       // raw Origin header value ("" if absent)
+    std::string authorization_header;  // raw Authorization header ("" if absent);
+                                       // the web gateway (plan M2) authenticates
+                                       // Bearer sessions from route handlers,
+                                       // which is why the transport keeps it.
+    std::string backend_token_header;  // raw X-Backend-Token（安全批次 B 进程
+                                       // 令牌；"" if absent）。传输层在
+                                       // dispatch 前强制校验，路由层无感。
     // Wire-fidelity copies for forwarding services (PLUGIN_SPEC §4 proxy): the
     // parsed views above are lossy — `query` drops repeated keys, `body`
     // reformats JSON — so a proxy that must replay the request byte-for-byte
@@ -50,6 +58,25 @@ struct Req {
     // Populated only up to kRawBodyKeepMax (see httpd.cpp): copying every body
     // would double the peak memory of the 100 MB base64 plugin installs.
     std::string raw_body;
+};
+
+// Origin/CORS tier for the transport (网页版计划 M1.2). Empty `trusted_origins`
+// == the desktop default: loopback-only Host/Origin checks with the fixed
+// `Access-Control-Allow-Origin: http://127.0.0.1` header line — byte-for-byte
+// the CONVENTIONS 2 wire (every golden depends on it). A non-empty list switches
+// to the "server tier": browser requests (those carrying an Origin) must match
+// one of the configured public origins exactly (scheme + host + port,
+// case-insensitive, default port folded); requests WITHOUT an Origin (CLI, the
+// gateway's local proxy hop, health checks) pass as they always did. The
+// trusted list replaces the "port is the boundary" rule because the admin has
+// explicitly declared which sites may drive this server, and dropping the
+// origin==host equality keeps legitimate cross-port dev flows working — a
+// DNS-rebinding page still fails: its Origin is the attacker's host name,
+// which is by definition not on the list.
+struct CorsConfig {
+    std::vector<std::string> trusted_origins;  // e.g. "https://editor.example"
+
+    bool server_mode() const { return !trusted_origins.empty(); }
 };
 
 // Handler result: JSON payload or pre-serialized bytes (bytes 直发, httpd.py:157-160).
@@ -61,6 +88,10 @@ struct Resp {
     // Empty keeps the transport's fixed `application/json; charset=utf-8`.
     // Set it only to hand through an upstream type (PLUGIN_SPEC §4 proxy).
     std::string content_type;
+    // Empty keeps the transport's fixed `Cache-Control: no-store`. Only the
+    // static web hosting route (网页版计划 M1.2) sets it — every JSON API
+    // response stays no-store as the Python wire requires.
+    std::string cache_control;
 
     Resp() = default;
     static Resp Json(int status, json payload) {
@@ -85,6 +116,12 @@ struct Resp {
 };
 
 using Handler = std::function<Resp(const Req&)>;
+
+// 长任务 opt-in 包装（性能 P1）：返回的 handler 在请求带 query `async=1` 时把
+// 原调用交给后台任务池（server/jobs，4 worker），立即返回
+// 202 {"job_id": ...}，结果经 GET /api/jobs/{id} 轮询；不带标记则同步执行
+// （旧客户端零影响）。实现见 server/jobs.cpp。
+Handler wrap_async_job(Handler fn);
 
 // Thrown by handlers/services to surface a Python-style exception name in the
 // 500 envelope: `raise ApiError("SandboxError", "no mod selected")` renders as
@@ -121,6 +158,10 @@ class Router {
         Handler fn;
     };
     std::vector<Entry> entries_;
+    // 精确路由直达表（性能 P2）：pattern 不含任何正则元字符时按
+    // method+'\x1f'+path 索引到 entries_ 下标；dispatch 先查表 O(1)，未命中
+    // 再走原有的有序正则全量回退（首条命中的顺序语义完全保留）。
+    std::unordered_map<std::string, size_t> exact_;
 };
 
 // Convert a Python regex pattern to std::regex ECMAScript: rewrite
@@ -135,8 +176,27 @@ class Httpd {
     ~Httpd();
 
     // Bind 127.0.0.1:port (port 0 -> auto). Returns false + error on failure.
+    // `host` may name any local address (网页版计划 M1.1 — run.cpp only passes
+    // non-loopback values in explicit server mode; inet_pton failures still
+    // fall back to loopback as CONVENTIONS 2 always demanded).
     bool bind_to(const std::string& host, int port, std::string* err);
     int port() const;
+
+    // Origin/CORS tier; must be called before start() (plan M1.2).
+    void set_cors(const CorsConfig& cors);
+
+    // Connection-slot ceiling; default 192（性能 P1，原 64）。The gateway may
+    // raise it.
+    void set_max_slots(int n);
+
+    // 安全批次 B：后端进程令牌。非空时，除豁免（/api/ping、OPTIONS、静态资源）
+    // 外的 /api/* 请求必须带等值 X-Backend-Token 头，否则 403。空串（默认）
+    // = 不启用。
+    void set_auth_token(std::string token);
+
+    // 安全批次 B：请求体上限（字节，覆盖 httpd 的 256 MiB 默认）。网关 fork
+    // 传 32 MiB。必须在 start() 前调用。
+    void set_max_body_bytes(long long n);
 
     void start();   // spawn accept loop thread; returns once listening
     void stop();    // stop accepting; existing connections drain/are killed at exit
@@ -172,6 +232,12 @@ bool shutdown_requested();
 
 namespace detail {
 void clear_shutdown_for_test();  // the flag is consumed by a connection thread in prod
-}
+
+// Server-mode shutdown gate (网页版计划 M1.2): run.cpp sets this when the bind
+// host is not loopback, and the /api/shutdown handler refuses to kill a
+// public-facing server. Loopback/default never sets it (behaviour unchanged).
+void set_shutdown_disabled(bool disabled);
+bool shutdown_disabled();
+}  // namespace detail
 
 }  // namespace sa

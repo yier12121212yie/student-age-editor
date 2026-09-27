@@ -22,6 +22,7 @@
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
 #include "server/state.h"
+#include "upload_staging.h"  // 网页版 M0.5: /api/resource_packs/import_upload
 
 namespace sa {
 namespace {
@@ -63,6 +64,46 @@ json b_or(const json& v, const char* key) {
 
 Resp sandbox_400(const SandboxError& e) {
     return Resp::Json(400, json{{"error", e.what()}});
+}
+
+// ---------------- 安全批次 B：API Key 掩码与保留哨兵 ----------------
+//
+// GET /api/ai/settings 曾把 apiKey/imageApiKey/ttsApiKey 明文下发给任意
+// HTTP 客户端（浏览器页面、本机其他进程都能读到三端共享的密钥）。现在：
+// 上送（PUT）侧用「保留哨兵」区分「用户没改 key」与「用户填了新 key」。
+
+// PUT 的保留哨兵：前端在用户未修改掩码回显时改发该值，后端见值即沿用
+// 共享文件中的现值。注意：哨兵不可作为真实 key —— 含 *** 的字符串不是
+// 任何服务商的密钥形态，因此「用户真的想把 key 设为字面 ***UNCHANGED***」
+// 不需要支持，该字面值永远按哨兵解释（想清空 key 应上送空串）。
+constexpr const char* kKeyUnchangedSentinel = "***UNCHANGED***";
+
+// 掩码规则：>=8 字符保留前 4 后 4、中间以 *** 代替；更短的非空密钥整串
+// 替换为 ***MASKED***（太短无法再截断，保留任何片段都等于泄露）。
+// 空串不掩码：空 key 无内容可泄露，掩码反而会让前端把「未配置」误显示成
+// 「已配置」，且空串回传也不会命中哨兵、可以正常覆盖为空。
+std::string mask_secret(const std::string& s) {
+    if (s.empty()) return s;
+    if (s.size() < 8) return "***MASKED***";
+    return s.substr(0, 4) + "***" + s.substr(s.size() - 4);
+}
+
+// 上送值是否表示「保留现值」：字面哨兵，或与当前存储值的掩码结果完全一致
+// （兼容直接回传 GET 掩码的旧客户端）。掩码必然含 ***，而真实密钥不会，
+// 等值比对不会误伤用户新填的 key。
+bool is_key_unchanged(const std::string& v, const std::string& current) {
+    if (v == kKeyUnchangedSentinel) return true;
+    return !current.empty() && v == mask_secret(current);
+}
+
+// 上送的 key 类字段（含 api.py 时代的蛇形别名）→ 归一后的存储字段名，
+// 用于取现值做掩码比对；非 key 字段返回 ""。别名表与 env_store_ai.cpp
+// 的 aliases_for 对应，normalize 本会忽略别名，但哨兵判定要先拦截。
+std::string secret_canonical(const std::string& key) {
+    if (key == "apiKey" || key == "api_key" || key == "apikey") return "apiKey";
+    if (key == "imageApiKey" || key == "image_api_key") return "imageApiKey";
+    if (key == "ttsApiKey" || key == "tts_api_key") return "ttsApiKey";
+    return "";
 }
 
 }  // namespace
@@ -215,9 +256,20 @@ void register_domain_tools_routes(Router& r) {
 
     // -------------------------------------------------------------- ai settings
     // GET /api/ai/settings — api.py:851-857 (env_store.read_ai_settings).
+    // 安全批次 B：key 类字段掩码后下发（见 mask_secret 注释），真实值只留
+    // 在服务端 .editor_ai.json 里，供 TTS/生图等服务端调用方使用。
     r.get(R"(/api/ai/settings)", [](const Req&) -> Resp {
+        json settings = env_store_ai::read_ai_settings(sa::editor_root());
+        if (settings.is_object()) {
+            for (const char* k : {"apiKey", "imageApiKey", "ttsApiKey"}) {
+                auto it = settings.find(k);
+                if (it != settings.end() && it->is_string()) {
+                    settings[k] = mask_secret(it->get_ref<const std::string&>());
+                }
+            }
+        }
         json body = json::object();
-        body["settings"] = env_store_ai::read_ai_settings(sa::editor_root());
+        body["settings"] = std::move(settings);
         return Resp::Json(200, std::move(body));
     });
 
@@ -235,6 +287,32 @@ void register_domain_tools_routes(Router& r) {
             patch = inner;
         } else {
             patch = req.body.is_object() ? req.body : json::object();
+        }
+        // 安全批次 B：保留哨兵——掩码回显（GET 已掩码）或字面 ***UNCHANGED***
+        // 都代表「用户没改这个 key」。命中即从 patch 中剔除该字段，让
+        // write_ai_settings 的 read-merge-write 自然沿用共享文件里的现值，
+        // 而不是把掩码串当成新 key 写进去、毁掉三端共享的密钥。
+        // 只比对不落库，故这里临时读一次现值；真实新值/空串（清空）不受影响。
+        {
+            const json current = env_store_ai::read_ai_settings(sa::editor_root());
+            for (auto it = patch.begin(); it != patch.end();) {
+                const std::string canonical = secret_canonical(it.key());
+                if (canonical.empty() || !it.value().is_string()) {
+                    ++it;
+                    continue;
+                }
+                const json& cur =
+                    current.is_object() && current.contains(canonical)
+                        ? current.at(canonical)
+                        : json();
+                const std::string cur_str =
+                    cur.is_string() ? cur.get_ref<const std::string&>() : std::string();
+                if (is_key_unchanged(it.value().get_ref<const std::string&>(), cur_str)) {
+                    it = patch.erase(it);  // 剔除即保留现值
+                } else {
+                    ++it;
+                }
+            }
         }
         json body = json::object();
         body["ok"] = true;
@@ -426,6 +504,22 @@ void register_domain_tools_routes(Router& r) {
         }
         try {
             return Resp::Json(200, rp::install_pack_from_path(path, filename));
+        } catch (const p3b::PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/resource_packs/import_upload — 网页版 M0.5：浏览器拿不到本机
+    // 路径，zip 以 {filename, data_base64} JSON 上传，落临时文件后走与
+    // import_path 完全相同的导入管线（响应包络一致）。解码上限 100MB。
+    r.post(R"(/api/resource_packs/import_upload)", [](const Req& req) -> Resp {
+        try {
+            return upload::install_from_upload(
+                req,
+                [](const std::string& path, const std::string& filename) {
+                    return rp::install_pack_from_path(path, filename);
+                },
+                "pack.zip");
         } catch (const p3b::PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }

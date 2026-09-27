@@ -510,6 +510,34 @@ json bg_snapshot(const json* bg_id, const json& meta) {
     return out;
 }
 
+// TalkCfg.screenEffect（1D，游戏只取第 1 组，如 [4015, CGid]）归一化为
+// {code:int, args:[原始参数...]}；空/缺/首项非整数 -> null。兼容个别脏数据把
+// 屏效写成 2D（[[4015,CGid],...]）的情况：首元素是数组则取其第一组。
+json normalize_screen_effect(const json* se) {
+    if (!se || !content::py_truthy(*se) || !se->is_array() || se->empty()) return json();
+    const json& row = se->front().is_array() ? se->front() : *se;
+    if (!row.is_array() || row.empty()) return json();
+    auto code = content::as_ll(row.front());
+    if (!code) return json();
+    json out = json::object();
+    out["code"] = *code;
+    json args = json::array();
+    for (size_t i = 1; i < row.size(); ++i) args.push_back(row[i]);
+    out["args"] = std::move(args);
+    return out;
+}
+
+// 集合类 id 的安全首标量（vocals 首项可能为嵌套数组）：数组取首元素递归，
+// 其余按 int() 取值；形态异常一律 nullopt——增强字段不得给主契约添新炸点。
+std::optional<long long> first_scalar_ll(const json& v) {
+    if (v.is_array()) {
+        if (v.empty()) return std::nullopt;
+        return first_scalar_ll(v.front());
+    }
+    if (v.is_object() || v.is_null() || v.is_boolean()) return std::nullopt;
+    return content::as_ll(v);
+}
+
 }  // namespace
 
 // GET /api/preview/meta：暴露合并 mod+本体的 build_meta()（roles/bgs/bgKeys/
@@ -532,6 +560,21 @@ json preview_event(const std::string& evt_id_in) {
 
     auto meta_sp = build_meta();
     const json& meta = *meta_sp;
+
+    // ---- 音频/屏效增强（响应契约增量，只增字段不改不删）----
+    // 数据源 mod+本体合并 AudioCfg（load_table_merged，同 /api/dicts 的
+    // build_audios 合并口径）。audio_refs 记录本次访问 talks 引用到的全部
+    // AudioCfg id（插入序）；current_bgm 是跨 talk 累积的状态机：TalkCfg.audio
+    // 指向 type==1 的表项 -> 切 BGM；audio==-1 -> 结束 BGM（清空）；type==2
+    // 音效/未知 id 不改状态。
+    auto audio_tbl = load_table_merged("AudioCfg");
+    json audio_refs = json::object();
+    std::string current_bgm;
+    json screen_effects = json::object();
+    auto note_audio = [&audio_refs](const std::string& aid) {
+        if (!aid.empty() && aid != "-1" && aid != "0" && !audio_refs.contains(aid))
+            audio_refs[aid] = true;
+    };
 
     std::vector<std::string> starts;
     {
@@ -570,6 +613,32 @@ json preview_event(const std::string& evt_id_in) {
         json st = json::object();
         st["bg"] = bg_snapshot(talk.contains("bg") ? &talk.at("bg") : nullptr, meta);
         st["chars"] = std::move(stage.chars);
+
+        // ---- 每条 talk 的音频状态机 + 引用收集 + 屏效归一（增量字段）----
+        // 原始 audio/vocals/screenEffect 字段保持不动（前端已自行解析）。
+        if (talk.contains("audio")) {
+            auto aid = first_scalar_ll(talk.at("audio"));
+            if (aid && *aid == -1) {
+                current_bgm.clear();  // -1：结束 BGM
+            } else if (aid && *aid > 0) {
+                std::string key = content::clean_id(talk.at("audio"));
+                note_audio(key);
+                auto ty = [&]() -> std::optional<long long> {
+                    const json* rec = record_at_table(*audio_tbl, key);
+                    return rec && rec->contains("type") ? first_scalar_ll(rec->at("type"))
+                                                        : std::nullopt;
+                }();
+                if (ty && *ty == 1) current_bgm = key;  // type=1：切 BGM
+            }
+        }
+        if (talk.contains("vocals") && content::py_truthy(talk.at("vocals"))) {
+            auto v = first_scalar_ll(talk.at("vocals"));  // 配音首项 id
+            if (v && *v > 0) note_audio(std::to_string(*v));
+        }
+        st["bgm"] = current_bgm.empty() ? json() : json(current_bgm);
+        screen_effects[tid] = normalize_screen_effect(
+            talk.contains("screenEffect") ? &talk.at("screenEffect") : nullptr);
+
         talk["stage"] = std::move(st);
         talks[tid] = std::move(talk);
 
@@ -625,6 +694,26 @@ json preview_event(const std::string& evt_id_in) {
     }
     if (event_title.empty()) event_title = "事件 " + evt_id;
 
+    // ---- 顶层增强字段 ----
+    // "audios"：本次 talks 引用到的全部 AudioCfg（TalkCfg.audio 有效值、
+    // vocals 首项、以及 stage 状态机演进后的当前 BGM），只收录合并表中真实
+    // 存在的 id（缺失 id 不出键，前端按缺键降级）。
+    if (!current_bgm.empty()) note_audio(current_bgm);
+    json audios_out = json::object();
+    for (auto it = audio_refs.begin(); it != audio_refs.end(); ++it) {
+        const json* rec = record_at_table(*audio_tbl, it.key());
+        if (!rec) continue;
+        json a = json::object();
+        const json* url = rec->contains("url") ? &rec->at("url") : nullptr;
+        a["url"] = (url && content::py_truthy(*url)) ? json(content::story_str(*url)) : json("");
+        const json* nm = rec->contains("name") ? &rec->at("name") : nullptr;
+        a["name"] = (nm && content::py_truthy(*nm)) ? json(content::story_str(*nm))
+                                                    : json("音频 " + it.key());  // build_audios 同款兜底
+        auto ty = rec->contains("type") ? first_scalar_ll(rec->at("type")) : std::nullopt;
+        a["type"] = ty ? json(*ty) : json(0);
+        audios_out[it.key()] = std::move(a);
+    }
+
     json out = json::object();
     out["ok"] = true;
     out["evt_id"] = evt_id;
@@ -638,6 +727,13 @@ json preview_event(const std::string& evt_id_in) {
     out["options"] = std::move(options);
     out["talk_count"] = talk_count;
     out["meta"] = meta;
+    // 顶层 stage：全事件遍历结束后的最终舞台级状态（当前只含 bgm）。
+    json stage_out = json::object();
+    stage_out["bgm"] = current_bgm.empty() ? json() : json(current_bgm);
+    out["stage"] = std::move(stage_out);
+    // talk id -> 首个屏效归一 {code,args}（无屏效为 null）。
+    out["screen_effects"] = std::move(screen_effects);
+    out["audios"] = std::move(audios_out);
     return out;
 }
 

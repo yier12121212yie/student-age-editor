@@ -105,11 +105,28 @@ std::string mod_name_or_throw(const json& v) {
                              "' is not iterable");
 }
 
+// Shared masked-writeback pre-pass (PUT providers, POST /test restore_from):
+// any "***" string in cfg whose key exists in orig_cfg takes back the stored
+// value. Key-agnostic by design, mirroring api.py:2745-2751.
+void apply_masked_restore(json& cfg, const json& orig_cfg) {
+    for (auto it = cfg.begin(); it != cfg.end(); ++it) {
+        if (it.value().is_string() && it.value().get<std::string>() == "***" &&
+            orig_cfg.contains(it.key())) {
+            it.value() = orig_cfg[it.key()];
+        }
+    }
+}
+
 }  // namespace
 
 void register_cloud_routes(Router& r) {
     // ------------------------------------------------------------------
     // GET /api/cloud/providers — api.py:2715-2729 (token/password/pass mask).
+    // Deviation: the keyword set is widened to cover the secret-family keys our
+    // providers actually store (client_secret, access_key, api_key, ...). The
+    // PUT "***" masked-writeback restore is key-agnostic, so extra masked keys
+    // round-trip without breaking the edit-save flow. "pass" alone covers
+    // password/passphrase.
     // ------------------------------------------------------------------
     r.get(R"(/api/cloud/providers)", [](const Req&) -> Resp {
         json safe = json::array();
@@ -123,9 +140,15 @@ void register_cloud_routes(Router& r) {
                     p.contains("config") && p["config"].is_object() ? p["config"] : json::object();
                 for (auto it = cfg.begin(); it != cfg.end(); ++it) {
                     std::string lk = sp::lower(it.key());
+                    // "pass" subsumes "password"; add the secret-family keywords
+                    // our providers store (client_secret / access_key / api_key).
                     if (lk.find("token") != std::string::npos ||
-                        lk.find("password") != std::string::npos ||
-                        lk.find("pass") != std::string::npos) {
+                        lk.find("pass") != std::string::npos ||
+                        lk.find("secret") != std::string::npos ||
+                        lk.find("access_key") != std::string::npos ||
+                        lk.find("api_key") != std::string::npos ||
+                        lk.find("apikey") != std::string::npos ||
+                        lk.find("credential") != std::string::npos) {
                         it.value() = p5::py_truthy(it.value()) ? json("***") : json("");
                     }
                 }
@@ -179,13 +202,7 @@ void register_cloud_routes(Router& r) {
             if (body.contains("config") && body["config"].is_object()) {
                 auto orig = cloud::get_provider(pid);
                 if (orig && orig->contains("config") && (*orig)["config"].is_object()) {
-                    const json& orig_cfg = (*orig)["config"];
-                    for (auto it = body["config"].begin(); it != body["config"].end(); ++it) {
-                        if (it.value().is_string() && it.value().get<std::string>() == "***" &&
-                            orig_cfg.contains(it.key())) {
-                            it.value() = orig_cfg[it.key()];
-                        }
-                    }
+                    apply_masked_restore(body["config"], (*orig)["config"]);
                 }
             }
         } catch (...) {
@@ -240,6 +257,21 @@ void register_cloud_routes(Router& r) {
                 if (!p5::py_truthy(tv)) return err400("type or provider_id required");
                 json cfgv = bget(body, "config");
                 if (!p5::py_truthy(cfgv)) cfgv = json::object();
+                // Opt-in masked-restore for the edit dialog's "测试连接": an
+                // unchanged secret arrives as "***" (GET masks it), so the
+                // client may name the stored provider to fill those back in.
+                // Unknown to the Python backend — omitting it keeps parity.
+                json rv = bget(body, "restore_from");
+                if (cfgv.is_object() && rv.is_string() && p5::py_truthy(rv)) {
+                    try {
+                        auto orig = cloud::get_provider(rv.get<std::string>());
+                        if (orig && orig->contains("config") &&
+                            (*orig)["config"].is_object()) {
+                            apply_masked_restore(cfgv, (*orig)["config"]);
+                        }
+                    } catch (...) {
+                    }
+                }
                 drv = cloud::get_driver(tv, cfgv);
             }
             drv->test();
@@ -260,8 +292,9 @@ void register_cloud_routes(Router& r) {
 
     // ------------------------------------------------------------------
     // POST /api/cloud/sync — api.py:2801-2844.
-    // ------------------------------------------------------------------
-    r.post(R"(/api/cloud/sync)", [](const Req& req) -> Resp {
+    // 性能 P1：?async=1 走后台 job（202 {"job_id"}，GET /api/jobs/{id} 轮询）；
+    // 全量同步分钟级，请求线程不再被钉死。
+    r.post(R"(/api/cloud/sync)", sa::wrap_async_job([](const Req& req) -> Resp {
         json body = dict_body(req.body);
         json pidv = bget(body, "provider_id");
         if (!p5::py_truthy(pidv)) pidv = bget(body, "id");
@@ -318,7 +351,7 @@ void register_cloud_routes(Router& r) {
         } catch (const std::exception& e) {
             return map_value_then_generic(e);
         }
-    });
+    }));
 
     // ------------------------------------------------------------------
     // POST /api/cloud/file — api.py:2846-2864 (FileNotFoundError -> 404).

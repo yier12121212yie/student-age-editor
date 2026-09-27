@@ -294,7 +294,54 @@ bool loopback_host(const std::string& host) {
     return host == "127.0.0.1" || host == "localhost" || host == "::1";
 }
 
-bool check_origin(const Req& req, std::string* reason) {
+// 阶段 1c 收紧（有记录的安全偏差，Python 只比主机名不比端口）：Origin 存在时，
+// 其 authority 必须与 Host 精确相等（主机+端口）。只比主机名的话，本机任意
+// 其它端口上的页面（比如 http://localhost:3000 的某开发服务）都能对 loopback
+// API 发"简单请求"（form/text/plain 不触发 CORS preflight）直接执行写操作——
+// loopback 不隔离不同应用，端口才是边界。桌面/移动/CLI 客户端不送 Origin，
+// 不受影响。
+std::string origin_authority(std::string_view origin) {
+    size_t pos = origin.find("://");
+    if (pos == std::string_view::npos) return {};
+    std::string_view rest = origin.substr(pos + 3);
+    size_t end = rest.find_first_of("/?#");
+    if (end != std::string_view::npos) rest = rest.substr(0, end);
+    size_t at = rest.rfind('@');  // userinfo，同 origin_hostname 的容错方向
+    if (at != std::string_view::npos) rest = rest.substr(at + 1);
+    return strip_lower(std::string(rest));
+}
+
+// 默认端口归一：本服务只跑明文 HTTP，":80" 显式写出与省略等价。
+std::string trim_default_port(std::string authority) {
+    if (authority.size() > 3 &&
+        authority.compare(authority.size() - 3, 3, ":80") == 0) {
+        authority.resize(authority.size() - 3);
+    }
+    return authority;
+}
+
+// Server tier (网页版计划 M1.2): a browser request must send an Origin whose
+// normalized authority is one of the admin-declared trusted origins; the
+// Host==Origin equality of the default tier is deliberately not required (the
+// trusted list is the stronger statement — a rebinding page carries its own
+// host name as Origin and fails the membership test). Non-browser requests
+// without an Origin pass, exactly as CLI traffic always has.
+bool check_origin_trusted(const Req& req, const CorsConfig* cors, std::string* reason) {
+    if (req.origin_header.empty()) return true;
+    std::string oa = trim_default_port(origin_authority(req.origin_header));
+    if (oa.empty()) {
+        *reason = "forbidden origin";
+        return false;
+    }
+    for (const auto& t : cors->trusted_origins) {
+        if (trim_default_port(origin_authority(t)) == oa) return true;
+    }
+    *reason = "forbidden origin";
+    return false;
+}
+
+bool check_origin(const Req& req, const CorsConfig* cors, std::string* reason) {
+    if (cors && cors->server_mode()) return check_origin_trusted(req, cors, reason);
     if (!loopback_host(host_without_port(req.host_header))) {
         *reason = "forbidden host";
         return false;
@@ -305,6 +352,11 @@ bool check_origin(const Req& req, std::string* reason) {
             *reason = "forbidden origin";
             return false;
         }
+        if (trim_default_port(origin_authority(req.origin_header)) !=
+            trim_default_port(strip_lower(req.host_header))) {
+            *reason = "origin/host mismatch";
+            return false;
+        }
     }
     return true;
 }
@@ -312,6 +364,30 @@ bool check_origin(const Req& req, std::string* reason) {
 // ---------------------------------------------------------------------------
 // response writing (httpd.py:155-176 / 192-211, CONVENTIONS 2 header table)
 // ---------------------------------------------------------------------------
+
+// Per-request CORS wire facts (网页版计划 M1.2). All-default == the desktop
+// tier: the fixed `http://127.0.0.1` ACAO line and the fixed Allow-Headers —
+// byte-for-byte what every golden pins. In server mode a request whose Origin
+// passed check_origin echoes that exact Origin back; every other response in
+// server mode carries no ACAO at all (no Origin => no browser consumer).
+struct CorsWire {
+    bool server_mode = false;
+    std::string echo_origin;  // non-empty == emit this exact ACAO value
+
+    static CorsWire for_request(const CorsConfig* cors, const Req& req, bool origin_ok) {
+        CorsWire w;
+        if (!cors || !cors->server_mode()) return w;
+        w.server_mode = true;
+        if (origin_ok && !req.origin_header.empty() && req.origin_header.size() <= 128) {
+            bool safe = true;
+            for (unsigned char c : req.origin_header) {
+                if (c <= 0x20 || c == 0x7F) safe = false;
+            }
+            if (safe) w.echo_origin = req.origin_header;
+        }
+        return w;
+    }
+};
 
 const char* reason_phrase(int status) {
     switch (status) {
@@ -336,15 +412,43 @@ const char* reason_phrase(int status) {
 // A hand-through value containing a control character would let an upstream
 // inject headers into THIS server's response, so it is discarded (default
 // header) rather than truncated.
+// Header-value sanity shared by content_type passthrough and the server-tier
+// Origin echo: reject CR/LF/NUL and other control bytes (header injection) and
+// DEL, but ALLOW the space 0x20 so legitimate values like
+// "text/html; charset=utf-8" and "public, max-age=3600" are not silently
+// downgraded. (The pre-web transport used `c <= 0x20`, which wrongly rejected
+// the space; every value that reached it was space-free JSON/§4-proxy types so
+// the difference was never observed. Default-tier bytes are unchanged.)
+bool safe_header_value(const std::string& v) {
+    if (v.size() > 128) return false;
+    for (unsigned char c : v) {
+        if (c < 0x20 || c == 0x7F) return false;
+    }
+    return true;
+}
+
+// Appends the tier-dependent CORS header lines. Default tier reproduces the
+// fixed CONVENTIONS 2 block byte-for-byte.
+void append_cors_headers(std::string& head, const CorsWire& cors) {
+    if (!cors.server_mode) {
+        head += "Access-Control-Allow-Origin: http://127.0.0.1\r\n";
+        head += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
+        head += "Access-Control-Allow-Headers: Content-Type\r\n";
+        return;
+    }
+    if (!cors.echo_origin.empty() && safe_header_value(cors.echo_origin)) {
+        head += "Access-Control-Allow-Origin: " + cors.echo_origin + "\r\n";
+    }
+    head += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
+    head += "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
+}
+
 bool write_response(sa_socket_t sock, int status, const std::string& body, bool close_after,
-                    const std::string& content_type = {}) {
+                    const std::string& content_type = {},
+                    const std::string& cache_control = {}, const CorsWire& cors = {}) {
     const char* ct = "application/json; charset=utf-8";
     if (!content_type.empty()) {
-        bool safe = content_type.size() <= 128;
-        for (unsigned char c : content_type) {
-            if (c <= 0x20 || c == 0x7F) safe = false;
-        }
-        if (safe) ct = content_type.c_str();
+        if (safe_header_value(content_type)) ct = content_type.c_str();
     }
     std::string head = "HTTP/1.1 ";
     head += std::to_string(status);
@@ -355,10 +459,12 @@ bool write_response(sa_socket_t sock, int status, const std::string& body, bool 
     head += ct;
     head += "\r\n";
     head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    head += "Cache-Control: no-store\r\n";
-    head += "Access-Control-Allow-Origin: http://127.0.0.1\r\n";
-    head += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
-    head += "Access-Control-Allow-Headers: Content-Type\r\n";
+    if (cache_control.empty() || !safe_header_value(cache_control)) {
+        head += "Cache-Control: no-store\r\n";
+    } else {
+        head += "Cache-Control: " + cache_control + "\r\n";
+    }
+    append_cors_headers(head, cors);
     if (close_after) head += "Connection: close\r\n";
     head += "\r\n";
     if (!send_all(sock, head.data(), head.size())) return false;
@@ -366,14 +472,12 @@ bool write_response(sa_socket_t sock, int status, const std::string& body, bool 
     return true;
 }
 
-bool write_options_response(sa_socket_t sock, bool close_after) {
+bool write_options_response(sa_socket_t sock, bool close_after, const CorsWire& cors = {}) {
     std::string head = "HTTP/1.1 204 No Content\r\n";
     head += "Content-Type: application/json; charset=utf-8\r\n";
-    head += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
-    head += "Access-Control-Allow-Headers: Content-Type\r\n";
+    append_cors_headers(head, cors);
     head += "Content-Length: 0\r\n";
     head += "Cache-Control: no-store\r\n";
-    head += "Access-Control-Allow-Origin: http://127.0.0.1\r\n";
     if (close_after) head += "Connection: close\r\n";
     head += "\r\n";
     return send_all(sock, head.data(), head.size());
@@ -386,9 +490,9 @@ std::string error_body(const std::string& message) {
 // httpd.py:157-165: bytes payloads go out verbatim; dict payloads go through
 // json.dumps(ensure_ascii=False) and a serialization failure becomes
 // 500 {"error":"non-serializable response"}.
-void serialize_payload(int& status, const Resp& r, std::string& body) {
+void serialize_payload(int& status, Resp& r, std::string& body) {
     if (r.is_bytes) {
-        body = r.bytes;
+        body = std::move(r.bytes);  // 性能 P2：bytes 直发路径不再整块拷贝（40MB 缓存命中）
         return;
     }
     try {
@@ -403,14 +507,19 @@ void serialize_payload(int& status, const Resp& r, std::string& body) {
 // per-connection loop (httpd.py:_ApiRequestHandler)
 // ---------------------------------------------------------------------------
 
-constexpr int kKeepAliveIdleMs = 65000;
+// keep-alive 空闲 65s -> 15s（性能 P1）：httpd.py:94 的 65s 是给浏览器的宽
+// 限；桌面/网关客户端都是主动连断，65s 的空闲槽位在 max_slots 内积压僵尸
+// keep-alive。长任务（AI/TTS/云同步）已改走 async job 轮询，不再有「响应前
+// 被掐断」的窗口。
+constexpr int kKeepAliveIdleMs = 15000;
 
 // Cap the request body buffered in memory. The transport reads the whole body
 // up front, so without a bound a local client (or a DNS-rebinding page past the
 // Host check) can send Content-Length: 9e18 and drive the process into
 // bad_alloc. 256 MiB leaves ample room for the base64 plugin/resource-pack
-// installs (their own limits are 100 MB decoded).
-constexpr long long kMaxBodyBytes = 256ll * 1024 * 1024;
+// installs (their own limits are 100 MB decoded). 安全批次 B：可经
+// --max-body 覆盖（网关 fork 传 32 MiB）。
+constexpr long long kDefaultMaxBodyBytes = 256ll * 1024 * 1024;
 
 // Ceiling for keeping a second, wire-fidelity copy of the body in Req::raw_body
 // (the §4 service proxy replays it byte-for-byte). Anything above this is a
@@ -418,9 +527,38 @@ constexpr long long kMaxBodyBytes = 256ll * 1024 * 1024;
 // no forwarding route ever consumes, and copying it would double the peak.
 constexpr size_t kRawBodyKeepMax = 8ull * 1024 * 1024;
 
-void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<bool>& quit_flag) {
+// 安全批次 B：后端进程令牌（X-Backend-Token）。启用后（require_token 非空）
+// 除豁免外的 /api/* 一律要求等值令牌。豁免：
+//   * /api/ping        —— 启动探活；客户端在读取 .backend_token 之前就要能
+//                         确认端口归属（它不泄露任何数据）。
+//   * 非 /api/* 路径   —— 静态资源（web_root 托管）：浏览器 <img>/<script>
+//                         无法携带自定义头。
+//   * OPTIONS          —— CORS preflight 不能携带自定义头（在更早的分支处理）。
+bool token_exempt(const std::string& path) {
+    return path == "/api/ping" || path.rfind("/api/", 0) != 0;
+}
+
+// 常数时间比较：长度不等直接 false（长度本身不构成泄露）；逐字节 XOR 折叠。
+bool token_ok(const std::string& require, const Req& req) {
+    if (token_exempt(req.path)) return true;
+    if (req.backend_token_header.size() != require.size()) return false;
+    unsigned char diff = 0;
+    for (size_t i = 0; i < require.size(); ++i) {
+        diff |= static_cast<unsigned char>(require[i]) ^
+                static_cast<unsigned char>(req.backend_token_header[i]);
+    }
+    return diff == 0;
+}
+
+void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<bool>& quit_flag,
+                      const CorsConfig* cors, const std::string* require_token,
+                      long long max_body_bytes) {
     set_recv_timeout(sock, kKeepAliveIdleMs);
     LineReader reader(sock);
+    // Errors raised before the origin verdict still need the tier's header
+    // block (no ACAO echo, but the server-tier Allow-Headers set).
+    CorsWire wire_pre;
+    wire_pre.server_mode = cors && cors->server_mode();
     for (;;) {
         if (quit_flag.load()) break;
 
@@ -472,6 +610,10 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                     req.host_header = value;
                 } else if (name == "origin" && req.origin_header.empty()) {
                     req.origin_header = value;
+                } else if (name == "authorization" && req.authorization_header.empty()) {
+                    req.authorization_header = value;
+                } else if (name == "x-backend-token" && req.backend_token_header.empty()) {
+                    req.backend_token_header = value;
                 } else if (name == "content-length" && !have_length_header) {
                     have_length_header = true;  // first wins (.headers.get)
                     content_length = value;
@@ -493,13 +635,17 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
             if (req.method == "OPTIONS") {
                 // do_OPTIONS: no Content-Length parse, no body (httpd.py:192-211).
                 std::string reason;
-                if (!check_origin(req, &reason)) {
+                if (!check_origin(req, cors, &reason)) {
                     responded = true;
                     json env{{"error", reason}};
-                    if (!write_response(sock, 403, sa_core::py_dumps(env), true)) break;
+                    if (!write_response(sock, 403, sa_core::py_dumps(env), true, {}, {},
+                                        wire_pre))
+                        break;
                 } else {
                     responded = true;
-                    if (!write_options_response(sock, close_after)) break;
+                    if (!write_options_response(sock, close_after,
+                                                CorsWire::for_request(cors, req, true)))
+                        break;
                 }
             } else {
                 std::optional<long long> length;
@@ -512,16 +658,16 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                     // httpd.py:137-139 (before the origin check, before the body read)
                     responded = true;
                     json env{{"error", "invalid Content-Length"}};
-                    write_response(sock, 400, sa_core::py_dumps(env), true);
+                    write_response(sock, 400, sa_core::py_dumps(env), true, {}, {}, wire_pre);
                     break;
                 }
                 std::string body_raw;
                 long long want = *length < 0 ? 0 : *length;  // length = max(0, length)
-                if (want > kMaxBodyBytes) {
+                if (want > max_body_bytes) {
                     // Refuse before reading: the body is buffered whole in memory.
                     responded = true;
                     json env{{"error", "request body too large"}};
-                    write_response(sock, 413, sa_core::py_dumps(env), true);
+                    write_response(sock, 413, sa_core::py_dumps(env), true, {}, {}, wire_pre);
                     break;
                 }
                 if (want > 0 && !reader.read_exact(body_raw, static_cast<size_t>(want))) {
@@ -545,9 +691,13 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 }
 
                 std::string reason;
+                bool origin_ok = check_origin(req, cors, &reason);
+                const CorsWire wire = CorsWire::for_request(cors, req, origin_ok);
                 Resp resp;
-                if (!check_origin(req, &reason)) {
+                if (!origin_ok) {
                     resp = Resp::Json(403, json{{"error", reason}});
+                } else if (require_token != nullptr && !token_ok(*require_token, req)) {
+                    resp = Resp::Json(403, json{{"error", "forbidden: backend token required"}});
                 } else {
                     resp = router.dispatch(req);
                 }
@@ -559,12 +709,15 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 // Connection: close so this loop exits immediately and the owning
                 // thread can _Exit(0) right after flushing the response.
                 if (g_shutdown_after.load()) close_after = true;
-                if (!write_response(sock, status, body, close_after, resp.content_type)) break;
+                if (!write_response(sock, status, body, close_after, resp.content_type,
+                                    resp.cache_control, wire))
+                    break;
             }
         } catch (const std::exception&) {
             // httpd.py:121-129: fallback 500 ONLY when nothing was written (B11).
             if (!responded) {
-                write_response(sock, 500, error_body("internal server error"), true);
+                write_response(sock, 500, error_body("internal server error"), true, {}, {},
+                               wire_pre);
             }
             break;
         }
@@ -606,10 +759,37 @@ void Router::add(const std::string& method, const std::string& pattern, Handler 
     e.rx = std::regex(py_pattern_to_std(pattern, &names), std::regex::ECMAScript);
     e.group_names = std::move(names);
     e.fn = std::move(fn);
+    // 性能 P2：不含正则元字符的字面量 pattern 进入精确直达表（绝大多数路由）。
+    if (pattern.find_first_of("^$.|()[]{}*+?\\") == std::string::npos) {
+        std::string key = method;
+        key += '\x1f';
+        key += pattern;
+        exact_.emplace(std::move(key), entries_.size());  // 首注册者优先
+    }
     entries_.push_back(std::move(e));
 }
 
 Resp Router::dispatch(Req& req) const {
+    // 性能 P2：精确路由 O(1) 直达；未命中再走有序正则回退（~190 条），首条
+    // 命中的顺序语义完全保留。两条路径的异常语义逐字节一致（同一 catch 组）。
+    std::string key;
+    key.reserve(req.method.size() + 1 + req.path.size());
+    key = req.method;
+    key += '\x1f';
+    key += req.path;
+    auto hit = exact_.find(key);
+    if (hit != exact_.end()) {
+        const Entry& e = entries_[hit->second];
+        try {
+            return e.fn(req);
+        } catch (const ApiError& err) {
+            return Resp::Json(500, json{{"error", err.what()}});
+        } catch (const json::exception& err) {
+            return Resp::Json(500, json{{"error", std::string("ValueError: ") + err.what()}});
+        } catch (const std::exception& err) {
+            return Resp::Json(500, json{{"error", std::string("RuntimeError: ") + err.what()}});
+        }
+    }
     for (const auto& e : entries_) {
         if (e.method != req.method) continue;
         std::smatch m;
@@ -654,7 +834,12 @@ struct Httpd::Impl {
     std::condition_variable conn_cv;
     std::set<sa_socket_t> conns;
 
-    static constexpr int kMaxSlots = 64;  // B13 (httpd.py:221)
+    // B13 (httpd.py:221): 64 slots by default. The web tiers may raise it
+    // (网页版计划 M1.2) — a value <=0 falls back to the default.
+    int max_slots = 192;  // B13 默认 64 -> 192（性能 P1；网关/测试仍可覆盖）
+    CorsConfig cors;      // set before start(); read-only afterwards
+    std::string auth_token;               // 安全批次 B：空串 = 不启用
+    long long max_body = kDefaultMaxBodyBytes;
 
     explicit Impl(Router* r) : router(r) {}
 
@@ -709,8 +894,9 @@ struct Httpd::Impl {
     }
 
     bool try_acquire() {
+        const int limit = max_slots > 0 ? max_slots : 64;
         int cur = slots.load(std::memory_order_relaxed);
-        while (cur < kMaxSlots) {
+        while (cur < limit) {
             if (slots.compare_exchange_weak(cur, cur + 1)) return true;
         }
         return false;
@@ -788,7 +974,11 @@ struct Httpd::Impl {
                         impl->conn_cv.notify_all();
                     }
                 } release{this, conn, slots};
-                serve_connection(conn, *router, quit);
+                const std::string impl_auth_token = auth_token;        // 快照，线程安全读
+                const long long impl_max_body = max_body;
+                serve_connection(conn, *router, quit, &cors,
+                                 impl_auth_token.empty() ? nullptr : &impl_auth_token,
+                                 impl_max_body);
                 if (g_shutdown_after.exchange(false)) {
                     // api.py:777-782 /api/shutdown semantics: respond first, then
                     // the process dies (Python: os._exit(0) on a daemon thread).
@@ -883,6 +1073,16 @@ bool Httpd::bind_to(const std::string& host, int port, std::string* err) {
 
 int Httpd::port() const { return impl_->bound_port; }
 
+void Httpd::set_cors(const CorsConfig& cors) { impl_->cors = cors; }
+
+void Httpd::set_max_slots(int n) { impl_->max_slots = n; }
+
+void Httpd::set_auth_token(std::string token) { impl_->auth_token = std::move(token); }
+
+void Httpd::set_max_body_bytes(long long n) {
+    if (n > 0) impl_->max_body = n;
+}
+
 void Httpd::start() {
     impl_->accept_thread = std::thread([this] { impl_->accept_loop(); });
 }
@@ -897,6 +1097,10 @@ bool shutdown_requested() { return g_shutdown_after.load(); }
 
 namespace detail {
 void clear_shutdown_for_test() { g_shutdown_after.store(false); }
+
+std::atomic<bool> g_shutdown_disabled{false};
+void set_shutdown_disabled(bool disabled) { g_shutdown_disabled.store(disabled); }
+bool shutdown_disabled() { return g_shutdown_disabled.load(); }
 }  // namespace detail
 
 }  // namespace sa

@@ -30,6 +30,7 @@
 #include "p3b_resource_pack.h"  // p3b::PyValueError: the ValueError -> 400 analogue
 #include "p3b_support.h"        // strict base64, miniz ZipReader, py_strip/py_repr
 #include "plugin_service.h"     // §4 infrastructure: discovery, cache, proxy
+#include "upload_staging.h"     // 网页版 M0.5: /api/plugins/install_upload
 #include "sa_core/atomic_io.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
@@ -298,7 +299,7 @@ bool plugin_id_valid(const std::string& pid) {
 bool reserved_id(const std::string& pid) {
     // "service" joins the list with §4: a plugin directory named "service"
     // would be shadowed by the /api/plugins/service/<pid>/<subpath> proxy.
-    for (const char* r : {"agent", "ui", "reload", "install", "install_path", "service"}) {
+    for (const char* r : {"agent", "ui", "reload", "install", "install_path", "install_upload", "service"}) {
         if (pid == r) return true;
     }
     return false;
@@ -606,6 +607,29 @@ void register_plugins_routes(Router& r) {
             body["id"] = pid;
             body["plugin"] = fresh_entry(pid);
             return Resp::Json(200, std::move(body));
+        } catch (const PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/plugins/install_upload — 网页版 M0.5：浏览器拿不到本机路径，
+    // zip 以 {filename, data_base64} JSON 上传，落临时文件后走与 install_path
+    // 完全相同的安装管线（响应包络也一致）。解码上限 100MB。
+    r.post(R"(/api/plugins/install_upload)", [](const Req& req) -> Resp {
+        try {
+            return upload::install_from_upload(
+                req,
+                [](const std::string& path, const std::string& filename) {
+                    json result = install_plugin_from_path(path, filename);
+                    const std::string pid = result.at("id").get<std::string>();
+                    ps::refresh_one(pid);  // §4: a declared service is fetched right away
+                    json body = json::object();
+                    body["ok"] = true;
+                    body["id"] = pid;
+                    body["plugin"] = fresh_entry(pid);
+                    return body;
+                },
+                "plugin.zip");
         } catch (const PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }

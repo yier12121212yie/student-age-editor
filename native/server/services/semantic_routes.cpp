@@ -5,16 +5,20 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <regex>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "sa_core/env_store.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/strings.h"
 #include "sa_core/util.h"
 #include "semantic_assets.h"
+#include "semantic_graph.h"
 #include "semantic_logic.h"
 #include "server/api_router.h"
 #include "server/cfg_cache.h"
@@ -23,6 +27,7 @@
 #include "server/perf.h"
 #include "server/services/stores_api.h"
 #include "server/state.h"
+#include "usage_store.h"
 
 namespace sa {
 namespace {
@@ -221,6 +226,79 @@ std::string sub_first_upper(const std::string& s, const std::string& repl) {
     return res;
 }
 
+// Match-normalized view of a candidate/query: upper, spaces stripped, the
+// math symbols the old path already folded (≥ ≤ ＞ ＜). Same shape the
+// scoring compares on.
+std::string norm_for_match(const std::string& s) {
+    std::string o = ascii_upper(s);
+    std::string t;
+    for (char c : o) if (c != ' ') t += c;
+    auto rep = [](std::string& x, const std::string& a, const std::string& b) {
+        size_t p = 0;
+        while ((p = x.find(a, p)) != std::string::npos) { x.replace(p, a.size(), b); p += b.size(); }
+    };
+    rep(t, "\xE2\x89\xA5", ">=");  // ≥
+    rep(t, "\xE2\x89\xA4", "<=");  // ≤
+    rep(t, "\xEF\xBC\x9E", ">");   // ＞
+    rep(t, "\xEF\xBC\x9C", "<");   // ＜
+    return t;
+}
+
+// Parameter slots inside a raw code template, so every frontend can build a
+// fill-in form instead of forcing the user to hand-edit "@ATTR@"/"V":
+//   "@NAME@"  -> {"kind":"dict", "name":NAME, "dict":<pool>, "label":<中文>}
+//                 (resolved via SECONDARY_PLACEHOLDER_MAP; unknown pools get
+//                  "dict":"" so the caller can still show the raw name)
+//   lone A-Z  -> {"kind":"number", "name":<letter>}
+// Repeated letters merge into one slot with a count (they take the same
+// value when the row is assembled).
+json parse_code_slots(const std::string& code) {
+    json slots = json::array();
+    std::map<std::string, size_t> index;  // slot name -> position in `slots`
+    for (size_t i = 0; i < code.size();) {
+        char c = code[i];
+        if (c == '@') {
+            size_t j = i + 1;
+            std::string name;
+            while (j < code.size() && ((code[j] >= 'A' && code[j] <= 'Z') || code[j] == '_'))
+                name += code[j++];
+            if (j < code.size() && code[j] == '@' && !name.empty()) {
+                std::string key = "@" + name + "@";
+                std::string dict, label;
+                const json& sp = p1::secondary_placeholder_map();
+                if (sp.contains(key) && sp[key].is_array() && sp[key].size() >= 2) {
+                    if (sp[key][0].is_string()) dict = sp[key][0].get<std::string>();
+                    if (sp[key][1].is_string()) label = sp[key][1].get<std::string>();
+                }
+                auto it = index.find(name);
+                if (it == index.end()) {
+                    index[name] = slots.size();
+                    slots.push_back(json{{"kind", "dict"}, {"name", name},
+                                         {"dict", dict}, {"label", label}, {"count", 1}});
+                } else {
+                    slots[it->second]["count"] = slots[it->second]["count"].get<int>() + 1;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        if (c >= 'A' && c <= 'Z') {
+            std::string name(1, c);
+            auto it = index.find(name);
+            if (it == index.end()) {
+                index[name] = slots.size();
+                slots.push_back(json{{"kind", "number"}, {"name", name}, {"count", 1}});
+            } else {
+                slots[it->second]["count"] = slots[it->second]["count"].get<int>() + 1;
+            }
+            ++i;
+            continue;
+        }
+        ++i;
+    }
+    return slots;
+}
+
 json effect_suggest_body(const std::string& q_in, const std::string& mode_in) {
     std::string mode = str::lower(str::trim(mode_in));
     if (mode.empty()) mode = "effect";
@@ -252,7 +330,22 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in) {
     std::vector<std::string> chunks = re_split_chunks(qu);
     std::vector<std::string> nums = re_find_nums(qu);
 
-    std::vector<json> out;
+    struct SuggestHit { int score; const json* item; };
+    std::vector<SuggestHit> hits;
+    const bool empty_q = qn.empty();
+    const std::string q_ns = norm_for_match(qn);
+    // 三端上报的接受记录（key=raw code 模板）：非空 q 只作同分微调（≤5），
+    // 不允许一个松命中盖掉精确前缀；空 q 则直接决定头部顺序。
+    std::vector<std::string> recent_keys;
+    for (const auto& e : sa::usage::top(sa::editor_root(), mode, 50))
+        if (e.contains("key") && e["key"].is_string())
+            recent_keys.push_back(e["key"].get<std::string>());
+    auto recent_boost = [&](const std::string& code) -> int {
+        for (size_t i = 0; i < recent_keys.size(); ++i)
+            if (recent_keys[i] == code) return i < 10 ? 5 : (i < 30 ? 3 : 1);
+        return 0;
+    };
+
     for (const auto& item : *db) {
         std::string desc = item.value("desc", "");
         std::string code = item.value("code", "");
@@ -281,24 +374,61 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in) {
             }
         }
         if (!ok) continue;
-        if (!has_text && chunks.empty() && qn.empty()) {
+        if (!has_text && chunks.empty() && empty_q) {
             // keep
         } else if (!has_text && !nums.empty()) {
             bool any = false;
             for (auto& n : nums) if (target.find(n) != std::string::npos) { any = true; break; }
             if (!any && count_upper_alpha(code) == 0) continue;
         }
-        out.push_back(item);
-        if (static_cast<int>(out.size()) >= limit) break;
+        // 打分：desc 前缀 > desc 包含 > code 前缀 > code 包含 > 码点松命中。
+        int score = 10;
+        if (!empty_q && !q_ns.empty()) {
+            std::string d_ns = norm_for_match(desc), c_ns = norm_for_match(code);
+            if (d_ns.rfind(q_ns, 0) == 0) score = 100;
+            else if (d_ns.find(q_ns) != std::string::npos) score = 70;
+            else if (c_ns.rfind(q_ns, 0) == 0) score = 60;
+            else if (c_ns.find(q_ns) != std::string::npos) score = 40;
+            else score = 10;
+            score += recent_boost(code);
+        }
+        hits.push_back({score, &item});
     }
-    if (out.empty() && !qn.empty()) {
-        out.clear();
-        for (size_t i = 0; i < db->size() && i < 15; ++i) out.push_back((*db)[i]);
+
+    std::vector<SuggestHit> picked;
+    if (empty_q) {
+        // 最近接受过的模板置顶（top 10），其余按码表原序补足 limit。
+        std::set<const json*> used;
+        for (size_t i = 0; i < recent_keys.size() && i < 10 && static_cast<int>(picked.size()) < limit;
+             ++i) {
+            for (const auto& h : hits)
+                if (h.item->value("code", "") == recent_keys[i] && used.insert(h.item).second) {
+                    picked.push_back(h);
+                    break;
+                }
+        }
+        for (const auto& h : hits) {
+            if (static_cast<int>(picked.size()) >= limit) break;
+            if (!used.insert(h.item).second) continue;
+            picked.push_back(h);
+        }
+    } else {
+        std::stable_sort(hits.begin(), hits.end(),
+                         [](const SuggestHit& a, const SuggestHit& b) { return a.score > b.score; });
+        for (const auto& h : hits) {
+            if (static_cast<int>(picked.size()) >= limit) break;
+            picked.push_back(h);
+        }
+    }
+    if (picked.empty() && !empty_q) {
+        for (size_t i = 0; i < db->size() && i < 15; ++i)
+            picked.push_back({0, &(*db)[i]});  // 未命中回落：前 15 条目录
     }
 
     bool skip_render = (mode == "action" || mode == "screen");
     json rendered = json::array();
-    for (auto& mi : out) {
+    for (const auto& h : picked) {
+        const json& mi = *h.item;
         std::string tc = mi.value("code", ""), td = mi.value("desc", "");
         int ph = count_upper_alpha(mi.value("code", ""));
         if (ph && !nums.empty() && !skip_render) {
@@ -311,6 +441,8 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in) {
         json r;
         r["desc"] = td; r["code"] = tc;
         r["raw_code"] = mi.value("code", ""); r["raw_desc"] = mi.value("desc", "");
+        r["slots"] = parse_code_slots(mi.value("code", ""));
+        r["score"] = h.score;
         rendered.push_back(r);
     }
     json body;
@@ -358,7 +490,15 @@ json broken_bug(const std::string& cfg, const std::string& err) {
     return b;
 }
 
-// scan/fix 共用：只读视图 → 普通 json 表集（scan_bugs 纯读，拷贝即 G3 隔离）。
+// 共享只读空对象：让 `const json& body = cond ? req.body : kEmptyJson` 这类
+// 绑定走真正的零拷贝 lvalue 组合。直接写 `: json::object()` 会让三目落回
+// prvalue（lvalue 操作数被整树拷贝一次）——请求/响应路径都不该付这笔钱。
+const json kEmptyJson = json::object();
+
+// scan/fix 共用：只读视图 → 普通 json 表集。scan_bugs 的引擎接口是
+// const json&（nlohmann 无引用语义的值类型），shared_ptr<const json> 视图
+// 无法零拷贝传入，这里组一次普通表集是引擎接口成本，而非 G3 隔离需求
+// （G3 fork-then-write 只对写者必要；scan_bugs 纯读，const 类型系统兜底）。
 json mod_tables_json(const ModCfgsView& view) {
     json m = json::object();
     for (auto& [name, ptr] : view.tables) if (ptr) m[name] = *ptr;
@@ -423,7 +563,7 @@ void register_semantic_routes(Router& r) {
 
     // POST /api/validate — api.py:1219-1281.
     r.post(R"(/api/validate)", [](const Req& req) -> Resp {
-        const json& body = req.body.is_object() ? req.body : json::object();
+        const json& body = req.body.is_object() ? req.body : kEmptyJson;
         // Python: cfg = str(body.get("cfg") or "") —— 假值（null/0/""/False）恒为 ""。
         std::string cfg = body.contains("cfg") ? py_str_or_empty(body.at("cfg")) : std::string();
         json data = body.contains("data") ? body.at("data") : json();
@@ -563,9 +703,217 @@ void register_semantic_routes(Router& r) {
         return Resp::Json(200, effect_suggest_body(q, mode));
     });
 
+    // ---------------- editor shared settings (no-code / appearance / accent) --
+    // GET/PUT /api/settings/editor — editor-level switches ALL three frontends
+    // consume. `noCodeMode` (bool), `appearanceMode` ("system"|"light"|
+    // "dark", 白日模式) and `themeColor` ("#rrggbb" 用户主题色)，persisted as
+    // editor_env.json keys `no_code_mode` / `appearance_mode` / `theme_color`
+    // (same store as oobe_completed/cli_selected_mod). Unknown
+    // or off-whitelist values are ignored — whitelist-strict, env_store_ai style.
+    // `meta.appearanceModeExplicit` / `meta.themeColorExplicit` tell a frontend
+    // whether the key was ever written: the GUI uses them to seed the backend
+    // from a local-only choice instead of overwriting that choice with the
+    // default.
+    auto appearance_enum = [](const json& env, bool* explicit_out) {
+        std::string v = "dark";
+        bool explicit_set = false;
+        if (env.contains("appearance_mode") && env["appearance_mode"].is_string()) {
+            const std::string raw = env["appearance_mode"].get<std::string>();
+            if (raw == "system" || raw == "light" || raw == "dark") {
+                v = raw;
+                explicit_set = true;
+            }
+        }
+        if (explicit_out) *explicit_out = explicit_set;
+        return v;
+    };
+    // 用户主题色：#rrggbb（大小写均收，落盘统一小写）；默认品牌紫。
+    auto theme_hex = [](const json& env, bool* explicit_out) {
+        std::string v = "#6c5ce7";
+        bool explicit_set = false;
+        if (env.contains("theme_color") && env["theme_color"].is_string()) {
+            const std::string raw = str::lower(env["theme_color"].get<std::string>());
+            if (raw.size() == 7 && raw[0] == '#' &&
+                raw.substr(1).find_first_not_of("0123456789abcdef") == std::string::npos) {
+                v = raw;
+                explicit_set = true;
+            }
+        }
+        if (explicit_out) *explicit_out = explicit_set;
+        return v;
+    };
+    auto editor_settings = [appearance_enum, theme_hex] {
+        json env = sa_core::env_store::read_editor_env(sa::editor_root());
+        bool explicit_appearance = false;
+        bool explicit_theme = false;
+        json s = json::object();
+        s["noCodeMode"] = (env.contains("no_code_mode") && env["no_code_mode"].is_boolean())
+                              ? env["no_code_mode"].get<bool>()
+                              : false;
+        s["appearanceMode"] = appearance_enum(env, &explicit_appearance);
+        s["themeColor"] = theme_hex(env, &explicit_theme);
+        json out;
+        out["settings"] = std::move(s);
+        out["meta"] = json{{"appearanceModeExplicit", explicit_appearance},
+                           {"themeColorExplicit", explicit_theme}};
+        return out;
+    };
+    r.get(R"(/api/settings/editor)", [editor_settings](const Req&) -> Resp {
+        return Resp::Json(200, editor_settings());
+    });
+    r.put(R"(/api/settings/editor)", [editor_settings, appearance_enum, theme_hex](const Req& req) -> Resp {
+        json patch = json::object();
+        if (req.body.is_object()) {
+            if (req.body.contains("settings") && req.body["settings"].is_object())
+                patch = req.body["settings"];
+            else
+                patch = req.body;
+        }
+        if (patch.contains("noCodeMode") && patch["noCodeMode"].is_boolean()) {
+            sa_core::env_store::merge_editor_env(sa::editor_root(),
+                                                 json{{"no_code_mode", patch["noCodeMode"]}});
+        }
+        if (patch.contains("appearanceMode") && patch["appearanceMode"].is_string()) {
+            const std::string want = patch["appearanceMode"].get<std::string>();
+            // 只认枚举值：非法写入不改库，但也不报错（与 noCodeMode 同风格）。
+            json env = sa_core::env_store::read_editor_env(sa::editor_root());
+            const std::string before = appearance_enum(env, nullptr);
+            if (want == "system" || want == "light" || want == "dark") {
+                if (want != before)
+                    sa_core::env_store::merge_editor_env(sa::editor_root(),
+                                                         json{{"appearance_mode", want}});
+            }
+        }
+        if (patch.contains("themeColor") && patch["themeColor"].is_string()) {
+            const std::string norm =
+                str::lower(str::trim(patch["themeColor"].get<std::string>()));
+            // 只认 #rrggbb（大小写均收，落盘小写）：非法值同风格静默忽略。
+            bool valid = norm.size() == 7 && norm[0] == '#' &&
+                         norm.substr(1).find_first_not_of("0123456789abcdef") == std::string::npos;
+            if (valid) {
+                json env = sa_core::env_store::read_editor_env(sa::editor_root());
+                if (norm != theme_hex(env, nullptr))
+                    sa_core::env_store::merge_editor_env(sa::editor_root(),
+                                                         json{{"theme_color", norm}});
+            }
+        }
+        json out = editor_settings();
+        out["ok"] = true;
+        return Resp::Json(200, std::move(out));
+    });
+
+    // ---------------- usage stats (候选高频/最近使用 backend) ----------------
+    // POST /api/usage {kind, key} — one "accepted/executed" bump. kind is
+    // whitelisted (see usage::valid_kind); key is trimmed, capped at 200B.
+    r.post(R"(/api/usage)", [](const Req& req) -> Resp {
+        const json& body = req.body.is_object() ? req.body : kEmptyJson;
+        auto gs = [&body](const char* k) -> std::string {
+            if (!body.contains(k)) return "";
+            const json& v = body[k];
+            if (v.is_string()) return str::trim(v.get<std::string>());
+            if (v.is_number()) return sa_core::py_str(v);
+            return "";
+        };
+        std::string kind = str::lower(str::trim(gs("kind")));
+        std::string key = gs("key");
+        if (!usage::valid_kind(kind))
+            return Resp::Json(400, json{{"error", "unknown kind: " + kind}});
+        if (key.empty()) return Resp::Json(400, json{{"error", "key required"}});
+        if (key.size() > 200) key = cp_prefix(key, 200);
+        json rec = usage::record(sa::editor_root(), kind, key);
+        json out;
+        out["ok"] = true;
+        out["count"] = rec.contains("count") ? rec["count"] : json(0);
+        out["last_ts"] = rec.contains("last_ts") ? rec["last_ts"] : json(0);
+        return Resp::Json(200, std::move(out));
+    });
+    // GET /api/usage?kind=&limit= — {key,count,last_ts} entries, count desc /
+    // last_ts desc. limit clamps to [1,200], default 10.
+    r.get(R"(/api/usage)", [](const Req& req) -> Resp {
+        std::string kind;
+        if (auto it = req.query.find("kind"); it != req.query.end())
+            kind = str::lower(str::trim(it->second));
+        if (!usage::valid_kind(kind))
+            return Resp::Json(400, json{{"error", "unknown kind: " + kind}});
+        size_t limit = 10;
+        if (auto it = req.query.find("limit"); it != req.query.end()) {
+            if (auto n = sa_core::py_int(it->second))
+                limit = static_cast<size_t>(std::max<long long>(1, std::min<long long>(200, *n)));
+        }
+        json out;
+        out["kind"] = kind;
+        out["limit"] = limit;
+        out["items"] = usage::top(sa::editor_root(), kind, limit);
+        return Resp::Json(200, std::move(out));
+    });
+
+    // GET /api/roles?q= — 人物目录：game_dicts.roles（id→中文名）合并工作区
+    // PersonCfg（gender + 立绘 key：url2 首项优先，否则 url 首项）。q 按
+    // 名字包含 / id 全等过滤；数值 id 按 int 升序在前，其余按字符串序。
+    r.get(R"(/api/roles)", [](const Req& req) -> Resp {
+        std::string q;
+        if (auto it = req.query.find("q"); it != req.query.end()) q = str::trim(it->second);
+        const std::string ql = str::lower(q);
+        const json& d = p1::dicts();
+        json base = d.value("game_dicts", json::object()).value("roles", json::object());
+        std::map<std::string, json> by_id;
+        for (auto it = base.begin(); it != base.end(); ++it) {
+            json r = json::object();
+            r["id"] = it.key();
+            r["name"] = it.value().is_string() ? it.value() : json(sa_core::py_str(it.value()));
+            r["gender"] = nullptr;
+            r["portrait"] = "";
+            by_id[it.key()] = std::move(r);
+        }
+        auto pcfg = read_mod_table("PersonCfg");
+        if (pcfg && pcfg->is_object()) {
+            auto first_str = [](const json& v) -> std::string {
+                if (v.is_array() && !v.empty() && v[0].is_string()) return v[0].get<std::string>();
+                return "";
+            };
+            for (auto it = pcfg->begin(); it != pcfg->end(); ++it) {
+                const json& row = it.value();
+                if (!row.is_object()) continue;
+                json& slot = by_id[it.key()];
+                if (!slot.is_object()) slot = json::object();
+                if (!slot.contains("id")) slot["id"] = it.key();
+                if (!slot.contains("name")) slot["name"] = "";
+                if (row.contains("name") && py_truthy(row["name"]))
+                    slot["name"] = py_str_or_empty(row["name"]);
+                if (row.contains("gender") && row["gender"].is_number()) slot["gender"] = row["gender"];
+                std::string p2 = row.contains("url2") ? first_str(row["url2"]) : "";
+                std::string p1 = row.contains("url") ? first_str(row["url"]) : "";
+                std::string portrait = !p2.empty() ? p2 : p1;
+                if (!portrait.empty()) slot["portrait"] = portrait;
+                if (!slot.contains("portrait")) slot["portrait"] = "";
+            }
+        }
+        json roles = json::array();
+        for (auto& kv : by_id) {
+            const json& r = kv.second;
+            if (!q.empty()) {
+                std::string name_l = str::lower(r.value("name", ""));
+                if (kv.first != q && (name_l.empty() || name_l.find(ql) == std::string::npos))
+                    continue;
+            }
+            roles.push_back(r);
+        }
+        std::sort(roles.begin(), roles.end(), [](const json& a, const json& b) {
+            auto keyf = [](const std::string& id) {
+                if (auto n = sa_core::py_int(id)) return std::make_tuple(0, *n, std::string());
+                return std::make_tuple(1, 0LL, id);
+            };
+            return keyf(a.value("id", "")) < keyf(b.value("id", ""));
+        });
+        json out;
+        out["roles"] = std::move(roles);
+        out["total"] = out["roles"].size();
+        return Resp::Json(200, std::move(out));
+    });
+
     // POST /api/effect_validate — api.py:1482-1582.
     r.post(R"(/api/effect_validate)", [](const Req& req) -> Resp {
-        const json& body = req.body.is_object() ? req.body : json::object();
+        const json& body = req.body.is_object() ? req.body : kEmptyJson;
         // Python: str(body.get("text") or "") —— 假值 → ""。
         std::string text = body.contains("text") ? py_str_or_empty(body.at("text"))
                                                  : std::string();
@@ -670,9 +1018,13 @@ void register_semantic_routes(Router& r) {
         json bugs = p1::scan_bugs(mod_tables_json(view), base_tables_json(), nullptr);
         for (auto& [cfg, err] : view.broken) bugs.push_back(broken_bug(cfg, err));
         // view.broken is a std::map (sorted by cfg already).
+        // 响应路径零拷贝：count 先取，bugs（可达 ~40MB 的响应体）整树 move 进
+        // 响应，不再 `out["bugs"] = bugs` 深拷一次；键序保持 bugs→count 不变，
+        // wire 上的 json→string 序列化由 httpd 恰好做一次（py_dumps）。
+        const long long count = static_cast<long long>(bugs.size());
         json out;
-        out["bugs"] = bugs;
-        out["count"] = static_cast<long long>(bugs.size());
+        out["bugs"] = std::move(bugs);
+        out["count"] = count;
         return Resp::Json(200, std::move(out));
     });
 
@@ -684,7 +1036,9 @@ void register_semantic_routes(Router& r) {
             if (STATE().mod_root.empty())
                 return Resp::Json(400, json{{"error", "no mod selected"}});
         }
-        const json body = req.body.is_object() ? req.body : json::object();
+        // 零拷贝读请求体：绑定共享只读空对象（写 json::object() 会让三目退回
+        // prvalue，客户端回传的 bugs 列表会被整树拷贝一次）。
+        const json& body = req.body.is_object() ? req.body : kEmptyJson;
         ModCfgsView view = load_mod_cfgs();
         json base_data = base_tables_json();
         // 首次扫描同 scan 路由（D16 修复后全语义）；A11 的 touched 重扫用私有
@@ -695,7 +1049,9 @@ void register_semantic_routes(Router& r) {
         // remaining 里 broken 条目出现两次是 api.py 的真实行为，照抄。
         for (auto& [cfg, err] : view.broken) bugs.push_back(broken_bug(cfg, err));
 
-        json targets =
+        // targets 只读：两个分支都是 lvalue，const& 绑定零拷贝（客户端列表不
+        // 拷、本地扫描结果也不拷）。
+        const json& targets =
             (body.contains("bugs") && !body.at("bugs").is_null()) ? body.at("bugs") : bugs;
         // A11: pre-index (cfg,id,key) -> bug once (later dup overwrites, dict-comp 语义).
         // 客户端回传 bug 的字段可能是 null/数字（不受控），逐字段取原始值再 str()，
@@ -713,20 +1069,22 @@ void register_semantic_routes(Router& r) {
         };
         for (size_t i = 0; i < bugs.size(); ++i)
             if (bugs[i].is_object()) by_key[bug_key(bugs[i])] = i;
-        json matched = json::array();
+        // matched 只是指向 bugs 元素的只读指针（A11 索引阶段之后 bugs 不再
+        // 变异），逐条 push_back 拷贝纯浪费。
+        std::vector<const json*> matched;
         if (targets.is_array())
             for (const auto& bug : targets) {
                 if (!bug.is_object()) continue;
                 auto it = by_key.find(bug_key(bug));
-                if (it != by_key.end()) matched.push_back(bugs[it->second]);
+                if (it != by_key.end()) matched.push_back(&bugs[it->second]);
             }
 
         std::set<std::string> fix_cfgs, touched;
         bool need_pair = false;
-        for (const auto& mbug : matched) {
-            std::string c = mbug.value("cfg", "");
+        for (const json* mbug : matched) {
+            std::string c = mbug->value("cfg", "");
             if (!c.empty()) fix_cfgs.insert(c);
-            std::string flag = mbug.value("flag", "");
+            std::string flag = mbug->value("flag", "");
             if (flag == "FIX_OPTION_1" || flag == "FIX_TALK_1") need_pair = true;
         }
         if (need_pair) { fix_cfgs.insert("TalkCfg"); fix_cfgs.insert("OptionCfg"); }
@@ -734,12 +1092,12 @@ void register_semantic_routes(Router& r) {
         for (const auto& c : fix_cfgs) private_tables[c] = fork_mod_table(c);
 
         long long fixed = 0;
-        for (const auto& mbug : matched) {
-            if (p1::apply_fix(private_tables, mbug)) {
+        for (const json* mbug : matched) {
+            if (p1::apply_fix(private_tables, *mbug)) {
                 fixed++;
-                std::string c = mbug.value("cfg", "");
+                std::string c = mbug->value("cfg", "");
                 if (!c.empty()) touched.insert(c);
-                std::string flag = mbug.value("flag", "");
+                std::string flag = mbug->value("flag", "");
                 if (flag == "FIX_OPTION_1" || flag == "FIX_TALK_1") {
                     touched.insert("TalkCfg");
                     touched.insert("OptionCfg");
@@ -749,7 +1107,10 @@ void register_semantic_routes(Router& r) {
         for (const auto& cfg : touched) {
             std::string path = try_cfg_path(cfg);
             if (path.empty()) continue;
-            json data = private_tables.contains(cfg) ? private_tables[cfg] : json::object();
+            // 零拷贝读 fork 表：write_cfg/after_write 都只收 const&，无需把整张
+            // fork 表再深拷一次（缺表时绑共享空对象，不落 prvalue）。
+            const json& data =
+                private_tables.contains(cfg) ? private_tables[cfg] : kEmptyJson;
             json result = cfg_store::write_cfg(path, data, std::nullopt, nullptr, false, true);
             // D11：_save_mod_cfg 失败 raise OSError → 传输层 500（不静默吞写失败）。
             if (!result.value("ok", false)) {
@@ -762,20 +1123,29 @@ void register_semantic_routes(Router& r) {
         }
 
         json remaining = json::array();
-        for (const auto& b : bugs)
-            if (b.is_object() && !touched.count(b.value("cfg", ""))) remaining.push_back(b);
+        // bugs 之后不再使用（A11 重扫读的是 private_tables）：留下来的条目直接
+        // move 进 remaining，免掉逐条深拷。
+        for (auto& b : bugs)
+            if (b.is_object() && !touched.count(b.value("cfg", ""))) remaining.push_back(std::move(b));
         if (!touched.empty()) {
             // A11: only rescan touched tables against their (already forked) data.
             json re = p1::scan_bugs(private_tables, base_data, &touched);
-            for (auto& b : re) remaining.push_back(b);
+            for (auto& b : re) remaining.push_back(std::move(b));
         }
         for (auto& [cfg, err] : view.broken) remaining.push_back(broken_bug(cfg, err));
+        // 响应路径零拷贝：count 先取，remaining 整树 move 进响应；键序保持
+        // fixed→remaining→remaining_count 与 api.py 字典序一致。
+        const long long remaining_count = static_cast<long long>(remaining.size());
         json out;
         out["fixed"] = fixed;
-        out["remaining"] = remaining;
-        out["remaining_count"] = static_cast<long long>(remaining.size());
+        out["remaining"] = std::move(remaining);
+        out["remaining_count"] = remaining_count;
         return Resp::Json(200, std::move(out));
     });
+
+    // 只读分析三端点（/api/effect/parse、/api/graph/relations、/api/graph/timeline）
+    // 实现在 semantic_graph.cpp；此处统一挂进 P1 语义族（api_router.cpp 不动）。
+    register_semantic_graph(r);
 }
 
 }  // namespace sa

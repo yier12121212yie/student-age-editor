@@ -7,12 +7,14 @@
 #include "server/ai_dicts_route.h"
 #include "server/services/aa.h"
 #include "server/services/ai_image.h"
+#include "server/services/ai_relay_routes.h"
 #include "server/services/assets_routes.h"
 #include "server/services/base_routes.h"
 #include "server/services/cfg_routes.h"
 #include "server/services/cloud_routes.h"
 #include "server/services/content_routes.h"
 #include "server/services/deleted_routes.h"
+#include "server/services/mod_files_routes.h"
 #include "server/services/mods_routes.h"
 #include "server/services/p3b_domain_tools_routes.h"
 #include "server/services/plugins_routes.h"
@@ -67,7 +69,13 @@ Router build_router() {
     // 标签现算，不新增产物（additive，不进 golden）。
     register_assets_routes(r);
     register_tts_routes(r);
+    // 网页版计划 M3：本地资源文件导入 POST /api/mod/import_files（图片/音频落盘
+    // + 可选 AudioCfg 登记）。注册在 tts 之后，复用其 register_audio_cfg_url。
+    register_mod_files_routes(r);
     register_ai_image_routes(r);
+    // 网页版计划 M1.3：平台 key 的中继对话 + 供给策略。注册在各 /api/ai/* 家族
+    // 之后，避免任何 /api/ai 通配把它前面的具体路由遮蔽（这两个路径本就唯一）。
+    register_ai_relay_routes(r);
     register_update_routes(r);
     // P5 wave-3: cloud 18 路由 + realtime；register 尾部对齐 api.py:3149 触发
     // rt_auto_start（3s 延迟线程，等同 Python build_router 期行为）。

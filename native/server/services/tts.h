@@ -63,6 +63,15 @@ json save_audio(const std::string& mod_root, const std::string& audio, const std
 // register_audio_cfg -> new AudioCfg id (int). Writes AudioCfg.json via cfg_store.
 long long register_audio_cfg(const std::string& cfg_dir, const std::string& key,
                              const std::string& title);
+// register_audio_cfg_url — same AudioCfg row, but the game-relative url is
+// supplied verbatim (rel_url, slash form) instead of being derived from a TTS
+// key under kAudioDir. Used by the本地资源导入 route (POST /api/mod/import_files)
+// to登记 an imported Audios file. Empty title falls back to
+// "音频 <basename(rel_url) 去扩展名>"; other than the url source and that
+// fallback, behaves identically to register_audio_cfg (same lock + max-id +
+// conflict semantics). Throws TtsStoreError.
+long long register_audio_cfg_url(const std::string& cfg_dir, const std::string& rel_url,
+                                 const std::string& title);
 // bind_talk_audio -> {"talkId","audioCfgId"}. Writes TalkCfg.audio via cfg_store
 // with a table-level expect_mtime_ns; conflict raises TtsStoreError (B7).
 json bind_talk_audio(const std::string& mod_root, const std::string& talk_id, long long audio_cfg_id);

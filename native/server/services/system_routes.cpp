@@ -108,7 +108,13 @@ void register_system_routes(Router& r) {
 
     // POST /api/shutdown — api.py:777-782. The 200 body is written first;
     // httpd's connection loop then tears the process down (CONVENTIONS 2).
+    // Server mode (bind host not loopback) refuses the kill: a public-facing
+    // instance must not be shutdown-able by whoever can reach it (网页版计划
+    // M1.2). Default desktop/loopback tier: unchanged byte-for-byte.
     r.post(R"(/api/shutdown)", [](const Req&) -> Resp {
+        if (detail::shutdown_disabled()) {
+            return Resp::Json(403, json{{"error", "shutdown disabled in server mode"}});
+        }
         json body;
         body["ok"] = true;
         request_shutdown();

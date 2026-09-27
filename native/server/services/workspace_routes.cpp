@@ -7,6 +7,8 @@
 // report per CONVENTIONS preamble ("以 Python 行为为准并回报差异").
 #include "workspace_routes.h"
 
+#include <algorithm>
+#include <cctype>
 #include <ctime>
 #include <cstdio>
 #include <exception>
@@ -45,6 +47,75 @@ bool py_truthy(const json& v) {
 std::string env_get(const char* name) {
     // UTF-8-safe: USERPROFILE/HOME feed OOBE `~` expansion and are paths.
     return sa_core::paths::getenv_utf8(name);
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 1c 安全加固（workspace root 校验）。POST /api/workspace 与 POST
+// /api/oobe/setup 可把沙箱根设成任意目录；配合 /api/tools/write(scope=
+// workspace) 就构成"任意本地进程/任意 localhost 页面可在任意落点写文件"的
+// 链（写进 Start Menu\Startup 即登录执行）。规则：显式 root 不得位于（或
+// 反向包住）系统目录/ProgramData/用户启动项目录，不得是盘符/文件系统根。
+// 普通工作目录（Documents\mods、%TEMP% 沙箱等）不受影响；env 缺失则跳过
+// 对应比较。校验先于 is_dir/mkdir：既不探测系统目录，也不在系统目录下
+// 建目录。Python 无此检查，属有记录的安全偏差。
+std::string ws_key(const std::string& p) {
+    std::string s = sa_core::str::replace_all(p, "\\", "/");
+    while (s.size() > 1 && s.back() == '/') s.pop_back();
+#ifdef _WIN32
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+    return s;
+}
+
+// child 位于 parent 内（或同一目录），按段边界比较；两者都必须是 ws_key 形式。
+bool path_within(const std::string& child, const std::string& parent) {
+    if (parent.empty()) return false;
+    if (child == parent) return true;
+    return child.size() > parent.size() &&
+           child.compare(0, parent.size(), parent) == 0 && child[parent.size()] == '/';
+}
+
+// 允许返回空串；否则返回拒绝理由（直接进 400 的 error 字段）。
+std::string workspace_root_reject(const std::string& raw) {
+    std::string norm = ws_key(cs::abs_path(raw));
+    if (norm.empty()) return {};
+#ifdef _WIN32
+    if (norm.size() == 2 && norm[1] == ':')
+        return "workspace root must not be a drive root: " + raw;
+    const char* env_names[] = {"SystemRoot", "windir", "ProgramFiles",
+                               "ProgramFiles(x86)", "ProgramData"};
+    for (const char* v : env_names) {
+        std::string d = ws_key(env_get(v));
+        if (!d.empty() && path_within(norm, d))
+            return "workspace root must not be inside a system/program directory (" +
+                   std::string(v) + ")";
+    }
+    // 用户 Start Menu（Startup 落点所在）："在内"与"包住它"两个方向都拒。
+    std::string roaming = ws_key(env_get("APPDATA"));
+    if (!roaming.empty()) {
+        std::string start_menu = roaming + "/microsoft/windows/start menu";
+        if (path_within(norm, start_menu) || path_within(start_menu, norm))
+            return "workspace root must not contain or be inside the Windows Start Menu directory";
+    }
+    return {};
+#else
+    if (norm == "/")
+        return "workspace root must not be the filesystem root: " + raw;
+    static const char* sys_dirs[] = {"/etc", "/usr", "/var", "/bin", "/sbin",
+                                     "/boot", "/dev", "/root", "/opt"};
+    for (const char* d : sys_dirs) {
+        if (path_within(norm, d))
+            return "workspace root must not be inside a system directory: " + std::string(d);
+    }
+    std::string home = env_get("HOME");
+    if (!home.empty()) {
+        std::string autostart = ws_key(home + "/.config/autostart");
+        if (path_within(norm, autostart) || path_within(autostart, norm))
+            return "workspace root must not contain or be inside the desktop autostart directory";
+    }
+    return {};
+#endif
 }
 
 // `(body.get(k) or "")` 语义（api.py:769 / 802-804）：缺失/null/JSON 假值
@@ -117,6 +188,10 @@ std::string oobe_set_workspace(const std::string& raw) {
     }
     // Python: not absolute -> cwd / p; then os.path.normpath.
     std::string abs = cs::abs_path(p);
+    // 阶段 1c：与 POST /api/workspace 同一护栏，先于 mkdir —— 拒绝在系统
+    // 目录下创建并注册工作区。OobeValueError 走 setup 的 400 通道。
+    std::string reject = workspace_root_reject(abs);
+    if (!reject.empty()) throw OobeValueError(reject);
     if (!cs::create_dirs(abs)) {
         throw OobeValueError("cannot create workspace " + abs + ": directory not creatable");
     }
@@ -210,6 +285,10 @@ void register_workspace_routes(Router& r) {
     // POST /api/workspace — api.py:768-775.
     r.post(R"(/api/workspace)", [](const Req& req) -> Resp {
         std::string root = body_str(req.body, "root");
+        if (!root.empty()) {
+            std::string reject = workspace_root_reject(root);
+            if (!reject.empty()) return Resp::Json(400, json{{"error", reject}});
+        }
         if (!root.empty() && !cs::is_dir(root)) {
             return Resp::Json(400, json{{"error", "directory not found: " + root}});
         }

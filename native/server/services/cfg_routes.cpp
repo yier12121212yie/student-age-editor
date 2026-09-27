@@ -48,6 +48,15 @@ std::optional<std::string> parse_revision(const json& v) {
     return std::nullopt;
 }
 
+// 阶段 2d（假冲突修复）：写成功后立刻失效重算 workspace 指纹，随 200 响应
+// 回一份新 revision。前端 SaveService 用它更新 _cachedRevision——同一批量
+// 保存的第二张表不再拿着旧指纹被 verify 误拒（写一张必换指纹，两表连发必
+// 假冲突）。Python 无此响应字段，属向后兼容的纯增量偏差。
+std::string refresh_revision_after_write() {
+    revision_manager::invalidate_cache();
+    return revision_manager::compute_revision_cached(false);
+}
+
 // api.py:508-513 _parse_prefix_query
 std::optional<std::set<std::string>> parse_prefix_query(const std::string* raw) {
     if (raw == nullptr || raw->empty()) return std::nullopt;
@@ -83,6 +92,10 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     }
     
     // P5 Revision check before processing patch
+    // TOCTOU 加固：verify 与实际写盘（下方 apply_patch）必须同处一个 workspace
+    // 写门临界区，否则并发双 PUT 携同一 revision 可同时通过校验、串行落盘，
+    // 后者静默覆盖前者（lost update）。锁序 gate -> path，见 cfg_store.h。
+    std::optional<cfg_store::WorkspaceWriteGuard> wgate;
     std::optional<std::string> client_revision = parse_revision(body.contains("revision") ? body.at("revision") : json());
     if (client_revision.has_value() && !client_revision->empty()) {
         std::string mod_root;
@@ -91,6 +104,7 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
             mod_root = STATE().mod_root;
         }
         if (!mod_root.empty()) {
+            wgate.emplace();
             revision_manager::set_workspace_root(mod_root);
             if (!revision_manager::verify_revision(*client_revision)) {
                 // 409 Conflict with fresh revision
@@ -190,6 +204,7 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     env["applied_remove"] = applied.contains("remove") ? applied_count(applied.at("remove")) : 0;
     env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
     env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
+    env["revision"] = refresh_revision_after_write();
     return Resp::Json(200, std::move(env));
 }
 
@@ -336,6 +351,8 @@ void register_cfg_routes(Router& r) {
         }
         
         // P5 Revision check (revision_manager): verify client_revision matches current workspace hash
+        // TOCTOU 加固：写门覆盖"verify → write_cfg"整段（同 do_cfg_patch）。
+        std::optional<cfg_store::WorkspaceWriteGuard> wgate;
         std::optional<std::string> client_revision = parse_revision(has_body && body.contains("revision") ? body.at("revision") : json());
         if (client_revision.has_value() && !client_revision->empty()) {
             std::string mod_root;
@@ -344,6 +361,7 @@ void register_cfg_routes(Router& r) {
                 mod_root = STATE().mod_root;
             }
             if (!mod_root.empty()) {
+                wgate.emplace();
                 revision_manager::set_workspace_root(mod_root);
                 if (!revision_manager::verify_revision(*client_revision)) {
                     // 409 Conflict with fresh revision
@@ -402,6 +420,7 @@ void register_cfg_routes(Router& r) {
         env["cfg"] = cfg_name;
         env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
         env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
+        env["revision"] = refresh_revision_after_write();
         return Resp::Json(200, std::move(env));
     });
 
@@ -462,6 +481,8 @@ void register_cfg_routes(Router& r) {
         const std::string id = req.params.count("id") ? req.params.at("id") : std::string();
         
         // P5 Revision check before processing delete
+        // TOCTOU 加固：写门覆盖"verify → 本 lambda 内 cfg_store 写盘"（同 PUT/patch）。
+        std::optional<cfg_store::WorkspaceWriteGuard> wgate;
         std::optional<std::string> client_revision = parse_revision(req.body.contains("revision") ? req.body.at("revision") : json());
         std::string cfg_name = cfg_name_of(name);
         std::string path;
@@ -478,6 +499,7 @@ void register_cfg_routes(Router& r) {
                 mod_root = STATE().mod_root;
             }
             if (!mod_root.empty()) {
+                wgate.emplace();
                 revision_manager::set_workspace_root(mod_root);
                 if (!revision_manager::verify_revision(*client_revision)) {
                     // 409 Conflict with fresh revision
@@ -601,6 +623,7 @@ void register_cfg_routes(Router& r) {
         out["id"] = id;
         out["tombstone_created"] = true;
         out["replacement_ids"] = replacement_ids;
+        out["revision"] = refresh_revision_after_write();
         return Resp::Json(200, std::move(out));
     });
 }
