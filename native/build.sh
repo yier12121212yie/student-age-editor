@@ -8,8 +8,11 @@
 #     ./native/build.sh                 # default build dir (build-linux on WSL)
 #     BUILD_DIR=build ./native/build.sh # explicit build dir
 #     BUILD_TYPE=Debug ./native/build.sh
+#     ./native/build.sh --no-tests      # skip the sa_tests step
+#     ./native/build.sh --target backend  # build one cmake target only
 #
-# Exit code 0 == configure + build + tests all green.
+# Without flags, exit code 0 == configure + build + tests all green.
+# --target implies --no-tests (the test binary may not be rebuilt).
 #
 # NOTE: on Windows/WSL the NTFS repo also carries the MSVC build/ tree. NEVER
 # point this at it. When running under WSL the default is build-linux so the
@@ -19,6 +22,29 @@ set -euo pipefail
 
 # Directory this script lives in (native/), absolute.
 NATIVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- argument parsing (dev "start from source" flow, see run_dev.py) ---------
+RUN_TESTS=1
+BUILD_TARGET=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-tests) RUN_TESTS=0 ;;
+        --target)
+            shift
+            if [[ -z "${1:-}" ]]; then
+                echo "[build.sh] ERROR: --target requires an argument" >&2
+                exit 2
+            fi
+            BUILD_TARGET="$1"
+            ;;
+        *)
+            echo "[build.sh] ERROR: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+[[ -n "$BUILD_TARGET" ]] && RUN_TESTS=0
 
 # Build dir selection. Precedence: explicit BUILD_DIR, else build-linux under
 # WSL (to avoid the Windows-owned build/ on the shared NTFS mount), else build.
@@ -71,8 +97,13 @@ cmake -G Ninja -S "$NATIVE_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 # compile on POSIX since W4-2/W4-3 (shell32 link is WIN32-guarded,
 # http_client dlopens libcurl, p5_mock has a BSD-socket branch).
 echo
-echo "[build.sh] === build (all) ==="
-cmake --build "$BUILD_DIR" --config "$BUILD_TYPE"
+if [[ -n "$BUILD_TARGET" ]]; then
+    echo "[build.sh] === build ($BUILD_TARGET) ==="
+    cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target "$BUILD_TARGET"
+else
+    echo "[build.sh] === build (all) ==="
+    cmake --build "$BUILD_DIR" --config "$BUILD_TYPE"
+fi
 
 # --- test -------------------------------------------------------------------
 # The Catch2 binary is 'sa_tests' on POSIX (no .exe suffix, unlike build.cmd).
@@ -93,10 +124,15 @@ cmake --build "$BUILD_DIR" --config "$BUILD_TYPE"
 # exe-dir walk-up cannot reach native/assets and the [p1] schema cases crash;
 # set EDITOR_ASSETS_ROOT="$NATIVE_DIR/assets" in that case.
 TEST_ARGS="${TEST_ARGS:-~[slow] ~[network]}"
-echo
-echo "[build.sh] === test (sa_tests $TEST_ARGS) ==="
-# shellcheck disable=SC2086  # intentional word-split of TEST_ARGS
-"$BUILD_DIR/bin/sa_tests" $TEST_ARGS
+if [[ "$RUN_TESTS" -eq 1 ]]; then
+    echo
+    echo "[build.sh] === test (sa_tests $TEST_ARGS) ==="
+    # shellcheck disable=SC2086  # intentional word-split of TEST_ARGS
+    "$BUILD_DIR/bin/sa_tests" $TEST_ARGS
+else
+    echo
+    echo "[build.sh] === test skipped ==="
+fi
 
 echo
 echo "[build.sh] ALL GREEN (configure + build + tests)"

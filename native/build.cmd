@@ -4,12 +4,43 @@ REM One-shot native backend build: init MSVC x64 -> configure (Ninja) -> build
 REM -> run the Catch2 suite. Run from the repo root:
 REM     cmd //c native\build.cmd          (Git Bash)
 REM     cmd /c  native\build.cmd          (cmd.exe)
-REM Exit code 0 == configure + build + tests all green.
+REM Optional flags (for the dev "start from source" flow, see run_dev.py):
+REM     --no-tests          skip the sa_tests step
+REM     --target <name>     build only that cmake target (e.g. backend);
+REM                         implies --no-tests (test binary may not be rebuilt)
+REM Without flags, exit code 0 == configure + build + tests all green.
 REM ---------------------------------------------------------------------------
 setlocal enabledelayedexpansion
 
+REM capture %~dp0 BEFORE any shift: SHIFT also shifts %0 in cmd, so the script
+REM directory would degrade to CWD after the parse loop consumes arguments.
+set "SELF_DIR=%~dp0"
+
+REM --- argument parsing -------------------------------------------------------
+set "RUN_TESTS=1"
+set "BUILD_TARGET="
+:parse_args
+if "%~1"=="" goto :args_done
+if /i "%~1"=="--no-tests" (set "RUN_TESTS=0" & shift & goto :parse_args)
+REM NOTE: 错误路径经 goto 跳出括号块再 exit——cmd 在「嵌套 if 块内 exit /b
+REM 且同块后续还有 set/shift」时会丢失退出码(rc 恒 0),勿合并回块内。
+if /i "%~1"=="--target" (
+    if "%~2"=="" goto :err_no_target
+    set "BUILD_TARGET=%~2"
+    shift
+    shift
+    goto :parse_args
+)
+echo [build.cmd] ERROR: unknown argument "%~1" 1>&2
+exit /b 2
+:err_no_target
+echo [build.cmd] ERROR: --target requires an argument 1>&2
+exit /b 2
+:args_done
+if defined BUILD_TARGET set "RUN_TESTS=0"
+
 REM Directory this script lives in (native\), trailing slash trimmed.
-set "NATIVE_DIR=%~dp0"
+set "NATIVE_DIR=%SELF_DIR%"
 if "%NATIVE_DIR:~-1%"=="\" set "NATIVE_DIR=%NATIVE_DIR:~0,-1%"
 
 REM Toolchain locations: vswhere 动态探测优先（不依赖写死的安装盘符），本机
@@ -70,19 +101,28 @@ if errorlevel 1 (
 )
 
 echo.
-echo [build.cmd] === build ===
-cmake --build "%BUILD_DIR%" --config %BUILD_TYPE%
+if defined BUILD_TARGET (
+    echo [build.cmd] === build ^(target %BUILD_TARGET%^) ===
+    cmake --build "%BUILD_DIR%" --config %BUILD_TYPE% --target %BUILD_TARGET%
+) else (
+    echo [build.cmd] === build ===
+    cmake --build "%BUILD_DIR%" --config %BUILD_TYPE%
+)
 if errorlevel 1 (
     echo [build.cmd] ERROR: build failed 1>&2
     exit /b 1
 )
 
 echo.
-echo [build.cmd] === test (sa_tests) ===
-"%BUILD_DIR%\bin\sa_tests.exe"
-if errorlevel 1 (
-    echo [build.cmd] ERROR: tests failed 1>&2
-    exit /b 1
+if not "%RUN_TESTS%"=="0" (
+    echo [build.cmd] === test ^(sa_tests^) ===
+    "%BUILD_DIR%\bin\sa_tests.exe"
+    if errorlevel 1 (
+        echo [build.cmd] ERROR: tests failed 1>&2
+        exit /b 1
+    )
+) else (
+    echo [build.cmd] === test skipped ===
 )
 
 echo.

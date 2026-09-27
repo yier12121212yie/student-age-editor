@@ -66,6 +66,29 @@ ABIS="${*:-arm64-v8a x86_64}"
 [ -n "$CMAKE" ] || { echo "[android_build] ERROR: cmake not found (set CMAKE_BIN or put it on PATH)" >&2; exit 2; }
 [ -n "$NINJA" ] || { echo "[android_build] ERROR: ninja not found (set NINJA_BIN or put it on PATH)" >&2; exit 2; }
 
+# NDK-bundled llvm-strip (multi-target: one binary handles arm64-v8a and x86_64).
+# The Release build type only turns on -O; it does NOT strip — the produced .so
+# still carries ~76MB of .debug_*/.symtab (see strip step in the loop below).
+case "$(uname -s 2>/dev/null || echo UNKNOWN)" in
+    Linux*)  NDK_HOST="linux-x86_64";  STRIP_BIN="llvm-strip" ;;
+    Darwin*) NDK_HOST="darwin-x86_64"; STRIP_BIN="llvm-strip" ;;
+    *)       NDK_HOST="windows-x86_64"; STRIP_BIN="llvm-strip.exe" ;;  # Git Bash/MSYS on the Win host
+esac
+STRIP="$(first_existing \
+    "$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/$STRIP_BIN" \
+    "$(ls "$NDK"/toolchains/llvm/prebuilt/*/bin/"$STRIP_BIN" 2>/dev/null | head -1 || true)" || true)"
+
+# NDK ships llvm-strip (multi-target: one binary handles both ABIs). Resolve it
+# the same way as cmake/ninja: known host tag first, then any prebuilt dir.
+case "$(uname -s 2>/dev/null || echo)" in
+    Linux*)  NDK_HOST="linux-x86_64";  EXE="" ;;
+    Darwin*) NDK_HOST="darwin-x86_64"; EXE="" ;;
+    *)       NDK_HOST="windows-x86_64"; EXE=".exe" ;;
+esac
+STRIP="$(first_existing \
+    "$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/llvm-strip$EXE" \
+    "$(ls "$NDK"/toolchains/llvm/prebuilt/*/bin/llvm-strip"$EXE" 2>/dev/null | head -1 || true)" || true)"
+
 for abi in $ABIS; do
     build="$SCRIPT_DIR/build-$abi"
     "$CMAKE" -G Ninja -S "$NATIVE_DIR" -B "$build" \
@@ -82,7 +105,19 @@ for abi in $ABIS; do
     out="$REPO_DIR/frontend/android/app/src/main/jniLibs/$abi"
     mkdir -p "$out"
     cp "$so" "$out/libbackend_shared.so"
+    # Strip the jniLibs copy that gets packaged into the APK (AGP strips again at
+    # packaging as a safety net; doing it here shrinks the ~76MB of .debug_*/.symtab
+    # out of the working artifact and speeds up the gradle merge step).
+    # --strip-unneeded keeps .dynsym intact, so the JNI exports (nativeStart/
+    # nativeStop/http*) are unaffected. The UNSTRIPPED original stays in the CMake
+    # build dir ($build) — use it as the symbol file for ndk-stack/addr2line when
+    # symbolising crashes.
+    if [ -n "$STRIP" ]; then
+        "$STRIP" --strip-unneeded "$out/libbackend_shared.so"
+    else
+        echo "[android_build] WARN: llvm-strip not found under NDK ('$NDK'), jniLibs copy stays unstripped" >&2
+    fi
     ls -l "$out/libbackend_shared.so"
-    echo "[android_build] $abi OK"
+    echo "[android_build] $abi OK (unstripped symbol copy: $so)"
 done
 echo "[android_build] done: $ABIS"

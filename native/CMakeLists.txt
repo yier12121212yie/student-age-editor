@@ -53,6 +53,25 @@ else()
     add_compile_definitions(NOMINMAX)
 endif()
 
+# Link-time / whole-program optimization, Release configuration only (Debug
+# stays incremental-friendly). When the toolchain supports IPO CMake translates
+# this to /GL + /LTCG on MSVC and -flto on GCC/Clang (Release already carries
+# -O3 there); the fallback handles toolchains whose IPO check fails.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT sa_ipo_ok OUTPUT sa_ipo_why LANGUAGES CXX)
+if(sa_ipo_ok)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+else()
+    message(STATUS "IPO/LTO unavailable, falling back to explicit flags: ${sa_ipo_why}")
+    if(MSVC)
+        add_compile_options($<$<CONFIG:Release>:/GL>)
+        add_link_options($<$<CONFIG:Release>:/LTCG>)
+    else()
+        add_compile_options($<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-flto>)
+        add_link_options($<$<CONFIG:Release>:-flto>)
+    endif()
+endif()
+
 enable_testing()
 
 add_subdirectory(core)
@@ -60,6 +79,16 @@ add_subdirectory(server)
 add_subdirectory(cli)   # sa_cli + backend_cli (P7); must precede tests
 add_subdirectory(tui)    # sa_tui + backend_tui (P8); must precede tests
 add_subdirectory(tests)
+
+# Online hosting gateway (网页版计划 M2): POSIX-only executable + sa_gateway lib.
+# It links the frozen M1 sa_server/sa_core for reuse and never touches them.
+# Placed after tests so gateway/CMakeLists.txt can graft sa_gateway onto the
+# shared sa_tests binary (the gateway Catch2 suite runs in-process). The
+# `if(UNIX)` gate keeps the Windows build (build.cmd) byte-for-byte unchanged:
+# there the whole subdirectory — including the sa_tests link — is not read.
+if(UNIX)
+    add_subdirectory(gateway)
+endif()
 
 # Android cross build (W4-4, permanent since W5-4): native/android/group.cmake
 # defines the JNI backend_shared target (libbackend_shared.so). Explicitly gated
