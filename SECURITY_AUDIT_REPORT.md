@@ -36,7 +36,8 @@
 | 全部 5 个 workflow 显式最小 `permissions:`（release 仅 `contents: write`） | `.github/workflows/*.yml` |
 | 外部资源包下载钉死 SHA-256（`ci_assets.lock.json` → `--expect-sha256` + 下载后复算双校验） | `release.yml:82+`、`packaging/ci_assets.lock.json` |
 | 新增 secret 扫描工作流（push / PR 双触发，PR 场景按 base..head 增量扫） | `secret-scan.yml` |
-| Android release 签名：无 keystore 材料时回落 debug 签名并显式告警（CI 不再因此静默失败） | `frontend/android/app/build.gradle.kts:80+`（遗留事项见 §5） |
+| Android release 签名：硬编码口令删除；release 工件任务执行前强校验 keystore + key.properties 三件套，缺失即 `GradleException` 中断（绝不静默产出 debug 签名的 release 包） | `frontend/android/app/build.gradle.kts:93+` |
+| release 产物签名校验：`apksigner verify --print-certs` 退出码 + 证书列表双检，Debug/空签名阻断发布 | `.github/workflows/release.yml:403+` |
 | 原版配置表导出弃用 Python pickle（`base_data.pkl`），改为逐表 JSON（C++ 后端可读、无反序列化执行面） | `tools/resource_scan/`（`base_data/<Table>.json` + `base_meta.json`） |
 
 ### 2.2 网络暴露面（backend / httpd）
@@ -113,22 +114,38 @@
 
 | 门槛 | 结果 |
 | --- | --- |
-| `actionlint`（5 个 workflow） | 0 error |
-| `sa_tests`（WSL GCC Release, `-flto`） | 423 用例 / 422 passed / 1 skipped（`[network]` 真实 HTTPS）/ 0 fail |
-| `sa_tests`（cloud_sync 并发化后复跑） | 见合入前最终记录，无回归（新增并发不改变信封契约） |
+| `actionlint`（5 个 workflow） | 0 error（本轮未改动 workflow，沿用合入前记录） |
+| `sa_tests`（Windows MSVC Release，全量重建后实跑） | **459 用例 / 4982 断言 全绿**（`EDITOR_BASE_ARTIFACT_DIR` 真实资产探针按环境跳过） |
 | MSVC `/GL + /LTCG` 全量构建 | 通过（`build.cmd` Release 门） |
-| `flutter analyze --no-pub` | 改动文件 0 error（5 个遗留 warning 在无关 `story_*` 文件） |
-| Flutter 定向测试 | save_service(8) / ai_client(7) / ai_policy_relay(16) / ai_image_settings(4) / ai_skills(13) / story_unsaved_guard(6) = 54/54 |
-| 遗留失败（非本轮引入） | `test/ai_event_plan_test.dart` 4 例：在途 `event_plan_flow.dart` 新代码的 patch 形状/文案断言与测试预期不一致，与本轮改动无关 |
+| `flutter analyze --no-pub` | **0 error**（65 条 info/warning，均在无关的 `story_*`/测试文件） |
+| `flutter test`（frontend 全量） | **693 passed / 7 skipped / 0 failed** |
+
+### 4.1 收尾修复（本轮补正）
+
+- **`putRaw`/`postRaw` 的 isolate 编码改为按规模触发**（`api_client.dart`）：原实现
+  无条件 `compute(jsonEncode, …)`，而真实 isolate 在 `testWidgets` 的伪异步区
+  **永不返回**，把保存 Future 悬死——连累 `story_flow_wire_workspace` /
+  `story_flow_drop` 等所有走保存链路的 widget 测试静默失败。现按结构元素数
+  （阈值 2000）决定是否 offload：40MB 大表照旧离开 UI isolate，小表/测试桩同步
+  编码（本就不值得一次 isolate 往返）。
+- **AI Settings 掩码契约的测试补正**（`test_p3b_domain_tools.cpp`）：批次 B 的
+  `mask_secret` 已在 `GET /api/ai/settings` 生效，但旧测试仍断言 `apiKey == "sk-1"`
+  明文回传；改为断言掩码值 `***MASKED***`，并新增「掩码回显视为未修改、原值保留、
+  真实 key 仍落盘」的哨兵契约用例。
+- **移除内存炸弹调试测试** `frontend/test/_debug_dump_test.dart`：其 `/api/effect/parse`
+  桩内回调又调用 `parseEffectText()` → 再次命中同一桩 → 无限异步递归，整个
+  `flutter test` 进程内存涨到 ~8GB 后卡死（已移出测试树，内容留档于会话 scratchpad）。
 
 ---
 
 ## 5. 用户侧待办（需要发布者手工完成）
 
-1. **配置正式 Android keystore 并下架 debug 签名包**：当前 CI 在缺 keystore
-   时会回落 debug 签名发版（`build.gradle.kts:80+`）。请把正式 keystore 纳入
-   CI secrets（或本地签名后手动传包），并**撤下已发布的 debug 签名 APK**——
-   debug 签名可被同签名应用冒充覆盖安装，且后续换正式签名后用户需卸载重装。
+1. **配置正式 Android keystore 并下架历史 debug 签名包**：现已删除硬编码口令，
+   且 release 工件任务在缺 keystore/`key.properties` 时直接 `GradleException`
+   中断（`build.gradle.kts:93+`），CI 不会再产出 debug 签名的 release 包。请把
+   正式 keystore 纳入 CI secrets（或本地签名后手动传包），并**撤下历史上已发布
+   的 debug 签名 APK**——debug 签名可被同签名应用冒充覆盖安装，且后续换正式
+   签名后用户需卸载重装。
 2. **历史网关账号升级确认**：老 `gateway.json` 账号首次登录即自动升级
    PBKDF2 v2；上线新版后让全部账号登录一遍，确认 `gateway.json` 中口令行
    已变为 v2 格式后，可考虑在运维侧禁用更早的备份副本。
