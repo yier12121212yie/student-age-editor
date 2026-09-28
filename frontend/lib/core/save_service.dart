@@ -87,8 +87,12 @@ class SaveService {
     try {
       final res = await ApiClient.instance.get('/api/workspace/revision');
       _cachedRevision = res['revision'] as String?;
-      if (kDebugMode) {
-        print('[SaveService] Revision refreshed: ${_cachedRevision?.substring(0, 8)}... '
+      if (kDebugMode && _cachedRevision != null) {
+        // 短于 8 字符（后端异常/测试桩）时 substring 会 RangeError。
+        final head = _cachedRevision!.length > 8
+            ? _cachedRevision!.substring(0, 8)
+            : _cachedRevision;
+        print('[SaveService] Revision refreshed: $head... '
               '(${res['computed_at_ms']}ms, ${res['files_scanned']} files)');
       }
     } catch (e) {
@@ -99,6 +103,68 @@ class SaveService {
 
   /// Get current cached revision without network request.
   String? get currentRevision => _cachedRevision;
+
+  /// 409 → 冲突信封（非冲突返回 null）。阶段 2d 两处修复：
+  /// 1) 旧判定 `e.code == 'conflict'` 永不成立（后端信封只有
+  ///    error=="conflict"，从无 code 字段），冲突一律掉进 error，
+  ///    三选对话框与指纹重试全是死代码；
+  /// 2) 错误体非 JSON 时容错：解析失败降级为空信封 + message 文本兜底，
+  ///    绝不抛 FormatException。非-utf8 源保护等 409 仍归 error。
+  static Map<String, dynamic>? _conflictPayload(ApiException e) {
+    if (e.statusCode != 409) return null;
+    final body = e.body;
+    if (body != null) {
+      final err = body['error']?.toString();
+      if (err == 'conflict' ||
+          e.code == 'conflict' ||
+          body.containsKey('current_revision') ||
+          body.containsKey('conflicting_keys')) {
+        return body;
+      }
+      return null;
+    }
+    // 无结构化信封：错误体非 JSON 或被旧链路降级成原文。
+    final m = e.message;
+    if (m == 'conflict' || m.contains('current_revision') || m.contains('"conflict"')) {
+      try {
+        final decoded = jsonDecode(m);
+        if (decoded is Map) return decoded.cast<String, dynamic>();
+      } catch (_) {
+        // 非 JSON 容错：走空信封
+      }
+      return const <String, dynamic>{};
+    }
+    return null;
+  }
+
+  Future<SaveResult> _conflictResult(
+      String cfgName, ApiException e, Map<String, dynamic> payload) async {
+    String? currentRevision = payload['current_revision'] as String?;
+    if (currentRevision == null) {
+      // 信封没带新指纹：尽力补拉一次，让「覆盖并重试」直接携带。
+      try {
+        await refreshRevision();
+        currentRevision = _cachedRevision;
+      } catch (_) {}
+    }
+    return SaveResult.conflict(
+      cfg: cfgName,
+      reason: payload['reason'] as String? ?? e.message,
+      detail: payload['detail'] as String? ?? '文件已被外部修改或与其他会话冲突',
+      currentRevision: currentRevision,
+      mtimeNs: payload['mtime_ns'] is int ? payload['mtime_ns'] as int : null,
+      data: (payload['data'] as Map?)?.cast<String, dynamic>(),
+    );
+  }
+
+  /// 写成功后端回传的指纹（阶段 2d 假冲突修复）：写一张表必然改变 workspace
+  /// hash，若 _cachedRevision 停在旧值，同批第二张表的 PUT 必被 verify 误拒。
+  void _adoptRevision(dynamic res) {
+    if (res is Map) {
+      final fresh = res['revision'];
+      if (fresh is String && fresh.isNotEmpty) _cachedRevision = fresh;
+    }
+  }
 
   /// Save full table data for a configuration table.
   ///
@@ -123,8 +189,12 @@ class SaveService {
     }
 
     try {
-      final res = await ApiClient.instance.put('/api/cfg/$cfgName', body: body);
-      
+      // putRaw：整表 jsonEncode 搬进后台 isolate（性能 P0-3），40MB 表保存
+      // 期间 UI 不冻结；返回形状与 put 完全一致，调用方（SaveResult 解析、
+      // 409 冲突分支）无需变更。
+      final res = await ApiClient.instance.putRaw('/api/cfg/$cfgName', body: body);
+      _adoptRevision(res);
+
       return SaveResult.success(
         cfg: res['cfg'] as String?,
         mtimeNs: res['mtime_ns'] as int?,
@@ -138,21 +208,9 @@ class SaveService {
             res['applied_remove'] is List ? (res['applied_remove'] as List) : const [],
       );
     } on ApiException catch (e) {
-      if (e.statusCode == 409 && e.code == 'conflict') {
-        final payload = e.message.contains('current_revision')
-            ? jsonDecode(e.message)
-            : null;
+      final payload = _conflictPayload(e);
+      if (payload != null) return _conflictResult(cfgName, e, payload);
 
-        return SaveResult.conflict(
-          cfg: cfgName,
-          reason: payload?['reason'] as String? ?? e.message,
-          detail: payload?['detail'] as String? ?? '文件已被外部修改或与其他会话冲突',
-          currentRevision: payload?['current_revision'] as String?,
-          mtimeNs: payload?['mtime_ns'] as int?,
-          data: (payload?['data'] as Map?)?.cast<String, dynamic>(),
-        );
-      }
-      
       return SaveResult.error(
         cfg: cfgName,
         message: e.toString(),
@@ -181,7 +239,10 @@ class SaveService {
     }
 
     try {
-      final res = await ApiClient.instance.put('/api/cfg/$cfgName', body: body);
+      // 与 saveTable 一致走 putRaw：patch 里 set 可能带大量整行，编码同样
+      // 应离 isolate；返回形状不变。
+      final res = await ApiClient.instance.putRaw('/api/cfg/$cfgName', body: body);
+      _adoptRevision(res);
       
       return SaveResult.success(
         cfg: res['cfg'] as String?,
@@ -196,21 +257,9 @@ class SaveService {
             res['applied_remove'] is List ? (res['applied_remove'] as List) : const [],
       );
     } on ApiException catch (e) {
-      if (e.statusCode == 409 && e.code == 'conflict') {
-        final payload = e.message.contains('current_revision')
-            ? jsonDecode(e.message)
-            : null;
+      final payload = _conflictPayload(e);
+      if (payload != null) return _conflictResult(cfgName, e, payload);
 
-        return SaveResult.conflict(
-          cfg: cfgName,
-          reason: payload?['reason'] as String? ?? e.message,
-          detail: payload?['detail'] as String? ?? '文件已被外部修改或与其他会话冲突',
-          currentRevision: payload?['current_revision'] as String?,
-          mtimeNs: payload?['mtime_ns'] as int?,
-          data: (payload?['data'] as Map?)?.cast<String, dynamic>(),
-        );
-      }
-      
       return SaveResult.error(
         cfg: cfgName,
         message: e.toString(),
@@ -239,7 +288,8 @@ class SaveService {
     
     try {
       final res = await ApiClient.instance.delete('/api/cfg/$cfgName/$id', body: bodyParams.isNotEmpty ? bodyParams : null);
-      
+      _adoptRevision(res);
+
       if (res['ok'] == true) {
         if (kDebugMode) {
           print('[SaveService] Deleted $cfgName/$id '
@@ -252,7 +302,9 @@ class SaveService {
       if (kDebugMode) {
         print('[SaveService] Failed to delete $cfgName/$id: ${e.message}');
       }
-      return false;
+      // 阶段 2d：失败不再吞成 false——调用方拿 false 与「成功但无墓碑」无法
+      // 区分，静默失败导致画布删了节点、磁盘上记录还在。向上抛给调用方 toast。
+      rethrow;
     }
   }
 
