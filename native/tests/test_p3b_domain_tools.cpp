@@ -689,7 +689,18 @@ TEST_CASE("ai settings: GET empty store matches golden shape; PUT roundtrips nor
     CHECK(p.json_payload["settings"]["apiKey"] == "sk-1");
     CHECK(p.json_payload["settings"]["temperature"] == 2.0);  // clamped
     auto g2 = fx.call("GET", "/api/ai/settings");
-    CHECK(g2.json_payload["settings"]["apiKey"] == "sk-1");
+    // 安全批次 B：GET 掩码下发，apiKey 不再明文回传（<8 字符整串掩码）。
+    CHECK(g2.json_payload["settings"]["apiKey"] == "***MASKED***");
+    // 掩码回显（或字面 ***UNCHANGED***）视为「用户未改 key」：原值原样保留，
+    // 掩码串绝不会被当成新 key 写回。
+    auto keep = fx.call("PUT", "/api/ai/settings", {},
+                        sa::json{{"apiKey", "***MASKED***"}});
+    REQUIRE(keep.status == 200);
+    CHECK(keep.json_payload["settings"]["apiKey"] == "sk-1");
+    // 掩码只作用于回传：真实 key 仍完整落盘。
+    auto ai_disk = cs::read_bytes(cs::join(root, ".editor_ai.json"));
+    REQUIRE(ai_disk.has_value());
+    CHECK(ai_disk->find("\"apiKey\": \"sk-1\"") != std::string::npos);
 
     // snake_case alias + null-skipped merge
     auto p2 = fx.call("PUT", "/api/ai/settings", {},
