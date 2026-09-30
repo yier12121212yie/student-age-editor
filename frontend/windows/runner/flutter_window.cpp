@@ -1,8 +1,16 @@
 #include "flutter_window.h"
 
+#include <dwmapi.h>
 #include <optional>
 
+#include <flutter/encodable_value.h>
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -26,6 +34,29 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+
+  // Appearance channel: lets Dart force the title bar light/dark so it matches
+  // the app's chosen appearance (not only the OS setting — bug #4).
+  appearance_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "studentage/appearance",
+          &flutter::StandardMethodCodec::GetInstance());
+  appearance_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() == "setDarkTitleBar") {
+          const bool* dark = std::get_if<bool>(call.arguments());
+          if (dark != nullptr) {
+            BOOL enable = *dark ? TRUE : FALSE;
+            DwmSetWindowAttribute(GetHandle(), DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                  &enable, sizeof(enable));
+          }
+          result->Success();
+        } else {
+          result->NotImplemented();
+        }
+      });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();

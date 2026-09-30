@@ -3,6 +3,7 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
 
 #include <memory>
 
@@ -28,6 +29,11 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Dart -> native appearance channel (title-bar light/dark follows the app's
+  // chosen appearance, not just the OS setting).
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      appearance_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

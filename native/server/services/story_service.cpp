@@ -421,6 +421,16 @@ class Parser {
     }
 
     json run(const std::string& full_text) {
+        std::vector<json> processed = looks_like_export(full_text)
+                                          ? parse_export_blocks(full_text)
+                                          : parse_named_blocks(full_text);
+        return finalize(std::move(processed));
+    }
+
+  private:
+    // Legacy name-driven segmentation (hand-written / bracket scripts): a talk
+    // starts at each line-leading pool name. Kept byte-for-byte as before.
+    std::vector<json> parse_named_blocks(const std::string& full_text) {
         Utf u(full_text);
         std::vector<M> ms;
         size_t scan = 0;
@@ -467,6 +477,10 @@ class Parser {
             }
         }
 
+        return processed;
+    }
+
+    json finalize(std::vector<json> processed) {
         std::vector<json> final_list;
         PendingResets pending;
         for (auto& item : processed) {
@@ -530,7 +544,176 @@ class Parser {
         return out;
     }
 
-  private:
+    // -----------------------------------------------------------------------
+    // Export-format parsing (bug #2). `story export` writes a document that the
+    // name-driven parser cannot read back: an event header line, then per talk
+    // a metadata line (speaker + optional `[expr]`/`背景：`/BGM：`/动作：`,
+    // joined by three spaces) followed by the dialogue line, a blank line, and
+    // a trailing `----- END -----`. We detect that shape and parse it directly
+    // so blocks are counted per utterance and out-of-pool speakers survive.
+    // -----------------------------------------------------------------------
+    static bool looks_like_export(const std::string& text) {
+        if (text.find("----- END -----") != std::string::npos) return true;
+        return text.find("事件id：") != std::string::npos ||
+               text.find("事件id:") != std::string::npos;
+    }
+
+    static bool is_export_skip_line(const std::string& t) {
+        if (t.empty()) return true;
+        if (t == "----- END -----") return true;
+        if (t.find("事件id：") != std::string::npos || t.find("事件id:") != std::string::npos)
+            return true;
+        if (t.rfind(">>>", 0) == 0) return true;  // (剧情汇合/跳转至已读剧情 ID…)
+        // "决定1：…" option line.
+        if (t.rfind("决定", 0) == 0) {
+            auto cps = content::to_codepoints(t);
+            if (cps.size() >= 3 && cps[2] >= U'0' && cps[2] <= U'9') return true;
+        }
+        // "——————" rule separator (all box/em dashes).
+        {
+            auto cps = content::to_codepoints(t);
+            bool all_dash = !cps.empty();
+            for (uint32_t c : cps) {
+                if (c != 0x2014 && c != 0x2015 && c != 0xFF3F && c != '-' && c != '—') {
+                    all_dash = false;
+                    break;
+                }
+            }
+            if (all_dash) return true;
+        }
+        // "--- 检定成功 (…) ---" / "--- 检定失败 ---".
+        if (t.rfind("---", 0) == 0 && t.find("检定") != std::string::npos) return true;
+        return false;
+    }
+
+    // UTF-8 substring by codepoint index range [from, to).
+    static std::string cp_slice(const std::string& s, size_t from, size_t to) {
+        auto cps = content::to_codepoints(s);
+        if (from > cps.size()) from = cps.size();
+        if (to > cps.size()) to = cps.size();
+        std::string out;
+        for (size_t k = from; k < to; ++k) out += content::cp_to_utf8(cps[k]);
+        return out;
+    }
+
+    // Splits the speaker token into name + trailing "(roleName)" alias.
+    static void split_role_alias(const std::string& token, std::string* name,
+                                 std::string* alias) {
+        *name = token;
+        alias->clear();
+        if (token.empty()) return;
+        auto cps = content::to_codepoints(token);
+        uint32_t last = cps.back();
+        if (last != ')' && last != 0xFF09) return;  // ')' / '）'
+        // find the last matching open paren
+        for (size_t i = cps.size() - 1; i-- > 0;) {
+            if (cps[i] == '(' || cps[i] == 0xFF08) {
+                if (i == 0) return;  // no name before the paren
+                *alias = content::py_strip(cp_slice(token, i + 1, cps.size() - 1));
+                *name = content::py_strip(cp_slice(token, 0, i));
+                return;
+            }
+        }
+    }
+
+    std::vector<json> parse_export_blocks(const std::string& text) {
+        std::vector<std::string> lines;
+        {
+            size_t start = 0;
+            while (true) {
+                size_t nl = text.find('\n', start);
+                std::string ln = nl == std::string::npos ? text.substr(start)
+                                                         : text.substr(start, nl - start);
+                if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+                lines.push_back(std::move(ln));
+                if (nl == std::string::npos) break;
+                start = nl + 1;
+            }
+        }
+
+        std::vector<json> out;
+        size_t i = 0;
+        while (i < lines.size()) {
+            std::string head = content::py_strip(lines[i]);
+            if (is_export_skip_line(head)) {
+                ++i;
+                continue;
+            }
+            std::string metadata = lines[i];
+            ++i;
+            // Dialogue: the non-empty, non-skip lines up to the next blank/skip.
+            std::string dialogue;
+            while (i < lines.size()) {
+                std::string t = content::py_strip(lines[i]);
+                if (t.empty() || is_export_skip_line(t)) break;
+                if (!dialogue.empty()) dialogue += "\n";
+                dialogue += t;
+                ++i;
+            }
+
+            // metadata line = speaker[   [expr]   背景：N   …]; items joined by
+            // runs of >=3 spaces.
+            std::string speaker_token = metadata;
+            std::string remainder;
+            {
+                size_t run = std::string::npos;
+                for (size_t p = 0; p + 2 < metadata.size(); ++p) {
+                    if (metadata[p] == ' ' && metadata[p + 1] == ' ' && metadata[p + 2] == ' ') {
+                        run = p;
+                        break;
+                    }
+                }
+                if (run != std::string::npos) {
+                    speaker_token = content::py_strip(metadata.substr(0, run));
+                    remainder = content::py_strip(metadata.substr(run));
+                } else {
+                    speaker_token = content::py_strip(metadata);
+                }
+            }
+
+            std::string name;
+            std::string alias;
+            split_role_alias(speaker_token, &name, &alias);
+
+            // Multi-speaker "A和B": resolve every part against the pool.
+            std::vector<json> ids;
+            std::string primary = name;
+            if (name.find("和") != std::string::npos) {
+                std::vector<std::string> parts;
+                size_t pos = 0;
+                while (pos <= name.size()) {
+                    size_t amp = name.find("和", pos);
+                    std::string piece = name.substr(
+                        pos, amp == std::string::npos ? std::string::npos : amp - pos);
+                    if (!piece.empty()) parts.push_back(piece);
+                    if (amp == std::string::npos) break;
+                    pos = amp + std::string("和").size();
+                }
+                bool all_known = parts.size() > 1;
+                for (const auto& p : parts) {
+                    auto it = name_to_id_.find(p);
+                    if (it == name_to_id_.end()) {
+                        all_known = false;
+                        break;
+                    }
+                    ids.push_back(it.value());
+                }
+                if (all_known) primary = parts.front();
+                else ids.clear();
+            }
+
+            std::string raw = remainder;
+            if (!dialogue.empty()) raw = raw.empty() ? dialogue : raw + "\n" + dialogue;
+            if (!alias.empty()) raw = "(" + alias + ") " + raw;
+
+            if (auto d = process_block(primary, raw)) {
+                if (ids.size() > 1) d->at("roleIds") = ids;
+                out.push_back(std::move(*d));
+            }
+        }
+        return out;
+    }
+
     struct NameRef {
         std::string name;
         std::vector<uint32_t> cp;

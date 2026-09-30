@@ -108,7 +108,7 @@ class _ModsPageState extends State<ModsPage> {
           fluent.Button(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           fluent.FilledButton(
             style: fluent.ButtonStyle(
-              backgroundColor: WidgetStatePropertyAll(Colors.red),
+              backgroundColor: WidgetStatePropertyAll(palette.danger),
             ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('删除'),

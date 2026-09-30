@@ -351,7 +351,7 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
                                 : FluentIcons.checkbox_unchecked_24_regular,
                             size: 16,
                             color: checked
-                                ? const Color(0xFF6C5CE7)
+                                ? accentColor
                                 : palette.textHint,
                           ),
                           const SizedBox(width: 8),
@@ -400,20 +400,20 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
                           );
                         }
                       },
-                      child: const Row(
+                      child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
                             FluentIcons.copy_24_regular,
                             size: 13,
-                            color: Color(0xFF6C5CE7),
+                            color: accentColor,
                           ),
                           SizedBox(width: 4),
                           Text(
                             '复制全文',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Color(0xFF6C5CE7),
+                              color: accentColor,
                             ),
                           ),
                         ],
@@ -473,7 +473,7 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
             color: checked ? palette.tintAccent : palette.card,
             borderRadius: BorderRadius.circular(4),
             border: Border.all(
-              color: checked ? const Color(0xFF6C5CE7) : palette.borderHover,
+              color: checked ? accentColor : palette.borderHover,
             ),
           ),
           child: Text(

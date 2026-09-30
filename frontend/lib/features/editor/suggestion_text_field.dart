@@ -12,12 +12,50 @@ import 'package:flutter/services.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/app_theme.dart';
+import '../../core/responsive.dart';
+
+/// 候选代码里的参数槽（后端 /api/effect_suggest 的 items[].slots）。
+/// [kind] = "dict"（@NAME@ 占位符，经字典池选择）| "number"（裸字母数值槽）。
+class SuggestionSlot {
+  const SuggestionSlot({
+    required this.kind,
+    required this.name,
+    this.dict = '',
+    this.label = '',
+    this.count = 1,
+  });
+  final String kind;
+  final String name;
+
+  /// 字典池名（ATTR/ROLE/ITEM…，空 = 无池可查）。
+  final String dict;
+
+  /// 槽的中文标签（属性/角色…）。
+  final String label;
+
+  /// 在代码模板中的出现次数（同值填所有出现处）。
+  final int count;
+
+  factory SuggestionSlot.fromJson(Map j) => SuggestionSlot(
+        kind: j['kind'] as String? ?? 'number',
+        name: j['name'] as String? ?? '',
+        dict: j['dict'] as String? ?? '',
+        label: j['label'] as String? ?? '',
+        count: (j['count'] as num?)?.toInt() ?? 1,
+      );
+}
 
 /// 一条候选：[code] 是插入的文本，[desc] 是给人看的说明。
+/// [slots] 非空表示代码带参数（占位符/数值槽）——无代码模式下接受时
+/// 先走 [SuggestionTextField.slotResolver] 表单补全再插入。
+/// [template] 是未渲染的参数槽代码模板（raw_code），用作使用度上报的
+/// 稳定 key（[code] 可能已被数字直映替换掉占位符）。
 class Suggestion {
-  const Suggestion(this.code, this.desc);
+  const Suggestion(this.code, this.desc, {this.slots = const [], this.template = ''});
   final String code;
   final String desc;
+  final List<SuggestionSlot> slots;
+  final String template;
 }
 
 /// 一次候选查询：光标前解析出的 [token] 及完整上下文。
@@ -53,6 +91,9 @@ class SuggestionTextField extends StatefulWidget {
     this.style,
     this.padding,
     this.enabled = true,
+    this.suggestOnEmpty = false,
+    this.slotResolver,
+    this.onSuggestionAccepted,
   });
 
   final TextEditingController controller;
@@ -79,6 +120,18 @@ class SuggestionTextField extends StatefulWidget {
 
   /// false 时不查候选（只读展示或字段暂不可编辑）。
   final bool enabled;
+
+  /// 空 token 也查询并展示（无代码模式：聚焦/清空即出「最近使用」默认候选，
+  /// 由后端空 q 契约提供）。false = 传统行为，打字才提示。
+  final bool suggestOnEmpty;
+
+  /// 带参数槽候选的接受钩子：返回填好的完整代码（null = 取消，不插入）。
+  /// 宿主用它弹「参数表单」，替代把 `@ATTR@`/`V` 原样插给用户手改。
+  final Future<String?> Function(Suggestion)? slotResolver;
+
+  /// 候选真正插入后（含表单补全成功）回调一次；宿主用于使用度上报等。
+  /// 取消表单不算接受，不会触发。
+  final void Function(Suggestion)? onSuggestionAccepted;
 
   @override
   State<SuggestionTextField> createState() => SuggestionTextFieldState();
@@ -163,13 +216,20 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
   }
 
   void _onFocusChanged() {
+    // 无代码模式：聚焦即查一轮（空 token → 后端返回最近使用/目录默认候选），
+    // 用户不打字也能"先看后选"。
+    if (widget.focusNode.hasFocus) {
+      if (widget.suggestOnEmpty && widget.enabled && widget.source != null) {
+        _triggerSuggest(widget.controller.text);
+      }
+      return;
+    }
     // 失焦 = 放弃这次补全：只藏 overlay 会留下看不见的候选，
     // 再按 Tab 仍会把它们插进去。
     // 延迟一帧再清：点击候选本身会先触发 TextBox 失焦（桌面端
     // EditableText 默认点击外部即 unfocus），若当场清掉浮层，
     // 候选项的 onTap（抬起时触发）就永远收不到；正常插入时
     // _applyText 会同步抢回焦点，延迟回调看到已重新聚焦就不清。
-    if (widget.focusNode.hasFocus) return;
     if (!_overlayVisible && _suggestions.isEmpty) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -252,6 +312,10 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     return true;
   }
 
+  /// 候选层单项高度（含 1px 分隔线）。触屏 48 便于点按，桌面维持 42；
+  /// 既用于渲染，也用于 _moveSelection / 翻转时的滚动对齐。
+  double _itemExtent = 42;
+
   void _moveSelection(int delta) {
     if (_suggestions.isEmpty) return;
     final next = (_selectedIndex + delta).clamp(0, _suggestions.length - 1);
@@ -260,7 +324,7 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     _overlayEntry?.markNeedsBuild();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_listCtrl.hasClients) return;
-      const itemExtent = 42.0;
+      final itemExtent = _itemExtent;
       final offset = next * itemExtent;
       final viewport = _listCtrl.position.viewportDimension;
       final cur = _listCtrl.offset;
@@ -284,8 +348,15 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     }
     if (_suggestions.isEmpty) return;
     const double gap = 4;
-    const double overlayMaxH = 168;
-    const double itemExtent = 42;
+    // 触屏上候选项要够手指点按：单项升到 48，列表上限也放宽。
+    final bool touch = isMobileWidth(context);
+    final double itemExtent = touch ? 48 : 42;
+    _itemExtent = itemExtent;
+    // 移动端按「扣掉软键盘后的可用空间」封顶（≤240），桌面维持 168。
+    final mq = MediaQuery.of(context);
+    final keyboardH = mq.viewInsets.bottom;
+    const double bottomReserve = 8; // 与键盘/屏底留一点呼吸距离
+    final double overlayMaxH = touch ? 240.0 : 168.0;
     double targetHeight = 32;
     double targetWidth = 360;
     final targetCtx = _targetKey.currentContext;
@@ -294,17 +365,34 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
       targetHeight = box.size.height;
       targetWidth = box.size.width;
     }
-    final viewH = MediaQuery.of(context).size.height;
+    final viewH = mq.size.height;
+    // 键盘弹出时可视区被 viewInsets.bottom 侵占：下方空间必须扣掉它，
+    // 否则候选层会被键盘整个盖住。
+    final usableBottom = viewH - keyboardH;
     double offsetY = targetHeight + gap;
+    double maxH = overlayMaxH;
     bool showAbove = false;
     if (box != null && box.hasSize) {
       final global = box.localToGlobal(Offset.zero);
-      final spaceBelow = viewH - (global.dy + targetHeight + gap);
-      if (spaceBelow < 96 && global.dy > spaceBelow) {
-        showAbove = true;
-        offsetY = -overlayMaxH - gap;
+      final spaceBelow =
+          usableBottom - (global.dy + targetHeight + gap) - bottomReserve;
+      // 触发翻转的阈值沿用原 96：低于两条候选就认为下方不可用。
+      if (spaceBelow < 96) {
+        // 下方放不下：翻到上方弹（上方同样按可用空间封顶）。
+        final spaceAbove = global.dy - gap;
+        if (spaceAbove > spaceBelow) {
+          showAbove = true;
+          maxH = spaceAbove < maxH ? spaceAbove : maxH;
+          offsetY = -maxH - gap;
+        } else {
+          // 上下两头都放不下：仍向下滑，保底两行高（宁可轻微贴键盘）。
+          maxH = 96.0;
+        }
+      } else if (spaceBelow < maxH) {
+        maxH = spaceBelow;
       }
     }
+    if (maxH < itemExtent) maxH = itemExtent;
     final overlay = Overlay.of(context);
     // 宽度跟随输入框但上限收紧：候选画在屏幕空间、不吃画布 scale，
     // 无限宽会在缩小的画布上糊满半屏。
@@ -321,14 +409,14 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
             color: Colors.transparent,
             child: Container(
               width: width,
-              constraints: const BoxConstraints(maxHeight: overlayMaxH),
+              constraints: BoxConstraints(maxHeight: maxH),
               decoration: BoxDecoration(
                 color: palette.card,
                 borderRadius: BorderRadius.circular(6),
                 border: Border.all(color: palette.borderHover),
-                boxShadow: const [
+                boxShadow: [
                   BoxShadow(
-                    color: Colors.black38,
+                    color: palette.scrimWeak,
                     blurRadius: 10,
                     offset: Offset(0, 3),
                   ),
@@ -363,6 +451,9 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
                         _insert(it);
                       },
                       child: Container(
+                        // 触屏下钉死单项高（含分隔线正好一个 itemExtent），
+                        // 桌面维持按内容自适应，与原滚动估算一致。
+                        height: touch ? itemExtent - 1 : null,
                         color: isSelected
                             ? palette.tintInfo
                             : _hoverIndex == i
@@ -372,6 +463,9 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
                           horizontal: 8,
                           vertical: 5,
                         ),
+                        alignment: touch
+                            ? Alignment.centerLeft
+                            : null,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -461,6 +555,24 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
 
   void _insert(Suggestion item) {
     if (item.code.isEmpty) return;
+    // 带参数槽 + 宿主给了表单钩子：先补全参数再插入（异步，期间光标可动，
+    // 按当前文本重算插入点即可——表单弹窗不会让本框失焦清候选之外的破坏）。
+    if (item.slots.isNotEmpty && widget.slotResolver != null) {
+      unawaited(_insertResolved(item));
+      return;
+    }
+    _insertCode(item.code);
+    widget.onSuggestionAccepted?.call(item);
+  }
+
+  Future<void> _insertResolved(Suggestion item) async {
+    final resolved = await widget.slotResolver!(item);
+    if (resolved == null || resolved.isEmpty || !mounted) return;
+    _insertCode(resolved);
+    widget.onSuggestionAccepted?.call(item);
+  }
+
+  void _insertCode(String code) {
     final text = widget.controller.text;
     final raw = widget.controller.selection.baseOffset;
     final cursor = raw < 0 ? text.length : raw.clamp(0, text.length);
@@ -470,10 +582,10 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     final String newText;
     final int newPos;
     if (widget.replaceWholeOnAccept) {
-      newText = item.code;
-      newPos = item.code.length;
+      newText = code;
+      newPos = code.length;
     } else {
-      final body = '${_separatorFor(prefix)}${item.code}';
+      final body = '${_separatorFor(prefix)}$code';
       newText = '$prefix$body$suffix';
       newPos = prefix.length + body.length;
     }
@@ -489,7 +601,15 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     _localEdit = false;
     clearCandidates();
     widget.onChanged?.call(newText);
-    if (mounted) FocusScope.of(context).requestFocus(widget.focusNode);
+    if (!mounted) return;
+    // 为什么抢焦点：桌面端点候选会让 TextBox 先失焦（见 _onFocusChanged 的
+    // 延迟清理注释），接受后必须同步夺回，才能继续"边打边补"，也才不会
+    // 被挂起的失焦回调把状态误清。
+    // 移动端不抢：焦点本就（几乎）在输入框上，强行夺回只会把软键盘一直
+    // 钉在屏幕上，用户看不到表单其余部分。
+    if (!isMobileWidth(context)) {
+      FocusScope.of(context).requestFocus(widget.focusNode);
+    }
   }
 
   // ---------- 文本变化 ----------
@@ -516,7 +636,7 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
     }
     final start = _tokenStart(text, cursor);
     final token = text.substring(start, cursor).trim();
-    if (token.isEmpty) {
+    if (token.isEmpty && !widget.suggestOnEmpty) {
       clearCandidates();
       return;
     }

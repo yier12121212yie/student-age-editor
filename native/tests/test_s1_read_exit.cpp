@@ -183,23 +183,25 @@ TEST_CASE("S1 GET projections: meta / keys / prefix / missing / parse-error", "[
     CHECK(kj["keys"][1] == "2");
 
     fx.write_cfg_file("Pfx", R"({"ab123": 1, "ab456": 2, "zz000": 3})");
+    // prefix = startswith, suffix = endswith, both independent (bug #3).
     auto p = sat::call_router(fx.router(), "GET", "/api/cfg/Pfx",
                               {{"prefix", "ab,zz"}, {"suffix", "3"}});
     auto pj = json::parse(sa_core::py_dumps(p.json_payload));
-    // _prefix_match (api.py:515-519): str(key)[:-3] in {ab, zz}
-    CHECK(pj["data"].size() == 3);
+    CHECK(pj["data"].size() == 1);  // only ab123 starts ab/zz AND ends with 3
     auto p2 = sat::call_router(fx.router(), "GET", "/api/cfg/Pfx",
                                {{"prefix", "ab"}, {"suffix", "3"}});
     auto p2j = json::parse(sa_core::py_dumps(p2.json_payload));
-    CHECK(p2j["data"].size() == 2);
-    // suffix clamps: N>8 clamps to 8; garbage falls back to 3
+    CHECK(p2j["data"].size() == 1);  // ab123
     auto p3 = sat::call_router(fx.router(), "GET", "/api/cfg/Pfx",
                                {{"prefix", "ab123zz0"}, {"suffix", "99"}});
     auto p3j = json::parse(sa_core::py_dumps(p3.json_payload));
-    CHECK(p3j["data"].empty());  // clamp 8: short keys pass through whole, none equals the prefix
+    CHECK(p3j["data"].empty());  // no key starts with ab123zz0
     auto p4 = sat::call_router(fx.router(), "GET", "/api/cfg/Pfx", {{"prefix", "ab"}, {"suffix", "x"}});
     auto p4j = json::parse(sa_core::py_dumps(p4.json_payload));
-    CHECK(p4j["data"].size() == 2);  // invalid suffix -> default 3
+    CHECK(p4j["data"].empty());  // no key starts ab and ends with x
+    auto p5 = sat::call_router(fx.router(), "GET", "/api/cfg/Pfx", {{"prefix", "ab"}});
+    auto p5j = json::parse(sa_core::py_dumps(p5.json_payload));
+    CHECK(p5j["data"].size() == 2);  // prefix alone: ab123 + ab456
 
     fx.write_cfg_file("Broken", "{not json");
     auto err = sat::call_router(fx.router(), "GET", "/api/cfg/Broken");

@@ -45,6 +45,9 @@ void main() {
     ValueChanged<String>? onChanged,
     Widget? second,
     double topGap = 0,
+    bool suggestOnEmpty = false,
+    Future<String?> Function(Suggestion)? slotResolver,
+    void Function(Suggestion)? onAccepted,
   }) async {
     // 固定逻辑尺寸 800x600：候选层的翻转判定直接依赖视口高度。
     tester.view.physicalSize = const Size(800, 600);
@@ -67,6 +70,9 @@ void main() {
                 enabled: enabled,
                 onTabWithoutCandidates: onTabWithoutCandidates,
                 onChanged: onChanged,
+                suggestOnEmpty: suggestOnEmpty,
+                slotResolver: slotResolver,
+                onSuggestionAccepted: onAccepted,
               ),
             ),
             if (second != null) SizedBox(width: 360, child: second),
@@ -451,5 +457,110 @@ void main() {
     final top = tester.getTopLeft(find.byType(fluent.TextBox).first).dy;
     expect(top + dy, greaterThanOrEqualTo(0));
     expect(tester.takeException(), isNull);
+  });
+
+  // ---------- 无代码模式 ----------
+
+  const slotCand = Suggestion(
+    '[1,1,ATTR,V]',
+    '属性增加：某属性 点 V',
+    template: '[1,1,@ATTR@,V]',
+    slots: [
+      SuggestionSlot(kind: 'dict', name: 'ATTR', dict: 'ATTR', label: '属性', count: 1),
+      SuggestionSlot(kind: 'number', name: 'V', label: '数值', count: 1),
+    ],
+  );
+
+  testWidgets('suggestOnEmpty：聚焦即查（空 token 出「最近使用」候选）', (tester) async {
+    final tokens = <String>[];
+    await mount(
+      tester,
+      suggestOnEmpty: true,
+      source: (q) async {
+        tokens.add(q.token);
+        return _cands;
+      },
+    );
+    // 未聚焦时不发查询
+    expect(tokens, isEmpty);
+
+    await tester.showKeyboard(find.byType(fluent.TextBox).first);
+    await tester.pump(const Duration(milliseconds: 300)); // 220ms 防抖
+    expect(tokens, [''], reason: '聚焦即以空 token 查询一次');
+    expect(state(tester).candidateCount, 3);
+    expect(state(tester).overlayOpen, isTrue);
+  });
+
+  testWidgets('默认（非 suggestOnEmpty）空文本聚焦不查询——保持传统行为', (tester) async {
+    var calls = 0;
+    await mount(
+      tester,
+      source: (_) {
+        calls++;
+        return Future.value(_cands);
+      },
+    );
+    await tester.showKeyboard(find.byType(fluent.TextBox).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(calls, 0);
+    expect(state(tester).overlayOpen, isFalse);
+  });
+
+  testWidgets('带槽候选：接受走 slotResolver 表单，插入的是填好的码', (tester) async {
+    Suggestion? accepted;
+    await mount(
+      tester,
+      source: sourceOf(const [slotCand]),
+      slotResolver: (s) async => '[1,1,7,3]',
+      onAccepted: (s) => accepted = s,
+    );
+    await typeAt(tester, '属性', 2);
+    expect(state(tester).candidateCount, 1);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump(); // resolver 的 Future 完成
+    await tester.pump();
+
+    expect(ctrl.text, '[1,1,7,3]', reason: '插入填好的完整码，而不是 @ATTR@ 模板');
+    expect(ctrl.text, isNot(contains('@')));
+    expect(accepted, same(slotCand), reason: '接受回调携带原候选（供 usage 上报 template）');
+  });
+
+  testWidgets('slotResolver 取消：不插入、不算接受', (tester) async {
+    var acceptedCalls = 0;
+    await mount(
+      tester,
+      source: sourceOf(const [slotCand]),
+      slotResolver: (s) async => null,
+      onAccepted: (_) => acceptedCalls++,
+    );
+    await typeAt(tester, '属性', 2);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.pump();
+
+    expect(ctrl.text, '属性', reason: '取消表单后原文本保持不动');
+    expect(acceptedCalls, 0);
+  });
+
+  testWidgets('无 resolver（传统模式）：带槽候选照旧直接插模板', (tester) async {
+    await mount(tester, source: sourceOf(const [slotCand]));
+    await typeAt(tester, '属性', 2);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(ctrl.text, '[1,1,ATTR,V]', reason: '没挂表单钩子时行为不变');
+  });
+
+  testWidgets('无槽候选接受即上报（onSuggestionAccepted）', (tester) async {
+    final accepted = <String>[];
+    await mount(
+      tester,
+      source: sourceOf(_cands),
+      onAccepted: (s) => accepted.add(s.code),
+    );
+    await typeAt(tester, '40', 2);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(accepted, ['4015']);
   });
 }

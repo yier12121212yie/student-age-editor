@@ -729,6 +729,71 @@ TEST_CASE("HandleKey: cloud with no provider refuses to act", "[p8]") {
     REQUIRE_FALSE(s.confirm.active);
 }
 
+TEST_CASE("HandleKey: u opens the update modal; r/Enter check, Esc/q close", "[p8]") {
+    AppState s = NavState();
+    // 打开弹窗本身不发请求（和 a/c/p/b 一样），r / Enter 才产生检查 intent。
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "u")) == Intent::None);
+    REQUIRE(s.page == Page::Update);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::CheckUpdate);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::CheckUpdate);
+    REQUIRE_FALSE(s.confirm.active);  // 只读，从不弹审批框
+    // 其余键被忽略，弹窗留在原地。
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "x")) == Intent::None);
+    REQUIRE(s.page == Page::Update);
+    REQUIRE(HandleKey(s, K(KeyInput::Escape)) == Intent::None);
+    REQUIRE(s.page == Page::Main);
+    // q 是关闭弹窗，不是退出程序。
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "u")) == Intent::None);
+    REQUIRE(s.page == Page::Update);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "q")) == Intent::None);
+    REQUIRE(s.page == Page::Main);
+}
+
+TEST_CASE("HandleKey: the update page gates the home keys", "[p8]") {
+    AppState s = NavState();
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "u")) == Intent::None);
+    REQUIRE(s.page == Page::Update);
+    // a/c/p/b 被弹窗吞掉：既不切换弹窗，也不产生任何网络 intent。
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "a")) == Intent::None);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "c")) == Intent::None);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "p")) == Intent::None);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "b")) == Intent::None);
+    REQUIRE(s.page == Page::Update);
+    // Ctrl-Q 仍然是全局退出。
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'q')) == Intent::Quit);
+}
+
+TEST_CASE("ParseUpdate reads the ok/failure envelopes and assets", "[p8]") {
+    Json ok = Json::parse(
+        R"({"ok":true,"current":"Alpha-v0.3","latest_tag":"Alpha-v0.4","latest_name":"暑期更新",)"
+        R"("prerelease":false,"published_at":"2025-08-01T10:00:00Z","html_url":"https://x/rel",)"
+        R"("notes":"新功能\n- 检查更新","update_available":true,)"
+        R"("assets":[{"name":"editor.zip","url":"https://x/a.zip","size":15728640}]})");
+    UpdateResult r = BackendApi::ParseUpdate(ok);
+    REQUIRE(r.ok);
+    REQUIRE(r.current == "Alpha-v0.3");
+    REQUIRE(r.latest_tag == "Alpha-v0.4");
+    REQUIRE(r.latest_name == "暑期更新");
+    REQUIRE(r.update_available);
+    REQUIRE_FALSE(r.prerelease);
+    REQUIRE(r.published_at == "2025-08-01T10:00:00Z");
+    REQUIRE(r.html_url == "https://x/rel");
+    REQUIRE(r.notes == "新功能\n- 检查更新");
+    REQUIRE(r.assets.size() == 1);
+    REQUIRE(r.assets[0].name == "editor.zip");
+    REQUIRE(r.assets[0].url == "https://x/a.zip");
+    REQUIRE(r.assets[0].size == 15728640);
+
+    // 失败形态：路由仍回 200，靠 ok==false + error，current 依然有效。
+    Json bad = Json::parse(R"({"ok":false,"error":"连接超时","current":"Alpha-v0.3"})");
+    UpdateResult e = BackendApi::ParseUpdate(bad);
+    REQUIRE_FALSE(e.ok);
+    REQUIRE(e.error == "连接超时");
+    REQUIRE(e.current == "Alpha-v0.3");
+    REQUIRE_FALSE(e.update_available);
+    REQUIRE(e.assets.empty());
+}
+
 // ------------------------------------------------------ plugin/cloud parsing
 TEST_CASE("ParsePlugins reads the declarative plugin entry shape", "[p8]") {
     Json body = Json::parse(

@@ -8,6 +8,7 @@
 library;
 
 import '../../core/api_client.dart';
+import 'story_logic.dart';
 
 // ============================================================
 // 数据模型定义
@@ -160,32 +161,65 @@ class MobileOptionCfg {
 // 数据访问层
 // ============================================================
 
-/// 移动版故事数据仓库
+/// 移动版故事数据仓库。
+///
+/// 单例：详情页/列表页各自 new 一个曾让「返回列表再进入」永远冷启动，
+/// 缓存跨页面实例才有意义。
 class StoryDataAccess {
+  StoryDataAccess._();
+  static final StoryDataAccess _shared = StoryDataAccess._();
+  factory StoryDataAccess() => _shared;
+
   final ApiClient _api = ApiClient.instance;
 
-  // 缓存键（按 Mod 隔离）
-  String _getCacheKey(String modName) => 'story_v1:$modName';
-  
-  // 内存缓存
+  // 内存缓存（key = 行 ID）。cacheTalks/cacheOptions 由
+  // loadEventDetails 的 ?prefix= 小批量填充，_loadedEvents 记录哪些
+  // 事件的批次已进缓存。
   Map<String, MobileEvtCfg> cacheEvents = {};
-  Map<String, MobileTalkCfg> cacheTalks = {};
-  Map<String, MobileOptionCfg> cacheOptions = {};
-  
+  final Map<String, dynamic> _evtRaw = {};
+  final Map<String, MobileTalkCfg> cacheTalks = {};
+  final Map<String, MobileOptionCfg> cacheOptions = {};
+  final Set<String> _loadedEvents = {};
+
+  /// 缓存所属模组：后端按工作区当前模组回表，换模组必须整体作废，
+  /// 否则数字 ID 撞段的事件会读到上一个模组的数据。
+  String? _cacheMod;
+
   bool _isLoading = false;
 
   bool get isLoading => _isLoading;
 
+  void _dropModCaches() {
+    cacheEvents.clear();
+    _evtRaw.clear();
+    cacheTalks.clear();
+    cacheOptions.clear();
+    _loadedEvents.clear();
+  }
+
+  void _ensureModCache(String modName) {
+    if (_cacheMod == modName) return;
+    _dropModCaches();
+    _cacheMod = modName;
+  }
+
+  /// 测试隔离用：清空全部内存缓存。
+  void debugClearCache() {
+    _cacheMod = null;
+    _dropModCaches();
+  }
+
   /// 加载指定 Mod 的全部剧情数据
   /// 返回所有事件的列表（不含 Talk/Option 详情）
   Future<List<MobileEvtCfg>> loadEvents(String modName) async {
+    _ensureModCache(modName);
     if (_isLoading) return cacheEvents.values.toList();
 
     _isLoading = true;
     try {
       final response = await _api.get('/api/cfg/EvtCfg');
       final data = response['data'] as Map? ?? {};
-      
+
       final events = data.entries.map((e) {
         final id = e.key;
         final value = e.value is Map ? e.value as Map<String, dynamic> : {'talkId': []};
@@ -193,6 +227,9 @@ class StoryDataAccess {
       }).toList();
 
       cacheEvents = {for (var evt in events) evt.id: evt};
+      _evtRaw
+        ..clear()
+        ..addAll({for (final e in data.entries) e.key.toString(): e.value});
 
       return events;
     } catch (e) {
@@ -202,81 +239,74 @@ class StoryDataAccess {
     }
   }
 
-  /// 加载单个事件的完整详情（包含 Talk/Option）
-  Future<_StoryEventDetails> loadEventDetails({
+  /// 加载单个事件的完整详情（包含 Talk/Option）。
+  ///
+  /// 与剧情图工作台（story_flow_workspace._selectEventInner）同口径：
+  /// 只拉该事件相关的两小批（对白 prefix 默认 suffix=3、选项 suffix=2），
+  /// 不再每次进入下载 TalkCfg/OptionCfg 全表——万行级大 mod 下这是
+  /// 手机端头号卡顿源。
+  Future<StoryEventDetails> loadEventDetails({
     required String modName,
     required String eventId,
   }) async {
-    // 先检查缓存
-    if (cacheTalks.isNotEmpty && cacheTalks.keys.any((k) => k.startsWith(eventId))) {
-      return _buildEventDetailsFromCache(modName, eventId);
+    // 换模组先作废旧模组缓存，避免同数字 ID 撞段读到上一个模组的数据。
+    _ensureModCache(modName);
+    // 前缀要从 EvtCfg 的首句 talkId 推导（storyRelatedPrefixes 同源逻辑）；
+    // 直达详情（列表页未走过）时先补一次小表 EvtCfg。
+    if (!_evtRaw.containsKey(eventId)) {
+      await loadEvents(modName);
+    }
+    final prefixes = storyRelatedPrefixes(eventId, _evtRaw);
+
+    if (!_loadedEvents.contains(eventId)) {
+      _isLoading = true;
+      try {
+        final p = prefixes.join(',');
+        final results = await Future.wait([
+          _api.get('/api/cfg/TalkCfg', query: {'prefix': p}),
+          _api.get('/api/cfg/OptionCfg', query: {'prefix': p, 'suffix': '2'}),
+        ]);
+        final talksData = (results[0]['data'] as Map?) ?? const {};
+        final optsData = (results[1]['data'] as Map?) ?? const {};
+        // ?prefix= 返回的本身就只是该事件行；matcher 再过一遍是兜底：
+        // MockClient / 旧后端忽略 query 返回全表时行为等价。
+        final matcher = PrefixMatcher(prefixes);
+        talksData.forEach((k, v) {
+          final id = k.toString();
+          if (!matcher.match(id)) return;
+          cacheTalks[id] = MobileTalkCfg.fromJson(
+              id, v is Map ? v.cast<String, dynamic>() : <String, dynamic>{});
+        });
+        optsData.forEach((k, v) {
+          final id = k.toString();
+          if (!matcher.match(id, isOption: true)) return;
+          cacheOptions[id] = MobileOptionCfg.fromJson(
+              v is Map ? v.cast<String, dynamic>() : <String, dynamic>{});
+        });
+        _loadedEvents.add(eventId);
+      } finally {
+        _isLoading = false;
+      }
     }
 
-    _isLoading = true;
-    try {
-      // 获取所有 TalkCfg 和 OptionCfg（整个表，但仅过滤当前事件的数据）
-      final [talksResponse, optsResponse] = await Future.wait([
-        _api.get('/api/cfg/TalkCfg'),
-        _api.get('/api/cfg/OptionCfg'),
-      ]);
-
-      final talksData = talksResponse['data'] as Map? ?? {};
-      final optsData = optsResponse['data'] as Map? ?? {};
-
-      // 筛选属于当前事件的 Talk/Option
-      final relatedTalks = <String, MobileTalkCfg>{};
-      final prefix = eventId;
-
-      for (final entry in talksData.entries) {
-        final id = entry.key;
-        final value = entry.value is Map ? entry.value as Map<String, dynamic> : <String, dynamic>{};
-        
-        // 判断是否属于该事件（ID 前缀匹配）
-        if (id.toLowerCase().startsWith(prefix.toLowerCase())) {
-          relatedTalks[id] = MobileTalkCfg.fromJson(id, value);
-        }
-      }
-
-      final relatedOpts = <String, MobileOptionCfg>{};
-      for (final entry in optsData.entries) {
-        final id = entry.key;
-        final value = entry.value is Map ? entry.value as Map<String, dynamic> : <String, dynamic>{};
-        
-        // Option ID 去后 2 位作为前缀
-        if (id.length > 2 && id.substring(0, id.length - 2).toLowerCase().startsWith(prefix.toLowerCase())) {
-          relatedOpts[id] = MobileOptionCfg.fromJson(value);
-        }
-      }
-
-      // 构建详情对象
-      return _StoryEventDetails(
-        event: cacheEvents[eventId],
-        talks: relatedTalks.values.toList(),
-        options: relatedOpts.values.toList(),
-      );
-    } finally {
-      _isLoading = false;
-    }
+    final event = cacheEvents[eventId];
+    final matcher = PrefixMatcher(prefixes);
+    return StoryEventDetails(
+      event: event,
+      talks:
+          cacheTalks.values.where((t) => matcher.match(t.id)).toList(),
+      options: cacheOptions.values
+          .where((o) => matcher.match(o.id, isOption: true))
+          .toList(),
+    );
   }
 
-  /// 从缓存构建详情对象（当已部分加载过）
-  _StoryEventDetails _buildEventDetailsFromCache(String modName, String eventId) {
-    final event = cacheEvents[eventId];
-    final prefix = eventId.toLowerCase();
-    
-    final relatedTalks = cacheTalks.values
-        .where((t) => t.id.toLowerCase().startsWith(prefix))
-        .toList();
-    
-    final relatedOpts = cacheOptions.values
-        .where((o) => o.id.length > 2 && o.id.substring(0, o.id.length - 2).toLowerCase().startsWith(prefix))
-        .toList();
-
-    return _StoryEventDetails(
-      event: event,
-      talks: relatedTalks,
-      options: relatedOpts,
-    );
+  /// 丢弃该事件的 Talk/Option 缓存（保存/删除后磁盘与缓存已不一致）。
+  void _invalidateEvent(String eventId) {
+    _loadedEvents.remove(eventId);
+    final matcher = PrefixMatcher(storyRelatedPrefixes(eventId, _evtRaw));
+    cacheTalks.removeWhere((k, _) => matcher.match(k));
+    cacheOptions.removeWhere((k, _) => matcher.match(k, isOption: true));
   }
 
   /// 保存单个事件（增量更新 Talk/Option）
@@ -294,7 +324,9 @@ class StoryDataAccess {
         'option_data': options.map((o) => o.toJson()).toList(),
       });
 
-      return result['success'] == true || result['ok'] == true;
+      final ok = result['success'] == true || result['ok'] == true;
+      if (ok) _invalidateEvent(eventId);
+      return ok;
     } catch (e) {
       rethrow;
     }
@@ -303,16 +335,19 @@ class StoryDataAccess {
   /// 删除事件
   Future<void> deleteEvent(String eventId) async {
     await _api.delete('/api/story/event/$eventId');
+    cacheEvents.remove(eventId);
+    _evtRaw.remove(eventId);
+    _invalidateEvent(eventId);
   }
 }
 
 /// 事件详情数据类
-class _StoryEventDetails {
+class StoryEventDetails {
   final MobileEvtCfg? event;
   final List<MobileTalkCfg> talks;
   final List<MobileOptionCfg> options;
 
-  _StoryEventDetails({
+  StoryEventDetails({
     this.event,
     required this.talks,
     required this.options,

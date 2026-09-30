@@ -56,13 +56,11 @@ std::string env_workspace_root() {
     return {};
 }
 
-#ifndef _WIN32
-// POSIX editor_root() fallbacks only — Windows keeps its historical exe-dir/cwd
-// rule untouched. Mirrors backend/editor/core/paths.py app_data_dir().
 std::string home_dir() { return env_or_empty("HOME"); }
 
 // paths.py:36-46 _dir_writable: makedirs(exist_ok=True) then create+delete a
-// probe file (an AppImage squashfs mount or a root-owned /opt fails here).
+// probe file (an AppImage squashfs mount, a root-owned /opt or an install under
+// Program Files fails here).
 bool dir_writable(const std::string& d) {
     if (d.empty()) return false;
     sa_core::paths::create_dirs(d);  // makedirs(exist_ok=True); ignore result
@@ -73,9 +71,17 @@ bool dir_writable(const std::string& d) {
 
 // paths.py:49-56 platform_data_dir(). Note the two names differ on purpose:
 // macOS uses "StudentAgeEditor", Linux uses "student-age-editor" (exact, per
-// the Python source).
+// the Python source); Windows uses %LOCALAPPDATA%\StudentAgeEditor so an
+// install under Program Files (read-only exe dir) still has a writable root
+// (bug #10 — previously env/GUI/backend data roots diverged and writes beside
+// backend_cli.exe failed / got virtualized).
 std::string platform_data_dir() {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+    std::string base = env_or_empty("LOCALAPPDATA");
+    if (base.empty()) base = env_or_empty("APPDATA");
+    if (base.empty()) return std::string();
+    return sa_core::paths::join(base, "StudentAgeEditor");
+#elif defined(__APPLE__)
     std::string p = sa_core::paths::join(home_dir(), "Library");
     p = sa_core::paths::join(p, "Application Support");
     return sa_core::paths::join(p, "StudentAgeEditor");
@@ -88,7 +94,21 @@ std::string platform_data_dir() {
     return sa_core::paths::join(base, "student-age-editor");
 #endif
 }
-#endif  // !_WIN32
+
+// The EDITOR_DATA_ROOT-independent fallback, resolved once per process: a
+// portable install keeps data beside the exe when that directory is writable,
+// otherwise the platform user-data dir. Cached so the writability probe file is
+// not re-created on every editor_root() call (env overrides below stay live).
+const std::string& default_editor_root() {
+    static const std::string cached = [] {
+        const std::string exe = sa_core::paths::exe_dir();
+        if (!exe.empty() && dir_writable(exe)) return exe;
+        const std::string pdata = platform_data_dir();
+        if (!pdata.empty()) return pdata;
+        return sa_core::paths::path_to_utf8(fs::current_path());
+    }();
+    return cached;
+}
 
 }  // namespace
 
@@ -178,24 +198,11 @@ std::string editor_root() {
     std::string env = env_or_empty("EDITOR_DATA_ROOT");
     if (!env.empty()) return env;
     if (!g_editor_root_override.empty()) return g_editor_root_override;
-    // app_data_dir() equivalent for a portable build: the executable directory.
-#ifdef _WIN32
-    wchar_t buf[4096];
-    DWORD n = GetModuleFileNameW(nullptr, buf, 4096);
-    if (n > 0 && n < 4096) {
-        fs::path exe = fs::path(buf).parent_path();
-        return sa_core::paths::path_to_utf8(exe);
-    }
-#else
     // paths.py:59-70 app_data_dir(): prefer the exe directory when writable so
     // data travels with an unpacked/portable install; otherwise fall back to
-    // the platform user-data dir (read-only AppImage, root-owned /opt, ...).
-    const std::string exe = sa_core::paths::exe_dir();
-    if (!exe.empty() && dir_writable(exe)) return exe;
-    const std::string pdata = platform_data_dir();
-    if (!pdata.empty()) return pdata;
-#endif
-    return sa_core::paths::path_to_utf8(fs::current_path());
+    // the platform user-data dir (read-only AppImage, root-owned /opt, or a
+    // Windows install under Program Files).
+    return default_editor_root();
 }
 
 namespace detail {

@@ -62,5 +62,9 @@ void set_ntfs_monitoring_enabled(bool enabled);
 long long debug_last_compute_time_ms();
 size_t debug_files_scanned_count();
 
+// Files actually read+hashed by the last compute_revision() (the rest were
+// served from the mtime+size fingerprint cache).
+size_t debug_files_hashed_count();
+
 }  // namespace revision_manager
 }  // namespace sa

@@ -57,8 +57,8 @@ class _ManifestStatusCardState extends State<ManifestStatusCard> {
         children: [
           Row(
             children: [
-              const Icon(FluentIcons.checkmark_circle_24_regular,
-                  size: 15, color: Color(0xFF4CAF50)),
+              Icon(FluentIcons.checkmark_circle_24_regular,
+                  size: 15, color: palette.statusOk),
               const SizedBox(width: 8),
               Text('模组清单检查',
                   style: TextStyle(fontSize: 12.5, color: palette.textHigh, fontWeight: FontWeight.w600)),
@@ -91,7 +91,7 @@ class _ManifestStatusCardState extends State<ManifestStatusCard> {
                           ? FluentIcons.checkmark_24_regular
                           : FluentIcons.dismiss_24_regular,
                       size: 13,
-                      color: c['ok'] == true ? const Color(0xFF4CAF50) : palette.warning,
+                      color: c['ok'] == true ? palette.statusOk : palette.warning,
                     ),
                     const SizedBox(width: 8),
                     Expanded(

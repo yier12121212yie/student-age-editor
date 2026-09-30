@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app_theme.dart';
+
 /// 统一移动端小工具库：提供触摸友好的 UI 组件和便捷操作。
 
 /// 移动端触摸反馈助手。
@@ -131,7 +133,7 @@ class MobileButton extends StatelessWidget {
     );
 
     return Material(
-      color: color ?? Theme.of(context).primaryColor,
+      color: color ?? palette.primaryColor,
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         onTap: loading ? null : () {
@@ -184,7 +186,7 @@ class _MobileTextFieldState extends State<MobileTextField> {
           InputDecoration(
             hintText: widget.hintText,
             filled: true,
-            fillColor: Colors.white.withOpacity(0.1),
+            fillColor: palette.overlayMedium,
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
@@ -230,10 +232,10 @@ class MobileCard extends StatelessWidget {
           if (title != null) ...[
             Text(
               title!,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: Colors.white70,
+                color: palette.textPrimary,
               ),
             ),
             const SizedBox(height: 12),
@@ -253,7 +255,7 @@ class MobileCard extends StatelessWidget {
           margin: margin,
           padding: EdgeInsets.zero,
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.05),
+            color: palette.overlayWeak,
             borderRadius: BorderRadius.circular(12),
           ),
           child: content,
@@ -265,7 +267,7 @@ class MobileCard extends StatelessWidget {
       margin: margin,
       padding: EdgeInsets.zero,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
+        color: palette.overlayWeak,
         borderRadius: BorderRadius.circular(12),
       ),
       child: content,
@@ -310,6 +312,56 @@ class MobileListItem extends StatelessWidget {
       onLongPress: onLongPress,
     );
   }
+}
+
+/// 通用底部滑出层：可拖拽（0.5–0.96 屏高），头部带手柄与可选操作按钮，
+/// 底部随软键盘抬升（viewInsets），避免输入法遮挡内容。
+/// 从 MobileShell._showSheet 抽出，供 AI 面板、预览呼出等复用。
+Future<void> showMobileSheet(
+  BuildContext context,
+  Widget child, {
+  List<Widget>? headerActions,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: palette.panel,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+    ),
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.92,
+        maxChildSize: 0.96,
+        minChildSize: 0.5,
+        expand: false,
+        builder: (ctx, ctrl) => Column(
+          children: [
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const SizedBox(width: 14),
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: palette.borderHover,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const Spacer(),
+                ...?headerActions,
+                const SizedBox(width: 4),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(child: child),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 /// 移动端全屏对话框包装器。

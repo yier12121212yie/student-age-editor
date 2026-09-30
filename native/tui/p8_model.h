@@ -18,9 +18,9 @@ using Json = nlohmann::ordered_json;
 
 // Main is the Alpha-v0.3 home screen: the three-pane browser (📦 Mods / Cfgs
 // two-level tree | 📋 Records | 📝 Detail). The rest are the centered modal
-// dialogs the Alpha opened over it (a/c/p/b keys) — `page` doubles as the
+// dialogs the Alpha opened over it (a/c/p/b/u keys) — `page` doubles as the
 // "which modal is up" selector, None == Main.
-enum class Page { Main, Bugfix, Agent, Plugins, Cloud };
+enum class Page { Main, Bugfix, Agent, Plugins, Cloud, Update };
 
 // One flat row of the left pane's two-level tree: a mod node (table_index<0)
 // or, under the expanded+selected mod, one of its Cfg tables.
@@ -58,6 +58,7 @@ enum class Intent {
     LoadCloudFiles,// GET /api/cloud/local_files + /api/cloud/list
     CloudSync,     // POST /api/cloud/sync
     CloudTest,     // POST /api/cloud/test
+    CheckUpdate,   // GET /api/update/check
     CreateMod,     // POST /api/mods/create {title} (N on the tree pane)
     LoadAiSettings,// GET /api/ai/settings (seeds permission_mode)
     SetPermissionMode, // PUT /api/ai/settings {permissionMode}
@@ -107,6 +108,13 @@ struct CloudFile {
     std::string name;
     bool is_dir = false;
     long long size = 0;
+};
+
+// One release attachment of GET /api/update/check (assets[]).
+struct UpdateAsset {
+    std::string name;
+    std::string url;
+    long long size = 0;  // bytes
 };
 
 // The permissionMode=="confirm" approval dialog (desktop parity: every mutating
@@ -297,6 +305,21 @@ struct AppState {
     bool cloud_dry_run = false;              // desktop default: DryRun off
     bool cloud_delete_extra = false;         // desktop "清理远端多余" checkbox
     std::string cloud_sync_summary;          // last sync result, one line
+
+    // update page (u; GET /api/update/check). `update_loaded` separates "never
+    // checked" (the modal just prompts) from "checked and failed".
+    bool update_loaded = false;
+    bool update_ok = false;
+    std::string update_error;       // ok==false 时的错误文案
+    std::string update_current;     // 当前版本（后端编译期版本号）
+    std::string update_latest_tag;
+    std::string update_latest_name;
+    std::string update_published_at;
+    std::string update_html_url;    // 发行页
+    std::string update_notes;       // release body（原样，渲染时截断）
+    bool update_available = false;
+    bool update_prerelease = false;
+    std::vector<UpdateAsset> update_assets;
 
     // permission mode + the confirm dialog it drives
     std::string permission_mode = "confirm";  // "confirm" | "full"

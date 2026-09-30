@@ -190,44 +190,52 @@ Resp search_talk(const Req& req) {
             {"本体", b_evt ? b_evt.get() : &kEmpty, b_talk ? b_talk.get() : &kEmpty},
             {"Mod", m_evt ? m_evt : &m_evt_empty, m_talk ? m_talk : &m_talk_empty},
         };
+        // Keep only the scan fields; the (heavier) result row is built for the
+        // ≤limit survivors after sorting instead of for every match, and the
+        // content value is read by reference (no per-row json copy).
         struct Hit {
+            int src_idx;
+            std::string talk_key;
             std::string content;
             size_t key_len;
             bool exact;
-            json row;
         };
         std::vector<Hit> hits;
-        for (const Src& s : srcs) {
+        for (size_t si = 0; si < 2; ++si) {
+            const Src& s = srcs[si];
             if (!s.talk->is_object()) continue;
             for (auto it = s.talk->begin(); it != s.talk->end(); ++it) {
                 const json& tdata = it.value();
                 if (!tdata.is_object()) continue;
-                std::string content_str;
-                {
-                    json v = tdata.contains("content") ? tdata.at("content") : json("");
-                    if (content::py_truthy(v)) content_str = content::story_str(v);
-                }
+                const json* cv = tdata.contains("content") ? &tdata.at("content") : nullptr;
+                if (cv == nullptr || !content::py_truthy(*cv)) continue;
+                std::string content_str = content::story_str(*cv);
                 if (content_str.empty() || content_str == "None") continue;
                 if (content_str.find(kw) == std::string::npos) continue;
-                auto [eid, title] = infer_evt_id(it.key(), *s.evt);
-                json row = json::object();
-                row["src"] = s.name;
-                row["evt_id"] = eid;
-                row["evt_title"] = title;
-                row["talk_id"] = it.key();
-                row["content"] = content_str;
                 size_t l = content::cp_len(content_str);
-                hits.push_back({content_str, l, content_str == kw, std::move(row)});
+                hits.push_back({static_cast<int>(si), it.key(), std::move(content_str), l,
+                                false});
             }
         }
         // results.sort(key=lambda x: (0 if x["content"]==kw else len(x["content"]))) 稳定
+        for (auto& h : hits)
+            if (h.content == kw) h.exact = true;
         std::stable_sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
             long long ka = a.exact ? 0 : static_cast<long long>(a.key_len);
             long long kb = b.exact ? 0 : static_cast<long long>(b.key_len);
             return ka < kb;
         });
-        for (size_t i = 0; i < hits.size() && static_cast<long long>(results.size()) < limit; ++i)
-            results.push_back(std::move(hits[i].row));
+        for (size_t i = 0; i < hits.size() && static_cast<long long>(results.size()) < limit; ++i) {
+            const Hit& h = hits[i];
+            auto [eid, title] = infer_evt_id(h.talk_key, *srcs[h.src_idx].evt);
+            json row = json::object();
+            row["src"] = srcs[h.src_idx].name;
+            row["evt_id"] = eid;
+            row["evt_title"] = title;
+            row["talk_id"] = h.talk_key;
+            row["content"] = h.content;
+            results.push_back(std::move(row));
+        }
     }
     json out = json::object();
     out["results"] = std::move(results);

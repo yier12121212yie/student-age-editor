@@ -9,7 +9,9 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../files/file_viewer.dart';
+import 'asset_explorer_panel.dart';
 import 'image_asset_picker.dart' show HoverTexPreview;
+import 'live2d_preview_panel.dart';
 import '../../core/app_theme.dart';
 
 /// Unity 资源侧边栏：AA bundle 索引状态、资源列表（tex/aud/txt）。
@@ -25,7 +27,6 @@ class _ResourcesPageState extends State<ResourcesPage> {
   List<String> _aud = [];
   List<String> _txt = [];
   String _tab = 'tex';
-  bool _busy = false;
   String? _selected;
   String? _exportMsg;
   bool _exporting = false;
@@ -34,10 +35,44 @@ class _ResourcesPageState extends State<ResourcesPage> {
   String _detectedDir = '';
   Map<String, dynamic>? _bundled;
 
+  /// 扫描忙碌态与 AA 状态的本地镜像（阶段 4c）：轮询/定时刷新只写这两个
+  /// notifier，订阅方仅扫描图标、来源横幅与列表区；索引与横幅数据到位才是
+  /// 结构性变化，仍走整页 setState。全局 [AppState.aaStatus] 照常双写，
+  /// 跨页消费方（状态栏等）语义不变。
+  final ValueNotifier<bool> _busy = ValueNotifier<bool>(false);
+  final ValueNotifier<String> _aaStatus = ValueNotifier<String>('idle');
+
+  /// 列表区同时关心忙碌态（空态里的转圈）与 AA 状态（空态/列表分支）。
+  late final Listenable _bodyTick = Listenable.merge([_busy, _aaStatus]);
+
   @override
   void initState() {
     super.initState();
+    _aaStatus.value = widget.state.aaStatus;
     _refreshStatus();
+  }
+
+  @override
+  void didUpdateWidget(covariant ResourcesPage old) {
+    super.didUpdateWidget(old);
+    // 其他页面/启动流程改过全局状态时跟随，避免镜像滞后
+    if (widget.state.aaStatus != _aaStatus.value) {
+      _aaStatus.value = widget.state.aaStatus;
+    }
+  }
+
+  @override
+  void dispose() {
+    _busy.dispose();
+    _aaStatus.dispose();
+    super.dispose();
+  }
+
+  /// 状态双写：本地 notifier（局部订阅，只刷横幅与列表区）+ 全局 AppState
+  /// （值未变化时其内部去重，不通知）。
+  void _setStatus(String status) {
+    _aaStatus.value = status;
+    widget.state.setAaStatus(status);
   }
 
   Future<void> _refreshStatus() async {
@@ -54,12 +89,17 @@ class _ResourcesPageState extends State<ResourcesPage> {
     }
   }
 
+  /// 扫描游戏资源并轮询直到就绪/出错。
+  ///
+  /// 阶段 4c：轮询期间只写 [_busy]/[_aaStatus]，重建范围限于扫描图标、来源
+  /// 横幅与列表区；索引（[_loadKeys]）与横幅数据（[_refreshStatus]）到位才是
+  /// 结构性变化，仍走整页 setState。
   Future<void> _scan() async {
-    setState(() => _busy = true);
+    _busy.value = true;
     try {
       final r = await ApiClient.instance.post('/api/aa/scan');
       var status = r['status'] as String? ?? 'scanning';
-      widget.state.setAaStatus(status);
+      _setStatus(status);
       if (status == 'scanning') {
         // 扫描在后台线程异步执行，轮询 /api/aa/status 直到就绪或出错
         for (var i = 0; i < 300; i++) {
@@ -68,7 +108,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
           final st = await ApiClient.instance.get('/api/aa/status');
           if (!mounted) return;
           status = st['status'] as String? ?? 'idle';
-          widget.state.setAaStatus(status);
+          _setStatus(status);
           if (status == 'error') {
             _err('索引失败：${st['error'] ?? '未知错误'}');
           }
@@ -82,7 +122,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
     } catch (e) {
       if (mounted) _err(e.toString());
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) _busy.value = false;
     }
   }
 
@@ -148,7 +188,6 @@ class _ResourcesPageState extends State<ResourcesPage> {
 
   @override
   Widget build(BuildContext context) {
-    final list = _tab == 'tex' ? _tex : (_tab == 'aud' ? _aud : _txt);
     return Column(
       children: [
         Container(
@@ -159,12 +198,21 @@ class _ResourcesPageState extends State<ResourcesPage> {
               Text('资源',
                   style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
               const Spacer(),
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                    onTap: _busy ? null : _scan,
-                    child: Icon(FluentIcons.scan_camera_24_regular,
-                        size: 15, color: palette.textMuted)),
+              // 扫描忙碌态只重建这一个图标（阶段 4c）
+              ListenableBuilder(
+                listenable: _busy,
+                builder: (context, _) => MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                      onTap: _busy.value ? null : _scan,
+                      behavior: HitTestBehavior.opaque,
+                      // 裸 15px 图标手机点不中：扩出触控热区。
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Icon(FluentIcons.scan_camera_24_regular,
+                            size: 18, color: palette.textMuted),
+                      )),
+                ),
               ),
             ],
           ),
@@ -179,13 +227,36 @@ class _ResourcesPageState extends State<ResourcesPage> {
               _tabBtn('aud', '音频'),
               const SizedBox(width: 4),
               _tabBtn('txt', '文本'),
+              const SizedBox(width: 4),
+              _tabBtn('explorer', '资源库'),
+              const SizedBox(width: 4),
+              _tabBtn('live2d', 'Live2D'),
             ],
           ),
         ),
         Divider(height: 1, color: palette.border),
-        _sourceBanner(),
+        // 「资源库」/「Live2D」页签是独立面板（插件域挂载）：不共用 AA 索引的
+        // 横幅、列表与导出栏，进入后整页交给对应面板。
+        if (_tab == 'explorer' || _tab == 'live2d') ...[
+          Expanded(
+            child: _tab == 'explorer'
+                ? const AssetExplorerPanel()
+                : const Live2DPreviewPanel(),
+          ),
+        ] else ...[
+        // 来源横幅：AA 状态变化只重建这一条（阶段 4c）
+        ListenableBuilder(
+          listenable: _aaStatus,
+          builder: (context, _) => _sourceBanner(),
+        ),
         Expanded(
-          child: widget.state.aaStatus == 'idle'
+          // 轮询/忙碌态局部订阅：重建范围限于这一段状态区，
+          // 索引与横幅数据到位才走整页 setState（阶段 4c）。
+          child: ListenableBuilder(
+            listenable: _bodyTick,
+            builder: (context, _) {
+              final list = _tab == 'tex' ? _tex : (_tab == 'aud' ? _aud : _txt);
+              return _aaStatus.value == 'idle'
               ? Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -196,7 +267,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
                           textAlign: TextAlign.center,
                           style: TextStyle(fontSize: 12, color: palette.textHint)),
                       const SizedBox(height: 10),
-                      if (_busy)
+                      if (_busy.value)
                         const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
                     ],
                   ),
@@ -231,7 +302,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
                                   borderRadius: BorderRadius.circular(4),
                                   border: Border.all(
                                       color: selected
-                                          ? const Color(0xFF6C5CE7)
+                                          ? accentColor
                                           : Colors.transparent),
                                 ),
                                 child: Row(
@@ -244,11 +315,24 @@ class _ResourcesPageState extends State<ResourcesPage> {
                                               fontSize: 12,
                                               color: palette.textPrimary)),
                                     ),
+                                    // 预览入口按钮：手机端不必依赖双击（双击易与
+                                    // 滚动惯性冲突且无提示），桌面双击保留不变。
+                                    GestureDetector(
+                                      onTap: () => _preview(key),
+                                      behavior: HitTestBehavior.opaque,
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(8),
+                                        child: Icon(
+                                            FluentIcons.eye_24_regular,
+                                            size: 14,
+                                            color: palette.textHint),
+                                      ),
+                                    ),
                                     if (selected)
-                                      const Icon(
+                                      Icon(
                                           FluentIcons.checkmark_24_regular,
                                           size: 12,
-                                          color: Color(0xFF6C5CE7)),
+                                          color: accentColor),
                                   ],
                                 ),
                               ),
@@ -285,15 +369,18 @@ class _ResourcesPageState extends State<ResourcesPage> {
                       ),
                     ),
                   ],
-                ),
+                );
+            },
+          ),
         ),
+        ],
       ],
     );
   }
 
   /// 资源来源状态横幅：内置资源包 > 已检测游戏目录 > 未就绪；扫描中优先显示扫描态。
   Widget _sourceBanner() {
-    final scanning = widget.state.aaStatus == 'scanning';
+    final scanning = _aaStatus.value == 'scanning';
     final bundled = _bundled;
 
     final Color fg;
@@ -313,8 +400,8 @@ class _ResourcesPageState extends State<ResourcesPage> {
       final tex = (bundled['tex'] as num?)?.toInt() ?? 0;
       final aud = (bundled['aud'] as num?)?.toInt() ?? 0;
       fg = palette.accentLight;
-      bg = const Color(0xFF6C5CE7).withValues(alpha: 0.14);
-      border = const Color(0xFF6C5CE7).withValues(alpha: 0.38);
+      bg = accentColor.withValues(alpha: 0.14);
+      border = accentColor.withValues(alpha: 0.38);
       leading = Icon(FluentIcons.box_24_regular, size: 14, color: palette.accentLight);
       text = '内置资源包：$name（纹理 $tex / 音频 $aud）';
     } else if (_detectedDir.isNotEmpty) {

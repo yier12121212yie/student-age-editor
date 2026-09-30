@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+
 import '../../core/motion.dart';
 import '../../core/plugin_state.dart';
 import '../plugins/plugin_pane.dart';
@@ -53,15 +54,24 @@ class _ActivityBarState extends State<ActivityBar> {
 
   int _paneIndex(SidePane p) {
     switch (p) {
-      case SidePane.mods: return 0;
-      case SidePane.pages: return 1;
-      case SidePane.files: return 2;
-      case SidePane.resources: return 3;
-      case SidePane.base: return 4;
-      case SidePane.cloud: return 5;
-      case SidePane.bugfix: return 6;
-      case SidePane.plugins: return 7;
-      case SidePane.settings: return 8;
+      case SidePane.mods:
+        return 0;
+      case SidePane.pages:
+        return 1;
+      case SidePane.files:
+        return 2;
+      case SidePane.resources:
+        return 3;
+      case SidePane.base:
+        return 4;
+      case SidePane.cloud:
+        return 5;
+      case SidePane.bugfix:
+        return 6;
+      case SidePane.plugins:
+        return 7;
+      case SidePane.settings:
+        return 8;
     }
   }
 
@@ -83,7 +93,8 @@ class _ActivityBarState extends State<ActivityBar> {
       icon: pluginPanelIcon(panel['icon'] as String?),
       tip: title.isEmpty ? '插件面板' : title,
       selected:
-          widget.current == SidePane.plugins && widget.shell.activePluginPanel == key,
+          widget.current == SidePane.plugins &&
+          widget.shell.activePluginPanel == key,
       onTap: () {
         widget.onSelect(SidePane.plugins);
         widget.shell.setActivePluginPanel(key);
@@ -99,7 +110,7 @@ class _ActivityBarState extends State<ActivityBar> {
     final onToggleAi = widget.onToggleAi;
     final shell = widget.shell;
     final pluginState = widget.pluginState;
-    final active = aiOpen ? const Color(0xFF6C5CE7) : palette.textPrimary;
+    final active = aiOpen ? accentColor : palette.textPrimary;
     return Container(
       width: 48,
       color: palette.bgDeep2,
@@ -136,8 +147,10 @@ class _ActivityBarState extends State<ActivityBar> {
           }
           // 滚动后指示条的屏幕位置 = 布局位置 - 滚动偏移。
           final double indicatorTop = math.max(0.0, paneTop - _scrollOffset);
-          final double aiIndicatorTop =
-              math.max(0.0, layoutH - 8 - 44 - gap - 44 + itemPad + 10 - _scrollOffset);
+          final double aiIndicatorTop = math.max(
+            0.0,
+            layoutH - 8 - 44 - gap - 44 + itemPad + 10 - _scrollOffset,
+          );
 
           return Stack(
             children: [
@@ -152,69 +165,169 @@ class _ActivityBarState extends State<ActivityBar> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                    const SizedBox(height: 8),
-                    FadeSlide(delay: AppMotion.stagger(0), child: _BarItem(pane: SidePane.mods, icon: FluentIcons.box_24_regular, tip: '模组', selected: current == SidePane.mods, onTap: () => onSelect(SidePane.mods))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(1), child: _BarItem(pane: SidePane.pages, icon: FluentIcons.apps_24_regular, tip: '编辑页面', selected: current == SidePane.pages, onTap: () => onSelect(SidePane.pages))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(2), child: _BarItem(pane: SidePane.files, icon: FluentIcons.folder_24_regular, tip: '文件', selected: current == SidePane.files, onTap: () => onSelect(SidePane.files))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(3), child: _BarItem(pane: SidePane.resources, icon: FluentIcons.image_24_regular, tip: '资源', selected: current == SidePane.resources, onTap: () => onSelect(SidePane.resources))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(4), child: _BarItem(pane: SidePane.base, icon: FluentIcons.book_search_24_regular, tip: '基础库（原数据/读取）', selected: current == SidePane.base, onTap: () => onSelect(SidePane.base))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(5), child: _BarItem(pane: SidePane.cloud, icon: FluentIcons.cloud_24_regular, tip: '云同步', selected: current == SidePane.cloud, onTap: () => onSelect(SidePane.cloud))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(6), child: _BarItem(pane: SidePane.bugfix, icon: FluentIcons.wrench_24_regular, tip: '错误修复', selected: current == SidePane.bugfix, onTap: () => onSelect(SidePane.bugfix))),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(7), child: _BarItem(pane: SidePane.plugins, icon: Icons.extension_outlined, selectedIcon: Icons.extension, tip: '插件', selected: current == SidePane.plugins && shell.activePluginPanel == null, onTap: _openPluginsList)),
-                    // 已启用插件声明的动态面板入口（uiPanels 为空时不渲染）
-                    for (var i = 0; i < pluginState.uiPanels.length; i++) ...[
-                      const SizedBox(height: 2),
-                      FadeSlide(delay: AppMotion.stagger(8 + i), child: _panelItem(i)),
-                    ],
-                    const Spacer(),
-                    FadeSlide(
-                      delay: AppMotion.stagger(8 + pluginState.uiPanels.length),
-                      child: Tooltip(
-                        message: 'AI 助手',
-                        child: _HoverScale(
-                          child: MouseRegion(
-                            cursor: SystemMouseCursors.click,
-                            child: GestureDetector(
-                              onTap: onToggleAi,
-                              child: AnimatedContainer(
-                                duration: AppMotion.fast,
-                                curve: AppMotion.easeOut,
-                                width: 44,
-                                height: 40,
-                                decoration: BoxDecoration(
-                                  color: aiOpen ? palette.card : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: AnimatedSwitcher(
-                                  duration: AppMotion.fast,
-                                  transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
-                                  child: Icon(FluentIcons.bot_24_regular,
-                                      key: ValueKey(aiOpen),
-                                      size: 21,
-                                      color: active),
+                          const SizedBox(height: 8),
+                          FadeSlide(
+                            delay: AppMotion.stagger(0),
+                            child: _BarItem(
+                              pane: SidePane.mods,
+                              icon: FluentIcons.box_24_regular,
+                              tip: '模组',
+                              selected: current == SidePane.mods,
+                              onTap: () => onSelect(SidePane.mods),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(1),
+                            child: _BarItem(
+                              pane: SidePane.pages,
+                              icon: FluentIcons.apps_24_regular,
+                              tip: '编辑页面',
+                              selected: current == SidePane.pages,
+                              onTap: () => onSelect(SidePane.pages),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(2),
+                            child: _BarItem(
+                              pane: SidePane.files,
+                              icon: FluentIcons.folder_24_regular,
+                              tip: '文件',
+                              selected: current == SidePane.files,
+                              onTap: () => onSelect(SidePane.files),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(3),
+                            child: _BarItem(
+                              pane: SidePane.resources,
+                              icon: FluentIcons.image_24_regular,
+                              tip: '资源',
+                              selected: current == SidePane.resources,
+                              onTap: () => onSelect(SidePane.resources),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(4),
+                            child: _BarItem(
+                              pane: SidePane.base,
+                              icon: FluentIcons.book_search_24_regular,
+                              tip: '基础库（原数据/读取）',
+                              selected: current == SidePane.base,
+                              onTap: () => onSelect(SidePane.base),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(5),
+                            child: _BarItem(
+                              pane: SidePane.cloud,
+                              icon: FluentIcons.cloud_24_regular,
+                              tip: '云同步',
+                              selected: current == SidePane.cloud,
+                              onTap: () => onSelect(SidePane.cloud),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(6),
+                            child: _BarItem(
+                              pane: SidePane.bugfix,
+                              icon: FluentIcons.wrench_24_regular,
+                              tip: '错误修复',
+                              selected: current == SidePane.bugfix,
+                              onTap: () => onSelect(SidePane.bugfix),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(7),
+                            child: _BarItem(
+                              pane: SidePane.plugins,
+                              icon: Icons.extension_outlined,
+                              selectedIcon: Icons.extension,
+                              tip: '插件',
+                              selected:
+                                  current == SidePane.plugins &&
+                                  shell.activePluginPanel == null,
+                              onTap: _openPluginsList,
+                            ),
+                          ),
+                          // 已启用插件声明的动态面板入口（uiPanels 为空时不渲染）
+                          for (
+                            var i = 0;
+                            i < pluginState.uiPanels.length;
+                            i++
+                          ) ...[
+                            const SizedBox(height: 2),
+                            FadeSlide(
+                              delay: AppMotion.stagger(8 + i),
+                              child: _panelItem(i),
+                            ),
+                          ],
+                          const Spacer(),
+                          FadeSlide(
+                            delay: AppMotion.stagger(
+                              8 + pluginState.uiPanels.length,
+                            ),
+                            child: Tooltip(
+                              message: 'AI 助手',
+                              child: _HoverScale(
+                                child: MouseRegion(
+                                  cursor: SystemMouseCursors.click,
+                                  child: GestureDetector(
+                                    onTap: onToggleAi,
+                                    child: AnimatedContainer(
+                                      duration: AppMotion.fast,
+                                      curve: AppMotion.easeOut,
+                                      width: 44,
+                                      height: 40,
+                                      decoration: BoxDecoration(
+                                        color: aiOpen
+                                            ? palette.card
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: AnimatedSwitcher(
+                                        duration: AppMotion.fast,
+                                        transitionBuilder: (c, a) =>
+                                            ScaleTransition(scale: a, child: c),
+                                        child: Icon(
+                                          FluentIcons.bot_24_regular,
+                                          key: ValueKey(aiOpen),
+                                          size: 21,
+                                          color: active,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
+                          const SizedBox(height: 2),
+                          FadeSlide(
+                            delay: AppMotion.stagger(
+                              9 + pluginState.uiPanels.length,
+                            ),
+                            child: _BarItem(
+                              pane: SidePane.settings,
+                              icon: FluentIcons.settings_24_regular,
+                              tip: '设置',
+                              selected: current == SidePane.settings,
+                              onTap: () => onSelect(SidePane.settings),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    FadeSlide(delay: AppMotion.stagger(9 + pluginState.uiPanels.length), child: _BarItem(pane: SidePane.settings, icon: FluentIcons.settings_24_regular, tip: '设置', selected: current == SidePane.settings, onTap: () => onSelect(SidePane.settings))),
-                    const SizedBox(height: 8),
-                  ],
                   ),
                 ),
               ),
-            ),
-          ),
               // 滑动紫条 - 连续位移动画（置于顶层，避免被按钮背景覆盖）
               // Positioned 必须是 Stack 直接子级：IgnorePointer 移入 AnimatedPositioned 内部
               AnimatedPositioned(
@@ -228,9 +341,15 @@ class _ActivityBarState extends State<ActivityBar> {
                     height: 20,
                     margin: const EdgeInsets.only(top: 10),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF6C5CE7),
+                      color: accentColor,
                       borderRadius: BorderRadius.circular(1),
-                      boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withValues(alpha: 0.45), blurRadius: 8, offset: const Offset(0, 0))],
+                      boxShadow: [
+                        BoxShadow(
+                          color: accentColor.withValues(alpha: 0.45),
+                          blurRadius: 8,
+                          offset: const Offset(0, 0),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -249,9 +368,16 @@ class _ActivityBarState extends State<ActivityBar> {
                       width: 2.5,
                       height: 20,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF6C5CE7),
+                        color: accentColor,
                         borderRadius: BorderRadius.circular(1),
-                        boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withValues(alpha: aiOpen ? 0.45 : 0), blurRadius: 8)],
+                        boxShadow: [
+                          BoxShadow(
+                            color: accentColor.withValues(
+                              alpha: aiOpen ? 0.45 : 0,
+                            ),
+                            blurRadius: 8,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -266,7 +392,14 @@ class _ActivityBarState extends State<ActivityBar> {
 }
 
 class _BarItem extends StatefulWidget {
-  const _BarItem({required this.pane, required this.icon, required this.tip, required this.selected, required this.onTap, this.selectedIcon});
+  const _BarItem({
+    required this.pane,
+    required this.icon,
+    required this.tip,
+    required this.selected,
+    required this.onTap,
+    this.selectedIcon,
+  });
   final SidePane pane;
   final IconData icon;
   final IconData? selectedIcon;
@@ -300,17 +433,29 @@ class _BarItemState extends State<_BarItem> {
                 color: widget.selected
                     ? palette.card
                     : _hover
-                        ? palette.panel
-                        : Colors.transparent,
+                    ? palette.panel
+                    : Colors.transparent,
                 borderRadius: BorderRadius.circular(6),
               ),
               child: AnimatedScale(
                 duration: AppMotion.fast,
                 curve: AppMotion.spring,
-                scale: widget.selected ? 1.0 : _hover ? 1.08 : 1.0,
-                child: Icon(widget.selected ? (widget.selectedIcon ?? widget.icon) : widget.icon,
-                    size: 21,
-                    color: widget.selected ? palette.textHigh : _hover ? palette.textPrimary : palette.textSecondary),
+                scale: widget.selected
+                    ? 1.0
+                    : _hover
+                    ? 1.08
+                    : 1.0,
+                child: Icon(
+                  widget.selected
+                      ? (widget.selectedIcon ?? widget.icon)
+                      : widget.icon,
+                  size: 21,
+                  color: widget.selected
+                      ? palette.textHigh
+                      : _hover
+                      ? palette.textPrimary
+                      : palette.textSecondary,
+                ),
               ),
             ),
           ),

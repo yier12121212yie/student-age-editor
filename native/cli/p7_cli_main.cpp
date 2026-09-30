@@ -361,7 +361,10 @@ int run_env(const Command& c, const sa_cli::GlobalFlags& g) {
     sa_cli::json env = sa_core::env_store::read_editor_env(root);
     if (c.kind == Kind::EnvGet) {
         if (!env.is_object() || !env.contains(c.env_key)) {
-            std::fprintf(stderr, "error: no such key: %s\n", c.env_key.c_str());
+            // Surface the resolved data root: a divergent CLI/backend root was
+            // the confusing part of bug #10 (writes landed beside the exe).
+            std::fprintf(stderr, "error: no such key: %s (data root: %s)\n",
+                         c.env_key.c_str(), root.c_str());
             return 1;
         }
         const sa_cli::json& v = env.at(c.env_key);
@@ -635,10 +638,11 @@ int real_main(int argc, char** argv) {
     std::string err;
     ParseResult pr = parse_command_line(args, g, c, err);
     if (pr == ParseResult::UsageError &&
-        (args.empty() || err.find("subcommand is required") != std::string::npos)) {
-        // No arguments (or only global flags): the Alpha-v0.3 default is the
-        // interactive mode, not a usage error (require_subcommand(1) rejected
-        // the argv before any subcommand matched).
+        err.find("subcommand is required") != std::string::npos &&
+        (args.empty() || references_known_commands_only(args))) {
+        // No arguments (or a bare command group such as `backend_cli cfg`):
+        // the Alpha-v0.3 default is the interactive mode, not a usage error.
+        // An unrecognized token (`cfg badsub`) stays a usage error (exit 2).
         pr = ParseResult::Ok;
         c.kind = Kind::Repl;
     }

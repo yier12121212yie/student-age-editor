@@ -87,6 +87,27 @@ TEST_CASE("revision_manager: set→get→verify 往返不挂起且指纹正确")
     REQUIRE(rm::get_current_revision() != rev);
 }
 
+TEST_CASE("revision_manager: unchanged files reuse the fingerprint cache") {
+    RevFixture fx("rev_cache");
+    const std::string root = fx.root.string();
+    rm::set_workspace_root(root);
+    REQUIRE_FALSE(rm::get_current_revision().empty());
+    CHECK(rm::debug_files_scanned_count() == 3);   // TalkCfg + EvtCfg + manifest
+    CHECK(rm::debug_files_hashed_count() == 3);
+
+    // Fresh scan with no content change: everything comes from the cache.
+    rm::set_workspace_root(root);
+    REQUIRE_FALSE(rm::get_current_revision().empty());
+    CHECK(rm::debug_files_scanned_count() == 3);
+    CHECK(rm::debug_files_hashed_count() == 0);
+
+    // A changed file forces exactly that one file to be re-hashed.
+    rm::set_workspace_root(root);
+    write_file(fx.root / "Cfgs" / "zh-cn" / "TalkCfg.json", R"({"id":"t9"})");
+    REQUIRE_FALSE(rm::get_current_revision().empty());
+    CHECK(rm::debug_files_hashed_count() == 1);
+}
+
 TEST_CASE("revision_manager: 空 root 与空 client_revision 的边界") {
     rm::set_workspace_root("");
     REQUIRE(rm::get_current_revision().empty());

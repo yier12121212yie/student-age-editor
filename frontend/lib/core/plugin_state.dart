@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
+import 'zip_staging_models.dart';
 
 /// 容错字符串取值：非字符串（数字/布尔/对象）转字符串，null/缺失归 ''。
 /// 后端 or_raw 会原样透传 manifest 值，`"version": 2` 之类不能抛异常。
@@ -115,11 +116,11 @@ class PluginState extends ChangeNotifier {
     }
   }
 
-  /// 从本地 zip 安装：path 为已拷贝到可写临时目录的文件路径（对齐资源包导入流程）。
-  Future<dynamic> installZip(String path, String filename) async {
+  /// 从本地 zip 安装：载荷由 zip_staging 决定——桌面=临时目录路径
+  /// （/api/plugins/install_path），web=base64 上传（/api/plugins/install_upload）。
+  Future<dynamic> installStaged(StagedZip staged) async {
     try {
-      return await ApiClient.instance
-          .post('/api/plugins/install_path', body: {'path': path, 'filename': filename});
+      return await ApiClient.instance.post(staged.endpoint, body: staged.body);
     } finally {
       await refresh();
     }

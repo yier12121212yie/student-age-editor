@@ -35,6 +35,11 @@ class FsEntry {
 
 /// 全局应用状态。
 class AppState extends ChangeNotifier {
+  /// 进程级单例引用（app.dart 根 State 创建时写入、dispose 时清空）。
+  /// 深层小控件（如设置页的无代码模式开关）拿不到 state prop 时经此同步；
+  /// 只允许在根 State 生命周期内非空。
+  static AppState? current;
+
   String workspaceRoot = '';
   String modRoot = '';
   String modName = '';
@@ -46,6 +51,25 @@ class AppState extends ChangeNotifier {
 
   bool backendOnline = false;
   String backendError = '';
+
+  /// 后端在线状态变更入口（阶段 3：进程退出监听等异步源使用），带通知。
+  void setBackendOnline(bool value, {String error = ''}) {
+    if (backendOnline == value && backendError == error) return;
+    backendOnline = value;
+    backendError = error;
+    notifyListeners();
+  }
+
+  /// 无代码模式（后端共享开关，editor_env.json no_code_mode，GUI/CLI/TUI 同一份）：
+  /// 开启后效果类字段以「选」代「打」——空输入即出候选、带参数槽的候选走表单，
+  /// 人物字段提供立绘浏览面板。启动时从 /api/settings/editor 拉取。
+  bool noCodeMode = false;
+
+  void setNoCodeMode(bool value) {
+    if (noCodeMode == value) return;
+    noCodeMode = value;
+    notifyListeners();
+  }
 
   /// 离开当前内容前的守卫钩子（剧情图画布注册）：切 UI 模式会按
   /// ValueKey(uiMode) 重建整壳、销毁画布状态，注册方负责弹「未保存」

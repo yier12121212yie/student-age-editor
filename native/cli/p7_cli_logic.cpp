@@ -153,8 +153,10 @@ struct AppParts {
              *cloud_add = nullptr, *cloud_update = nullptr, *cloud_remove = nullptr,
              *cloud_test = nullptr, *cloud_sync = nullptr, *cloud_status = nullptr,
              *cloud_drivers = nullptr, *cloud_local = nullptr, *cloud_remote = nullptr,
+             *update_check = nullptr,
              *ai_settings = nullptr, *ai_set = nullptr, *search = nullptr,
-             *repl = nullptr, *settings_no_code = nullptr;
+             *repl = nullptr, *settings_no_code = nullptr,
+             *settings_appearance = nullptr;
 };
 
 void wire_app(AppParts& P) {
@@ -206,8 +208,8 @@ void wire_app(AppParts& P) {
     P.cfg_get->add_option("--field", c.field, "配合 --id 只看一个字段");
     P.cfg_get->add_flag("--keys", c.keys, "只要键列表");
     P.cfg_get->add_flag("--meta", c.meta, "只要元信息（条数/mtime）");
-    P.cfg_get->add_option("--prefix", c.prefix, "键前缀过滤（逗号分隔）");
-    P.cfg_get->add_option("--suffix", c.suffix, "前缀过滤尾截长度 1..8")->capture_default_str();
+    P.cfg_get->add_option("--prefix", c.prefix, "键前缀过滤 startswith（逗号分隔）");
+    P.cfg_get->add_option("--suffix", c.suffix, "键后缀过滤 endswith（逗号分隔）");
     P.cfg_get->add_option("--limit", c.limit, "文本视图最多显示行数")->capture_default_str();
     P.cfg_set = cfg->add_subcommand("set", "整表覆盖写入（PUT）");
     P.cfg_set->add_option("cfg", c.cfg, "表名")->required();
@@ -269,6 +271,8 @@ void wire_app(AppParts& P) {
     P.settings_no_code = settings->add_subcommand("no-code", "无代码模式开关");
     P.settings_no_code->alias("nocode");
     P.settings_no_code->add_option("mode", c.setting_value, "on|off|show")->required();
+    P.settings_appearance = settings->add_subcommand("appearance", "外观（白日/暗色/跟随系统）");
+    P.settings_appearance->add_option("mode", c.setting_value, "show|light|dark|system")->required();
 
     // ---- oobe / env ----
     CLI::App* oobe = app.add_subcommand("oobe", "首次使用引导状态");
@@ -349,6 +353,20 @@ void wire_app(AppParts& P) {
     P.cloud_remote->add_option("--mod", c.mod_name, "模组名（默认当前选中模组）");
     P.cloud_remote->add_option("--path", c.remote_root, "远端子目录");
 
+    // ---- update ----
+    // 顶层 `update check` 查询 GitHub 最新发行版（GET /api/update/check）。
+    // --timeout 是本子命令自己的 HTTP 超时（默认 6s），与全局 --timeout 分开；
+    // 覆盖地址用 --update-url 而不是 --url，避开全局 --url（打已运行实例）。
+    CLI::App* update = app.add_subcommand("update", "检查更新");
+    update->require_subcommand(1);
+    P.update_check = update->add_subcommand("check", "查询 GitHub 最新发行版");
+    P.update_check->add_option("--timeout", c.update_timeout, "HTTP 超时秒数")
+        ->capture_default_str();
+    P.update_check->add_option("--update-url", c.update_url,
+                               "覆盖 GitHub Releases API 地址（fork/测试用）");
+    P.update_check->add_option("--current", c.update_current,
+                               "覆盖当前版本（默认取后端注入版本）");
+
     // ---- ai ----
     CLI::App* ai = app.add_subcommand("ai", "AI 设置（.editor_ai.json）");
     ai->require_subcommand(1);
@@ -362,7 +380,7 @@ void wire_app(AppParts& P) {
     // (Python parity): every non-root app falls unrecognized options through
     // to its parent. get_subcommands() only lists *parsed* apps pre-parse, so
     // the list is built explicitly here.
-    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env, plugin, cloud, ai, settings,
+    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env, plugin, cloud, update, ai, settings,
                         P.mods_list, P.mods_create, P.mods_add, P.mods_select, P.mods_remove,
                         P.cfg_list, P.cfg_get, P.cfg_set, P.cfg_patch, P.cfg_history,
                         P.validate, P.bugfix_scan, P.bugfix_fix,
@@ -374,11 +392,36 @@ void wire_app(AppParts& P) {
                         P.cloud_providers, P.cloud_add, P.cloud_update, P.cloud_remove,
                         P.cloud_test, P.cloud_sync, P.cloud_status, P.cloud_drivers,
                         P.cloud_local, P.cloud_remote,
-                        P.ai_settings, P.ai_set, P.settings_no_code}) {
+                        P.update_check,
+                        P.ai_settings, P.ai_set, P.settings_no_code,
+                        P.settings_appearance, P.search}) {
         s->fallthrough();
     }
 }
 }  // namespace
+
+bool references_known_commands_only(const std::vector<std::string>& args) {
+    static const std::set<std::string> kKnown = {
+        "mods", "cfg", "validate", "bugfix", "story", "oobe", "env", "plugin",
+        "cloud", "ai", "settings", "search", "repl",
+        "list", "create", "add", "select", "remove", "get", "set", "patch",
+        "history", "scan", "fix", "export", "import", "status", "done", "setup",
+        "install", "uninstall", "reload", "tools", "providers", "update", "check", "test",
+        "sync", "drivers", "local", "remote", "no-code", "nocode", "appearance"};
+    static const std::set<std::string> kGlobalValueOpts = {
+        "--url", "--data-root", "--workspace", "--mod", "--timeout"};
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (a.empty()) continue;
+        if (a[0] == '-') {
+            std::string name = a.substr(0, a.find('='));
+            if (kGlobalValueOpts.count(name) && a.find('=') == std::string::npos) ++i;
+            continue;
+        }
+        if (!kKnown.count(a)) return false;
+    }
+    return true;
+}
 
 ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags& g,
                                Command& c, std::string& err_msg) {
@@ -474,10 +517,12 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
     else if (hit(P.cloud_drivers)) c.kind = Kind::CloudDrivers;
     else if (hit(P.cloud_local)) c.kind = Kind::CloudLocal;
     else if (hit(P.cloud_remote)) c.kind = Kind::CloudRemote;
+    else if (hit(P.update_check)) c.kind = Kind::UpdateCheck;
     else if (hit(P.ai_settings)) c.kind = Kind::AiSettings;
     else if (hit(P.ai_set)) c.kind = Kind::AiSet;
     else if (hit(P.search)) c.kind = Kind::Search;
     else if (hit(P.settings_no_code)) c.kind = Kind::SettingsNoCode;
+    else if (hit(P.settings_appearance)) c.kind = Kind::SettingsAppearance;
     else if (hit(P.repl)) c.kind = Kind::Repl;
     else {
         err_msg = "缺少子命令";
@@ -523,6 +568,14 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
         const std::string mode = lower_ascii(c.setting_value);
         if (mode != "on" && mode != "off" && mode != "show") {
             err_msg = "settings no-code 只接受 on|off|show";
+            return ParseResult::UsageError;
+        }
+        c.setting_value = mode;
+    }
+    if (c.kind == Kind::SettingsAppearance) {
+        const std::string mode = lower_ascii(c.setting_value);
+        if (mode != "show" && mode != "light" && mode != "dark" && mode != "system") {
+            err_msg = "settings appearance 只接受 show|light|dark|system";
             return ParseResult::UsageError;
         }
         c.setting_value = mode;
@@ -647,6 +700,23 @@ HttpRequestSpec editor_settings_put_request(bool no_code) {
     return HttpRequestSpec{"PUT", "/api/settings/editor", {}, std::move(body)};
 }
 
+HttpRequestSpec editor_appearance_put_request(const std::string& mode) {
+    json body;
+    body["appearanceMode"] = mode;
+    return HttpRequestSpec{"PUT", "/api/settings/editor", {}, std::move(body)};
+}
+
+// Reads settings.appearanceMode ("system"|"light"|"dark"); unknown -> *known=false.
+std::string parse_appearance_mode(const json& body, bool* known) {
+    if (known) *known = false;
+    if (!body.is_object() || !body.contains("settings") || !body["settings"].is_object())
+        return std::string();
+    const json& s = body["settings"];
+    if (!s.contains("appearanceMode") || !s["appearanceMode"].is_string()) return std::string();
+    if (known) *known = true;
+    return s["appearanceMode"].get<std::string>();
+}
+
 bool parse_no_code_mode(const json& body, bool* known) {
     if (known) *known = false;
     if (!body.is_object() || !body.contains("settings") || !body["settings"].is_object())
@@ -726,6 +796,11 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
             else out.push_back(editor_settings_put_request(c.setting_value == "on"));
             return true;
         }
+        case Kind::SettingsAppearance: {
+            if (c.setting_value == "show") out.push_back(editor_settings_get_request());
+            else out.push_back(editor_appearance_put_request(c.setting_value));
+            return true;
+        }
         case Kind::ModsCreate: {
             json body;
             body["title"] = c.title;
@@ -767,10 +842,8 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
             HttpRequestSpec spec{"GET", "/api/cfg/" + c.cfg, {}, json()};
             if (c.meta) spec.query.emplace_back("meta", "1");
             if (c.keys) spec.query.emplace_back("keys", "1");
-            if (!c.prefix.empty()) {
-                spec.query.emplace_back("prefix", c.prefix);
-                spec.query.emplace_back("suffix", std::to_string(c.suffix));
-            }
+            if (!c.prefix.empty()) spec.query.emplace_back("prefix", c.prefix);
+            if (!c.suffix.empty()) spec.query.emplace_back("suffix", c.suffix);
             out.push_back(std::move(spec));
             return true;
         }
@@ -1011,6 +1084,20 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
             spec.query.emplace_back("provider_id", c.provider_id);
             if (!c.mod_name.empty()) spec.query.emplace_back("mod_name", c.mod_name);
             if (!c.remote_root.empty()) spec.query.emplace_back("path", c.remote_root);
+            // Walk the whole subtree so `cloud remote` lists every uploaded file
+            // instead of only the top level (bug #12).
+            spec.query.emplace_back("recursive", "1");
+            out.push_back(std::move(spec));
+            return true;
+        }
+        case Kind::UpdateCheck: {
+            // GET /api/update/check：timeout 始终传（后端默认 6s），current/url
+            // 只在覆盖时传（--current / --update-url 供 fork 与测试）。
+            HttpRequestSpec spec{"GET", "/api/update/check", {}, json()};
+            spec.query.emplace_back("timeout", std::to_string(c.update_timeout));
+            if (!c.update_current.empty())
+                spec.query.emplace_back("current", c.update_current);
+            if (!c.update_url.empty()) spec.query.emplace_back("url", c.update_url);
             out.push_back(std::move(spec));
             return true;
         }
@@ -1061,6 +1148,12 @@ int compute_exit(int status, const json& body, const Command& c) {
         if (body.is_object() && body.contains("data") && body["data"].is_object())
             data = &body["data"];
         if (!data || !data->contains(c.id)) return 1;
+    }
+    // 检查更新：HTTP 2xx + {"ok":false,...} 是"查不到"的正常信封（无网/超时/
+    // GitHub 限流），文本里已写明原因，退出码按失败处理（后端失败信封约定）。
+    if (c.kind == Kind::UpdateCheck && body.is_object() && body.contains("ok") &&
+        body["ok"].is_boolean() && !body["ok"].get<bool>()) {
+        return 1;
     }
     return 0;
 }
@@ -1511,6 +1604,60 @@ std::string format_text(const Command& c, const json& body) {
             }
             break;
         }
+        case Kind::UpdateCheck: {
+            // 后端失败信封（2xx + ok:false）也走文本渲染，退出码由 compute_exit 落成 1。
+            if (body.is_object() && body.contains("ok") && body["ok"].is_boolean() &&
+                !body["ok"].get<bool>()) {
+                os << "检查更新失败："
+                   << scalar_or_dump(body.contains("error") ? body.at("error") : json()) << "\n";
+                break;
+            }
+            os << "当前版本: " << str_at("current") << "\n"
+               << "最新版本: " << str_at("latest_tag");
+            const std::string latest_name = str_at("latest_name");
+            if (!latest_name.empty()) os << "  " << latest_name;
+            os << "\n"
+               << "是否需要更新: " << (jbool(body, "update_available") ? "是" : "否") << "\n";
+            if (jbool(body, "prerelease")) os << "预发行版: 是\n";
+            if (!str_at("published_at").empty())
+                os << "发布时间: " << str_at("published_at") << "\n";
+            if (!str_at("html_url").empty()) os << "发行页: " << str_at("html_url") << "\n";
+            const std::string notes = str_at("notes");
+            if (!notes.empty()) {
+                os << "更新说明:\n";
+                // 只铺前 20 行，其余引导到发行页（文本视图不灌整篇 changelog）。
+                std::size_t start = 0;
+                long long shown = 0;
+                bool more = false;
+                while (start < notes.size()) {
+                    if (shown >= 20) {
+                        more = true;
+                        break;
+                    }
+                    const std::size_t nl = notes.find('\n', start);
+                    os << "    "
+                       << (nl == std::string::npos ? notes.substr(start)
+                                                   : notes.substr(start, nl - start))
+                       << "\n";
+                    ++shown;
+                    if (nl == std::string::npos) break;
+                    start = nl + 1;
+                }
+                if (more) os << "…（完整说明见发行页）\n";
+            }
+            if (body.contains("assets") && body["assets"].is_array()) {
+                const json& arr = body["assets"];
+                os << "附件: " << arr.size();
+                if (!arr.empty() && arr[0].is_object()) {
+                    // 一位小数的 MB（四舍五入到 0.1MB）。
+                    const long long tenths = (jint(arr[0], "size", 0) * 10 + 524288) / 1048576;
+                    os << "  首个: " << jstr(arr[0], "name") << "  " << (tenths / 10) << "."
+                       << (tenths % 10) << "MB";
+                }
+                os << "\n";
+            }
+            break;
+        }
         case Kind::CloudSync: {
             os << "direction: " << str_at("direction")
                << "  dry_run: " << (body.value("dry_run", false) ? "true" : "false") << "\n";
@@ -1651,6 +1798,17 @@ std::string format_text(const Command& c, const json& body) {
             // /settings 复用同一渲染）。
             if (c.setting_value != "show") os << Style::Green("ok:") << " ";
             os << "no-code: " << (on ? Style::BoldGreen("on") : Style::Dim("off")) << "\n";
+            break;
+        }
+        case Kind::SettingsAppearance: {
+            bool known = false;
+            const std::string mode = parse_appearance_mode(body, &known);
+            if (!known) {
+                os << sa_core::py_dumps(body) << "\n";
+                break;
+            }
+            if (c.setting_value != "show") os << Style::Green("ok:") << " ";
+            os << "appearance: " << mode << "\n";
             break;
         }
         case Kind::EnvGet:
@@ -1799,6 +1957,7 @@ const std::vector<FlagRow>& top_command_rows() {
         {"env", "editor_env.json 键值"}, {"plugin", "插件管理"},
         {"cloud", "云同步"},       {"ai", "AI 设置"},
         {"search", "全局搜索对白"}, {"settings", "编辑器共享设置（无代码模式）"},
+        {"update", "检查更新"},
         {"repl", "进入交互模式"},
     };
     return kRows;
@@ -1817,7 +1976,8 @@ const std::map<std::string, std::vector<std::string>>& subcommand_table() {
         {"cloud", {"providers", "add", "update", "remove", "test", "sync", "status",
                    "drivers", "local", "remote"}},
         {"ai", {"settings", "set"}},
-        {"settings", {"no-code"}},
+        {"settings", {"no-code", "appearance"}},
+        {"update", {"check"}},
     };
     return kTable;
 }
@@ -1882,6 +2042,9 @@ const std::map<std::string, std::vector<FlagRow>>& flag_table() {
           {"--dry-run", "只预览不写入"}, {"--delete-extra", "清理对端多余文件"}}},
         {"cloud local", {{"--mod", "模组名"}}},
         {"cloud remote", {{"--mod", "模组名"}, {"--path", "远端子目录"}}},
+        {"update check",
+         {{"--timeout", "HTTP 超时秒数"}, {"--update-url", "覆盖 GitHub API 地址"},
+          {"--current", "覆盖当前版本"}}},
         {"ai set",
          {{"--mode", "permissionMode confirm|full"}, {"--data", "设置补丁 JSON"},
           {"--file", "设置补丁文件"}}},
@@ -2011,6 +2174,11 @@ SlotInfo PositionalSlot(const std::string& cmd, const std::string& sub, size_t p
     if (cmd == "settings" && sub == "no-code" && pos == 0) {
         si.slot = CompletionSlot::Literal;
         si.group = "no_code";
+        return si;
+    }
+    if (cmd == "settings" && sub == "appearance" && pos == 0) {
+        si.slot = CompletionSlot::Literal;
+        si.group = "appearance";
         return si;
     }
     if (cmd == "cfg" && pos == 0 &&
@@ -2268,6 +2436,9 @@ std::vector<CompletionItem> command_flags(const std::string& command,
 std::vector<CompletionItem> literal_values(const std::string& group) {
     if (group == "no_code")
         return {{"on", "开启无代码模式"}, {"off", "关闭无代码模式"}, {"show", "查看当前值"}};
+    if (group == "appearance")
+        return {{"show", "查看当前外观"}, {"light", "亮色（白日）"},
+                {"dark", "暗色"}, {"system", "跟随系统"}};
     if (group == "direction")
         return {{"upload", "上传到远端"},
                 {"download", "下载到本地"},

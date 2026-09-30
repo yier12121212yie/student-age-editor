@@ -74,12 +74,35 @@ std::optional<std::set<std::string>> parse_prefix_query(const std::string* raw) 
     return prefixes;
 }
 
-// api.py:515-519 _prefix_match (frontend PrefixMatcher parity): strip the last
-// `suffix` chars of str(key) (whole string when len <= suffix), exact set hit.
-bool prefix_match(const std::string& key, const std::set<std::string>& prefixes, int suffix) {
-    std::string p = static_cast<long>(key.size()) > suffix ? key.substr(0, key.size() - suffix)
-                                                           : key;
-    return prefixes.count(p) > 0;
+// Key filters for GET /api/cfg/<name>: `prefix` is a real startswith (OR over
+// the comma list) and `suffix` a real endswith; both are independent and
+// optional. The old implementation stripped the last N chars then did an exact
+// set hit, so `--prefix 32` could never match 6-digit keys like "320101"
+// (bug #3).
+bool key_matches(const std::string& key, const std::set<std::string>* prefixes,
+                 const std::set<std::string>* suffixes) {
+    if (prefixes != nullptr) {
+        bool hit = false;
+        for (const auto& p : *prefixes) {
+            if (!p.empty() && key.size() >= p.size() && key.compare(0, p.size(), p) == 0) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) return false;
+    }
+    if (suffixes != nullptr) {
+        bool hit = false;
+        for (const auto& s : *suffixes) {
+            if (!s.empty() && key.size() >= s.size() &&
+                key.compare(key.size() - s.size(), s.size(), s) == 0) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) return false;
+    }
+    return true;
 }
 
 // api.py:1039-1097 _do_cfg_patch — S2 contract: the PATCH branch is picked by
@@ -202,6 +225,16 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     };
     env["applied_set"] = applied.contains("set") ? applied_count(applied.at("set")) : 0;
     env["applied_remove"] = applied.contains("remove") ? applied_count(applied.at("remove")) : 0;
+    const long long removed_unmatched =
+        applied.contains("remove_unmatched") ? applied_count(applied.at("remove_unmatched")) : 0;
+    env["applied_remove_unmatched"] = removed_unmatched;
+    // A remove list where nothing matched is a silent no-op the user asked to
+    // fix (bug #1): keep ok=true but add an explicit warning so scripts/CLI can
+    // tell "deleted 0" apart from "the id was simply not there".
+    if (!patch_remove.empty() && env["applied_remove"].get<long long>() == 0 &&
+        removed_unmatched > 0) {
+        env["warn"] = "remove: no matching rows";
+    }
     env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
     env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
     env["revision"] = refresh_revision_after_write();
@@ -256,11 +289,7 @@ void register_cfg_routes(Router& r) {
         const bool meta_only = qv("meta") != nullptr && *qv("meta") == "1";
         const bool want_keys = qv("keys") != nullptr && *qv("keys") == "1";
         auto prefixes = parse_prefix_query(qv("prefix"));
-        int suffix = 3;
-        if (const std::string* s = qv("suffix")) {
-            auto v = sa_core::py_int(*s);
-            suffix = v.has_value() ? static_cast<int>(std::clamp(*v, 1LL, 8LL)) : 3;
-        }
+        auto suffixes = parse_prefix_query(qv("suffix"));
 
         auto res = load_table_cached(path, cfg_name);
         if (res.state == "missing") {
@@ -288,10 +317,13 @@ void register_cfg_routes(Router& r) {
             if (res.lossy) body["lossy"] = true;
             return Resp::Json(200, std::move(body));
         }
-        if (prefixes) {
+        if (prefixes || suffixes) {
             json filtered = json::object();
             for (auto it = data.begin(); it != data.end(); ++it) {
-                if (prefix_match(it.key(), *prefixes, suffix)) filtered[it.key()] = it.value();
+                if (key_matches(it.key(), prefixes ? &*prefixes : nullptr,
+                                suffixes ? &*suffixes : nullptr)) {
+                    filtered[it.key()] = it.value();
+                }
             }
             json body;
             body["cfg"] = cfg_name;

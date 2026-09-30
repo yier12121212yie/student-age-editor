@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+// Uint8List 随 foundation 一并导出（compute 入口返回字节列表）。
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
+import 'local_import.dart' show importLocalAssets;
 
 /// Asset Explorer Panel - Resource browser for Live2D characters, CGs, and audio assets.
 ///
@@ -33,6 +36,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
 
   bool _isLoading = true;
   bool _isScanning = false;
+  bool _isImporting = false;
   String? _error;
 
   /// 最近一次 catalog 响应里的行（服务端已过滤 + 分页）。
@@ -56,6 +60,13 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
   /// 请求序号：慢响应回来时若已有更新的请求发出，直接丢弃（防乱序覆盖）。
   int _reqSeq = 0;
 
+  /// 预览字节缓存（资源键 → future）：参照 image_asset_picker 的
+  /// TexBytesCache/_PreviewPane 样板——future 只创建一次，对话框反复 rebuild
+  /// 复用同一实例，不再每次重建都重发 /api/aa/preview、重解码 base64。
+  /// 键 = previewKind + 分隔符 + 资源 key（音频/图片可能共用键名）。
+  final Map<String, Future<Uint8List>> _previewFutures =
+      <String, Future<Uint8List>>{};
+
   final List<Map<String, String>> _kindOptions = [
     {'label': '全部', 'value': 'all'},
     {'label': '立绘/角色', 'value': 'sprite'},
@@ -73,6 +84,8 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
   @override
   void dispose() {
     _debounce?.cancel();
+    // 面板销毁后缓存的 future 不再有意义：清掉，避免跨实例误复用。
+    _previewFutures.clear();
     super.dispose();
   }
 
@@ -148,6 +161,8 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
       setState(() {
         _scanResult = res is Map ? Map<String, dynamic>.from(res) : null;
       });
+      // 刷新（重读索引）后产物可能已变：清空预览缓存，重新打开预览会重新拉取。
+      _previewFutures.clear();
       await _loadCatalog();
       await _loadTags();
       if (!mounted) return;
@@ -158,6 +173,31 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
       await _showInfoDialog('重新读取资源索引失败', _detailOf(e));
     } finally {
       if (mounted) setState(() => _isScanning = false);
+    }
+  }
+
+  /// 从本地电脑导入资源到当前模组。
+  ///
+  /// 类型跟着当前筛选走：筛「音频」→ `kind: 'audio'` 且让后端顺手登记
+  /// AudioCfg（`register_audio: true`）；其余（全部/立绘/背景）→ `'image'`。
+  /// 目录仍由后端按扩展名推断，前端不传 `dir`。
+  Future<void> _importLocal() async {
+    if (_isImporting) return;
+    setState(() => _isImporting = true);
+    try {
+      final audio = _selectedKind == 'audio';
+      final saved = await importLocalAssets(
+        context,
+        kind: audio ? 'audio' : 'image',
+        registerAudio: audio,
+      );
+      if (!mounted || saved.isEmpty) return;
+      // 新文件可能改动了索引产物与标签：清预览缓存并重拉目录。
+      _previewFutures.clear();
+      await _loadCatalog();
+      await _loadTags();
+    } finally {
+      if (mounted) setState(() => _isImporting = false);
     }
   }
 
@@ -216,18 +256,18 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(FluentIcons.folder_open_24_regular, size: 64, color: Colors.grey),
+          Icon(FluentIcons.folder_open_24_regular, size: 64, color: palette.textSecondary),
           const SizedBox(height: 16),
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey),
+            style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w500, color: palette.textSecondary),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             '资源目录来自游戏 aa_index.json（tools/resource_scan 产物）',
-            style: TextStyle(fontSize: 14, color: Colors.grey),
+            style: TextStyle(fontSize: 14, color: palette.textSecondary),
           ),
           const SizedBox(height: 24),
           fluent.Button(
@@ -260,19 +300,19 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
     switch (kind) {
       case 'sprite':
         icon = FluentIcons.person_24_regular;
-        iconColor = const Color(0xFF0078D4); // Blue for character
+        iconColor = palette.catSprite;
         break;
       case 'texture':
         icon = FluentIcons.image_24_regular;
-        iconColor = const Color(0xFF00B294); // Teal for background
+        iconColor = palette.catTexture;
         break;
       case 'audio':
         icon = FluentIcons.music_note_2_24_regular;
-        iconColor = const Color(0xFFF25460); // Red for audio
+        iconColor = palette.catAudio;
         break;
       default:
         icon = FluentIcons.attach_24_regular;
-        iconColor = Colors.grey;
+        iconColor = palette.textSecondary;
     }
 
     return fluent.Card(
@@ -281,9 +321,8 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
         child: InkWell(
           onTap: () => _showAssetPreview(asset),
           borderRadius: BorderRadius.circular(8),
-          hoverColor: Theme.of(context).brightness == Brightness.light
-              ? Colors.grey.shade100
-              : Colors.white.withOpacity(0.05),
+          hoverColor:
+              palette.isLight ? palette.checkerA : palette.overlayWeak,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -300,14 +339,14 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                     ),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: iconColor.withOpacity(0.1),
+                      color: iconColor.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Text(
                       kind.toUpperCase(),
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      style: TextStyle(fontSize: 10, color: palette.textSecondary),
                     ),
                   ),
                 ],
@@ -316,7 +355,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
               if (width > 0 && height > 0)
                 Text(
                   '$width × $height px',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary),
                 ),
               // 显示前 3 个标签
               if (tags.isNotEmpty) ...[
@@ -329,12 +368,12 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF6C5CE7).withAlpha(100),
+                          color: accentColor.withAlpha(100),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           tag,
-                          style: const TextStyle(fontSize: 9, color: Colors.white),
+                          style: TextStyle(fontSize: 9, color: palette.onAccent),
                         ),
                       ),
                     if (tags.length > 3)
@@ -342,7 +381,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                         child: Text(
                           '+${tags.length - 3}',
-                          style: TextStyle(fontSize: 9, color: Colors.grey[600]),
+                          style: TextStyle(fontSize: 9, color: palette.textSecondary),
                         ),
                       ),
                   ],
@@ -357,6 +396,10 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
 
   void _showAssetPreview(Map<String, dynamic> asset) {
     final name = asset['original_name']?.toString() ?? asset['key']?.toString() ?? '';
+    // 样板做法（image_asset_picker 的 _PreviewPane/TexBytesCache）：future 在进入
+    // build 之前从缓存取出（同 key 只创建一次），由对话框内容 State 持有。
+    // 旧写法在 dialog builder 里直接调 _loadAssetImage → 每次 rebuild 重发请求
+    // + 重解码。
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -364,22 +407,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
         content: SizedBox(
           width: 480,
           height: 360,
-          child: FutureBuilder<List<int>>(
-            future: _loadAssetImage(asset),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasError) {
-                return SingleChildScrollView(
-                  child: Text('加载失败：${snapshot.error}'),
-                );
-              }
-              final bytes = snapshot.data ?? const <int>[];
-              if (bytes.isEmpty) return const Center(child: Text('无预览数据'));
-              return Image.memory(Uint8List.fromList(bytes), fit: BoxFit.contain);
-            },
-          ),
+          child: _AssetPreviewBody(future: _previewFutureFor(asset)),
         ),
         actions: [
           TextButton(
@@ -391,18 +419,40 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
     );
   }
 
-  /// POST /api/aa/preview：只有预解码包里的资源能出图，游戏索引里的键回 422
-  /// （C++ 侧不解码 bundle，ARTIFACT_FORMAT §8.7 边界）。
-  Future<List<int>> _loadAssetImage(Map<String, dynamic> asset) async {
+  /// 预览字节的按 key 缓存入口：目录行里资源键唯一（sha24 随目录刷新），同 key
+  /// 重复打开预览复用同一 future，不再重发 /api/aa/preview、不再重解码。
+  /// 失败的 future 会移出缓存（重开可重试），错误仍会送达已挂载的 FutureBuilder。
+  Future<Uint8List> _previewFutureFor(Map<String, dynamic> asset) {
     final kind = asset['kind']?.toString() ?? '';
     final key = asset['key']?.toString() ?? asset['original_name']?.toString() ?? '';
     final previewKind = kind == 'audio' ? 'aud' : 'tex';
+    if (key.isEmpty) return Future<Uint8List>.value(_emptyPreviewBytes);
+    // previewKind 前缀防音频/图片共用键名串数据。
+    final cacheKey = '$previewKind|$key';
+    final cached = _previewFutures[cacheKey];
+    if (cached != null) return cached;
+    final f = _loadAssetImage(previewKind, key);
+    _previewFutures[cacheKey] = f;
+    // 失败移出缓存以便重开重试；这里只是旁路监听，错误仍送达 FutureBuilder。
+    f.then<void>((_) {}, onError: (_) {
+      if (_previewFutures[cacheKey] == f) _previewFutures.remove(cacheKey);
+    });
+    return f;
+  }
+
+  /// POST /api/aa/preview：只有预解码包里的资源能出图，游戏索引里的键回 422
+  /// （C++ 侧不解码 bundle，ARTIFACT_FORMAT §8.7 边界）。
+  /// base64→字节移到 compute（后台 isolate）：预览图常见数 MB，同步解码会卡
+  /// 对话框首帧——参照样板的「解码重活出主 isolate」。
+  Future<Uint8List> _loadAssetImage(String previewKind, String key) async {
     try {
       final res = await ApiClient.instance
           .post('/api/aa/preview', body: {'kind': previewKind, 'key': key});
       final data = res is Map ? res['data'] : null;
-      if (data is String && data.isNotEmpty) return base64Decode(data);
-      return const <int>[];
+      if (data is String && data.isNotEmpty) {
+        return await compute(_decodePreviewBase64, data);
+      }
+      return _emptyPreviewBytes;
     } on ApiException catch (e) {
       if (e.statusCode == 422) {
         throw '该资源需要预解码包才能预览（后端不解码 bundle）';
@@ -426,7 +476,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
                   '标签过滤',
-                  style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+                  style: TextStyle(fontSize: 10, color: palette.textSecondary),
                 ),
               ),
               Expanded(
@@ -441,12 +491,12 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                           decoration: BoxDecoration(
                             color: _selectedTags.isEmpty
                                 ? Colors.transparent
-                                : const Color(0xFF6C5CE7).withAlpha(30),
+                                : accentColor.withAlpha(30),
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
                               color: _selectedTags.isEmpty
                                   ? Colors.transparent
-                                  : const Color(0xFF6C5CE7).withAlpha(150),
+                                  : accentColor.withAlpha(150),
                             ),
                           ),
                           child: Text(
@@ -454,8 +504,8 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                             style: TextStyle(
                               fontSize: 10,
                               color: _selectedTags.isEmpty
-                                  ? Colors.grey[600]
-                                  : const Color(0xFF6C5CE7),
+                                  ? palette.textSecondary
+                                  : accentColor,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -471,13 +521,13 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                                 const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
                               color: _selectedTags.contains(tag)
-                                  ? const Color(0xFF6C5CE7).withAlpha(200)
-                                  : Colors.grey.shade100,
+                                  ? accentColor.withAlpha(200)
+                                  : palette.checkerA,
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(
                                 color: _selectedTags.contains(tag)
-                                    ? const Color(0xFF6C5CE7).withAlpha(150)
-                                    : Colors.grey.shade300,
+                                    ? accentColor.withAlpha(150)
+                                    : palette.border,
                                 width: 1,
                               ),
                             ),
@@ -486,8 +536,8 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                               style: TextStyle(
                                 fontSize: 9.5,
                                 color: _selectedTags.contains(tag)
-                                    ? Colors.white
-                                    : Colors.grey[700],
+                                    ? palette.onAccent
+                                    : palette.textMuted,
                                 fontWeight: _selectedTags.contains(tag)
                                     ? FontWeight.w600
                                     : FontWeight.normal,
@@ -514,7 +564,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
         : '共 $_total 条，显示 $shown 条';
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-      child: Text(text, style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+      child: Text(text, style: TextStyle(fontSize: 11, color: palette.textSecondary)),
     );
   }
 
@@ -585,6 +635,13 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                       ),
                       const SizedBox(width: 8),
                       fluent.Button(
+                        onPressed: (_isImporting || _isScanning)
+                            ? null
+                            : _importLocal,
+                        child: Text(_isImporting ? '导入中…' : '导入本地…'),
+                      ),
+                      const SizedBox(width: 8),
+                      fluent.Button(
                         onPressed: _isScanning ? null : _scanBundles,
                         child: const Text('重新读取索引'),
                       ),
@@ -648,6 +705,60 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
                   ),
           ),
       ],
+    );
+  }
+}
+
+/// compute 入口必须是顶层/静态函数（不能捕获 State 闭包）：base64 → 字节。
+Uint8List _decodePreviewBase64(String base64Data) => base64Decode(base64Data);
+
+/// 空预览的共享占位（data 缺失/键为空时用），避免每次分配新列表。
+final Uint8List _emptyPreviewBytes = Uint8List(0);
+
+/// 预览对话框内容：future 存进 State（initState 一次），照搬 image_asset_picker
+/// 的 _PreviewPane 样板——build 期间不再新建 future，FutureBuilder 不会
+/// 每次 rebuild 重新订阅、进而重发请求/重解码。
+class _AssetPreviewBody extends StatefulWidget {
+  const _AssetPreviewBody({required this.future});
+
+  final Future<Uint8List> future;
+
+  @override
+  State<_AssetPreviewBody> createState() => _AssetPreviewBodyState();
+}
+
+class _AssetPreviewBodyState extends State<_AssetPreviewBody> {
+  late final Future<Uint8List> _future = widget.future;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return SingleChildScrollView(
+            child: Text('加载失败：${snapshot.error}'),
+          );
+        }
+        final bytes = snapshot.data ?? _emptyPreviewBytes;
+        if (bytes.isEmpty) return const Center(child: Text('无预览数据'));
+        // 按显示宽 × DPR 限解码尺寸：1080p 原图全尺寸解码位图 ≈8MB/张。
+        return LayoutBuilder(
+          builder: (context, box) {
+            final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1;
+            final px = (box.maxWidth.isFinite ? box.maxWidth : 512.0) * dpr;
+            final w = px.ceil();
+            return Image.memory(
+              bytes,
+              fit: BoxFit.contain,
+              cacheWidth: w < 64 ? 64 : (w > 4096 ? 4096 : w),
+            );
+          },
+        );
+      },
     );
   }
 }

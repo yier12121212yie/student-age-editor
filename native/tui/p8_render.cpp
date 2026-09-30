@@ -42,6 +42,13 @@ std::string Cut(const std::string& s, size_t n) {
     return s.substr(0, i);
 }
 
+// 字节 -> "12.3 MB"（一位小数，附件大小展示用；+0.05MB 再取整 = 四舍五入）。
+std::string SizeMb(long long bytes) {
+    if (bytes < 0) bytes = 0;
+    const long long tenths = (bytes * 10 + 524288) / 1048576;
+    return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " MB";
+}
+
 struct Slice {
     int start, end;
 };
@@ -428,6 +435,64 @@ Element CloudBody(const AppState& s, int width, int lh) {
     return vbox(std::move(body));
 }
 
+// 检查更新 modal (u)：GET /api/update/check 的结果。打开弹窗本身不发请求，
+// 未检查时只给按键提示；失败与成功都只读 update_* 字段。
+Element UpdateBody(const AppState& s, int width, int lh) {
+    auto cut = [&](const std::string& v) {
+        return Cut(v, static_cast<size_t>(std::max(4, width - 14)));
+    };
+    if (!s.update_loaded) return vbox({text("  （按 r 检查更新…）") | color(th::TextDim())});
+    if (!s.update_ok)
+        return vbox({text("  错误: " + cut(s.update_error)) | color(th::ErrorColor()),
+                     text("  （按 r 重试）") | color(th::TextDim())});
+    Elements out;
+    out.push_back(text("  当前版本: " + cut(s.update_current.empty() ? "-" : s.update_current)) |
+                  color(th::TextMain()));
+    out.push_back(text("  最新版本: " +
+                       cut(s.update_latest_tag.empty() ? "-" : s.update_latest_tag) +
+                       (s.update_latest_name.empty() ? "" : "  " + cut(s.update_latest_name))) |
+                  color(th::TextMain()));
+    out.push_back(text(std::string("  是否需要更新: ") +
+                       (s.update_available ? "有可用更新" : "已是最新")) |
+                  (s.update_available ? color(th::SyncGreen()) : color(th::TextDim())));
+    out.push_back(text(std::string("  类型: ") +
+                       (s.update_prerelease ? "预发行版 (prerelease)" : "正式版")) |
+                  (s.update_prerelease ? color(th::WarnColor()) : color(th::TextDim())));
+    out.push_back(text("  发布时间: " +
+                       cut(s.update_published_at.empty() ? "-" : s.update_published_at)) |
+                  color(th::TextDim()));
+    out.push_back(text("  发行页: " + cut(s.update_html_url.empty() ? "-" : s.update_html_url)) |
+                  color(th::TextDim()));
+    if (s.update_assets.empty()) {
+        out.push_back(text("  附件: 0 个") | color(th::TextDim()));
+    } else {
+        const UpdateAsset& a0 = s.update_assets.front();
+        out.push_back(text("  附件: " + std::to_string(s.update_assets.size()) + " 个  首个: " +
+                           cut(a0.name) + "  " + SizeMb(a0.size)) |
+                      color(th::TextDim()));
+    }
+    out.push_back(text("  更新说明:") | color(th::SectionOrange()));
+    // release body 是 Markdown：按行贴，最多 ~20 行（也受弹窗高度限制），超出
+    // 给一行省略号。
+    const int max_lines = std::min(20, std::max(1, lh - 4));
+    int shown = 0;
+    size_t pos = 0;
+    while (pos < s.update_notes.size() && shown < max_lines) {
+        size_t nl = s.update_notes.find('\n', pos);
+        const std::string line =
+            s.update_notes.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        out.push_back(text("  " + cut(line)) | color(th::TextDim()));
+        ++shown;
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+    if (s.update_notes.empty())
+        out.push_back(text("  （无）") | color(th::TextDim()));
+    else if (shown >= max_lines && pos < s.update_notes.size())
+        out.push_back(text("  …（已截断）") | color(th::TextDim()));
+    return vbox(std::move(out));
+}
+
 // The permissionMode=="confirm" approval box (topmost modal).
 Element ConfirmBody(const AppState& s, int width) {
     return vbox({text("  " + Cut(s.confirm.detail,
@@ -494,6 +559,7 @@ Element HelpBody() {
     return vbox({hbox({text(" 全局") | bold | color(th::SectionOrange()), filler()}),
                  text("  q / Ctrl-Q    退出（有未保存修改先确认）") | color(TextDim()),
                  text("  a / c / p / b  AI 助手 / 云同步 / 插件 / Bug 扫描弹窗") | color(TextDim()),
+                 text("  u             检查更新（GitHub Releases）") | color(TextDim()),
                  text("  Ctrl-K        全局搜索对白") | color(TextDim()),
                  text("  Ctrl-M        权限模式 confirm ↔ full") | color(TextDim()),
                  text("  Ctrl-N        无代码模式开关（选效果/人物，不写代码）") |
@@ -569,6 +635,10 @@ ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
                              "↑↓ 选 Provider  Enter 读取  u/d/b 方向  y DryRun  x 清理  s 同步  "
                              "t 测试  Esc 关闭",
                              width, list_height);
+                break;
+            case Page::Update:
+                body = Modal(s, UpdateBody(s, width, list_height), "⬆️ 检查更新",
+                             "r / Enter 检查更新  Esc 关闭", width, list_height);
                 break;
             case Page::Main:
                 body = BrowseBody(s, width, list_height);

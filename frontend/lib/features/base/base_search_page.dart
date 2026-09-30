@@ -18,7 +18,12 @@ class BaseSearchPage extends StatefulWidget {
 
 class _BaseSearchPageState extends State<BaseSearchPage> {
   String _tab = 'events'; // events | talks
-  Map<String, dynamic> _status = {};
+  // 阶段 4c：状态由 ValueNotifier 驱动，/api/base/status 的轮询回包
+  // 只重建状态卡/门控子树，不再整页 setState。
+  final ValueNotifier<Map<String, dynamic>> _statusN =
+      ValueNotifier<Map<String, dynamic>>(const {});
+  // 读侧统一走此 getter；写侧改 _statusN.value（ValueNotifier 自动通知订阅者）。
+  Map<String, dynamic> get _status => _statusN.value;
   bool _loadingBase = false;
 
   // 事件检索
@@ -38,6 +43,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
   final TextEditingController _talkQuery = TextEditingController();
   List<Map<String, dynamic>> _talks = [];
   bool _talkBusy = false;
+  // 搜索请求代际（阶段 3）：过期响应到达时直接丢弃。
+  int _evtSeq = 0;
+  int _talkSeq = 0;
 
   @override
   void initState() {
@@ -47,6 +55,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
 
   @override
   void dispose() {
+    _statusN.dispose();
     _evtQuery.dispose();
     _talkQuery.dispose();
     super.dispose();
@@ -56,11 +65,14 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
     try {
       final r = await ApiClient.instance.get('/api/base/status');
       if (!mounted) return;
-      setState(() => _status = (r as Map).cast<String, dynamic>());
+      _statusN.value = (r as Map).cast<String, dynamic>();
     } catch (_) {}
   }
 
   Future<void> _loadBase({bool force = false}) async {
+    // 防重（阶段 3）：轮询窗口长达 300s，入口不拦的话「重新加载原版数据」
+    // 连点会并发两条 POST /api/base/load + 两套轮询循环互踩状态。
+    if (_loadingBase) return;
     setState(() => _loadingBase = true);
     try {
       await ApiClient.instance.post('/api/base/load', body: {'force': force});
@@ -70,8 +82,8 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
         if (!mounted) return;
         final st = await ApiClient.instance.get('/api/base/status');
         if (!mounted) return;
-        setState(() => _status = (st as Map).cast<String, dynamic>());
-        if (_status['status'] != 'loading') break;
+        _statusN.value = (st as Map).cast<String, dynamic>();
+        if (_statusN.value['status'] != 'loading') break;
       }
     } catch (e) {
       if (mounted) _err(e.toString());
@@ -81,6 +93,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
   }
 
   Future<void> _searchEvents() async {
+    // 请求代际号（阶段 3）：快速翻页/改筛选时并发多个搜索，旧响应可能
+    // 晚于新响应到达——不带代际校验就把过期结果 setState 上去。
+    final seq = ++_evtSeq;
     setState(() => _evtBusy = true);
     try {
       final r = await ApiClient.instance.get(
@@ -93,7 +108,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
           'per_page': '$_perPage',
         },
       );
-      if (!mounted) return;
+      if (!mounted || seq != _evtSeq) return; // 迟到的过期响应直接丢弃
       final m = (r as Map).cast<String, dynamic>();
       setState(() {
         _events = (m['events'] as List? ?? []).cast<Map<String, dynamic>>();
@@ -101,30 +116,31 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
         _selected.clear();
       });
     } catch (e) {
-      if (mounted) _err(e.toString());
+      if (mounted && seq == _evtSeq) _err(e.toString());
     } finally {
-      if (mounted) setState(() => _evtBusy = false);
+      if (mounted && seq == _evtSeq) setState(() => _evtBusy = false);
     }
   }
 
   Future<void> _searchTalks() async {
     final q = _talkQuery.text.trim();
     if (q.isEmpty) return;
+    final seq = ++_talkSeq;
     setState(() => _talkBusy = true);
     try {
       final r = await ApiClient.instance.get(
         '/api/search/talk',
         query: {'q': q},
       );
-      if (!mounted) return;
+      if (!mounted || seq != _talkSeq) return;
       setState(
         () => _talks = ((r as Map)['results'] as List? ?? [])
             .cast<Map<String, dynamic>>(),
       );
     } catch (e) {
-      if (mounted) _err(e.toString());
+      if (mounted && seq == _talkSeq) _err(e.toString());
     } finally {
-      if (mounted) setState(() => _talkBusy = false);
+      if (mounted && seq == _talkSeq) setState(() => _talkBusy = false);
     }
   }
 
@@ -184,7 +200,11 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
       children: [
         _header(),
         Divider(height: 1, color: palette.border),
-        _statusCard(),
+        // 阶段 4c：状态卡单独订阅 _statusN，轮询只重建此卡。
+        ValueListenableBuilder<Map<String, dynamic>>(
+          valueListenable: _statusN,
+          builder: (ctx, _, _) => _statusCard(),
+        ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: Row(
@@ -213,7 +233,15 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
           ),
         ),
         Divider(height: 1, color: palette.border),
-        Expanded(child: _tab == 'events' ? _eventsTab() : _talksTab()),
+        // 阶段 4c：tab 体的「未就绪」门控订阅 _statusN——
+        // 加载轮询不再整页 setState，只重建这棵子树。
+        Expanded(
+          child: ValueListenableBuilder<Map<String, dynamic>>(
+            valueListenable: _statusN,
+            builder: (ctx, _, _) =>
+                _tab == 'events' ? _eventsTab() : _talksTab(),
+          ),
+        ),
       ],
     );
   }
@@ -224,10 +252,10 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             FluentIcons.book_search_24_regular,
             size: 15,
-            color: Color(0xFF6C5CE7),
+            color: accentColor,
           ),
           const SizedBox(width: 8),
           Text(
@@ -281,8 +309,18 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
         style: TextStyle(fontSize: 11, color: palette.danger),
       );
     } else {
+      // Surface where the backend looks so a diverging data root (bug #15) is
+      // visible instead of a bare "not loaded".
+      final base = (_status['base_dir'] as String?) ?? '';
+      final root = (_status['data_root'] as String?) ?? '';
+      final where = base.isNotEmpty
+          ? 'base 目录: $base'
+          : (root.isNotEmpty ? '数据根: $root' : '');
       content = Text(
-        '未加载原版数据：配置 editor_env.json 或点击扫描',
+        '未加载原版数据：配置 editor_env.json 或点击扫描'
+        '${where.isEmpty ? '' : '\n$where'}',
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(fontSize: 11, color: palette.textMuted),
       );
     }
@@ -306,10 +344,10 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
                   onTap: _loadingBase ? null : _loadBase,
-                  child: const Icon(
+                  child: Icon(
                     FluentIcons.play_24_regular,
                     size: 14,
-                    color: Color(0xFF6C5CE7),
+                    color: accentColor,
                   ),
                 ),
               ),
@@ -429,7 +467,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                     : FluentIcons.checkbox_unchecked_24_regular,
                                 size: 16,
                                 color: selected
-                                    ? const Color(0xFF6C5CE7)
+                                    ? accentColor
                                     : palette.textHint,
                               ),
                             ),
@@ -469,7 +507,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                   child: Icon(
                                     FluentIcons.arrow_download_24_regular,
                                     size: 14,
-                                    color: const Color(0xFF6C5CE7),
+                                    color: accentColor,
                                   ),
                                 ),
                               ),
@@ -488,9 +526,9 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
               onPressed: _extracting ? null : _extractSelected,
               style: fluent.ButtonStyle(
                 backgroundColor: WidgetStatePropertyAll(
-                  const Color(0xFF6C5CE7),
+                  accentColor,
                 ),
-                foregroundColor: const WidgetStatePropertyAll(Colors.white),
+                foregroundColor: WidgetStatePropertyAll(palette.onAccent),
               ),
               child: Text(_extracting
                   ? '提取中…'
@@ -595,7 +633,7 @@ class _BaseSearchPageState extends State<BaseSearchPage> {
                                         child: Icon(
                                           FluentIcons.arrow_download_24_regular,
                                           size: 13,
-                                          color: const Color(0xFF6C5CE7),
+                                          color: accentColor,
                                         ),
                                       ),
                                     ),

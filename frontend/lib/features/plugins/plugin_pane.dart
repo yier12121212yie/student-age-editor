@@ -30,6 +30,26 @@ class PluginPane extends StatefulWidget {
   State<PluginPane> createState() => _PluginPaneState();
 }
 
+/// 把 manifest 声明的相对 url 拼进 `/api/plugins/<pluginId>/` 命名空间。
+///
+/// pluginId 与 url 路径段均做编码（manifest 里的 id 可能含中文/空格/斜杠）。
+/// manifest 属外部输入：拼全后折叠 `.`/`..` 段并断言结果仍在本插件命名空间内，
+/// 否则 `url:"../../mods/delete"` 之类的声明会让用户一点按钮就调用任意后端
+/// 端点（带任意 JSON body）。越界抛 [StateError]，由调用方 toast 呈现。
+String buildPluginScopedUrl(String pluginId, String url) {
+  final prefix = '/api/plugins/${Uri.encodeComponent(pluginId)}/';
+  final encodedUrl = url
+      .replaceFirst(RegExp(r'^/+'), '')
+      .split('/')
+      .map(Uri.encodeComponent)
+      .join('/');
+  final full = Uri.parse('$prefix$encodedUrl').normalizePath().path;
+  if (!full.startsWith(prefix)) {
+    throw StateError('插件 url 越出自身命名空间：$url');
+  }
+  return full;
+}
+
 class _PluginPaneState extends State<PluginPane> {
   Map<String, dynamic>? _data;
   bool _loading = false;
@@ -540,7 +560,7 @@ class _PluginPaneState extends State<PluginPane> {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(6),
-          borderSide: BorderSide(color: const Color(0xFF6C5CE7)),
+          borderSide: BorderSide(color: accentColor),
         ),
       );
 
@@ -661,17 +681,16 @@ class _PluginPaneState extends State<PluginPane> {
     }
   }
 
-  /// url 为相对路径：统一拼 `/api/plugins/<pluginId>/` 前缀。
+  /// url 为相对路径：统一走 [buildPluginScopedUrl]（阶段 1d 守卫）。
   /// method 缺省 POST；GET 时 body 参数拼入 query。
-  /// pluginId 与 url 路径段均做编码（manifest 里的 id 可能含中文/空格/斜杠）。
   Future<dynamic> _request(String url,
       {String method = 'POST', Map<String, dynamic>? body}) {
-    final encodedUrl = url
-        .replaceFirst(RegExp(r'^/+'), '')
-        .split('/')
-        .map(Uri.encodeComponent)
-        .join('/');
-    final full = '/api/plugins/${Uri.encodeComponent(widget.pluginId)}/$encodedUrl';
+    final String full;
+    try {
+      full = buildPluginScopedUrl(widget.pluginId, url);
+    } catch (e) {
+      return Future.error(e);
+    }
     switch (method) {
       case 'GET':
         return ApiClient.instance.get(full, query: {
@@ -752,7 +771,7 @@ MarkdownStyleSheet _panelMdStyle() => MarkdownStyleSheet(
           fontSize: 13, color: palette.textSecondary, height: 1.5),
       blockquoteDecoration: BoxDecoration(
         color: palette.panel,
-        border: Border(left: BorderSide(color: Color(0xFF6C5CE7), width: 3)),
+        border: Border(left: BorderSide(color: accentColor, width: 3)),
       ),
       horizontalRuleDecoration: BoxDecoration(
           border: Border(top: BorderSide(color: palette.border))),

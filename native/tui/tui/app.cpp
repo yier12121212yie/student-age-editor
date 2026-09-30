@@ -444,6 +444,33 @@ void TuiApp::RunIntent(Intent intent) {
             st.status = st.cloud_sync_summary;
             break;
         }
+        case Intent::CheckUpdate: {
+            // 只读检查（后端代查 GitHub Releases，默认 6 秒超时）。先带上已知的
+            // 当前版本；首次为空时由后端用它自己编译进去的版本号兜底。
+            UpdateResult r = api_.CheckUpdate(st.update_current, &err);
+            st.update_loaded = true;
+            st.update_ok = r.ok;
+            st.update_error = r.error;
+            if (!r.current.empty()) st.update_current = r.current;
+            st.update_latest_tag = r.latest_tag;
+            st.update_latest_name = r.latest_name;
+            st.update_published_at = r.published_at;
+            st.update_html_url = r.html_url;
+            st.update_notes = r.notes;
+            st.update_available = r.update_available;
+            st.update_prerelease = r.prerelease;
+            st.update_assets = std::move(r.assets);
+            if (!r.ok) {
+                st.status = "检查更新失败: " + (r.error.empty() ? err : r.error);
+            } else if (r.update_available) {
+                st.status = "发现新版本 " +
+                            (r.latest_tag.empty() ? r.latest_name : r.latest_tag) +
+                            (r.prerelease ? "（预发行版）" : "");
+            } else {
+                st.status = "已是最新 " + (r.latest_tag.empty() ? r.current : r.latest_tag);
+            }
+            break;
+        }
         case Intent::LoadAiSettings:
             st.permission_mode = api_.LoadPermissionMode(&err);
             break;

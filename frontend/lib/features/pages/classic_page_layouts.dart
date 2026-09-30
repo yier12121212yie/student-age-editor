@@ -295,7 +295,7 @@ class _PersonLayoutState extends State<_PersonLayout> {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                const Icon(FluentIcons.arrow_sync_24_regular, size: 14, color: Color(0xFF6C5CE7)),
+                                Icon(FluentIcons.arrow_sync_24_regular, size: 14, color: accentColor),
                                 const SizedBox(width: 6),
                                 Flexible(
                                   child: Text(
@@ -1595,8 +1595,8 @@ class _ActionPill extends StatelessWidget {
     Color? borderColor = palette.borderHover;
 
     if (primary) {
-      bg = const Color(0xFF6C5CE7);
-      fg = Colors.white;
+      bg = accentColor;
+      fg = palette.onAccent;
       borderColor = null;
     } else if (danger) {
       bg = palette.tintDanger;
@@ -1648,8 +1648,8 @@ class _ToolActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = primary ? const Color(0xFF6C5CE7) : palette.card;
-    final fg = primary ? Colors.white : palette.textPrimary;
+    final bg = primary ? accentColor : palette.card;
+    final fg = primary ? palette.onAccent : palette.textPrimary;
 
     return MouseRegion(
       cursor: onPressed != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
@@ -1796,14 +1796,14 @@ class _ConfigEntryListState extends State<_ConfigEntryList> {
               decoration: BoxDecoration(
                 color: isSelected ? palette.tintAccent : palette.card,
                 borderRadius: BorderRadius.circular(4),
-                border: isSelected ? Border.all(color: const Color(0xFF6C5CE7), width: 1) : null,
+                border: isSelected ? Border.all(color: accentColor, width: 1) : null,
               ),
               child: Row(
                 children: [
                   Icon(
                     FluentIcons.document_24_regular,
                     size: 13,
-                    color: isSelected ? const Color(0xFF6C5CE7) : palette.accentLight,
+                    color: isSelected ? accentColor : palette.accentLight,
                   ),
                   const SizedBox(width: 6),
                   Expanded(

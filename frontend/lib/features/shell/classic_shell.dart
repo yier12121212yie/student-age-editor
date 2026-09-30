@@ -7,7 +7,7 @@ import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
-import '../ai/ai_panel.dart';
+import 'ai_dock.dart';
 import '../base/base_search_page.dart';
 import '../bugfix/bugfix_panel.dart';
 import '../editor/editor_controller.dart';
@@ -18,7 +18,6 @@ import '../plugins/plugins_page.dart';
 import '../resources/resources_page.dart';
 import '../settings/settings_page.dart';
 import 'shell_state.dart';
-import 'shell_widgets.dart';
 import 'status_bar.dart';
 import '../../core/app_theme.dart';
 
@@ -77,7 +76,9 @@ class _ClassicShellState extends State<ClassicShell> {
     });
     final def = pageById(pageId);
     if (def != null) {
-      widget.shell.controller.open(OpenDoc.page(pageId: pageId, title: def.title));
+      widget.shell.controller.open(
+        OpenDoc.page(pageId: pageId, title: def.title),
+      );
     }
   }
 
@@ -87,11 +88,14 @@ class _ClassicShellState extends State<ClassicShell> {
       context: context,
       barrierDismissible: true,
       barrierLabel: title,
-      barrierColor: Colors.black54,
+      barrierColor: palette.scrim,
       transitionDuration: AppMotion.normal,
       pageBuilder: (ctx, a1, a2) => Dialog(
         backgroundColor: palette.panel,
-        insetPadding: EdgeInsets.symmetric(horizontal: isMob ? 12 : 40, vertical: isMob ? 24 : 40),
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: isMob ? 12 : 40,
+          vertical: isMob ? 24 : 40,
+        ),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
           side: BorderSide(color: palette.surface),
@@ -115,7 +119,11 @@ class _ClassicShellState extends State<ClassicShell> {
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
+                    icon: Icon(
+                      FluentIcons.dismiss_24_regular,
+                      size: 16,
+                      color: palette.textSecondary,
+                    ),
                     onPressed: () => Navigator.of(ctx).pop(),
                   ),
                 ],
@@ -133,7 +141,10 @@ class _ClassicShellState extends State<ClassicShell> {
           child: ScaleTransition(
             scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
             child: SlideTransition(
-              position: Tween<Offset>(begin: const Offset(0, 0.02), end: Offset.zero).animate(curved),
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.02),
+                end: Offset.zero,
+              ).animate(curved),
               child: child,
             ),
           ),
@@ -147,7 +158,10 @@ class _ClassicShellState extends State<ClassicShell> {
   // 待后端提供打包导出 API 后恢复。
 
   Future<void> _importMod() async {
-    _showToolModal('📂 加载 / 切换模组', ModsPage(state: widget.state, controller: widget.shell.controller));
+    _showToolModal(
+      '📂 加载 / 切换模组',
+      ModsPage(state: widget.state, controller: widget.shell.controller),
+    );
   }
 
   @override
@@ -173,10 +187,8 @@ class _ClassicShellState extends State<ClassicShell> {
               _ClassicHeader(
                 uiMode: widget.uiMode,
                 modName: state.modName.isEmpty ? '(未加载/空白)' : state.modName,
-                onGlobalSearch: () => _showToolModal(
-                  '🔍 全局搜索',
-                  BaseSearchPage(state: state),
-                ),
+                onGlobalSearch: () =>
+                    _showToolModal('🔍 全局搜索', BaseSearchPage(state: state)),
                 onModPreview: () {
                   shell.controller.open(OpenDoc.preview(eventId: '8000'));
                 },
@@ -184,32 +196,34 @@ class _ClassicShellState extends State<ClassicShell> {
                   '📂 加载 / 切换模组',
                   ModsPage(state: state, controller: shell.controller),
                 ),
-                onMountRes: () => _showToolModal(
-                  '⚙️ 挂载解包资源',
-                  ResourcesPage(state: state),
-                ),
-                onDiagnose: () => _showToolModal(
-                  '🛠️ 扫描修复',
-                  BugfixPanel(state: state),
-                ),
+                onMountRes: () =>
+                    _showToolModal('⚙️ 挂载解包资源', ResourcesPage(state: state)),
+                onDiagnose: () =>
+                    _showToolModal('🛠️ 扫描修复', BugfixPanel(state: state)),
                 onImport: _importMod,
                 onPlugins: () {
                   shell.selectPane(SidePane.plugins);
                   shell.setActivePluginPanel(null);
-                  _showToolModal('🧩 插件', PluginsPage(pluginState: widget.pluginState));
+                  _showToolModal(
+                    '🧩 插件',
+                    PluginsPage(pluginState: widget.pluginState),
+                  );
                 },
                 onToggleAi: shell.toggleAi,
                 onSettings: () => _showToolModal(
                   '⚙️ 系统设置',
                   SettingsPage(
-                    settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
+                    settings: shell.settingsLoaded
+                        ? shell.aiSettings
+                        : AiSettings(),
                     settingsLoaded: shell.settingsLoaded,
                     onChanged: shell.setAiSettings,
                     uiMode: uiMode,
                     onUiModeChanged: widget.onUiModeChanged,
                   ),
                 ),
-                onToggleUiMode: () => widget.onUiModeChanged(uiMode.nextCycle()),
+                onToggleUiMode: () =>
+                    widget.onUiModeChanged(uiMode.nextCycle()),
               ),
               Expanded(
                 child: Row(
@@ -223,7 +237,9 @@ class _ClassicShellState extends State<ClassicShell> {
                       onOpenSettings: () => _showToolModal(
                         '⚙️ 系统设置',
                         SettingsPage(
-                          settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
+                          settings: shell.settingsLoaded
+                              ? shell.aiSettings
+                              : AiSettings(),
                           settingsLoaded: shell.settingsLoaded,
                           onChanged: shell.setAiSettings,
                           uiMode: uiMode,
@@ -244,8 +260,17 @@ class _ClassicShellState extends State<ClassicShell> {
                                 switchInCurve: AppMotion.easeOut,
                                 switchOutCurve: AppMotion.easeOut,
                                 transitionBuilder: (child, anim) {
-                                  final slide = Tween<Offset>(begin: const Offset(0.02, 0), end: Offset.zero).animate(anim);
-                                  return FadeTransition(opacity: anim, child: SlideTransition(position: slide, child: child));
+                                  final slide = Tween<Offset>(
+                                    begin: const Offset(0.02, 0),
+                                    end: Offset.zero,
+                                  ).animate(anim);
+                                  return FadeTransition(
+                                    opacity: anim,
+                                    child: SlideTransition(
+                                      position: slide,
+                                      child: child,
+                                    ),
+                                  );
                                 },
                                 child: ClassicPageLayouts(
                                   key: ValueKey(_activePageId),
@@ -253,70 +278,34 @@ class _ClassicShellState extends State<ClassicShell> {
                                   page: currentPageDef,
                                   cfgName: _activeCfgName,
                                   onPreview: (evtId) {
-                                    shell.controller.open(OpenDoc.preview(eventId: evtId));
+                                    shell.controller.open(
+                                      OpenDoc.preview(eventId: evtId),
+                                    );
                                   },
                                   onOpenSearch: () {
-                                    _showToolModal('🔍 全局搜索', BaseSearchPage(state: state));
+                                    _showToolModal(
+                                      '🔍 全局搜索',
+                                      BaseSearchPage(state: state),
+                                    );
                                   },
                                 ),
                               ),
                             ),
-                            AnimatedContainer(
-                              duration: AppMotion.normal,
-                              curve: AppMotion.easeOut,
-                              width: shell.aiOpen ? shell.aiWidth + 5 : 0,
-                              child: ClipRect(
-                                child: OverflowBox(
-                                  alignment: Alignment.centerRight,
-                                  maxWidth: shell.aiWidth + 5,
-                                  minWidth: shell.aiWidth + 5,
-                                  child: AnimatedOpacity(
-                                    duration: AppMotion.normal,
-                                    opacity: shell.aiOpen ? 1 : 0,
-                                    child: AnimatedSlide(
-                                      duration: AppMotion.normal,
-                                      curve: AppMotion.easeOut,
-                                      offset: shell.aiOpen ? Offset.zero : const Offset(0.06, 0),
-                                      child: shell.aiOpen
-                                          ? Row(
-                                              children: [
-                                                ResizeHandle(
-                                                  width: shell.aiWidth,
-                                                  min: ShellState.minAiWidth,
-                                                  max: ShellState.maxAiWidth,
-                                                  defaultWidth: ShellState.defaultAiWidth,
-                                                  inverted: true,
-                                                  onChanged: shell.setAiWidth,
-                                                ),
-                                                SizedBox(
-                                                  width: shell.aiWidth,
-                                                  child: ClipRRect(
-                                                    borderRadius: BorderRadius.circular(8),
-                                                    child: Container(
-                                                      color: palette.panel,
-                                                      child: AiPanel(
-                                                        state: state,
-                                                        settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
-                                                        onChanged: shell.setAiSettings,
-                                                        onOpenSettings: () => _showToolModal(
-                                                          '⚙️ 系统设置',
-                                                          SettingsPage(
-                                                            settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
-                                                            settingsLoaded: shell.settingsLoaded,
-                                                            onChanged: shell.setAiSettings,
-                                                            uiMode: uiMode,
-                                                            onUiModeChanged: widget.onUiModeChanged,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            )
-                                          : const SizedBox.shrink(),
-                                    ),
-                                  ),
+                            AiDock(
+                              state: state,
+                              shell: shell,
+                              // 经典壳侧栏悬浮在内容之上：面板需自带不透明底板
+                              panelBackground: palette.panel,
+                              onOpenSettings: () => _showToolModal(
+                                '⚙️ 系统设置',
+                                SettingsPage(
+                                  settings: shell.settingsLoaded
+                                      ? shell.aiSettings
+                                      : AiSettings(),
+                                  settingsLoaded: shell.settingsLoaded,
+                                  onChanged: shell.setAiSettings,
+                                  uiMode: uiMode,
+                                  onUiModeChanged: widget.onUiModeChanged,
                                 ),
                               ),
                             ),
@@ -375,22 +364,53 @@ class _ClassicHeader extends StatelessWidget {
 
   /// 循环切换按钮的目标模式图标：创作=画笔，经典=列表，剧情图=流程图。
   IconData _nextModeIcon(UiMode m) => switch (m) {
-        UiMode.creation => FluentIcons.paint_brush_24_regular,
-        UiMode.classic => FluentIcons.list_24_regular,
-        UiMode.storyFlow => FluentIcons.flow_24_regular,
-      };
+    UiMode.creation => FluentIcons.paint_brush_24_regular,
+    UiMode.classic => FluentIcons.list_24_regular,
+    UiMode.storyFlow => FluentIcons.flow_24_regular,
+  };
 
   @override
   Widget build(BuildContext context) {
     final buttons = <Widget>[
-      _ToolbarButton(emoji: '🔍', label: '全局搜索 (Ctrl+F)', onPressed: onGlobalSearch, delay: 0),
-      _ToolbarButton(emoji: '📑', label: '模组预览 (Ctrl+P)', onPressed: onModPreview, delay: 1),
-      _ToolbarButton(emoji: '📂', label: '加载 / 切换模组', primary: true, onPressed: onSwitchMod, delay: 2),
-      _ToolbarButton(emoji: '⚙️', label: '挂载解包资源', onPressed: onMountRes, delay: 3),
-      _ToolbarButton(emoji: '🛠️', label: '扫描修复', onPressed: onDiagnose, delay: 4),
+      _ToolbarButton(
+        emoji: '🔍',
+        label: '全局搜索 (Ctrl+F)',
+        onPressed: onGlobalSearch,
+        delay: 0,
+      ),
+      _ToolbarButton(
+        emoji: '📑',
+        label: '模组预览 (Ctrl+P)',
+        onPressed: onModPreview,
+        delay: 1,
+      ),
+      _ToolbarButton(
+        emoji: '📂',
+        label: '加载 / 切换模组',
+        primary: true,
+        onPressed: onSwitchMod,
+        delay: 2,
+      ),
+      _ToolbarButton(
+        emoji: '⚙️',
+        label: '挂载解包资源',
+        onPressed: onMountRes,
+        delay: 3,
+      ),
+      _ToolbarButton(
+        emoji: '🛠️',
+        label: '扫描修复',
+        onPressed: onDiagnose,
+        delay: 4,
+      ),
       _ToolbarButton(emoji: '📥', label: '导入', onPressed: onImport, delay: 6),
       _ToolbarButton(emoji: '🧩', label: '插件', onPressed: onPlugins, delay: 7),
-      _ToolbarButton(emoji: '🤖', label: 'AI 助手', onPressed: onToggleAi, delay: 8),
+      _ToolbarButton(
+        emoji: '🤖',
+        label: 'AI 助手',
+        onPressed: onToggleAi,
+        delay: 8,
+      ),
       _ToolbarButton(emoji: '⚙️', label: '设置', onPressed: onSettings, delay: 9),
     ];
 
@@ -411,15 +431,38 @@ class _ClassicHeader extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  const Icon(FluentIcons.box_24_regular, size: 18, color: Color(0xFF6C5CE7)),
+                  Icon(
+                    FluentIcons.box_24_regular,
+                    size: 18,
+                    color: accentColor,
+                  ),
                   const SizedBox(width: 8),
-                  Text('学生时代模组编辑器', style: TextStyle(fontSize: 14, color: palette.textHigh, fontWeight: FontWeight.w600)),
+                  Text(
+                    '学生时代模组编辑器',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: palette.textHigh,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   const SizedBox(width: 14),
-                  Icon(FluentIcons.person_24_regular, size: 13, color: palette.textHint),
+                  Icon(
+                    FluentIcons.person_24_regular,
+                    size: 13,
+                    color: palette.textHint,
+                  ),
                   const SizedBox(width: 4),
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 320),
-                    child: Text('欢迎：神秘造物主 - 当前工作区: $modName', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+                    child: Text(
+                      '欢迎：神秘造物主 - 当前工作区: $modName',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: palette.textSecondary,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 16),
                   _HoverScale(
@@ -431,14 +474,31 @@ class _ClassicHeader extends StatelessWidget {
                           behavior: HitTestBehavior.opaque,
                           onTap: onToggleUiMode,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(color: palette.card, borderRadius: BorderRadius.circular(4), border: Border.all(color: palette.borderHover)),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: palette.card,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: palette.borderHover),
+                            ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(_nextModeIcon(uiMode.nextCycle()), size: 13, color: Color(0xFF6C5CE7)),
+                                Icon(
+                                  _nextModeIcon(uiMode.nextCycle()),
+                                  size: 13,
+                                  color: accentColor,
+                                ),
                                 SizedBox(width: 6),
-                                Text('${uiMode.nextCycle().label}布局', style: TextStyle(fontSize: 11, color: palette.textMid)),
+                                Text(
+                                  '${uiMode.nextCycle().label}布局',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: palette.textMid,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -488,13 +548,24 @@ class _HoverScaleState extends State<_HoverScale> {
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: AnimatedScale(scale: _hover ? 1.04 : 1.0, duration: AppMotion.fast, curve: AppMotion.easeOut, child: widget.child),
+      child: AnimatedScale(
+        scale: _hover ? 1.04 : 1.0,
+        duration: AppMotion.fast,
+        curve: AppMotion.easeOut,
+        child: widget.child,
+      ),
     );
   }
 }
 
 class _ToolbarButton extends StatefulWidget {
-  const _ToolbarButton({required this.emoji, required this.label, required this.onPressed, this.primary = false, this.delay = 0});
+  const _ToolbarButton({
+    required this.emoji,
+    required this.label,
+    required this.onPressed,
+    this.primary = false,
+    this.delay = 0,
+  });
   final String emoji;
   final String label;
   final VoidCallback onPressed;
@@ -509,8 +580,8 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
   bool _pressed = false;
   @override
   Widget build(BuildContext context) {
-    final bg = widget.primary ? const Color(0xFF6C5CE7) : palette.card;
-    final hoverBg = widget.primary ? const Color(0xFF7B6EF0) : palette.surface;
+    final bg = widget.primary ? accentColor : palette.card;
+    final hoverBg = widget.primary ? palette.accentLight : palette.surface;
     return FadeSlide(
       delay: AppMotion.stagger(widget.delay, baseMs: 30),
       offset: const Offset(0, 6),
@@ -529,18 +600,61 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
             curve: AppMotion.easeOut,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
             decoration: BoxDecoration(
-              color: _pressed ? bg.withValues(alpha: 0.85) : _hover ? hoverBg : bg,
+              color: _pressed
+                  ? bg.withValues(alpha: 0.85)
+                  : _hover
+                  ? hoverBg
+                  : bg,
               borderRadius: BorderRadius.circular(5),
-              border: widget.primary ? null : Border.all(color: _hover ? palette.borderHover : palette.surface),
-              boxShadow: _hover ? [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 8, offset: const Offset(0, 2))] : [],
+              border: widget.primary
+                  ? null
+                  : Border.all(
+                      color: _hover ? palette.borderHover : palette.surface,
+                    ),
+              boxShadow: _hover
+                  ? [
+                      BoxShadow(
+                        color: palette.scrimWeak,
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : [],
             ),
-            transform: Matrix4.identity()..scaleByDouble(_pressed ? 0.97 : _hover ? 1.02 : 1.0, _pressed ? 0.97 : _hover ? 1.02 : 1.0, _pressed ? 0.97 : _hover ? 1.02 : 1.0, 1.0),
+            transform: Matrix4.identity()
+              ..scaleByDouble(
+                _pressed
+                    ? 0.97
+                    : _hover
+                    ? 1.02
+                    : 1.0,
+                _pressed
+                    ? 0.97
+                    : _hover
+                    ? 1.02
+                    : 1.0,
+                _pressed
+                    ? 0.97
+                    : _hover
+                    ? 1.02
+                    : 1.0,
+                1.0,
+              ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(widget.emoji, style: const TextStyle(fontSize: 13)),
                 const SizedBox(width: 6),
-                Text(widget.label, style: TextStyle(fontSize: 12, color: widget.primary ? Colors.white : palette.textPrimary, fontWeight: FontWeight.w500)),
+                Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: widget.primary
+                        ? palette.onAccent
+                        : palette.textPrimary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
               ],
             ),
           ),
@@ -566,9 +680,38 @@ class _ClassicNav extends StatelessWidget {
   final VoidCallback onOpenSettings;
 
   static const _groups = <(String, List<(String, String, IconData)>)>[
-    ('基础配置', [('person', '人物综合配置', FluentIcons.person_24_regular), ('resource', '资源综合配置', FluentIcons.box_24_regular), ('function', '功能配置相关', FluentIcons.wrench_24_regular), ('evt', '事件与闲聊', FluentIcons.calendar_24_regular)]),
-    ('内容创作', [('story', '剧情编辑器', FluentIcons.book_letter_24_regular), ('social', '空间手机结局编辑', FluentIcons.chat_24_regular), ('love', '恋爱相关', FluentIcons.heart_24_regular), ('gift', '礼物与纸条', FluentIcons.gift_24_regular)]),
-    ('玩法主题', [('news', '新闻与评论', FluentIcons.news_24_regular), ('fishing', '钓鱼', FluentIcons.food_fish_24_regular), ('travel', '旅游', FluentIcons.globe_24_regular), ('anime', '看番与漫展', FluentIcons.video_24_regular), ('expo', '世博会', FluentIcons.building_24_regular), ('club', '侦探社', FluentIcons.search_24_regular), ('crafts', '手工', FluentIcons.puzzle_piece_24_regular), ('birthday', '生日派对', FluentIcons.food_cake_24_regular), ('negotiation', '辩论交涉', FluentIcons.scales_24_regular)]),
+    (
+      '基础配置',
+      [
+        ('person', '人物综合配置', FluentIcons.person_24_regular),
+        ('resource', '资源综合配置', FluentIcons.box_24_regular),
+        ('function', '功能配置相关', FluentIcons.wrench_24_regular),
+        ('evt', '事件与闲聊', FluentIcons.calendar_24_regular),
+      ],
+    ),
+    (
+      '内容创作',
+      [
+        ('story', '剧情编辑器', FluentIcons.book_letter_24_regular),
+        ('social', '空间手机结局编辑', FluentIcons.chat_24_regular),
+        ('love', '恋爱相关', FluentIcons.heart_24_regular),
+        ('gift', '礼物与纸条', FluentIcons.gift_24_regular),
+      ],
+    ),
+    (
+      '玩法主题',
+      [
+        ('news', '新闻与评论', FluentIcons.news_24_regular),
+        ('fishing', '钓鱼', FluentIcons.food_fish_24_regular),
+        ('travel', '旅游', FluentIcons.globe_24_regular),
+        ('anime', '看番与漫展', FluentIcons.video_24_regular),
+        ('expo', '世博会', FluentIcons.building_24_regular),
+        ('club', '侦探社', FluentIcons.search_24_regular),
+        ('crafts', '手工', FluentIcons.puzzle_piece_24_regular),
+        ('birthday', '生日派对', FluentIcons.food_cake_24_regular),
+        ('negotiation', '辩论交涉', FluentIcons.scales_24_regular),
+      ],
+    ),
     ('官方生态', [('official', '官方兼容工具', FluentIcons.shield_task_24_regular)]),
   ];
 
@@ -611,7 +754,14 @@ class _ClassicNav extends StatelessWidget {
                           delay: AppMotion.stagger(gi, baseMs: 60),
                           child: Padding(
                             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                            child: Text(_groups[gi].$1, style: TextStyle(fontSize: 11, color: palette.textHint, fontWeight: FontWeight.w600)),
+                            child: Text(
+                              _groups[gi].$1,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: palette.textHint,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           ),
                         ),
                         for (var ii = 0; ii < _groups[gi].$2.length; ii++)
@@ -620,13 +770,13 @@ class _ClassicNav extends StatelessWidget {
                             child: _NavItem(
                               icon: _groups[gi].$2[ii].$3,
                               label: _groups[gi].$2[ii].$2,
-                            selected: activePageId == _groups[gi].$2[ii].$1,
-                            onTap: () => onSelectPage(_groups[gi].$2[ii].$1),
+                              selected: activePageId == _groups[gi].$2[ii].$1,
+                              onTap: () => onSelectPage(_groups[gi].$2[ii].$1),
+                            ),
                           ),
-                        ),
+                      ],
                     ],
-                  ],
-                ),
+                  ),
                 ),
                 // Positioned 必须是 Stack 直接子级：IgnorePointer 移入 AnimatedPositioned 内部
                 AnimatedPositioned(
@@ -639,9 +789,14 @@ class _ClassicNav extends StatelessWidget {
                       width: 2.5,
                       height: 20,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF6C5CE7),
+                        color: accentColor,
                         borderRadius: BorderRadius.circular(1),
-                        boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withValues(alpha: 0.45), blurRadius: 8)],
+                        boxShadow: [
+                          BoxShadow(
+                            color: accentColor.withValues(alpha: 0.45),
+                            blurRadius: 8,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -655,8 +810,24 @@ class _ClassicNav extends StatelessWidget {
             children: [
               Column(
                 children: [
-                  FadeSlide(delay: AppMotion.stagger(9), child: _NavItem(icon: FluentIcons.bot_24_regular, label: 'AI 助手', selected: aiOpen, onTap: onToggleAi)),
-                  FadeSlide(delay: AppMotion.stagger(10), child: _NavItem(icon: FluentIcons.settings_24_regular, label: '系统设置', selected: false, onTap: onOpenSettings)),
+                  FadeSlide(
+                    delay: AppMotion.stagger(9),
+                    child: _NavItem(
+                      icon: FluentIcons.bot_24_regular,
+                      label: 'AI 助手',
+                      selected: aiOpen,
+                      onTap: onToggleAi,
+                    ),
+                  ),
+                  FadeSlide(
+                    delay: AppMotion.stagger(10),
+                    child: _NavItem(
+                      icon: FluentIcons.settings_24_regular,
+                      label: '系统设置',
+                      selected: false,
+                      onTap: onOpenSettings,
+                    ),
+                  ),
                 ],
               ),
               // Positioned 必须是 Stack 直接子级：IgnorePointer 移入 AnimatedPositioned 内部
@@ -673,9 +844,14 @@ class _ClassicNav extends StatelessWidget {
                       width: 2.5,
                       height: 20,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF6C5CE7),
+                        color: accentColor,
                         borderRadius: BorderRadius.circular(1),
-                        boxShadow: [BoxShadow(color: const Color(0xFF6C5CE7).withValues(alpha: 0.45), blurRadius: 8)],
+                        boxShadow: [
+                          BoxShadow(
+                            color: accentColor.withValues(alpha: 0.45),
+                            blurRadius: 8,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -691,7 +867,12 @@ class _ClassicNav extends StatelessWidget {
 }
 
 class _NavItem extends StatefulWidget {
-  const _NavItem({required this.icon, required this.label, required this.selected, required this.onTap});
+  const _NavItem({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
   final IconData icon;
   final String label;
   final bool selected;
@@ -718,18 +899,44 @@ class _NavItemState extends State<_NavItem> {
           margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
-            color: widget.selected ? palette.card : _hover ? palette.panel : Colors.transparent,
+            color: widget.selected
+                ? palette.card
+                : _hover
+                ? palette.panel
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(6),
           ),
           child: Row(
             children: [
-              Icon(widget.icon, size: 15, color: widget.selected ? const Color(0xFF6C5CE7) : _hover ? palette.textPrimary : palette.textSecondary),
+              Icon(
+                widget.icon,
+                size: 15,
+                color: widget.selected
+                    ? accentColor
+                    : _hover
+                    ? palette.textPrimary
+                    : palette.textSecondary,
+              ),
               const SizedBox(width: 9),
               Expanded(
                 child: AnimatedDefaultTextStyle(
                   duration: AppMotion.fast,
-                  style: TextStyle(fontSize: 12.5, fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal, color: widget.selected ? palette.textHigh : _hover ? palette.textPrimary : palette.textSecondary),
-                  child: Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: widget.selected
+                        ? FontWeight.w600
+                        : FontWeight.normal,
+                    color: widget.selected
+                        ? palette.textHigh
+                        : _hover
+                        ? palette.textPrimary
+                        : palette.textSecondary,
+                  ),
+                  child: Text(
+                    widget.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ),
             ],
@@ -739,4 +946,3 @@ class _NavItemState extends State<_NavItem> {
     );
   }
 }
-

@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -8,6 +6,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
+import '../../core/zip_staging.dart';
 
 /// 资源包管理页：列出 / 激活 / 删除 / 导入内置游戏资源包。
 /// 资源包内含官方配置表、base_data 与预解码图包，是无游戏环境（Android）
@@ -69,8 +68,8 @@ class _PackManagerPageState extends State<PackManagerPage> {
         actions: [
           fluent.Button(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           fluent.FilledButton(
-            style: const fluent.ButtonStyle(
-              backgroundColor: WidgetStatePropertyAll(Colors.red),
+            style: fluent.ButtonStyle(
+              backgroundColor: WidgetStatePropertyAll(palette.danger),
             ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('删除'),
@@ -87,19 +86,23 @@ class _PackManagerPageState extends State<PackManagerPage> {
     }
   }
 
-  /// 选择本地 zip 导入：先拷贝到应用可写临时目录，再按路径提交后端
-  /// （绕过 base64 与 500MB 体积上限）。
+  /// 选择本地 zip 导入：载荷由 zip_staging 决定——桌面=拷贝到应用可写临时
+  /// 目录后按路径提交（绕过 base64 与体积上限）；web=base64 上传端点。
   Future<void> _import() async {
     const typeGroup = XTypeGroup(label: 'zip', extensions: ['zip']);
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
     if (file == null) return;
-    Directory? tmpDir;
+    StagedZip? staged;
     try {
-      tmpDir = await Directory.systemTemp.createTemp('pack_import_');
-      final dest = '${tmpDir.path}${Platform.pathSeparator}${file.name}';
-      await File(file.path).copy(dest);
-      final r = await ApiClient.instance
-          .post('/api/resource_packs/import_path', body: {'path': dest});
+      staged = await stageZipForInstall(
+        file,
+        const ZipStageOptions(
+          pathEndpoint: '/api/resource_packs/import_path',
+          uploadEndpoint: '/api/resource_packs/import_upload',
+          tempPrefix: 'pack_import_',
+        ),
+      );
+      final r = await ApiClient.instance.post(staged.endpoint, body: staged.body);
       if (!mounted) return;
       if (r is Map && r['ok'] == false) {
         _showError((r['error'] ?? '导入失败').toString());
@@ -110,9 +113,8 @@ class _PackManagerPageState extends State<PackManagerPage> {
     } catch (e) {
       if (mounted) _showError(e.toString());
     } finally {
-      // 后端已读完文件，临时目录不再需要（失败也一并清理）。
       try {
-        if (tmpDir != null) await tmpDir.delete(recursive: true);
+        await staged?.cleanup();
       } catch (_) {}
     }
   }
@@ -173,7 +175,7 @@ class _PackManagerPageState extends State<PackManagerPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(FluentIcons.error_circle_24_regular, color: Colors.redAccent, size: 32),
+              Icon(FluentIcons.error_circle_24_regular, color: palette.statusDanger, size: 32),
               const SizedBox(height: 10),
               Text('加载失败: $_error',
                   textAlign: TextAlign.center,
@@ -203,7 +205,7 @@ class _PackManagerPageState extends State<PackManagerPage> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(FluentIcons.info_24_regular, size: 16, color: Color(0xFF6C5CE7)),
+              Icon(FluentIcons.info_24_regular, size: 16, color: accentColor),
               SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -241,7 +243,7 @@ class _PackManagerPageState extends State<PackManagerPage> {
         color: palette.panel,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-            color: isActive ? const Color(0xFF4A3DB8) : palette.surface),
+            color: isActive ? palette.accentDeep : palette.surface),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -263,9 +265,9 @@ class _PackManagerPageState extends State<PackManagerPage> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF6C5CE7).withValues(alpha: 0.15),
+                    color: accentColor.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xFF4A3DB8)),
+                    border: Border.all(color: palette.accentDeep),
                   ),
                   child: Text('激活中',
                       style: TextStyle(fontSize: 11, color: palette.accentLighter)),

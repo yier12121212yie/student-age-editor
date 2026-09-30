@@ -22,7 +22,7 @@ import 'story_flow_graph.dart';
 import 'story_flow_models.dart';
 
 /// 视口框用色：与画布的选中/拉线强调色同一支品牌色（不入 palette）。
-const Color kFlowMinimapAccent = Color(0xFF6C5CE7);
+Color get kFlowMinimapAccent => accentColor;
 
 /// 包围盒退化时占位用的最小世界尺寸，保证 scale 有限、映射仍可逆（不除零）。
 const double kFlowMinimapMinExtent = 1;
@@ -259,9 +259,9 @@ class StoryFlowMinimap extends StatelessWidget {
               child: Container(
                 width: width,
                 height: height,
-                decoration: const BoxDecoration(
-                  boxShadow: AppShadow.float,
-                  borderRadius: BorderRadius.all(Radius.circular(AppRadius.l)),
+                decoration: BoxDecoration(
+                  boxShadow: AppShadow.float(palette),
+                  borderRadius: const BorderRadius.all(Radius.circular(AppRadius.l)),
                 ),
                 child: CustomPaint(
                   size: size,

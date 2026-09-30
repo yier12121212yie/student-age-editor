@@ -19,6 +19,10 @@ add_library(sa_core STATIC
 
 target_include_directories(sa_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# The release version is read by version.cpp only (PRIVATE is enough); the
+# quoting survives both MSVC (/DSA_APP_VERSION=\"dev\") and GCC/Clang.
+target_compile_definitions(sa_core PRIVATE SA_APP_VERSION="${SA_APP_VERSION}")
+
 if(WIN32)
     # steam_paths reads HKCU\Software\Valve\Steam via the registry;
     # http_client speaks WinHTTP (in-box, schannel TLS — no third-party dep).

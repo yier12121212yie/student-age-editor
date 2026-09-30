@@ -93,6 +93,11 @@ std::string sha1_of_file(const std::string& p) {
     return sa_core::sha1_hex(*raw);
 }
 
+// Defined further down (its own default argument lives there); forward-declared
+// so the bug #6 journal cases, which sit with the other undo/redo cases, can
+// size-check the A8 invariant.
+json big_payload(int rows = 400);
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -113,8 +118,14 @@ TEST_CASE("overwrite creates snapshot with old content", "[cfg_store][A9]") {
     CHECK(r["mtime_ns"].get<long long>() == cs::stat(fx.p())->mtime_ns);
     CHECK(r["mtime_ns"].get<long long>() != old_mtime);
     bool ok = false;
-    auto snaps = cs::listdir_sorted(sa_core::paths::path_to_utf8(fx.history_dir), &ok);
+    auto all = cs::listdir_sorted(sa_core::paths::path_to_utf8(fx.history_dir), &ok);
     REQUIRE(ok);
+    // The directory now also holds the undo journal (bug #6); this case is
+    // about the snapshot itself, so keep only "<stem>_<ts>_<seq>.json".
+    std::vector<std::string> snaps;
+    for (const auto& name : all) {
+        if (name.rfind("EvtCfg_", 0) == 0) snaps.push_back(name);
+    }
     REQUIRE(snaps.size() == 1);
     CHECK(snaps[0].rfind("EvtCfg_", 0) == 0);
     auto snap_text = cs::read_bytes(sa_core::paths::path_to_utf8(fx.history_dir / std::filesystem::u8path(snaps[0])));
@@ -128,7 +139,14 @@ TEST_CASE("create file has no snapshot", "[cfg_store]") {
     auto r = store::write_cfg(fx.p(), json{{"1", json{{"id", 1}}}});
     CHECK(r["ok"] == true);
     CHECK(r["snapshot"].is_null());
-    CHECK_FALSE(std::filesystem::exists(fx.history_dir));
+    // No snapshot exists for a create (there was no old content), so nothing
+    // under .editor_history may look like one. The undo journal IS written:
+    // "(nothing) -> {…}" is exactly the step that undo must be able to take,
+    // including from a later process (bug #6).
+    bool ok = false;
+    auto entries = cs::listdir_sorted(sa_core::paths::path_to_utf8(fx.history_dir), &ok);
+    REQUIRE(ok);
+    for (const auto& name : entries) CHECK(name == "EvtCfg.journal.json");
     CHECK(fx.read_direct() == json{{"1", json{{"id", 1}}}});
 }
 
@@ -139,6 +157,9 @@ TEST_CASE("snapshot=false skips history", "[cfg_store]") {
                               /*snapshot=*/false);
     CHECK(r["ok"] == true);
     CHECK(r["snapshot"].is_null());
+    // The only undo entry holds the table text as an in-process fallback, which
+    // the journal deliberately does not duplicate on disk — so a
+    // snapshot-disabled write still leaves NO history artifact behind.
     CHECK_FALSE(std::filesystem::exists(fx.history_dir));
 }
 
@@ -349,6 +370,85 @@ TEST_CASE("forget drops the undo stack", "[cfg_store][5.5.7]") {
     CHECK(fx.read_direct() == json{{"1", json{{"name", "b"}}}});  // disk untouched
 }
 
+TEST_CASE("undo survives a process boundary via the journal (bug #6)",
+          "[cfg_store][bug6]") {
+    StoreFixture fx("cs_journal");
+    fx.write_direct(json{{"1", json{{"name", "a"}}}});
+    auto a_bytes = fx.raw_bytes();
+
+    REQUIRE(store::write_cfg(fx.p(), json{{"1", json{{"name", "b"}}}})["ok"] == true);
+    REQUIRE(store::write_cfg(fx.p(), json{{"1", json{{"name", "c"}}}})["ok"] == true);
+    CHECK(fx.read_direct() == json{{"1", json{{"name", "c"}}}});
+
+    // A fresh backend process: memory is gone, only .editor_history remains.
+    // This is the embedded-CLI shape — one backend per command (bug #6).
+    store::debug_reset_stacks();
+
+    auto u1 = store::undo(fx.p());
+    CHECK(u1["ok"] == true);
+    CHECK(fx.read_direct() == json{{"1", json{{"name", "b"}}}});  // one step back
+
+    // redo is journaled too, so it also crosses the process boundary
+    store::debug_reset_stacks();
+    auto r1 = store::redo(fx.p());
+    CHECK(r1["ok"] == true);
+    CHECK(fx.read_direct() == json{{"1", json{{"name", "c"}}}});
+
+    // and the remaining undo step reaches the original bytes exactly
+    store::debug_reset_stacks();
+    CHECK(store::undo(fx.p())["ok"] == true);
+    store::debug_reset_stacks();
+    CHECK(store::undo(fx.p())["ok"] == true);
+    CHECK(fx.raw_bytes() == a_bytes);
+}
+
+TEST_CASE("journal restores a create as a delete across processes (bug #6)",
+          "[cfg_store][bug6]") {
+    StoreFixture fx("cs_journal_new");
+    // The table does not exist yet: undo must bring it back to "missing".
+    REQUIRE(store::write_cfg(fx.p(), json{{"1", json{{"name", "a"}}}})["ok"] == true);
+    REQUIRE(cs::is_file(fx.p()));
+
+    store::debug_reset_stacks();  // fresh process
+
+    auto u = store::undo(fx.p());
+    CHECK(u["ok"] == true);
+    CHECK_FALSE(cs::is_file(fx.p()));
+}
+
+TEST_CASE("journal keeps the A8 invariant: snapshots are referenced, not copied",
+          "[cfg_store][bug6][A8]") {
+    StoreFixture fx("cs_journal_a8");
+    fx.write_direct(big_payload());
+    REQUIRE(store::write_cfg(fx.p(), json{{"1", json{{"name", "b"}}}})["ok"] == true);
+    // Snapshot-backed: no table text is resident, and the journal holds only
+    // the snapshot file name — so it must stay far smaller than the table.
+    CHECK(store::debug_stack_bytes() == 0);
+    const auto jp = fx.history_dir / "EvtCfg.journal.json";
+    REQUIRE(cs::is_file(cs::path_to_utf8(jp)));
+    auto raw = cs::read_bytes(cs::path_to_utf8(jp));
+    REQUIRE(raw.has_value());
+    CHECK(raw->size() < 4096);
+    CHECK(raw->find("EvtCfg_") != std::string::npos);  // the snapshot name
+}
+
+TEST_CASE("forget also drops the persisted journal", "[cfg_store][bug6]") {
+    StoreFixture fx("cs_journal_forget");
+    fx.write_direct(json{{"1", json{{"name", "a"}}}});
+    REQUIRE(store::write_cfg(fx.p(), json{{"1", json{{"name", "b"}}}})["ok"] == true);
+    const auto jp = fx.history_dir / "EvtCfg.journal.json";
+    REQUIRE(cs::is_file(cs::path_to_utf8(jp)));
+
+    store::forget(fx.p());
+    CHECK_FALSE(cs::is_file(cs::path_to_utf8(jp)));  // stale history is gone
+
+    store::debug_reset_stacks();  // a later process must not resurrect it
+    auto u = store::undo(fx.p());
+    CHECK(u["ok"] == false);
+    CHECK(u["error"] == "nothing to undo");
+    CHECK(fx.read_direct() == json{{"1", json{{"name", "b"}}}});  // disk untouched
+}
+
 // ---------------------------------------------------------------------------
 // test_s2_write_path.py: UnchangedWriteTest (cfg.writes short circuit)
 // ---------------------------------------------------------------------------
@@ -408,7 +508,7 @@ TEST_CASE("prune keeps newest 10 and spares other tables", "[s2][A9]") {
 }
 
 namespace {
-json big_payload(int rows = 400) {
+json big_payload(int rows) {
     json out = json::object();
     std::string content = "对白" + std::string(200, 'x');
     for (int i = 0; i < rows; ++i) out[std::to_string(i)] = json{{"id", i}, {"content", content}};
@@ -536,9 +636,21 @@ TEST_CASE("apply_patch set and remove", "[s2][S2]") {
     auto r = store::apply_patch(fx.p(), json{{"1000", json{{"id", 1000}, {"content", "新"}}}},
                                 json::array({"1001"}), nullptr);
     REQUIRE(r["ok"] == true);
-    CHECK(r["applied"] == json{{"set", 1}, {"remove", 1}});
+    CHECK(r["applied"] == json{{"set", 1}, {"remove", 1}, {"remove_unmatched", 0}});
     CHECK(fx.read_direct() == json{{"1000", json{{"id", 1000}, {"content", "新"}}}});
     CHECK(store::list_history(fx.p()).size() == 1);
+}
+
+TEST_CASE("apply_patch remove accepts numeric keys and reports unmatched", "[s2][bug1]") {
+    PatchFixture fx;
+    // Numeric (not string) ids must still delete, and a missing id must be
+    // counted instead of silently skipped (bug #1).
+    auto r = store::apply_patch(fx.p(), json::object(),
+                                json::array({1001, 9999}), nullptr);
+    REQUIRE(r["ok"] == true);
+    CHECK(r["applied"]["remove"] == 1);
+    CHECK(r["applied"]["remove_unmatched"] == 1);
+    CHECK(fx.read_direct() == json{{"1000", json{{"id", 1000}, {"content", "旧"}}}});
 }
 
 TEST_CASE("if_match conflict reports keys without data", "[s2][S2]") {

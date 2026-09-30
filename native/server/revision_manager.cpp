@@ -39,8 +39,18 @@ long long g_last_compute_time_ms = 0;
 size_t g_files_scanned_count = 0;
 bool g_ntfs_monitoring_enabled = true;  // Windows default
 
-// File list cache: path -> (mtime_ns, size) to skip unchanged files
-std::unordered_map<std::string, std::pair<long long, uint64_t>> g_file_metadata;
+// Per-file fingerprint cache: absolute path -> (mtime_ns, size, sha256). A file
+// whose mtime_ns+size are unchanged since the last scan reuses its cached hash
+// instead of being re-read and re-hashed. This is what keeps a save from
+// re-reading the whole 40MB TalkCfg twice (bug: the map existed but was never
+// read/written). Guarded by g_revision_mu; never held across disk IO.
+struct FileFingerprint {
+    long long mtime_ns = 0;
+    long long size = 0;
+    std::string hash;
+};
+std::unordered_map<std::string, FileFingerprint> g_file_metadata;
+size_t g_files_hashed_count = 0;
 
 // Compute SHA-256 over a single file's bytes
 std::optional<std::string> sha256_of_file(const std::string& abs_path) {
@@ -121,13 +131,33 @@ std::string compute_revision() {
     }
 
     std::string combined_hash;
+    size_t hashed = 0;
 
-    // Hash each file's content sequentially (锁外磁盘 IO)
+    // Hash each file's content sequentially (锁外磁盘 IO). Unchanged files
+    // (same mtime_ns+size) reuse the cached hash and are never re-read.
     for (const auto& filepath : files) {
-        auto hash_opt = sha256_of_file(filepath);
-        if (hash_opt) {
-            combined_hash += *hash_opt;
+        auto st = sa_core::paths::stat(filepath);
+        if (!st) continue;
+        std::string hash;
+        bool reuse = false;
+        {
+            std::lock_guard<std::mutex> lk(g_revision_mu);
+            auto it = g_file_metadata.find(filepath);
+            if (it != g_file_metadata.end() && it->second.mtime_ns == st->mtime_ns &&
+                it->second.size == st->size) {
+                hash = it->second.hash;
+                reuse = true;
+            }
         }
+        if (!reuse) {
+            auto hash_opt = sha256_of_file(filepath);
+            if (!hash_opt) continue;
+            hash = *hash_opt;
+            ++hashed;
+            std::lock_guard<std::mutex> lk(g_revision_mu);
+            g_file_metadata[filepath] = FileFingerprint{st->mtime_ns, st->size, hash};
+        }
+        combined_hash += hash;
     }
 
     // Final hash over the combined content hashes
@@ -138,6 +168,7 @@ std::string compute_revision() {
     {
         std::lock_guard<std::mutex> lk(g_revision_mu);
         g_last_compute_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        g_files_hashed_count = hashed;
     }
 
     return final_hash.substr(0, 20);
@@ -204,6 +235,11 @@ long long debug_last_compute_time_ms() {
 size_t debug_files_scanned_count() {
     std::lock_guard<std::mutex> lk(g_revision_mu);
     return g_files_scanned_count;
+}
+
+size_t debug_files_hashed_count() {
+    std::lock_guard<std::mutex> lk(g_revision_mu);
+    return g_files_hashed_count;
 }
 
 }  // namespace revision_manager

@@ -40,6 +40,16 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
   }
 
   @override
+  void didUpdateWidget(covariant StoryListMobilePage old) {
+    super.didUpdateWidget(old);
+    // 宿主切换模组后重载列表（page_view 现跟随 state.modName）。
+    if (old.modName != widget.modName) {
+      _selectedEventId = null;
+      _loadData();
+    }
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
@@ -69,6 +79,8 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
       } catch (_) {
         // 忽略错误，不影响主流程
       }
+
+      if (!mounted) return; // 阶段 3：角色字典那次 await 之后组件可能已销毁
 
       setState(() {
         _events = events;
@@ -123,7 +135,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
         backgroundColor: AppTheme.palette.bg,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(FluentIcons.arrow_left_24_regular, color: Colors.white),
+          icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
@@ -146,12 +158,12 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
         actions: [
           // 搜索按钮
           IconButton(
-            icon: const Icon(FluentIcons.search_24_regular, color: Colors.white),
+            icon: Icon(FluentIcons.search_24_regular, color: palette.onAccent),
             onPressed: _toggleSearch,
           ),
           // 刷新按钮
           IconButton(
-            icon: const Icon(FluentIcons.arrow_sync_24_regular, color: Colors.white),
+            icon: Icon(FluentIcons.arrow_sync_24_regular, color: palette.onAccent),
             onPressed: _loadData,
             tooltip: '刷新',
           ),
@@ -219,7 +231,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
           // 事件列表
           Expanded(
             child: _loading
-                ? const Center(
+                ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -231,7 +243,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
                         SizedBox(height: 12),
                         Text(
                           '加载中...',
-                          style: TextStyle(fontSize: 12, color: Colors.white70),
+                          style: TextStyle(fontSize: 12, color: palette.textPrimary),
                         ),
                       ],
                     ),
@@ -292,7 +304,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
           color: AppTheme.palette.card,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: event.id == _selectedEventId ? const Color(0xFF4F6EF7) : AppTheme.palette.border,
+            color: event.id == _selectedEventId ? palette.primaryColor : AppTheme.palette.border,
             width: event.id == _selectedEventId ? 2 : 1,
           ),
         ),
@@ -344,7 +356,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
                 _badge(
                   '对白条数',
                   talkDerivedCount > 0 ? '$talkDerivedCount' : '-',
-                  const Color(0xFF4F6EF7),
+                  palette.primaryColor,
                 ),
                 
                 // Option 数量（需要额外 API 调用获取）
@@ -353,7 +365,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
                 _badge(
                   '选项数',
                   '-', // placeholder
-                  Colors.grey,
+                  palette.textSecondary,
                 ),
                 
                 // 事件类型
@@ -481,7 +493,8 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
 
   void _onEventTap(MobileEvtCfg event) async {
     await MobileHaptic.mediumImpact();
-    
+    if (!mounted) return; // 阶段 3：震动通道 await 后组件可能已销毁
+
     setState(() => _selectedEventId = event.id);
 
     // 直接导航到详情页面（不使用路由系统）

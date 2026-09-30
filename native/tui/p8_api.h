@@ -40,6 +40,23 @@ struct CloudSyncSummary {
     std::string message;  // "dry_run"/"message" passthrough or an HTTP error
 };
 
+// Outcome of GET /api/update/check. The route answers 200 even on failure
+// ({ok:false, error, current}), so `ok` — not the HTTP status — says whether the
+// check succeeded; `current` is valid in both shapes.
+struct UpdateResult {
+    bool ok = false;
+    std::string error;  // ok==false 时的错误文案
+    std::string current;
+    std::string latest_tag;
+    std::string latest_name;
+    std::string published_at;
+    std::string html_url;   // 发行页
+    std::string notes;      // release body（可能多行 Markdown）
+    bool update_available = false;
+    bool prerelease = false;
+    std::vector<UpdateAsset> assets;
+};
+
 class BackendApi {
 public:
     explicit BackendApi(std::string base_url) : base_(std::move(base_url)) {}
@@ -74,6 +91,8 @@ public:
     static std::vector<FieldSuggestion> ParseSuggestions(const Json& body);
     // GET /api/roles -> roles[] (id/name) folded into insertable candidates.
     static std::vector<FieldSuggestion> ParseRoles(const Json& body);
+    // GET /api/update/check -> UpdateResult (ok/error + 全部 update_* 字段).
+    static UpdateResult ParseUpdate(const Json& body);
 
     // ---- transport (never throws; fills *err on failure) ----------------
     bool Ping(std::string* err);
@@ -113,6 +132,10 @@ public:
     CloudSyncSummary CloudSync(const std::string& provider_id, const std::string& direction,
                                const std::string& mod, bool dry_run, bool delete_extra,
                                bool full, std::string* err);
+    // ---- update ---------------------------------------------------------
+    // GET /api/update/check?timeout=6（current 非空时附带 &current=…）。只读，
+    // 失败时 *err 有文案且返回的 UpdateResult.ok==false。
+    UpdateResult CheckUpdate(const std::string& current, std::string* err);
     // ---- ai settings ----------------------------------------------------
     // GET /api/ai/settings -> permission mode ("confirm" on any failure).
     std::string LoadPermissionMode(std::string* err);

@@ -16,6 +16,9 @@ TEST_CASE("version and app identity constants are populated") {
     CHECK(sa_core::kVersionMajor == 0);
     CHECK(sa_core::kVersionMinor == 1);
     REQUIRE(std::string(sa_core::app_name()) == "student-age-editor");
+    // Release version: injected via -DSA_APP_VERSION at configure time, "dev"
+    // when the build system did not provide one. Never empty.
+    CHECK_FALSE(std::string(sa_core::app_version()).empty());
 }
 
 TEST_CASE("trim strips ASCII whitespace on both ends") {

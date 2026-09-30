@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
@@ -60,7 +62,8 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
         _event = details.event;
         _talks = details.talks;
         _options = details.options;
-        
+        _baselineJson = _currentProjection();
+
         // 加载角色字典
         _loadReferenceData();
         
@@ -82,11 +85,10 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   Future<void> _loadReferenceData() async {
     try {
+      // OptionCfg 全表不再拉取：选项已随 loadEventDetails 的 ?prefix=
+      // 小批量进缓存，这里只是取角色名。
       final personResponse = await ApiClient.instance.get('/api/cfg/PersonCfg');
-      final optsResponse = await ApiClient.instance.get('/api/cfg/OptionCfg');
-      
       final personData = personResponse['data'] as Map? ?? {};
-      final optsData = optsResponse['data'] as Map? ?? {};
 
       // 只保留相关 Talk 对应的 Role
       for (final entry in personData.entries) {
@@ -96,6 +98,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
             : entry.value.toString()) ?? '';
       }
 
+      if (!mounted) return; // 阶段 3：两次 await 后组件可能已销毁
       setState(() {});
     } catch (_) {
       // 忽略错误
@@ -112,7 +115,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           backgroundColor: AppTheme.palette.bg,
           elevation: 0,
           leading: IconButton(
-            icon: const Icon(FluentIcons.arrow_left_24_regular, color: Colors.white),
+            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
             onPressed: () => Navigator.pop(context),
           ),
           title: Text('加载中...'),
@@ -140,7 +143,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           backgroundColor: AppTheme.palette.bg,
           elevation: 0,
           leading: IconButton(
-            icon: const Icon(FluentIcons.arrow_left_24_regular, color: Colors.white),
+            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
             onPressed: () => Navigator.pop(context),
           ),
           title: Text('加载失败'),
@@ -177,7 +180,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           backgroundColor: AppTheme.palette.bg,
           elevation: 0,
           leading: IconButton(
-            icon: const Icon(FluentIcons.arrow_left_24_regular, color: Colors.white),
+            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
             onPressed: () => Navigator.pop(context),
           ),
           title: Text('事件不存在'),
@@ -188,24 +191,87 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       );
     }
 
-    return Scaffold(
-      appBar: _buildAppBar(),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildEventInfoSection(),
-            SizedBox(height: 24),
-            _buildTalkSection(),
-            SizedBox(height: 24),
-            _buildOptionsSection(),
-            SizedBox(height: 24),
-            _buildActionsSection(),
+    // 阶段 2c：系统返回与 AppBar 返回统一走脏守卫。旧实现里
+    // _checkUnsavedChanges 恒真且语义写反（“有未保存修改”才 pop），
+    // 等于从无检测——编辑后侧滑/返回键静默丢改动。
+    return PopScope(
+      canPop: !_checkUnsavedChanges(),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _confirmLeave();
+      },
+      child: Scaffold(
+        appBar: _buildAppBar(),
+        // 阶段 4e：主体改 CustomScrollView + SliverList，替代
+        // SingleChildScrollView > Column > ListView(shrinkWrap) 的嵌套结构。
+        // shrinkWrap 的 ListView 会按内容全量构建所有卡片，节点多时首帧
+        // 与每次 setState 的构建开销线性放大；Sliver 化后获得真实视口懒建。
+        // 间距与旧 Column 布局逐段对齐（段间 24、标题下 16、卡片间 16）。
+        body: CustomScrollView(
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              sliver: SliverToBoxAdapter(child: _buildEventInfoSection()),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+              sliver: SliverToBoxAdapter(child: _buildTalkSectionHeader()),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              sliver: SliverList.separated(
+                itemCount: _talks.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 16),
+                itemBuilder: (context, index) =>
+                    _buildTalkCard(_talks[index], index),
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+              sliver: SliverToBoxAdapter(child: _buildOptionsSectionHeader()),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              sliver: SliverList.separated(
+                itemCount: _options.isEmpty ? 1 : _options.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 16),
+                itemBuilder: (context, index) {
+                  if (_options.isEmpty && index == 0) {
+                    return _buildAddOptionRow(null);
+                  }
+                  return _buildOptionCard(_options[index], index);
+                },
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+              sliver: SliverToBoxAdapter(child: _buildActionsSection()),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _confirmLeave() async {
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('有未保存修改'),
+        content: const Text('对白/选项已编辑但尚未保存，离开将丢失这些修改。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('留在本页'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('放弃并离开'),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && mounted) Navigator.pop(context);
   }
 
   PreferredSizeWidget _buildAppBar() {
@@ -213,12 +279,9 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       backgroundColor: AppTheme.palette.bg,
       elevation: 0,
       leading: IconButton(
-        icon: const Icon(FluentIcons.arrow_left_24_regular, color: Colors.white),
-        onPressed: () {
-          if (_checkUnsavedChanges()) {
-            Navigator.pop(context);
-          }
-        },
+        icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
+        // maybePop 走 PopScope 守卫，与系统返回同一口径。
+        onPressed: () => Navigator.maybePop(context),
         tooltip: '返回',
       ),
       title: Row(
@@ -241,7 +304,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       actions: [
         // 预览按钮 - placeholder
         IconButton(
-          icon: Icon(FluentIcons.eye_24_regular, color: Colors.white), // 替换为实际存在的图标
+          icon: Icon(FluentIcons.eye_24_regular, color: palette.onAccent), // 替换为实际存在的图标
           onPressed: _previewEvent,
         ),
         SizedBox(width: 4),
@@ -259,7 +322,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           Tooltip(
             message: '保存',
             child: IconButton(
-              icon: Icon(FluentIcons.checkmark_24_regular, color: Colors.greenAccent),
+              icon: Icon(FluentIcons.checkmark_24_regular, color: palette.statusOk),
               onPressed: _saveEvent,
             ),
           ),
@@ -420,70 +483,51 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
     );
   }
 
-  Widget _buildTalkSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  // 对白区标题行（阶段 4e：卡片列表已提升为 SliverList，这里只保留头部）。
+  Widget _buildTalkSectionHeader() {
+    return Row(
       children: [
-        // 标题行
-        Row(
-          children: [
-            Icon(
-              FluentIcons.document_24_regular,
-              size: 16,
-              color: AppTheme.palette.textSecondary,
-            ),
-            SizedBox(width: 6),
-            Text(
-              '对白配置 (${_talks.length} 条)',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.palette.textPrimary,
-              ),
-            ),
-            const Spacer(),
-            // 添加对白按钮
-            GestureDetector(
-              onTap: _addNewTalk,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF4F6EF7).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0xFF4F6EF7).withValues(alpha: 0.3)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      FluentIcons.add_24_regular,
-                      size: 12,
-                      color: const Color(0xFF4F6EF7),
-                    ),
-                    SizedBox(width: 4),
-                    Text(
-                      '新建对话',
-                      style: TextStyle(fontSize: 10, color: const Color(0xFF4F6EF7)),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+        Icon(
+          FluentIcons.document_24_regular,
+          size: 16,
+          color: AppTheme.palette.textSecondary,
         ),
-        
-        SizedBox(height: 16),
-        
-        // Talk 列表（卡片化）
-        ListView.separated(
-          shrinkWrap: true,
-          physics: NeverScrollableScrollPhysics(),
-          itemCount: _talks.length,
-          separatorBuilder: (_, __) => SizedBox(height: 16),
-          itemBuilder: (context, index) {
-            final talk = _talks[index];
-            return _buildTalkCard(talk, index);
-          },
+        SizedBox(width: 6),
+        Text(
+          '对白配置 (${_talks.length} 条)',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.palette.textPrimary,
+          ),
+        ),
+        const Spacer(),
+        // 添加对白按钮
+        GestureDetector(
+          onTap: _addNewTalk,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: palette.primaryColor.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: palette.primaryColor.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  FluentIcons.add_24_regular,
+                  size: 12,
+                  color: palette.primaryColor,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  '新建对话',
+                  style: TextStyle(fontSize: 10, color: palette.primaryColor),
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -514,7 +558,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                   borderRadius: BorderRadius.circular(6),
                   border: Border.all(
                     color: talk.id == '001' 
-                        ? const Color(0xFF0F7B0F)
+                        ? palette.statusOk
                         : AppTheme.palette.border,
                     width: talk.id == '001' ? 2 : 1,
                   ),
@@ -525,7 +569,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                   style: TextStyle(
                     fontSize: 10,
                     color: talk.id == '001' 
-                        ? const Color(0xFF0F7B0F)
+                        ? palette.statusOk
                         : AppTheme.palette.textMuted,
                     fontWeight: FontWeight.w600,
                   ),
@@ -562,14 +606,14 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0F7B0F).withValues(alpha: 0.15),
+                    color: palette.statusOk.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
                     '开场',
                     style: TextStyle(
                       fontSize: 8,
-                      color: const Color(0xFF0F7B0F),
+                      color: palette.statusOk,
                     ),
                   ),
                 ),
@@ -677,16 +721,20 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
             ),
           ],
           
-          // 删除按钮
+          // 删除按钮（9px 裸文本热区太小，扩到 ~44 高）
           Align(
             alignment: Alignment.centerRight,
             child: GestureDetector(
               onTap: () => _confirmDeleteTalk(index),
-              child: Text(
-                '删除此句对话',
-                style: TextStyle(
-                  fontSize: 9,
-                  color: AppTheme.palette.danger,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                child: Text(
+                  '删除此句对话',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.palette.danger,
+                  ),
                 ),
               ),
             ),
@@ -730,81 +778,60 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
         label: Text(
           '$targetIndex?',
           style: TextStyle(
-            fontSize: 8,
+            fontSize: 10,
             color: isError ? AppTheme.palette.danger : palette.statusInfo,
           ),
         ),
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        // 可点击跳转的 chip：不再 shrinkWrap，保留 Material 默认 ≥48 触控间距。
       ),
     );
   }
 
-  Widget _buildOptionsSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  // 选项区标题行（阶段 4e：卡片列表已提升为 SliverList，这里只保留头部）。
+  Widget _buildOptionsSectionHeader() {
+    return Row(
       children: [
-        Row(
-          children: [
-            Icon(
-              FluentIcons.arrow_split_24_regular,
-              size: 16,
-              color: AppTheme.palette.textSecondary,
-            ),
-            SizedBox(width: 6),
-            Text(
-              '选项分支 (${_options.length} 个)',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.palette.textPrimary,
-              ),
-            ),
-            const Spacer(),
-            // 添加选项按钮
-            GestureDetector(
-              onTap: _addNewOption,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F7B0F).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0xFF0F7B0F).withValues(alpha: 0.3)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      FluentIcons.add_24_regular,
-                      size: 12,
-                      color: const Color(0xFF0F7B0F),
-                    ),
-                    SizedBox(width: 4),
-                    Text(
-                      '添加选项',
-                      style: TextStyle(fontSize: 10, color: const Color(0xFF0F7B0F)),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+        Icon(
+          FluentIcons.arrow_split_24_regular,
+          size: 16,
+          color: AppTheme.palette.textSecondary,
         ),
-        
-        SizedBox(height: 16),
-        
-        // Option 列表
-        ListView.separated(
-          shrinkWrap: true,
-          physics: NeverScrollableScrollPhysics(),
-          itemCount: _options.isEmpty ? 1 : _options.length,
-          separatorBuilder: (_, __) => SizedBox(height: 16),
-          itemBuilder: (context, index) {
-            if (_options.isEmpty && index == 0) {
-              return _buildAddOptionRow(null);
-            }
-            final option = _options[index];
-            return _buildOptionCard(option, index);
-          },
+        SizedBox(width: 6),
+        Text(
+          '选项分支 (${_options.length} 个)',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.palette.textPrimary,
+          ),
+        ),
+        const Spacer(),
+        // 添加选项按钮
+        GestureDetector(
+          onTap: _addNewOption,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: palette.statusOk.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: palette.statusOk.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  FluentIcons.add_24_regular,
+                  size: 12,
+                  color: palette.statusOk,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  '添加选项',
+                  style: TextStyle(fontSize: 10, color: palette.statusOk),
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -834,7 +861,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                   color: AppTheme.palette.card,
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: const Color(0xFF4F6EF7).withValues(alpha: 0.3),
+                    color: palette.primaryColor.withValues(alpha: 0.3),
                     width: 1.5,
                   ),
                 ),
@@ -843,7 +870,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                   '$optionIndex',
                   style: TextStyle(
                     fontSize: 10,
-                    color: const Color(0xFF4F6EF7),
+                    color: palette.primaryColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -1132,6 +1159,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   Future<void> _addNewTalk([int? insertIndex]) async {
     await MobileHaptic.mediumImpact();
+    if (!mounted) return; // 阶段 3：震动通道 await 后组件可能已销毁
 
     // 锚点：插入时为前驱节点，追加时为尾节点；列表为空则以事件 ID 为基准。
     final anchorIdx = insertIndex != null ? insertIndex - 1 : _talks.length - 1;
@@ -1168,7 +1196,8 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   Future<void> _addNewOption([int? insertIndex]) async {
     await MobileHaptic.lightImpact();
-    
+    if (!mounted) return; // 阶段 3：震动通道 await 后组件可能已销毁
+
     final prefix = _event!.id;
     final newOption = allocOptionId(prefix, {
       for (var o in _options) o.id,
@@ -1228,7 +1257,8 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed == true && mounted) {
+      // 阶段 3：确认对话框 await 后组件可能已销毁
       setState(() {
         _talks.removeAt(talkIndex);
       });
@@ -1254,7 +1284,8 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed == true && mounted) {
+      // 阶段 3：确认对话框 await 后组件可能已销毁
       await _deleteEvent();
     }
   }
@@ -1281,7 +1312,9 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
     }
     
     setState(() => _saving = true);
-    
+    // 送发时的投影快照：在途又有编辑时基线不得吸收新改动（阶段 2c）。
+    final sentProjection = _currentProjection();
+
     try {
       final result = await _dataAccess.saveEvent(
         modName: widget.modName,
@@ -1291,9 +1324,8 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       );
 
       if (!mounted) return;
-
+      if (result) _baselineJson = sentProjection;
       await MobileHaptic.success();
-      
       _showSuccessDialog(result ? '保存成功' : '保存完成');
     } catch (e) {
       if (!mounted) return;
@@ -1308,7 +1340,9 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
   Future<void> _saveAndBack() async {
     await _saveEvent();
     if (mounted && !_saving) {
-      Navigator.pop(context);
+      // maybePop：保存失败/在途又有编辑时仍脏，交由 PopScope 守卫弹确认，
+      // 不再无条件 pop 丢掉改动（阶段 2c）。
+      Navigator.maybePop(context);
     }
   }
 
@@ -1370,7 +1404,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       builder: (ctx) => AlertDialog(
         title: Row(
           children: [
-            Icon(FluentIcons.checkmark_circle_24_regular, color: Colors.green),
+            Icon(FluentIcons.checkmark_circle_24_regular, color: palette.statusOk),
             SizedBox(width: 8),
             Text(message),
           ],
@@ -1412,10 +1446,18 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
   }
 
   bool _checkUnsavedChanges() {
-    // TODO: 检测未保存修改的逻辑
-    // 可以对比 baseline 和当前状态
-    return true;
+    // 阶段 2c：baseline 对比。投影与 saveEvent 落盘口径一致（talk+option）；
+    // 事件标题不在 saveEvent 持久化范围内，纳入会造成永不清脏的假阳性。
+    if (_event == null) return false;
+    return _currentProjection() != _baselineJson;
   }
+
+  String _currentProjection() => jsonEncode({
+        'talk_data': _talks.map((t) => t.toJson()).toList(),
+        'option_data': _options.map((o) => o.toJson()).toList(),
+      });
+
+  String _baselineJson = '';
 
 }
 

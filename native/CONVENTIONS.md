@@ -158,7 +158,7 @@ AI 供给（同 wave 落地，端点 additive 不进 golden）：`GET /api/ai/po
 | 无 | `{cfg, data, exists:true, mtime_ns}`（bytes 直发缓存项） |
 | `keys=1` | 额外 `"keys": sorted(data.keys())`（**显式排序**） |
 | `meta=1` | `{cfg, exists:true, mtime_ns, count}`（无 data） |
-| `prefix=a,b,c&suffix=N` | data 过滤为键满足 `str(key)[:-N]`（长度≤N 时取全串）∈ prefixes；N clamp [1,8] 默认 3；与前端 PrefixMatcher 同式（`api.py:508-519`） |
+| `prefix=a,b&suffix=c,d` | data 过滤为键 **startswith** 任一 prefix **且** **endswith** 任一 suffix；两者独立、均可选、逗号分隔。此前是「截掉末尾 N 位后精确命中集合」的旧式，导致 `--prefix 32` 对 6 位键恒空（bug #3 已修） |
 | 文件缺失 | 200 `{"cfg":..., "data":{}, "exists":false, "mtime_ns":null}`（**不是 404**） |
 | 解析失败 | 400 `{"error":"JSON parse failed: 文件内容不是合法 JSON","cfg":...}` |
 | lossy 表 | 上述响应附加 `"lossy": true` |
@@ -221,6 +221,11 @@ fork/只读视图语义见 5.2：C++ 侧缓存值用 `shared_ptr<const nlohmann:
   （bytes 直发不计）；内容未变短路不 bump writes。
 - C++ 新增只读端点 `GET /api/perf` → `{"counters": {...全量字典}}`（**additive**，Python 无此端点，
   仅供黑盒契约与调试；不进 golden，不参与等值比对）。
+- C++ 新增只读端点 `GET /api/version` → `{"ok":true,"app":…,"version":…,"core_version":…}`
+  （**additive**，Python 无此端点；`version` 由构建期 `-DSA_APP_VERSION` 注入，source of
+  truth 是 `sa_core::app_version()`，dev/未注入时为 `"dev"`；不进 golden）。检查更新
+  `GET /api/update/check` 的 `current` 缺省即取该值（`server/services/ai_image.cpp`），
+  三端版本口径因此一致。
 - 波次 1 准出（对 40MB benchdata 表，语义抄自 S1/S2 测试）：
   热 GET `Δparses==0 && Δdumps==0 && Δread_bytes==0`；单字段补丁保存响应 body<2048B 且
   `Δwrites==1`；undo 栈内存指标（新增 `debug_stack_bytes()` 等价函数 + `/api/perf` 附带字段）。

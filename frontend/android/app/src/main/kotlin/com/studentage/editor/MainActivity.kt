@@ -2,6 +2,8 @@ package com.studentage.editor
 
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -19,6 +21,24 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         ensureBackend()
+    }
+
+    /// 安全批次 B：把后端进程令牌（editor_root()/.backend_token = 
+    /// <filesDir>/data/.backend_token）交给 Dart 侧（backend_launcher 在后端
+    /// 就绪后调用）。dataRoot 只有原生侧与 backend 约定一致，Dart 侧无
+    /// path_provider 依赖，经此通道读取；文件未就绪/不存在返回 null。
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "studentage/backend")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "backendToken" -> {
+                        val f = File("${filesDir.absolutePath}/data/.backend_token")
+                        result.success(if (f.exists()) f.readText().trim() else null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     /// W4-4：Android 后端从 Chaquopy 内嵌 CPython 换成 native C++

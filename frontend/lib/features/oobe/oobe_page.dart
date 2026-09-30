@@ -1,11 +1,11 @@
-import 'dart:io' show Platform;
-
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/motion.dart';
+import '../../core/platform_env.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../settings/settings_page.dart';
@@ -40,7 +40,7 @@ class OobePage extends StatefulWidget {
 }
 
 class _OobePageState extends State<OobePage> {
-  static const accent = Color(0xFF6C5CE7);
+  static Color get accent => accentColor;
   static Color get hintColor => palette.textMuted;
   static const _totalSteps = 7; // 欢迎·工作区·Mod·AI·TTS·风格·云
 
@@ -60,6 +60,8 @@ class _OobePageState extends State<OobePage> {
   late final TextEditingController _modCtrl;
   late final TextEditingController _descCtrl;
   String? _modError;
+  bool _modCreated = false;
+  String _createdModName = '';
 
   // AI 助手步骤
   String _aiProvider = 'openai_compatible';
@@ -314,6 +316,13 @@ class _OobePageState extends State<OobePage> {
           _step = 2;
         });
         return;
+      case 2:
+        // Create the mod the moment the user leaves step ② (bug #5): the old
+        // flow only created it on the final step, so skipping/or leaving early
+        // silently dropped the entered name.
+        if (!await _ensureModCreated()) return;
+        setState(() => _step = 3);
+        return;
       default:
         if (_step == _totalSteps - 1) {
           await _finish(setupMod: true);
@@ -324,18 +333,51 @@ class _OobePageState extends State<OobePage> {
     }
   }
 
-  Future<void> _finish({required bool setupMod}) async {
-    final modTitle = _modCtrl.text.trim();
-    if (setupMod && modTitle.contains(RegExp(r'[\\/:*?"<>|\x00-\x1f]'))) {
+  /// Creates the mod entered in step ② via /api/oobe/setup (idempotent).
+  /// Returns false and surfaces [_modError] on failure. An empty name is a
+  /// no-op success (the step is optional).
+  Future<bool> _ensureModCreated() async {
+    final title = _modCtrl.text.trim();
+    if (title.isEmpty) return true;
+    if (_modCreated && _createdModName == title) return true;
+    if (title.contains(RegExp(r'[\\/:*?"<>|\x00-\x1f]'))) {
       setState(() => _modError = '模组名不能包含 \\ / : * ? " < > | 等字符');
-      return;
+      return false;
     }
+    try {
+      final r = await ApiClient.instance.post('/api/oobe/setup', body: {
+        if (_effectiveWorkspace.isNotEmpty) 'workspace': _effectiveWorkspace,
+        'mod_title': title,
+        if (_descCtrl.text.trim().isNotEmpty) 'mod_desc': _descCtrl.text.trim(),
+        'mark_done': false,
+      }).timeout(const Duration(seconds: 30));
+      if (r is Map && r['error'] != null) {
+        if (mounted) setState(() => _modError = r['error'].toString());
+        return false;
+      }
+      _modCreated = true;
+      _createdModName = title;
+      if (mounted) setState(() => _modError = null);
+      return true;
+    } catch (e) {
+      if (mounted) setState(() => _modError = e.toString());
+      return false;
+    }
+  }
+
+  Future<void> _finish({required bool setupMod}) async {
     setState(() {
       _modError = null;
       _busy = true;
     });
     try {
       if (setupMod) {
+        // Mod is normally already created at step ②; create it here only if
+        // the user jumped straight to the last step.
+        if (!await _ensureModCreated()) {
+          if (mounted) setState(() => _busy = false);
+          return;
+        }
         // AI / TTS：有输入才落盘（本地缓存 + 写穿 .editor_ai.json）
         final ai = await _collectAiSettings();
         if (ai != null) await ai.save();
@@ -345,12 +387,16 @@ class _OobePageState extends State<OobePage> {
         }
         await ApiClient.instance.post('/api/oobe/setup', body: {
           if (_effectiveWorkspace.isNotEmpty) 'workspace': _effectiveWorkspace,
-          if (modTitle.isNotEmpty) 'mod_title': modTitle,
+          // Omit mod_title when already created: the backend rejects a
+          // duplicate directory with "模组已存在".
+          if (!_modCreated && _modCtrl.text.trim().isNotEmpty)
+            'mod_title': _modCtrl.text.trim(),
           if (_descCtrl.text.trim().isNotEmpty) 'mod_desc': _descCtrl.text.trim(),
           if (_cloudProvider != null) 'cloud_provider': _cloudProvider,
         }).timeout(const Duration(seconds: 30));
       } else {
-        // 全部跳过：只写完成标记
+        // "跳过全部" must not silently drop the mod name the user typed.
+        await _ensureModCreated();
         await ApiClient.instance.post('/api/oobe/complete', body: {})
             .timeout(const Duration(seconds: 10));
       }
@@ -461,7 +507,7 @@ class _OobePageState extends State<OobePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 12),
-              const Center(child: ScaleFade(child: Icon(FluentIcons.sparkle_48_regular, size: 44, color: accent))),
+              Center(child: ScaleFade(child: Icon(FluentIcons.sparkle_48_regular, size: 44, color: accent))),
               const SizedBox(height: 14),
               Center(
                 child: Text('欢迎使用 学生时代 · 模组编辑器',
@@ -515,14 +561,20 @@ class _OobePageState extends State<OobePage> {
               if (!_useRecommended) ...[
                 fluent.TextBox(
                   controller: _wsCtrl,
-                  placeholder: Platform.isWindows
-                    ? r'D:\MyMods 或 %USERPROFILE%\AppData\LocalLow\...\Mods'
-                    : '例如 ~/学生时代Mods（Linux 经 Proton 运行游戏时建议指向\nsteamapps/compatdata 内的 Mods 目录）',
+                  placeholder: isAndroidPlatform
+                      // 手机端后端内嵌，工作区固定为应用私有目录，手输路径无意义。
+                      ? '应用私有目录（自动创建，无需修改）'
+                      : kIsWeb
+                          // Web：工作区在服务器上，本机路径概念不存在。
+                          ? '由服务器端配置（一般无需修改）'
+                          : isWindowsPlatform
+                              ? r'D:\MyMods 或 %USERPROFILE%\AppData\LocalLow\...\Mods'
+                              : '例如 ~/学生时代Mods（Linux 经 Proton 运行游戏时建议指向\nsteamapps/compatdata 内的 Mods 目录）',
                 ),
                 const SizedBox(height: 6),
               ],
               if (_wsError != null)
-                Text(_wsError!, style: const TextStyle(fontSize: 11, color: Colors.redAccent)),
+                Text(_wsError!, style: TextStyle(fontSize: 11, color: palette.statusDanger)),
             ],
           ),
         );
@@ -554,7 +606,7 @@ class _OobePageState extends State<OobePage> {
               if (_modError != null) ...[
                 const SizedBox(height: 8),
                 Text(_modError!, maxLines: 3, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11, color: Colors.redAccent)),
+                    style: TextStyle(fontSize: 11, color: palette.statusDanger)),
               ],
               const SizedBox(height: 14),
               Container(
@@ -817,7 +869,7 @@ class _OobePageState extends State<OobePage> {
                     child: Text(_cloudTestMsg!, maxLines: 2, overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                             fontSize: 11,
-                            color: _cloudTestMsg!.contains('成功') ? palette.statusOk : Colors.redAccent)),
+                            color: _cloudTestMsg!.contains('成功') ? palette.statusOk : palette.statusDanger)),
                   ),
                 ],
               ]),

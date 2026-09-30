@@ -61,10 +61,12 @@ enum class Kind {
     CloudDrivers,   // GET  /api/cloud/drivers
     CloudLocal,     // GET  /api/cloud/local_files
     CloudRemote,    // GET  /api/cloud/list
+    UpdateCheck,    // GET /api/update/check（检查更新）
     AiSettings,     // GET  /api/ai/settings
     AiSet,          // PUT  /api/ai/settings
     Search,         // GET  /api/search/talk?q=<kw> (Python CLI parity)
     SettingsNoCode, // GET/PUT /api/settings/editor (M3 无代码模式开关)
+    SettingsAppearance,  // GET/PUT /api/settings/editor appearanceMode (白日/暗色)
     EnvGet,         // local editor_env.json (no HTTP route exists)
     EnvSet,
     Repl,           // interactive mode (handled by p7_repl.cpp, never planned)
@@ -133,6 +135,11 @@ struct Command {
     bool delete_extra = false; // cloud sync --delete-extra
     bool folder = false;       // cloud sync --folder/--all (whole-mod sync)
 
+    // update ----------------------------------------------------------------
+    int update_timeout = 6;    // update check --timeout（默认 6 秒）
+    std::string update_url;    // update check --update-url（覆盖 GitHub Releases API）
+    std::string update_current; // update check --current（覆盖当前版本）
+
     // ai / oobe extras ------------------------------------------------------
     json ai_settings;          // ai set --data / oobe setup --ai
     bool has_ai_settings = false;
@@ -141,7 +148,7 @@ struct Command {
 
     long long expect_mtime = 0;
     bool has_expect_mtime = false;
-    int suffix = 3;            // cfg get ?suffix=
+    std::string suffix;        // cfg get ?suffix= (endswith filter, comma list)
     long long limit = 20;      // text-view row cap
 
     bool keys = false, meta = false, force = false;
@@ -159,6 +166,12 @@ enum class ParseResult { Ok, Help, UsageError };
 // as server_main's argument handling).
 ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags& g,
                                Command& c, std::string& err_msg);
+
+// True when every bare (non-dash) argv token names a known command, i.e. an
+// empty invocation or "a command group with no subcommand". Used to decide
+// whether a UsageError means "open the REPL" or "unknown subcommand, exit 2"
+// (bug #11). Global value-option values are skipped.
+bool references_known_commands_only(const std::vector<std::string>& args);
 
 // Human usage text (CLI11 help) for --help / usage errors.
 std::string usage_text();

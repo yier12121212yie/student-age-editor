@@ -153,34 +153,40 @@ class _PulseDotState extends State<PulseDot>
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: widget.size + 8,
-      height: widget.size + 8,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          ScaleTransition(
-            scale: Tween<double>(begin: 1.0, end: 2.2).animate(
-              CurvedAnimation(parent: _c, curve: Curves.easeOut),
-            ),
-            child: FadeTransition(
-              opacity: Tween<double>(begin: 0.45, end: 0.0).animate(_c),
-              child: Container(
-                width: widget.size,
-                height: widget.size,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: widget.color,
+    // repeat() 的永久动画每帧都会标脏绘制；不加 RepaintBoundary 时重绘会
+    // 向上传播到最近边界（可能是整条状态栏甚至更大区域）。包一层把每帧
+    // 重绘限制在这个小圆点自身。
+    return RepaintBoundary(
+      child: SizedBox(
+        width: widget.size + 8,
+        height: widget.size + 8,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            ScaleTransition(
+              scale: Tween<double>(begin: 1.0, end: 2.2).animate(
+                CurvedAnimation(parent: _c, curve: Curves.easeOut),
+              ),
+              child: FadeTransition(
+                opacity: Tween<double>(begin: 0.45, end: 0.0).animate(_c),
+                child: Container(
+                  width: widget.size,
+                  height: widget.size,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: widget.color,
+                  ),
                 ),
               ),
             ),
-          ),
-          Container(
-            width: widget.size,
-            height: widget.size,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: widget.color),
-          ),
-        ],
+            Container(
+              width: widget.size,
+              height: widget.size,
+              decoration:
+                  BoxDecoration(shape: BoxShape.circle, color: widget.color),
+            ),
+          ],
+        ),
       ),
     );
   }

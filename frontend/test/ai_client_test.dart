@@ -196,28 +196,41 @@ void main() {
             .firstWhere((m) => (m as Map<String, dynamic>)['role'] == 'system')
         as Map<String, dynamic>)['content'] as String;
     expect(sysMsg, contains('修改模组必须通过工具完成'));
+    // 标准操作流程：未知字段拒绝并报允许清单、id 省略自动分配、
+    // 游戏字典名、生图保存 Art/ai/
+    expect(sysMsg, contains('【标准操作流程】'));
     expect(sysMsg, contains('list_domains'));
     expect(sysMsg, contains('update_domain_item'));
+    expect(sysMsg, contains('报错列出允许字段清单'));
+    expect(sysMsg, contains('省略时按当前最大数字 id+1 自动分配'));
+    expect(sysMsg, contains('evt_types=事件类型'));
+    expect(sysMsg, contains('保存到模组 Art/ai/'));
+    // 内容条目规则：说话人/发送者角色必填（数组/单个 ID），
+    // roleName 只是可选显示名；TalkCfg 的 roles 是舞台编码、由 set_talk_stage 维护
+    expect(sysMsg, contains('【内容条目规则】'));
+    expect(sysMsg, contains('roleIds（说话人群组，数组）'));
+    expect(sysMsg, contains('PhoneMsgCfg 的 role（发送者，单个 ID）'));
+    expect(sysMsg, contains('KZoneContentCfg 的 role（发布者，单个 ID）'));
+    expect(sysMsg, contains('均为必填'));
+    expect(sysMsg, contains('roleName（自定义名字）只是覆盖显示名的可选字段'));
+    expect(sysMsg, contains('由 set_talk_stage 维护'));
+    // 跨类联动：缺角色新建而非复用，引用存 ID，剧情链路与社交挂接的引用字段
+    expect(sysMsg, contains('【跨类联动】'));
+    expect(sysMsg, contains('缺角色就新建'));
+    expect(sysMsg, contains('跨表引用存的都是 ID 不是名字'));
+    expect(sysMsg, contains('nextEvtId 跳转下一事件'));
+    expect(sysMsg, contains('parent 指向所属动态'));
+    // 修改纪律与回答要求
+    expect(sysMsg, contains('【修改纪律】'));
+    expect(sysMsg, contains('不要编造 id 或字段'));
+    expect(sysMsg, contains('连续失败 2 次'));
+    expect(sysMsg, contains('【回答要求】'));
+    expect(sysMsg, contains('使用简体中文'));
     // 系统提示应包含「工具参数速查」：逐条列出每个工具允许携带的参数
     expect(sysMsg, contains('工具参数速查'));
     expect(sysMsg, contains('- read_file：path（string'));
     expect(sysMsg, contains('必填'));
     expect(sysMsg, contains('可空'));
-    // 内容条目规则：说话人/发送者角色必填，roleName 只是可选显示名
-    expect(sysMsg, contains('roleIds（说话人群组）'));
-    expect(sysMsg, contains('PhoneMsgCfg 的 role（发送者）'));
-    expect(sysMsg, contains('KZoneContentCfg 的 role（发布者）'));
-    expect(sysMsg, contains('roleName（自定义名字）只是覆盖显示名的可选字段'));
-    // 扩写的操作细节：TalkCfg.roles 是舞台编码不能手改；修改纪律防编造
-    expect(sysMsg, contains('由 set_talk_stage 维护'));
-    expect(sysMsg, contains('不要编造 id 或字段'));
-    // 跨类联动：缺角色新建而非复用，引用存 ID
-    expect(sysMsg, contains('【跨类联动】'));
-    expect(sysMsg, contains('缺角色就新建，不要复用'));
-    expect(sysMsg, contains('跨表引用存的都是 ID 不是名字'));
-    // 剧情链路与社交挂接的具体引用字段
-    expect(sysMsg, contains('nextEvtId 跳转到下一个事件'));
-    expect(sysMsg, contains('parent 指向所属动态'));
   });
 
   test('OpenAI Responses API 流式 + 工具循环', () async {

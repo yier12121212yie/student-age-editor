@@ -99,7 +99,7 @@ class _BugfixPanelState extends State<BugfixPanel> {
         flag == 'FIX_TALK_1') {
       return palette.danger;
     }
-    return const Color(0xFFF57C00);
+    return palette.warning;
   }
 
   @override
@@ -111,10 +111,10 @@ class _BugfixPanelState extends State<BugfixPanel> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             children: [
-              const Icon(
+              Icon(
                 FluentIcons.wrench_24_regular,
                 size: 15,
-                color: Color(0xFF6C5CE7),
+                color: accentColor,
               ),
               const SizedBox(width: 8),
               Text(
@@ -217,7 +217,7 @@ class _BugfixPanelState extends State<BugfixPanel> {
                               borderRadius: BorderRadius.circular(6),
                               border: Border.all(
                                 color: selected
-                                    ? const Color(0xFF6C5CE7)
+                                    ? accentColor
                                     : palette.border,
                               ),
                             ),
@@ -292,9 +292,9 @@ class _BugfixPanelState extends State<BugfixPanel> {
               onPressed: _busy ? null : _fixAll,
               style: fluent.ButtonStyle(
                 backgroundColor: WidgetStatePropertyAll(
-                  const Color(0xFFE8890C),
+                  palette.warning,
                 ),
-                foregroundColor: const WidgetStatePropertyAll(Colors.white),
+                foregroundColor: WidgetStatePropertyAll(palette.onAccent),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,

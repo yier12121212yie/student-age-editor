@@ -66,10 +66,10 @@ class _PageViewState extends State<EditorPageView> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              const Icon(
+              Icon(
                 FluentIcons.table_24_regular,
                 size: 16,
-                color: Color(0xFF6C5CE7),
+                color: accentColor,
               ),
               const SizedBox(width: 10),
               Text(
@@ -142,14 +142,26 @@ class _PageViewState extends State<EditorPageView> {
               : widget.page.id == 'story'
               ? (isMobileWidth(context)
                   ? StoryListMobilePage(
+                      // 跟随当前选中模组（此前写死 mods 第一个：切换模组后
+                      // 列表仍显示旧模组数据）；换模组由页面 didUpdateWidget 重载。
                       key: const ValueKey('story-list-mobile'),
-                      modName: widget.state.mods.firstOrNull?.name ?? '',
+                      modName: widget.state.modName,
                     )
-                  : StoryDirectorView(
-                      key: const ValueKey('story-director'),
-                      state: widget.state,
-                      onPreview: widget.onPreview,
-                    ))
+                  // 桌面故事页默认进导演视图；一旦用「配置表」下拉选了别的表，
+                  // 就切到该表的 schema 编辑器（bug #13：此前下拉只改标签）。
+                  : (_cfg == widget.page.defaultCfg
+                      ? StoryDirectorView(
+                          key: const ValueKey('story-director'),
+                          state: widget.state,
+                          onPreview: widget.onPreview,
+                        )
+                      : SchemaEditorView(
+                          key: ValueKey('story:$_cfg'),
+                          state: widget.state,
+                          cfgName: _cfg,
+                          onPreview: _cfg == 'EvtCfg' ? widget.onPreview : null,
+                          onOpenSearch: widget.onOpenSearch,
+                        )))
               : SchemaEditorView(
                   key: ValueKey('${widget.page.id}:$_cfg'),
                   state: widget.state,

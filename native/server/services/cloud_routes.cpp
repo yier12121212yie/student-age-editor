@@ -415,11 +415,27 @@ void register_cloud_routes(Router& r) {
                                          prov->contains("config") ? (*prov)["config"]
                                                                   : json::object());
             std::string remote = cloud::remote_path_for(*prov, mod_name, sub);
-            auto objs = drv->list(remote);
+            // recursive=1 -> walk the whole subtree and return a flat file list
+            // (bug #12: an uploaded 14-file mod showed only the top-level dir +
+            // manifest). Non-recursive stays the default for compatibility.
+            const std::string rec = qget(req, "recursive");
+            bool recursive = rec == "1" || rec == "true";
             json out;
             out["remote"] = remote;
             json arr = json::array();
-            for (const auto& o : objs) arr.push_back(o.to_dict());
+            if (recursive) {
+                auto files = cloud::list_remote_recursive(drv.get(), remote);
+                for (const auto& [rel, o] : files) {
+                    json d = o.to_dict();
+                    d["path"] = rel;  // path is relative to the remote base
+                    d["rel"] = rel;
+                    d["is_dir"] = false;
+                    arr.push_back(std::move(d));
+                }
+            } else {
+                auto objs = drv->list(remote);
+                for (const auto& o : objs) arr.push_back(o.to_dict());
+            }
             out["objects"] = arr;
             return Resp::Json(200, std::move(out));
         } catch (const std::exception& e) {

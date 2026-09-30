@@ -268,7 +268,9 @@ Future<BenchDrag> benchDrag(
   // 按下选中的 setState 可能跨到下一次 pump 才 build：再排空一帧，
   // 否则那一次合法重建会被算进拖拽帧（C10 断言会被它污染）。
   await tester.pump();
-  final card0 = debugNodeCardBuilds;
+  // debugNodeCardBuilds 已随阶段 4a 移除；卡片实例创建（缓存未命中）与
+  // 卡片 build 一一对应，debugSlotCardsBuilt 是等价探针。
+  final card0 = debugSlotCardsBuilt;
   final paint0 = debugEdgePaintCount;
   final graph0 = debugBuildFlowGraphCalls;
   final dash0 = debugDashCacheClears;
@@ -288,7 +290,7 @@ Future<BenchDrag> benchDrag(
   await tester.pump();
   return (
     frameMs: frames,
-    cards: debugNodeCardBuilds - card0,
+    cards: debugSlotCardsBuilt - card0,
     paints: debugEdgePaintCount - paint0,
     graphs: debugBuildFlowGraphCalls - graph0,
     dashClears: debugDashCacheClears - dash0,

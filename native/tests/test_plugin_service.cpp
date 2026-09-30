@@ -13,8 +13,10 @@
 //     passes the upstream status/body/Content-Type back untouched;
 //   * the service URL whitelist (http, 127.0.0.1/localhost, explicit port)
 //     turns bad declarations into entry errors and 400s, never requests.
+#include <chrono>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <catch_amalgamated.hpp>
@@ -137,6 +139,16 @@ int dead_port() {
     const int p = s.start();
     s.stop();
     return p;
+}
+
+// P2: exec_tool's cache-miss fallback refresh runs on a detached thread; wait
+// for it to land before asserting or ending a test case (deadline guard so a
+// wedged environment cannot hang the suite).
+void wait_bg_refresh_idle() {
+    for (int i = 0; i < 1000 && !ps::bg_refresh_idle_for_test(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(ps::bg_refresh_idle_for_test());
 }
 
 }  // namespace
@@ -383,12 +395,18 @@ TEST_CASE("plugin service agent tools list and execute through the proxy", "[plu
     make_plugin(root, "svc", manifest_with_service(svc.url()));
 
     ServiceFixture fx;
-    // No reload yet: exec performs the bounded inline refresh itself (§4
-    // cache-miss fallback) and still finds the tool.
+    // P2: no reload yet — exec's fallback refresh runs on the detached
+    // background thread, the first exec answers from the cache (404) at once;
+    // after the refresh lands, the retry reaches the service.
     auto exec = fx.call("POST", "/api/plugins/agent/exec", {},
                         json{{"name", "get_weather"}, {"args", json{{"city", "杭州"}}}});
+    CHECK(exec.status == 404);
+    CHECK(exec.json_payload == json{{"error", "unknown plugin tool: get_weather"}});
+    wait_bg_refresh_idle();
+    CHECK(svc.calls("/plugin.json").size() == 1);  // the background fallback refresh
+    exec = fx.call("POST", "/api/plugins/agent/exec", {},
+                   json{{"name", "get_weather"}, {"args", json{{"city", "杭州"}}}});
     CHECK(exec.status == 200);  // wildcard "ok" — the call DID reach the service
-    CHECK(svc.calls("/plugin.json").size() == 1);  // the inline refresh
     REQUIRE(svc.calls("/tools/weather").size() == 1);
     CHECK(svc.calls("/tools/weather")[0].method == "POST");
     CHECK(svc.calls("/tools/weather")[0].body.find("get_weather") != std::string::npos);
@@ -418,6 +436,7 @@ TEST_CASE("plugin service agent tools list and execute through the proxy", "[plu
     auto unknown = fx.call("POST", "/api/plugins/agent/exec", {}, json{{"name", "nope"}});
     CHECK(unknown.status == 404);
     CHECK(unknown.json_payload == json{{"error", "unknown plugin tool: nope"}});
+    wait_bg_refresh_idle();  // the miss spawned a background refresh — wait it out
 }
 
 // ---------------------------------------------------------------------------

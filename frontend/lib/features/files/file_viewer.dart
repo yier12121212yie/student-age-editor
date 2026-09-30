@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -9,6 +10,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
+import '../../core/responsive.dart';
 
 /// 文件查看器：文本只读展示；图片/音频走媒体预览（通过 /api/tools/read 的 base64）。
 class FileViewer extends StatefulWidget {
@@ -198,13 +200,25 @@ class ImagePreview extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _InfoBar(name: name, icon: FluentIcons.image_24_regular, hint: '滚轮缩放 · 拖拽平移'),
+        // 手机端滚轮提示误导：InteractiveViewer 支持双指捏合缩放。
+        _InfoBar(
+            name: name,
+            icon: FluentIcons.image_24_regular,
+            hint: isMobileWidth(context)
+                ? '双指缩放 · 拖拽平移'
+                : '滚轮缩放 · 拖拽平移'),
         Divider(height: 1, color: palette.border),
         Expanded(
           child: InteractiveViewer(
             maxScale: 8,
             child: Center(
               child: Image.memory(bytes,
+                  // 阶段 4d：模组贴图可达数十 MB，全分辨率解码会卡；按当前
+                  // 视口宽×DPR 降采样（放大查看时略糊换取不冻结 UI）。
+                  cacheWidth:
+                      (MediaQuery.sizeOf(context).width *
+                              MediaQuery.devicePixelRatioOf(context))
+                          .round(),
                   fit: BoxFit.contain,
                   gaplessPlayback: true,
                   errorBuilder: (_, _, _) => Text('图片解码失败',
@@ -234,6 +248,9 @@ class _AudioPreviewState extends State<AudioPreview> {
   bool _playing = false;
   bool _dragging = false;
   String? _error;
+  // 阶段 3：播放器事件订阅存句柄，dispose 时先取消再关播放器——
+  // 旧实现四个 .listen() 全都不留句柄，页面关闭后事件仍打进来。
+  final List<StreamSubscription<dynamic>> _playerSubs = [];
 
   @override
   void initState() {
@@ -243,28 +260,34 @@ class _AudioPreviewState extends State<AudioPreview> {
 
   @override
   void dispose() {
+    for (final s in _playerSubs) {
+      s.cancel();
+    }
+    _playerSubs.clear();
     _player.dispose();
     super.dispose();
   }
 
   Future<void> _init() async {
-    _player.onDurationChanged.listen((d) {
-      if (mounted) setState(() => _duration = d);
-    });
-    _player.onPositionChanged.listen((p) {
-      if (mounted && !_dragging) setState(() => _position = p);
-    });
-    _player.onPlayerStateChanged.listen((s) {
-      if (mounted) setState(() => _playing = s == PlayerState.playing);
-    });
-    _player.onPlayerComplete.listen((_) {
-      if (mounted) {
-        setState(() {
-          _playing = false;
-          _position = _duration;
-        });
-      }
-    });
+    _playerSubs.addAll([
+      _player.onDurationChanged.listen((d) {
+        if (mounted) setState(() => _duration = d);
+      }),
+      _player.onPositionChanged.listen((p) {
+        if (mounted && !_dragging) setState(() => _position = p);
+      }),
+      _player.onPlayerStateChanged.listen((s) {
+        if (mounted) setState(() => _playing = s == PlayerState.playing);
+      }),
+      _player.onPlayerComplete.listen((_) {
+        if (mounted) {
+          setState(() {
+            _playing = false;
+            _position = _duration;
+          });
+        }
+      }),
+    ]);
     try {
       // BytesSource 由插件写入临时文件播放，无需落盘到模组目录
       await _player.play(BytesSource(widget.bytes));
@@ -274,6 +297,8 @@ class _AudioPreviewState extends State<AudioPreview> {
   }
 
   Future<void> _toggle() async {
+    // 播放/暂停态由 onPlayerStateChanged 订阅统一回写，此处不再 await 后
+    // 自行翻 _playing（与订阅双写会翻错），也不再有 await 后的 setState。
     if (_playing) {
       await _player.pause();
     } else {

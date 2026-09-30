@@ -18,6 +18,13 @@ namespace {
 
 std::mutex g_write_lock;  // read-modify-write serialization (env_store._WRITE_LOCK)
 
+// Parsed-document cache for top(): the autocomplete path calls it on every
+// keystroke, and the file never changes between writes. Invalidated by record().
+std::mutex g_cache_mu;
+std::string g_cached_path;
+json g_cached_doc;
+bool g_cache_valid = false;
+
 constexpr std::size_t kMaxPerKind = 512;
 
 long long now_ts() {
@@ -75,12 +82,32 @@ json record(const std::string& editor_root, const std::string& kind, const std::
     }
     doc[kind] = std::move(kmap);
     sa_core::write_text_atomic(usage_path(editor_root), doc.dump(2));
+    {
+        std::lock_guard<std::mutex> cl(g_cache_mu);
+        g_cache_valid = false;
+    }
     return rec;
 }
 
 json top(const std::string& editor_root, const std::string& kind, std::size_t limit) {
     json out = json::array();
-    json doc = sa_core::env_store::read_json_file(usage_path(editor_root));
+    const std::string path = usage_path(editor_root);
+    json doc;
+    {
+        std::lock_guard<std::mutex> cl(g_cache_mu);
+        if (g_cache_valid && g_cached_path == path) {
+            doc = g_cached_doc;  // cheap: bounded (<=512 entries/kind)
+        }
+    }
+    if (!doc.is_object()) {
+        doc = sa_core::env_store::read_json_file(path);
+        {
+            std::lock_guard<std::mutex> cl(g_cache_mu);
+            g_cached_path = path;
+            g_cached_doc = doc;
+            g_cache_valid = true;
+        }
+    }
     if (!doc.is_object() || !doc.contains(kind) || !doc[kind].is_object()) return out;
     std::vector<std::pair<std::string, json>> v;
     for (auto it = doc[kind].begin(); it != doc[kind].end(); ++it) {

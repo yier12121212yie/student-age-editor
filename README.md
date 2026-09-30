@@ -2,7 +2,8 @@
 
 前端为 Flutter，后端为 **native C++**（源码在 `native/`，CMake 构建，不依赖 Python
 运行时）。后端以本地 `127.0.0.1:8765` HTTP 服务与前端通信，各平台启动方式一致；
-HTTP API 契约与旧 Python 版保持兼容，并随功能扩展到 122 端点，Flutter 前端零改动。
+HTTP API 契约与旧 Python 版保持兼容，并随功能持续扩展（GUI / CLI / TUI 三端共用
+同一后端），Flutter 前端零改动。
 
 除 GUI 外提供 CLI / TUI，发行产物为三个**相互独立**的可执行文件：`backend`
 （HTTP 服务）、`backend_cli`（CLI）、`backend_tui`（TUI）；Windows 下带 `.exe`
@@ -43,6 +44,12 @@ HTTP API 契约与旧 Python 版保持兼容，并随功能扩展到 122 端点�
   CLI `backend_cli plugin list|install|uninstall|reload|tools`、TUI `p` 插件弹窗。
   详见 [`PLUGIN_GUIDE.md`](PLUGIN_GUIDE.md)，规范以
   [`native/PLUGIN_SPEC.md`](native/PLUGIN_SPEC.md) 为唯一真相源。
+- **检查更新（三端）**：查询 GitHub Releases 最新发行版并与本机版本比较——版本
+  抓取与比较都在后端 `GET /api/update/check`（三端同一套规则），本机版本由构建期
+  `-DSA_APP_VERSION` 注入、经 `GET /api/version` 读取。入口：GUI 设置页
+  「关于 · 检查更新」（手动 + 启动静默检查，最多 24 小时一次，可「跳过此版本」）、
+  CLI `backend_cli update check` 与 REPL `/update`、TUI `u` 弹窗。**不做自动
+  更新**：发现新版本只展示发行说明与发行页链接（可一键复制到浏览器），下载安装仍走人工。
 - **网页版（本机浏览器 / 自托管 Linux）**：同一 native 后端的浏览器形态——本机
   `backend --web-root` 打开即用，或 Linux 上 `backend_gateway` 多账号自托管；
   详见 [`WEB_GUIDE.md`](WEB_GUIDE.md)（随本里程碑交付生效）。

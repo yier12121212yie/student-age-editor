@@ -447,6 +447,27 @@ Intent HandleCloudModal(AppState& s, const KeyInput& k) {
     }
 }
 
+// 检查更新 modal (u)。只读：Enter/r 发一次 GET /api/update/check（结果由
+// intent runner 写回 update_* 字段），其余键忽略；Esc/q 关闭回浏览页。
+Intent HandleUpdateModal(AppState& s, const KeyInput& k) {
+    switch (k.kind) {
+        case KeyInput::Enter:
+            return Intent::CheckUpdate;
+        case KeyInput::Escape:
+            s.page = Page::Main;
+            return Intent::None;
+        case KeyInput::Char:
+            if (k.text == "r") return Intent::CheckUpdate;
+            if (k.text == "q") {
+                s.page = Page::Main;
+                return Intent::None;
+            }
+            return Intent::None;
+        default:
+            return Intent::None;
+    }
+}
+
 }  // namespace
 
 int AppState::ClampSel(int sel, int count) const {
@@ -682,6 +703,7 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
             case Page::Agent: return HandleAgentModal(s, k);
             case Page::Plugins: return HandlePluginsModal(s, k);
             case Page::Cloud: return HandleCloudModal(s, k);
+            case Page::Update: return HandleUpdateModal(s, k);
             case Page::Main: break;
         }
         return Intent::None;
@@ -882,6 +904,7 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
         if (k.text == "c") return OpenModal(s, Page::Cloud);
         if (k.text == "p") return OpenModal(s, Page::Plugins);
         if (k.text == "b") return OpenModal(s, Page::Bugfix);
+        if (k.text == "u") return OpenModal(s, Page::Update);
     }
     // Tab / Shift+Tab cycle the three panes (Alpha's panel switcher).
     if (k.kind == KeyInput::Tab || k.kind == KeyInput::ShiftTab) {

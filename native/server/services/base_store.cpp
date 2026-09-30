@@ -185,6 +185,13 @@ json BaseStore::status_dict() const {
     out["missing"] = std::move(missing);
     out["env_path"] = env_path;
     out["env_exists"] = sa_core::paths::is_file(env_path);
+    // Surface where the backend actually looks (bug #15: the GUI said "未加载
+    // 原版数据" while a CLI-era artifact sat in a different root; make the
+    // resolved paths visible so the mismatch can be diagnosed).
+    out["data_root"] = sa::editor_root();
+    out["base_dir"] = base_artifact_dir();
+    out["base_dir_exists"] = !out["base_dir"].get<std::string>().empty() &&
+                             sa_core::paths::is_dir(out["base_dir"].get<std::string>());
     return out;
 }
 

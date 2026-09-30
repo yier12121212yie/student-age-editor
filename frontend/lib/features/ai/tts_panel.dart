@@ -5,10 +5,12 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import 'ai_policy.dart';
 
 /// 配音（TTS）面板。
 ///
@@ -63,11 +65,16 @@ class _TtsPanelState extends State<TtsPanel> {
   String? _savedPath;
   String? _savedCfgId;
   bool _convertedOgg = false;
+
   /// 音色列表请求代际号（防快速切换服务商时旧响应覆盖新列表）。
   int _voicesReqGen = 0;
 
   List<Map<String, dynamic>> _materials = [];
   bool _materialsLoading = false;
+
+  /// web 托管形态（policy.tts_image_available=false）：服务端没有 TTS 密钥，
+  /// 全部操作禁用置灰。桌面与非托管 web 恒 false，行为不变。
+  bool _disabledByPolicy = false;
 
   @override
   void initState() {
@@ -87,12 +94,25 @@ class _TtsPanelState extends State<TtsPanel> {
   }
 
   Future<void> _loadSettings() async {
+    if (kIsWeb) {
+      // 双通道策略（应用内一次性拉取，已就绪时立即返回）：
+      // 托管形态禁用本面板全部服务端操作。
+      try {
+        await AiPolicyStore.instance.ensureLoaded();
+      } catch (_) {}
+      if (!mounted) return;
+      if (!AiPolicyStore.instance.policy.ttsImageAvailable) {
+        setState(() => _disabledByPolicy = true);
+        return; // 不拉音色/素材列表（后端未开启 TTS）
+      }
+    }
     try {
       final r = await ApiClient.instance
           .get('/api/tts/settings')
           .timeout(const Duration(seconds: 5));
       if (!mounted) return;
-      final s = (r is Map ? r['settings'] : null) as Map<String, dynamic>? ?? {};
+      final s =
+          (r is Map ? r['settings'] : null) as Map<String, dynamic>? ?? {};
       final speed = (s['ttsSpeed'] as num?)?.toDouble() ?? 1.0;
       setState(() {
         _settings = s;
@@ -169,18 +189,24 @@ class _TtsPanelState extends State<TtsPanel> {
       _result = null;
     });
     try {
-      final r = await ApiClient.instance
-          .post('/api/tts/synthesize',
-              body: {
-                'provider': _provider,
-                'text': text,
-                'voice': _voiceCtrl.text.trim(),
-                'params': {'speed': _speed},
-              })
-          .timeout(const Duration(minutes: 6));
+      // 长台词合成是长任务端点：async=1 走 202+轮询；maxWait 不短于原
+      // 6 分钟整体超时（老后端仍同步 200，靠 timeout 兜底）。
+      final r = await ApiClient.instance.runLongTask(
+        '/api/tts/synthesize',
+        body: {
+          'provider': _provider,
+          'text': text,
+          'voice': _voiceCtrl.text.trim(),
+          'params': {'speed': _speed},
+        },
+        timeout: const Duration(minutes: 6),
+        maxWait: const Duration(minutes: 6),
+      );
       final b64 = r['audio'] as String? ?? '';
       final ext = r['ext']?.toString() ?? 'wav';
-      final bytes = Uint8List.fromList(base64Decode(b64));
+      // 长台词 wav 的 base64 有数 MB：主 isolate 同步解码在手机上是一次
+      // 可感知冻结，搬去后台。
+      final bytes = await _decodeAudioB64(b64);
       if (!mounted) return;
       setState(() {
         _lastAudio = bytes;
@@ -216,8 +242,7 @@ class _TtsPanelState extends State<TtsPanel> {
     }
     setState(() => _saving = true);
     try {
-      final keyBase =
-          widget.initTalkId.isNotEmpty ? widget.initTalkId : 'tts';
+      final keyBase = widget.initTalkId.isNotEmpty ? widget.initTalkId : 'tts';
       final key = '${keyBase}_${DateTime.now().millisecondsSinceEpoch}';
       // 从剧情导演打开时 initTalkId 形如 'talk_<对白id>'：剥离前缀得到真实对白 id，
       // 供"配音打通"使用（后端写回 TalkCfg.audio，即引擎的逐句配音通道）
@@ -225,18 +250,20 @@ class _TtsPanelState extends State<TtsPanel> {
           ? widget.initTalkId.substring(5)
           : (widget.initTalkId.isEmpty ? '' : widget.initTalkId);
       final r = await ApiClient.instance
-          .post('/api/tts/save',
-              body: {
-                'audio': base64Encode(_lastAudio!),
-                'ext': _lastExt,
-                'key': key,
-                'ogg': true, // 有 ffmpeg/oggenc 时自动转 Ogg（游戏原生格式）
-                'writeCfg': true,
-                if (bindTalkId.isNotEmpty) 'bindTalkId': bindTalkId,
-                'title': widget.initTitle.isNotEmpty
-                    ? widget.initTitle
-                    : _textCtrl.text.trim(),
-              })
+          .post(
+            '/api/tts/save',
+            body: {
+              'audio': base64Encode(_lastAudio!),
+              'ext': _lastExt,
+              'key': key,
+              'ogg': true, // 有 ffmpeg/oggenc 时自动转 Ogg（游戏原生格式）
+              'writeCfg': true,
+              if (bindTalkId.isNotEmpty) 'bindTalkId': bindTalkId,
+              'title': widget.initTitle.isNotEmpty
+                  ? widget.initTitle
+                  : _textCtrl.text.trim(),
+            },
+          )
           // 后端 ogg 转码最长 120s（ffmpeg/oggenc），超时须留足余量，
           // 否则慢转码下前端先报失败而后端实际已写完文件
           .timeout(const Duration(seconds: 150));
@@ -248,16 +275,19 @@ class _TtsPanelState extends State<TtsPanel> {
         _convertedOgg = r['convertedOgg'] == true;
       });
       _refreshMaterials();
-      final cfgNote =
-          r['audioCfgId'] != null ? '，已登记 AudioCfg #${r['audioCfgId']}' : '';
+      final cfgNote = r['audioCfgId'] != null
+          ? '，已登记 AudioCfg #${r['audioCfgId']}'
+          : '';
       final boundNote = r['boundTalkId'] != null
           ? '，已绑定对白 ${r['boundTalkId']}'
           : '';
       // 后端如实上报：绑定未发生（未登记 AudioCfg）或失败时 boundTalkId
       // 为 null 并带 warning——提示必须透传，不能只报「已保存」
       final warnNote = r['warning'] != null ? '\n⚠ ${r['warning']}' : '';
-      _toast('已保存：$_savedPath$cfgNote$boundNote$warnNote',
-          severe: r['warning'] != null);
+      _toast(
+        '已保存：$_savedPath$cfgNote$boundNote$warnNote',
+        severe: r['warning'] != null,
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -270,8 +300,7 @@ class _TtsPanelState extends State<TtsPanel> {
       final r = await ApiClient.instance
           .get('/api/tts/audio', query: {'path': rel})
           .timeout(const Duration(seconds: 30));
-      final bytes = Uint8List.fromList(
-          base64Decode(r['audio'] as String? ?? ''));
+      final bytes = await _decodeAudioB64(r['audio'] as String? ?? '');
       if (!mounted) return;
       await _play(bytes);
     } catch (e) {
@@ -288,11 +317,13 @@ class _TtsPanelState extends State<TtsPanel> {
         content: Text('确认删除 $path ？'),
         actions: [
           fluent.Button(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           fluent.FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('删除')),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -310,29 +341,34 @@ class _TtsPanelState extends State<TtsPanel> {
 
   void _toast(String msg, {bool severe = false}) {
     if (!mounted) return;
-    fluent.displayInfoBar(context,
-        builder: (ctx, close) => fluent.InfoBar(
-            title: Text(msg),
-            severity: severe
-                ? fluent.InfoBarSeverity.error
-                : fluent.InfoBarSeverity.success));
+    fluent.displayInfoBar(
+      context,
+      builder: (ctx, close) => fluent.InfoBar(
+        title: Text(msg),
+        severity: severe
+            ? fluent.InfoBarSeverity.error
+            : fluent.InfoBarSeverity.success,
+      ),
+    );
   }
 
   Future<void> _test() async {
     try {
-      final r = await ApiClient.instance
-          .post('/api/tts/test',
-              body: {
-                'provider': _provider,
-                'settings': {
-                  'ttsProvider': _provider,
-                  'ttsApiKey': _settings['ttsApiKey'] ?? '',
-                  'ttsGroupId': _settings['ttsGroupId'] ?? '',
-                  'ttsBaseUrl': _settings['ttsBaseUrl'] ?? '',
-                  'ttsModel': _settings['ttsModel'] ?? '',
-                },
-              })
-          .timeout(const Duration(minutes: 2));
+      final r = await ApiClient.instance.runLongTask(
+        '/api/tts/test',
+        body: {
+          'provider': _provider,
+          'settings': {
+            'ttsProvider': _provider,
+            'ttsApiKey': _settings['ttsApiKey'] ?? '',
+            'ttsGroupId': _settings['ttsGroupId'] ?? '',
+            'ttsBaseUrl': _settings['ttsBaseUrl'] ?? '',
+            'ttsModel': _settings['ttsModel'] ?? '',
+          },
+        },
+        timeout: const Duration(minutes: 2),
+        maxWait: const Duration(seconds: 300),
+      );
       if (r['ok'] == true) {
         _toast('连接成功：${r['detail'] ?? ''}');
       } else {
@@ -358,29 +394,40 @@ class _TtsPanelState extends State<TtsPanel> {
     final size = MediaQuery.sizeOf(context);
     final compact = size.width < 560;
     // 窄屏两个主按钮等宽铺满，宽屏保持固有宽度并在右侧显示说明
-    final synthBtn = fluent.FilledButton(
-      onPressed: _synthBusy ? null : _synth,
-      style: fluent.ButtonStyle(
-        backgroundColor: WidgetStatePropertyAll(palette.warning),
+    final synthBtn = fluent.Tooltip(
+      message: kAiTtsImageDisabledHint,
+      child: fluent.FilledButton(
+        onPressed: (_synthBusy || _disabledByPolicy) ? null : _synth,
+        style: fluent.ButtonStyle(
+          backgroundColor: WidgetStatePropertyAll(palette.warning),
+        ),
+        child: _synthBusy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Text('🧪 合成并试听'),
       ),
-      child: _synthBusy
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2))
-          : const Text('🧪 合成并试听'),
     );
-    final saveBtn = fluent.FilledButton(
-      onPressed: (_saving || _lastAudio == null) ? null : _save,
-      style: const fluent.ButtonStyle(
-        backgroundColor: WidgetStatePropertyAll(Color(0xFF6C5CE7)),
+    final saveBtn = fluent.Tooltip(
+      message: kAiTtsImageDisabledHint,
+      child: fluent.FilledButton(
+        onPressed:
+            (_saving || _lastAudio == null || _disabledByPolicy)
+                ? null
+                : _save,
+        style: fluent.ButtonStyle(
+          backgroundColor: WidgetStatePropertyAll(accentColor),
+        ),
+        child: _saving
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Text('💾 保存到模组'),
       ),
-      child: _saving
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2))
-          : const Text('💾 保存到模组'),
     );
     return Container(
       // 预留 Dialog 默认 insetPadding（水平 40 / 垂直 24），避免弹窗内溢出
@@ -401,27 +448,38 @@ class _TtsPanelState extends State<TtsPanel> {
             ),
             child: Row(
               children: [
-                Icon(FluentIcons.mic_24_regular,
-                    size: 18, color: palette.warning),
+                Icon(
+                  FluentIcons.mic_24_regular,
+                  size: 18,
+                  color: palette.warning,
+                ),
                 const SizedBox(width: 8),
-                Text('配音（TTS）',
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: palette.textHigh)),
+                Text(
+                  '配音（TTS）',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: palette.textHigh,
+                  ),
+                ),
                 const SizedBox(width: 8),
                 Flexible(
-                  child: Text(_voicesSource == 'live'
-                      ? '· ${_provider == 'minimax' ? 'MiniMax' : '阿里云'} 音色在线'
-                      : '· 内置音色表',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 11, color: hint)),
+                  child: Text(
+                    _voicesSource == 'live'
+                        ? '· ${_provider == 'minimax' ? 'MiniMax' : '阿里云'} 音色在线'
+                        : '· 内置音色表',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: hint),
+                  ),
                 ),
                 const Spacer(),
-                fluent.Button(
-                  onPressed: _test,
-                  child: const Text('测试连接'),
+                fluent.Tooltip(
+                  message: kAiTtsImageDisabledHint,
+                  child: fluent.Button(
+                    onPressed: _disabledByPolicy ? null : _test,
+                    child: const Text('测试连接'),
+                  ),
                 ),
                 const SizedBox(width: 8),
                 fluent.IconButton(
@@ -456,8 +514,7 @@ class _TtsPanelState extends State<TtsPanel> {
                       children: [
                         Expanded(child: _label('服务商')),
                         const SizedBox(width: 12),
-                        Expanded(
-                            flex: 2, child: _label('音色（voice id）')),
+                        Expanded(flex: 2, child: _label('音色（voice id）')),
                         const SizedBox(width: 4),
                       ],
                     ),
@@ -466,13 +523,19 @@ class _TtsPanelState extends State<TtsPanel> {
                   ],
                   if (_voicesError != null) ...[
                     const SizedBox(height: 6),
-                    Text(_voicesError!,
-                        style: TextStyle(
-                            fontSize: 11, color: palette.statusDanger)),
+                    Text(
+                      _voicesError!,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: palette.statusDanger,
+                      ),
+                    ),
                   ] else if (_voices.isEmpty && !_voicesLoading) ...[
                     const SizedBox(height: 6),
-                    Text('请先在「设置 → 配音」填写 API Key 后刷新音色',
-                        style: TextStyle(fontSize: 11, color: hint)),
+                    Text(
+                      '请先在「设置 → 配音」填写 API Key 后刷新音色',
+                      style: TextStyle(fontSize: 11, color: hint),
+                    ),
                   ],
                   const SizedBox(height: 14),
                   _label('合成文本'),
@@ -504,8 +567,7 @@ class _TtsPanelState extends State<TtsPanel> {
                           child: Text(
                             '$_lastBytes 字节(.$_lastExt)，'
                             '保存时自动转为游戏原生 Ogg（若本机装有 ffmpeg/oggenc）',
-                            style:
-                                TextStyle(fontSize: 11, color: hint),
+                            style: TextStyle(fontSize: 11, color: hint),
                           ),
                         ),
                       ],
@@ -521,17 +583,17 @@ class _TtsPanelState extends State<TtsPanel> {
                   ],
                   const SizedBox(height: 8),
                   if (_result != null)
-                    Text(_result!,
-                        style: const TextStyle(
-                            fontSize: 11, color: Color(0xFF6C5CE7))),
+                    Text(
+                      _result!,
+                      style: TextStyle(fontSize: 11, color: accentColor),
+                    ),
                   if (_savedPath != null) ...[
                     const SizedBox(height: 6),
                     Text(
                       '已保存：$_savedPath'
                       '${_convertedOgg ? '（已转码 Ogg）' : ''}'
                       '${_savedCfgId != null ? ' · AudioCfg #$_savedCfgId' : ''}',
-                      style:
-                          const TextStyle(fontSize: 11, color: Color(0xFF3FA46B)),
+                      style: TextStyle(fontSize: 11, color: palette.statusOk),
                     ),
                   ],
                   const SizedBox(height: 6),
@@ -545,16 +607,21 @@ class _TtsPanelState extends State<TtsPanel> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      Text('素材库（当前 mod audio/tts/）',
-                          style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                              color: palette.textHigh)),
+                      Text(
+                        '素材库（当前 mod audio/tts/）',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: palette.textHigh,
+                        ),
+                      ),
                       const Spacer(),
                       fluent.IconButton(
                         onPressed: _refreshMaterials,
-                        icon: const Icon(FluentIcons.arrow_sync_24_regular,
-                            size: 15),
+                        icon: const Icon(
+                          FluentIcons.arrow_sync_24_regular,
+                          size: 15,
+                        ),
                       ),
                     ],
                   ),
@@ -563,22 +630,27 @@ class _TtsPanelState extends State<TtsPanel> {
                     const Padding(
                       padding: EdgeInsets.all(8),
                       child: SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
                     )
                   else if (_materials.isEmpty)
                     Padding(
                       padding: EdgeInsets.symmetric(vertical: 10),
-                      child: Text('暂无配音素材，合成后点击「保存到模组」',
-                          style: TextStyle(fontSize: 11, color: hint)),
+                      child: Text(
+                        '暂无配音素材，合成后点击「保存到模组」',
+                        style: TextStyle(fontSize: 11, color: hint),
+                      ),
                     )
                   else
                     for (final item in _materials)
                       Container(
                         margin: const EdgeInsets.symmetric(vertical: 3),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 6),
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color: palette.bgAlt,
                           borderRadius: BorderRadius.circular(6),
@@ -586,8 +658,11 @@ class _TtsPanelState extends State<TtsPanel> {
                         ),
                         child: Row(
                           children: [
-                            Icon(FluentIcons.mic_24_regular,
-                                size: 14, color: palette.textMuted),
+                            Icon(
+                              FluentIcons.mic_24_regular,
+                              size: 14,
+                              color: palette.textMuted,
+                            ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -595,26 +670,31 @@ class _TtsPanelState extends State<TtsPanel> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                    fontSize: 11.5, color: palette.textPrimary),
+                                  fontSize: 11.5,
+                                  color: palette.textPrimary,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 8),
                             Text(
-                                _fmtSize(
-                                    (item['size'] as num?)?.toInt() ?? 0),
-                                style: TextStyle(
-                                    fontSize: 10.5, color: hint)),
+                              _fmtSize((item['size'] as num?)?.toInt() ?? 0),
+                              style: TextStyle(fontSize: 10.5, color: hint),
+                            ),
                             const SizedBox(width: 4),
                             fluent.IconButton(
-                              onPressed: () => _playMaterial(
-                                  item['path']?.toString() ?? ''),
-                              icon: const Icon(FluentIcons.play_24_regular,
-                                  size: 14),
+                              onPressed: () =>
+                                  _playMaterial(item['path']?.toString() ?? ''),
+                              icon: const Icon(
+                                FluentIcons.play_24_regular,
+                                size: 14,
+                              ),
                             ),
                             fluent.IconButton(
                               onPressed: () => _deleteMaterial(item),
-                              icon: const Icon(FluentIcons.delete_24_regular,
-                                  size: 14),
+                              icon: const Icon(
+                                FluentIcons.delete_24_regular,
+                                size: 14,
+                              ),
                             ),
                           ],
                         ),
@@ -629,79 +709,74 @@ class _TtsPanelState extends State<TtsPanel> {
   }
 
   Widget _providerCombo() => fluent.ComboBox<String>(
-        value: _provider,
-        isExpanded: true,
-        items: const [
-          fluent.ComboBoxItem(
-              value: 'aliyun', child: Text('阿里云 DashScope（百炼）')),
-          fluent.ComboBoxItem(value: 'minimax', child: Text('MiniMax（T2A V2）')),
-        ],
-        onChanged: (v) {
-          if (v == null || v == _provider) return;
-          setState(() => _provider = v);
-          _loadVoices();
-        },
-      );
+    value: _provider,
+    isExpanded: true,
+    items: const [
+      fluent.ComboBoxItem(value: 'aliyun', child: Text('阿里云 DashScope（百炼）')),
+      fluent.ComboBoxItem(value: 'minimax', child: Text('MiniMax（T2A V2）')),
+    ],
+    onChanged: (v) {
+      if (v == null || v == _provider) return;
+      setState(() => _provider = v);
+      _loadVoices();
+    },
+  );
 
   Widget _voiceCombo() => fluent.ComboBox<String>(
-        value: _matchedVoice,
-        isExpanded: true,
-        placeholder: _voicesLoading
-            ? const Text('加载中…')
-            : const Text('选择音色'),
-        items: [
-          for (final v in _voices)
-            fluent.ComboBoxItem(
-              // 音色表来自后端 JSON：id 非字符串（数字等）时不硬 cast，
-              // 否则整个面板 build 抛 TypeError 红屏。
-              value: v['id']?.toString() ?? '',
-              child: Text(
-                  '${v['name'] ?? v['id']}'
-                  '${(v['gender']?.toString() ?? '').isNotEmpty ? '（${v['gender']}）' : ''}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
-            ),
-        ],
-        onChanged: (v) => setState(() {
-          _voiceCtrl.text = v ?? '';
-        }),
-      );
+    value: _matchedVoice,
+    isExpanded: true,
+    placeholder: _voicesLoading ? const Text('加载中…') : const Text('选择音色'),
+    items: [
+      for (final v in _voices)
+        fluent.ComboBoxItem(
+          // 音色表来自后端 JSON：id 非字符串（数字等）时不硬 cast，
+          // 否则整个面板 build 抛 TypeError 红屏。
+          value: v['id']?.toString() ?? '',
+          child: Text(
+            '${v['name'] ?? v['id']}'
+            '${(v['gender']?.toString() ?? '').isNotEmpty ? '（${v['gender']}）' : ''}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+    ],
+    onChanged: (v) => setState(() {
+      _voiceCtrl.text = v ?? '';
+    }),
+  );
 
   /// 音色行：下拉选择 + 刷新（窄屏）；手填 voice id 输入框在窄屏单独成行。
   Widget _voiceRow() => Row(
-        children: [
-          Expanded(child: _voiceCombo()),
-          const SizedBox(width: 8),
-          fluent.IconButton(
-            onPressed: _voicesLoading ? null : _loadVoices,
-            icon: const Icon(FluentIcons.arrow_sync_24_regular, size: 15),
-          ),
-        ],
-      );
+    children: [
+      Expanded(child: _voiceCombo()),
+      const SizedBox(width: 8),
+      fluent.IconButton(
+        onPressed: _voicesLoading ? null : _loadVoices,
+        icon: const Icon(FluentIcons.arrow_sync_24_regular, size: 15),
+      ),
+    ],
+  );
 
   /// 宽屏布局：服务商 + 音色下拉 + 手填输入框 + 刷新并排。
   Widget _providerAndVoiceRow() => Row(
-        children: [
-          Expanded(child: _providerCombo()),
-          const SizedBox(width: 12),
-          Expanded(
-            flex: 2,
-            child: _voiceCombo(),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: fluent.TextBox(
-              controller: _voiceCtrl,
-              placeholder: '或手填 voice id',
-            ),
-          ),
-          const SizedBox(width: 4),
-          fluent.IconButton(
-            onPressed: _voicesLoading ? null : _loadVoices,
-            icon: const Icon(FluentIcons.arrow_sync_24_regular, size: 15),
-          ),
-        ],
-      );
+    children: [
+      Expanded(child: _providerCombo()),
+      const SizedBox(width: 12),
+      Expanded(flex: 2, child: _voiceCombo()),
+      const SizedBox(width: 8),
+      Expanded(
+        child: fluent.TextBox(
+          controller: _voiceCtrl,
+          placeholder: '或手填 voice id',
+        ),
+      ),
+      const SizedBox(width: 4),
+      fluent.IconButton(
+        onPressed: _voicesLoading ? null : _loadVoices,
+        icon: const Icon(FluentIcons.arrow_sync_24_regular, size: 15),
+      ),
+    ],
+  );
 
   /// 当前音色（手填 / 默认设置），仅当存在于预设列表时才作为下拉选中值；
   /// 手填的自定义 voice id 不匹配列表项时下拉回到占位符。
@@ -717,3 +792,13 @@ class _TtsPanelState extends State<TtsPanel> {
   Widget _label(String s) =>
       Text(s, style: TextStyle(fontSize: 12, color: palette.textPrimary));
 }
+
+/// base64 → 字节。> 256KB 走后台 isolate（compute 入口须为顶层函数），
+/// 小结果留主 isolate 免去线程往返开销。
+Future<Uint8List> _decodeAudioB64(String b64) async {
+  if (b64.isEmpty) return Uint8List(0);
+  if (b64.length <= 256 * 1024) return base64Decode(b64);
+  return await compute(_base64DecodeIsolate, b64);
+}
+
+Uint8List _base64DecodeIsolate(String b64) => base64Decode(b64);

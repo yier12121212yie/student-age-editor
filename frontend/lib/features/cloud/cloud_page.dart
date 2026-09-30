@@ -33,14 +33,30 @@ class _CloudPageState extends State<CloudPage> {
   bool _dryRun = false;
   bool _deleteExtra = false;
   dynamic _syncResult;
-  Map<String, dynamic>? _syncStatus;
+  // 阶段 4c：轮询状态改由 ValueNotifier 驱动，只重建消费它的子树——
+  // 旧实现每 600ms/2s 一次整页 setState，长文件列表跟着白白重排。
+  final ValueNotifier<Map<String, dynamic>?> _syncStatusN =
+      ValueNotifier<Map<String, dynamic>?>(null);
   Timer? _pollTimer;
   String _localSearch = '';
   // realtime sync
   Map<String, dynamic>? _rtConfig;
-  Map<String, dynamic>? _rtStatus;
+  final ValueNotifier<Map<String, dynamic>?> _rtStatusN =
+      ValueNotifier<Map<String, dynamic>?>(null);
   Timer? _rtPollTimer;
+  Timer? _rtRestartTimer; // 阶段 3：停表后的退避重启
+  int _rtBackoffSec = 15;
   bool _rtLoading = false;
+
+  /// The mod the cloud page should act on: the editor's current mod when it is
+  /// in the list, else the first one (bug #14: it used to always pick the
+  /// first mod, so it silently targeted the wrong one).
+  String? _defaultMod() {
+    final mods = widget.state.mods;
+    final cur = widget.state.modName;
+    if (cur.isNotEmpty && mods.any((m) => m.name == cur)) return cur;
+    return mods.isNotEmpty ? mods.first.name : null;
+  }
 
   @override
   void initState() {
@@ -48,10 +64,24 @@ class _CloudPageState extends State<CloudPage> {
     _loadProviders();
     _loadRealtimeStatus();
     _startRealtimePolling();
-    // auto select first mod if available
-    if (widget.state.mods.isNotEmpty) {
-      _selectedMod = widget.state.mods.first.name;
+    _selectedMod = _defaultMod();
+    if (_selectedMod != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadFiles());
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CloudPage old) {
+    super.didUpdateWidget(old);
+    // Follow a mod switch made elsewhere in the editor.
+    final cur = widget.state.modName;
+    if (cur.isNotEmpty &&
+        cur != old.state.modName &&
+        cur != _selectedMod &&
+        widget.state.mods.any((m) => m.name == cur)) {
+      setState(() => _selectedMod = cur);
+      _loadFiles();
+      if (_selectedProvider != null) _loadRemote();
     }
   }
 
@@ -59,6 +89,9 @@ class _CloudPageState extends State<CloudPage> {
   void dispose() {
     _pollTimer?.cancel();
     _rtPollTimer?.cancel();
+    _rtRestartTimer?.cancel();
+    _syncStatusN.dispose();
+    _rtStatusN.dispose();
     super.dispose();
   }
 
@@ -84,32 +117,42 @@ class _CloudPageState extends State<CloudPage> {
     try {
       final r = await ApiClient.instance.get('/api/cloud/realtime/status');
       if (!mounted) return;
-      setState((){
-        _rtStatus = r;
-        _rtConfig = r['config'] as Map<String,dynamic>?;
-      });
+      _rtConfig = r['config'] as Map<String,dynamic>?;
+      _rtStatusN.value = r;
     } catch (_) {}
   }
 
   void _startRealtimePolling(){
     _rtPollTimer?.cancel();
+    _rtRestartTimer?.cancel();
     var tick = 0, failures = 0;
     _rtPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       tick++;
       // 未启用实时同步时降频（每 5 跳即 10s 刷一次状态），避免空转轮询；
       // 连续失败达到上限则停表，防止后端不可达时每 2s 打一次。
-      final enabled = _rtStatus?['enabled'] == true || _rtStatus?['running'] == true;
+      final rt = _rtStatusN.value;
+      final enabled = rt?['enabled'] == true || rt?['running'] == true;
       if (!enabled && tick % 5 != 0) return;
       try {
         final r = await ApiClient.instance.get('/api/cloud/realtime/status');
         failures = 0;
+        _rtBackoffSec = 15;
         if (!mounted) return;
-        setState((){
-          _rtStatus = r;
-          _rtConfig = r['config'] as Map<String,dynamic>?;
-        });
+        _rtConfig = r['config'] as Map<String,dynamic>?;
+        _rtStatusN.value = r;
       } catch (_) {
-        if (++failures >= 10) _rtPollTimer?.cancel();
+        if (++failures >= 10) {
+          // 停表不等于永久放弃：退避定时重试（15s→30s→45s→60s 封顶），
+          // 后端恢复后状态自动续上，无需重进页面（阶段 3）。
+          _rtPollTimer?.cancel();
+          _rtPollTimer = null;
+          _rtRestartTimer?.cancel();
+          _rtRestartTimer = Timer(Duration(seconds: _rtBackoffSec), () {
+            if (!mounted) return;
+            _rtBackoffSec = (_rtBackoffSec + 15).clamp(15, 60);
+            _startRealtimePolling();
+          });
+        }
       }
     });
   }
@@ -159,7 +202,7 @@ class _CloudPageState extends State<CloudPage> {
   }
 
   Widget _buildRealtimePanel(){
-    final rt = _rtStatus;
+    final rt = _rtStatusN.value;
     final cfg = _rtConfig ?? rt?['config'] as Map<String,dynamic>?;
     final enabled = rt?['enabled']==true || rt?['running']==true;
     final running = rt?['running']==true;
@@ -176,13 +219,13 @@ class _CloudPageState extends State<CloudPage> {
       decoration: BoxDecoration(
         color: palette.bgDeep,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: enabled ? const Color(0xFF4F6EF7).withValues(alpha: 0.4) : palette.border),
+        border: Border.all(color: enabled ? palette.primaryColor.withValues(alpha: 0.4) : palette.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
         Row(children:[
           Container(
             padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(color: enabled ? const Color(0xFF4F6EF7) : palette.border, borderRadius: BorderRadius.circular(6)),
+            decoration: BoxDecoration(color: enabled ? palette.primaryColor : palette.border, borderRadius: BorderRadius.circular(6)),
             child: Icon(enabled ? FluentIcons.cloud_sync_24_regular : FluentIcons.cloud_off_24_regular, size:14, color: palette.textHigh),
           ),
           const SizedBox(width:8),
@@ -192,11 +235,11 @@ class _CloudPageState extends State<CloudPage> {
           const SizedBox(width:6),
           Flexible(child: Container(
             padding: const EdgeInsets.symmetric(horizontal:6, vertical:2),
-            decoration: BoxDecoration(color: running ? const Color(0xFF0F7B0F).withValues(alpha:0.15) : palette.border, borderRadius: BorderRadius.circular(4), border: Border.all(color: running ? const Color(0xFF0F7B0F).withValues(alpha:0.3) : Colors.transparent)),
+            decoration: BoxDecoration(color: running ? palette.statusOk.withValues(alpha:0.15) : palette.border, borderRadius: BorderRadius.circular(4), border: Border.all(color: running ? palette.statusOk.withValues(alpha:0.3) : Colors.transparent)),
             child: Row(mainAxisSize: MainAxisSize.min, children:[
-              Container(width:6, height:6, decoration: BoxDecoration(color: running ? const Color(0xFF0F7B0F) : palette.textHint, shape: BoxShape.circle)),
+              Container(width:6, height:6, decoration: BoxDecoration(color: running ? palette.statusOk : palette.textHint, shape: BoxShape.circle)),
               const SizedBox(width:4),
-              Flexible(child: Text(running ? '运行中' : (enabled ? '已启用' : '已停止'), maxLines:1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:10, color: running ? const Color(0xFF0F7B0F) : palette.textMuted))),
+              Flexible(child: Text(running ? '运行中' : (enabled ? '已启用' : '已停止'), maxLines:1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize:10, color: running ? palette.statusOk : palette.textMuted))),
             ]),
           ),
           ),
@@ -274,11 +317,11 @@ class _CloudPageState extends State<CloudPage> {
           padding: const EdgeInsets.only(top:6),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal:8, vertical:6),
-            decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha:0.08), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.redAccent.withValues(alpha:0.2))),
+            decoration: BoxDecoration(color: palette.danger.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(4), border: Border.all(color: palette.statusDanger.withValues(alpha:0.2))),
             child: Row(children:[
-              const Icon(FluentIcons.error_circle_24_regular, size:12, color: Colors.redAccent),
+              Icon(FluentIcons.error_circle_24_regular, size:12, color: palette.statusDanger),
               const SizedBox(width:6),
-              Expanded(child: Text(error, style: const TextStyle(fontSize:10, color: Colors.redAccent), maxLines:2, overflow: TextOverflow.ellipsis)),
+              Expanded(child: Text(error, style: TextStyle(fontSize:10, color: palette.statusDanger), maxLines:2, overflow: TextOverflow.ellipsis)),
             ]),
           ),
         ),
@@ -318,7 +361,7 @@ class _CloudPageState extends State<CloudPage> {
                   final e = events[i] as Map;
                   final lvl = e['level'] as String? ?? 'info';
                   Color col = palette.textSecondary;
-                  if (lvl=='error') col = Colors.redAccent;
+                  if (lvl=='error') col = palette.statusDanger;
                   else if (lvl=='warn') col = palette.statusWarn;
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal:8, vertical:2),
@@ -350,7 +393,13 @@ class _CloudPageState extends State<CloudPage> {
                 if (!mounted) return;
                 fluent.showDialog(context: context, builder:(ctx)=> fluent.ContentDialog(
                   title: const Text('实时事件'),
-                  content: SizedBox(width:420, height:300, child: ListView(
+                  content: SizedBox(
+                    // 固定 420 宽在手机端溢出：窄屏贴边（云页经「更多」手机可达）。
+                    width: MediaQuery.sizeOf(ctx).width < 492
+                        ? MediaQuery.sizeOf(ctx).width - 72
+                        : 420,
+                    height: 300,
+                    child: ListView(
                     children: ev.map((e)=> Padding(
                       padding: const EdgeInsets.only(bottom:4),
                       child: Text("${e['time']} [${e['level']}] ${e['msg']}", style: const TextStyle(fontSize:10)),
@@ -371,7 +420,7 @@ class _CloudPageState extends State<CloudPage> {
 
   Widget _rtDirectionChip(String value, String label, IconData icon, String current){
     final sel = current==value;
-    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:10, color: sel? Colors.white: palette.textSecondary), const SizedBox(width:3), Text(label, style: TextStyle(fontSize:10, color: sel? Colors.white: palette.textPrimary))]);
+    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:10, color: sel? palette.onAccent: palette.textSecondary), const SizedBox(width:3), Text(label, style: TextStyle(fontSize:10, color: sel? palette.onAccent: palette.textPrimary))]);
     if(sel){
       return fluent.FilledButton(onPressed: ()=> _updateRealtimeConfig({'direction': value}), child: content);
     }
@@ -445,7 +494,7 @@ class _CloudPageState extends State<CloudPage> {
           if (type=='google_drive' || type=='gdrive') ...[field('refresh_token *', refreshCtrl, hint:'1//... 完整 refresh_token'), field('Client ID (直连时选填，留空则尝试公共刷新)', gClientIdCtrl, hint:'xxx.apps.googleusercontent.com'), field('Client Secret (直连时选填)', gClientSecretCtrl, obscure:true), field('OpenList 地址', openUrlCtrl, hint:'http://127.0.0.1:5244（自建时填）'), field('挂载路径', mountCtrl, hint:'/gdrive (OpenList 中挂载名)'),],
           if (type=='onedrive') ...[field('refresh_token *', refreshCtrl, hint:'M.R3_BAY... 长串'), field('Client ID *', oClientIdCtrl, hint:'如 f0e3cad9-1bf3-4006-9999-1a1a1e1a4ae0 (oplist.org 公共)'), field('Client Secret', oClientSecretCtrl, obscure:true), field('OpenList 地址', openUrlCtrl, hint:'http://127.0.0.1:5244'), field('挂载路径', mountCtrl, hint:'/onedrive'),],
           field('远端根', rootCtrl, hint:'mods'),
-          if (errorText!=null) Padding(padding: const EdgeInsets.only(top:6), child: Text(errorText!, style: const TextStyle(fontSize:11, color: Colors.red))),
+          if (errorText!=null) Padding(padding: const EdgeInsets.only(top:6), child: Text(errorText!, style: TextStyle(fontSize:11, color: palette.danger))),
         ])),
         actions:[
           fluent.Button(onPressed:()=>Navigator.pop(ctx), child: const Text('取消')),
@@ -554,7 +603,7 @@ class _CloudPageState extends State<CloudPage> {
       try{
         final s = await ApiClient.instance.get('/api/cloud/status');
         failures = 0;
-        if(mounted) setState(()=>_syncStatus = s as Map<String,dynamic>?);
+        if(mounted) _syncStatusN.value = s as Map<String,dynamic>?;
         if(s['running']!=true){
           _pollTimer?.cancel();
         }
@@ -570,7 +619,10 @@ class _CloudPageState extends State<CloudPage> {
     setState(()=>_busy=true);
     _startPolling();
     try{
-      final r=await ApiClient.instance.post('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'folder':true,'dry_run':_dryRun, 'delete_extra':_deleteExtra});
+      // 全量同步是后端长任务端点（含 dry_run 预览：同一端点同一扫描量级，
+      // 仅不传文件）：async=1 走 202+轮询，maxWait 1800s；进度条仍由
+      // /api/cloud/status 轮询驱动，不受影响。
+      final r=await ApiClient.instance.runLongTask('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'folder':true,'dry_run':_dryRun, 'delete_extra':_deleteExtra}, maxWait:const Duration(seconds: 1800));
       _pollTimer?.cancel();
       if (!mounted) return;
       setState(()=>_syncResult=r);
@@ -592,8 +644,8 @@ class _CloudPageState extends State<CloudPage> {
       _showErr(e.toString());
     } finally{
       if (mounted) setState(()=>_busy=false);
-      _syncStatus=null;
-      try{ final s=await ApiClient.instance.get('/api/cloud/status'); if(mounted) setState(()=>_syncStatus=s); }catch(_){}
+      _syncStatusN.value = null;
+      try{ final s=await ApiClient.instance.get('/api/cloud/status'); if(mounted) _syncStatusN.value = s; }catch(_){}
     }
   }
 
@@ -603,7 +655,8 @@ class _CloudPageState extends State<CloudPage> {
     setState(()=>_busy=true);
     _startPolling();
     try{
-      final r=await ApiClient.instance.post('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'files':_checked.toList(),'dry_run':_dryRun});
+      // 单文件同步同样走长任务轮询（与全量一致，保持一套超时语义）。
+      final r=await ApiClient.instance.runLongTask('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'files':_checked.toList(),'dry_run':_dryRun}, maxWait:const Duration(seconds: 1800));
       _pollTimer?.cancel();
       if (!mounted) return;
       setState(()=>_syncResult=r);
@@ -622,7 +675,7 @@ class _CloudPageState extends State<CloudPage> {
 
   Widget _directionChip(String value, String label, IconData icon){
     final sel = _direction==value;
-    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:12, color: sel? Colors.white: palette.textSecondary), const SizedBox(width:4), Text(label, style: TextStyle(fontSize:11, color: sel? Colors.white: palette.textPrimary))]);
+    final content = Row(mainAxisSize: MainAxisSize.min, children:[Icon(icon, size:12, color: sel? palette.onAccent: palette.textSecondary), const SizedBox(width:4), Text(label, style: TextStyle(fontSize:11, color: sel? palette.onAccent: palette.textPrimary))]);
     if(sel){
       return fluent.FilledButton(onPressed: ()=> setState(()=> _direction=value), child: content);
     }
@@ -630,7 +683,7 @@ class _CloudPageState extends State<CloudPage> {
   }
 
   Widget _buildProgress(){
-    final s = _syncStatus;
+    final s = _syncStatusN.value;
     if(s==null || !_busy) return const SizedBox.shrink();
     final running = s['running']==true;
     final prog = s['progress'] as int? ?? 0;
@@ -643,14 +696,14 @@ class _CloudPageState extends State<CloudPage> {
       decoration: BoxDecoration(color: palette.panel, borderRadius: BorderRadius.circular(6), border: Border.all(color: palette.border)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
         Row(children:[
-          SizedBox(width:12, height:12, child: running ? const fluent.ProgressRing(strokeWidth:2) : const Icon(FluentIcons.checkmark_12_regular, size:12, color: Colors.green)),
+          SizedBox(width:12, height:12, child: running ? const fluent.ProgressRing(strokeWidth:2) : Icon(FluentIcons.checkmark_12_regular, size:12, color: palette.statusOk)),
           const SizedBox(width:8),
           Expanded(child: Text(running ? '同步中 $action $prog/$total' : '就绪', style: TextStyle(fontSize:11, color: palette.textPrimary))),
           if(total>0) Text('$prog/$total', style: TextStyle(fontSize:10, color: palette.textMuted)),
         ]),
         if(total>0) Padding(padding: const EdgeInsets.only(top:6), child: fluent.ProgressBar(value: total==0? null : (prog/total*100).clamp(0,100))),
         if(last.isNotEmpty) Padding(padding: EdgeInsets.only(top:4), child: Text(last, style: TextStyle(fontSize:10, color: palette.textHint), overflow: TextOverflow.ellipsis)),
-        if((s['error']?.toString() ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top:4), child: Text('错误: ${s['error']}', style: const TextStyle(fontSize:10, color: Colors.redAccent))),
+        if((s['error']?.toString() ?? '').isNotEmpty) Padding(padding: const EdgeInsets.only(top:4), child: Text('错误: ${s['error']}', style: TextStyle(fontSize:10, color: palette.statusDanger))),
       ]),
     );
   }
@@ -679,13 +732,13 @@ class _CloudPageState extends State<CloudPage> {
           padding: const EdgeInsets.symmetric(horizontal:10, vertical:8),
           decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))),
           child: Row(children:[
-            Text(isError? '失败' : '结果', style: TextStyle(fontSize:11, color: isError? Colors.redAccent: palette.textPrimary, fontWeight: FontWeight.w600)),
+            Text(isError? '失败' : '结果', style: TextStyle(fontSize:11, color: isError? palette.statusDanger: palette.textPrimary, fontWeight: FontWeight.w600)),
             const SizedBox(width:8),
             if(!isError) ...[
-              _badge('$okCount 成功', const Color(0xFF0F7B0F)),
+              _badge('$okCount 成功', palette.statusOk),
               const SizedBox(width:6),
               _badge('$skipCount 跳过', palette.textHint),
-              if(failCount>0) ...[const SizedBox(width:6), _badge('$failCount 失败', Colors.redAccent)],
+              if(failCount>0) ...[const SizedBox(width:6), _badge('$failCount 失败', palette.statusDanger)],
               const Spacer(),
               Text('total $total', style: TextStyle(fontSize:10, color: palette.textMuted)),
             ] else ...[
@@ -695,7 +748,7 @@ class _CloudPageState extends State<CloudPage> {
             fluent.Button(onPressed: ()=>setState(()=>_syncResult=null), child: const Text('清除', style: TextStyle(fontSize:10))),
           ]),
         ),
-        if(isError) Padding(padding: const EdgeInsets.all(10), child: SelectableText(message, style: const TextStyle(fontSize:11, color: Colors.redAccent))),
+        if(isError) Padding(padding: const EdgeInsets.all(10), child: SelectableText(message, style: TextStyle(fontSize:11, color: palette.statusDanger))),
         if(message.isNotEmpty && !isError) Padding(padding: EdgeInsets.all(10), child: Text(message, style: TextStyle(fontSize:11, color: palette.textPrimary))),
         if(results.isNotEmpty) SizedBox(
           height: 160,
@@ -709,10 +762,10 @@ class _CloudPageState extends State<CloudPage> {
               final err = e['error'] as String?;
               Color col;
               IconData icon;
-              if(!ok){ col=Colors.redAccent; icon=FluentIcons.error_circle_24_regular; }
+              if(!ok){ col=palette.statusDanger; icon=FluentIcons.error_circle_24_regular; }
               else if(action.contains('skip')){ col=palette.textMuted; icon=FluentIcons.subtract_24_regular; }
-              else if(action.contains('upload')){ col=const Color(0xFF4F6EF7); icon=FluentIcons.arrow_upload_24_regular; }
-              else if(action.contains('download')){ col=const Color(0xFF0F7B0F); icon=FluentIcons.arrow_download_24_regular; }
+              else if(action.contains('upload')){ col=palette.primaryColor; icon=FluentIcons.arrow_upload_24_regular; }
+              else if(action.contains('download')){ col=palette.statusOk; icon=FluentIcons.arrow_download_24_regular; }
               else { col=palette.textPrimary; icon=FluentIcons.checkmark_12_regular; }
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal:10, vertical:5),
@@ -722,7 +775,7 @@ class _CloudPageState extends State<CloudPage> {
                   const SizedBox(width:8),
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
                     Text(rel, style: TextStyle(fontSize:11, color: palette.textPrimary), overflow: TextOverflow.ellipsis),
-                    Text(ok ? action : (err ?? 'error'), style: TextStyle(fontSize:10, color: ok? palette.textMuted: Colors.redAccent), overflow: TextOverflow.ellipsis),
+                    Text(ok ? action : (err ?? 'error'), style: TextStyle(fontSize:10, color: ok? palette.textMuted: palette.statusDanger), overflow: TextOverflow.ellipsis),
                   ])),
                 ]),
               );
@@ -767,12 +820,13 @@ class _CloudPageState extends State<CloudPage> {
             const Spacer(),
             Tooltip(message: '刷新', child: GestureDetector(onTap:_loadProviders, child:Icon(FluentIcons.arrow_sync_24_regular, size:14, color:palette.textMuted))),
             const SizedBox(width:10),
-            Tooltip(message: '新增', child: GestureDetector(onTap:()=>_addProvider(), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: const Color(0xFF4F6EF7), borderRadius: BorderRadius.circular(4)), child: const Icon(FluentIcons.add_24_regular, size:12, color: Colors.white)))),
+            Tooltip(message: '新增', child: GestureDetector(onTap:()=>_addProvider(), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: palette.primaryColor, borderRadius: BorderRadius.circular(4)), child: Icon(FluentIcons.add_24_regular, size:12, color: palette.onAccent)))),
           ])),
           if(_providers.isNotEmpty) Container(padding: const EdgeInsets.symmetric(horizontal:10, vertical:6), color: palette.panel, child: Row(children:[
             Icon(FluentIcons.info_24_regular, size:10, color: palette.textHint),
             const SizedBox(width:6),
-            Expanded(child: Text('点名称选中，右侧展示文件对比。建议优先用 OpenList 代理', style: TextStyle(fontSize:9, color: palette.textHint))),
+            // narrow（手机上下堆叠布局）下对比面板在 provider 列下方，措辞跟随实际布局。
+            Expanded(child: Text('点名称选中，${narrow ? '下方' : '右侧'}展示文件对比。建议优先用 OpenList 代理', style: TextStyle(fontSize:9, color: palette.textHint))),
           ])),
           Expanded(child: _loading? const Center(child:SizedBox(width:20,height:20, child:fluent.ProgressRing(strokeWidth:2))) : ListView.builder(itemCount:_providers.length, itemBuilder:(c,i){
             final p=_providers[i] as Map; final sel=p['id']==_selectedProvider;
@@ -797,7 +851,7 @@ class _CloudPageState extends State<CloudPage> {
               const SizedBox(width:4),
               Tooltip(message: '编辑', child: GestureDetector(onTap:()=>_addProvider(editTarget: p), child: Container(padding: EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: palette.border), borderRadius: BorderRadius.circular(4)), child: Icon(FluentIcons.edit_24_regular, size:10, color:palette.textHint)))),
               const SizedBox(width:4),
-              Tooltip(message: '删除', child: GestureDetector(onTap:()=>_del(p['id'] as String), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)), borderRadius: BorderRadius.circular(4)), child: const Icon(FluentIcons.delete_24_regular, size:10, color:Colors.redAccent)))),
+              Tooltip(message: '删除', child: GestureDetector(onTap:()=>_del(p['id'] as String), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: palette.statusDanger.withValues(alpha: 0.3)), borderRadius: BorderRadius.circular(4)), child: Icon(FluentIcons.delete_24_regular, size:10, color:palette.statusDanger)))),
             ])));
           })),
           if(_providers.isEmpty && !_loading) Padding(padding:EdgeInsets.all(16), child:Column(children:[
@@ -807,21 +861,29 @@ class _CloudPageState extends State<CloudPage> {
             SizedBox(height:4),
             Text('点击右上角 + 新增\n推荐：本地目录测试 → OpenList 代理', textAlign: TextAlign.center, style:TextStyle(fontSize:10, color:palette.textHint)),
           ])),
-          // provider 状态 history
-          if(_syncStatus!=null && (_syncStatus!['history'] as List?)?.isNotEmpty==true) Container(
-            height: 70,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(border: Border(top: BorderSide(color: palette.border))),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
-              Text('最近同步', style: TextStyle(fontSize:10, color: palette.textHint)),
-              const SizedBox(height:4),
-              Expanded(child: ListView(
-                children: ((_syncStatus!['history'] as List).take(3).map((h)=> Padding(
-                  padding: const EdgeInsets.only(bottom:2),
-                  child: Text('${h['time']} ${h['mod']} ${h['direction']} x${h['count']}', style: TextStyle(fontSize:9, color: palette.textMuted), overflow: TextOverflow.ellipsis),
-                )).toList()),
-              )),
-            ]),
+          // provider 状态 history（阶段 4c：订阅同步状态，局部重建）
+          ValueListenableBuilder<Map<String, dynamic>?>(
+            valueListenable: _syncStatusN,
+            builder: (ctx, st, _) {
+              if (st == null || (st['history'] as List?)?.isNotEmpty != true) {
+                return const SizedBox.shrink();
+              }
+              return Container(
+                height: 70,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(border: Border(top: BorderSide(color: palette.border))),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
+                  Text('最近同步', style: TextStyle(fontSize:10, color: palette.textHint)),
+                  const SizedBox(height:4),
+                  Expanded(child: ListView(
+                    children: ((st['history'] as List).take(3).map((h)=> Padding(
+                      padding: const EdgeInsets.only(bottom:2),
+                      child: Text('${h['time']} ${h['mod']} ${h['direction']} x${h['count']}', style: TextStyle(fontSize:9, color: palette.textMuted), overflow: TextOverflow.ellipsis),
+                    )).toList()),
+                  )),
+                ]),
+              );
+            },
           ),
         ]),
       );
@@ -928,7 +990,12 @@ class _CloudPageState extends State<CloudPage> {
       final syncPane = SingleChildScrollView(
         padding: const EdgeInsets.all(12),
         child: Column(crossAxisAlignment:CrossAxisAlignment.stretch, children:[
-          _buildRealtimePanel(),
+          // 阶段 4c：实时/同步面板订阅各自的 ValueNotifier，
+          // 轮询回包只重建本面板，不再整页 setState。
+          ValueListenableBuilder<Map<String, dynamic>?>(
+            valueListenable: _rtStatusN,
+            builder: (ctx, _, _) => _buildRealtimePanel(),
+          ),
           // Mod 选择
           Row(children:[
             Expanded(child: fluent.ComboBox<String>(
@@ -995,7 +1062,12 @@ class _CloudPageState extends State<CloudPage> {
               ),
             ]),
           ),
-          _buildProgress(),
+          // 阶段 4c：同步进度条单独订阅 _syncStatusN，600ms 轮询
+          // 只重建此进度区，不连带重建下方文件对比列表。
+          ValueListenableBuilder<Map<String, dynamic>?>(
+            valueListenable: _syncStatusN,
+            builder: (ctx, _, _) => _buildProgress(),
+          ),
           const SizedBox(height:10),
           // 文件对比区
           Row(children:[
@@ -1016,7 +1088,7 @@ class _CloudPageState extends State<CloudPage> {
       );
       return Column(children:[
         Container(height:44, padding:EdgeInsets.symmetric(horizontal:12), decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))), child:Row(children:[
-          const Icon(FluentIcons.cloud_sync_24_regular, size:16, color: Color(0xFF4F6EF7)),
+          Icon(FluentIcons.cloud_sync_24_regular, size:16, color: palette.primaryColor),
           const SizedBox(width:8),
           Flexible(child: Text('云同步 · 整Mod文件夹', maxLines:1, overflow:TextOverflow.ellipsis, style:TextStyle(fontSize:13, color:palette.textPrimary, fontWeight:FontWeight.w600))),
           const SizedBox(width:8),

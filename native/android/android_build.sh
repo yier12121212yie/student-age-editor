@@ -14,7 +14,9 @@
 # Usage (Git Bash on the Windows build host; CI runs the same on ubuntu):
 #   native/android/android_build.sh                  # arm64-v8a + x86_64
 #   native/android/android_build.sh arm64-v8a        # single ABI
-# Env overrides: ANDROID_HOME, NDK_DIR, CMAKE_BIN, NINJA_BIN, ANDROID_API.
+# Env overrides: ANDROID_HOME, NDK_DIR, CMAKE_BIN, NINJA_BIN, ANDROID_API,
+#                 SA_APP_VERSION (release version string reported by
+#                 GET /api/version / used by the update check; default "dev").
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # native/android
@@ -97,6 +99,7 @@ for abi in $ABIS; do
         -DANDROID_PLATFORM="android-$API" \
         -DANDROID_STL=c++_static \
         -DCMAKE_BUILD_TYPE=Release \
+        -DSA_APP_VERSION="${SA_APP_VERSION:-dev}" \
         -DCMAKE_MAKE_PROGRAM="$NINJA"
     "$CMAKE" --build "$build" --target backend_shared
 

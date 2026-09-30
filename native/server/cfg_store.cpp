@@ -5,6 +5,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "sa_core/atomic_io.h"
@@ -182,6 +184,178 @@ std::string encode_with_bom(const std::string& text, bool had_bom) {
 }
 
 // ---------------------------------------------------------------------------
+// Undo-stack durability (bug #6).
+//
+// The undo stack lives in g_stacks (process memory), so the embedded CLI — one
+// fresh backend process per command — always answered "nothing to undo" even
+// though the snapshots were on disk. Persist the stack beside those snapshots
+// as .editor_history/<stem>.journal.json and hydrate it lazily the first time a
+// process touches the table.
+//
+// Entries stay snapshot-backed: only snap (a snapshot file NAME) is stored for
+// undo steps, never the merged table — a 40MB TalkCfg therefore journals a
+// handful of bytes (A8's invariant preserved across processes). Redo steps and
+// undo-of-a-create carry no snapshot by construction; see journal_snapshot_of
+// for exactly what is persisted.
+// ---------------------------------------------------------------------------
+
+std::string journal_path(const std::string& abs_path) {
+    return cs::join(history_dir(abs_path), cfg_stem(abs_path) + ".journal.json");
+}
+
+json journal_entry_to_json(const StackEntry& e) {
+    json o;
+    o["snap"] = e.snap ? json(*e.snap) : json();
+    // "missing" marks a create: undo must delete the file rather than restore
+    // bytes. Without it a create has no snapshot and no text, so the entry
+    // would round-trip to nothing and be dropped (bug #6 / A8).
+    o["missing"] = !e.existed;
+    o["text"] = e.text ? json(*e.text) : json();
+    o["existed"] = e.existed;
+    o["had_bom"] = e.had_bom;
+    o["lossy"] = e.lossy;
+    return o;
+}
+
+std::optional<StackEntry> journal_entry_from_json(const json& v) {
+    if (!v.is_object()) return std::nullopt;
+    StackEntry e;
+    if (v.contains("snap") && v["snap"].is_string()) e.snap = v["snap"].get<std::string>();
+    if (v.contains("text") && v["text"].is_string()) e.text = v["text"].get<std::string>();
+    // "existed" is authoritative when present; "missing" is the explicit create
+    // marker and wins if the two disagree.
+    e.existed = v.value("existed", true);
+    if (v.contains("missing") && v["missing"].is_boolean() && v["missing"].get<bool>()) {
+        e.existed = false;
+        e.snap.reset();  // a non-existent file never has a snapshot
+    }
+    if (!e.existed) e.text.reset();
+    e.had_bom = v.value("had_bom", false);
+    e.lossy = v.value("lossy", false);
+    return e;
+}
+
+std::vector<StackEntry> journal_entries_from(const json& arr) {
+    std::vector<StackEntry> out;
+    if (!arr.is_array()) return out;
+    for (const auto& v : arr) {
+        if (auto e = journal_entry_from_json(v)) out.push_back(std::move(*e));
+    }
+    return out;
+}
+
+// The stack projected onto what the journal should persist.
+//
+// Redo entries never have a disk snapshot (they hold the text captured at undo
+// time), so they are always written verbatim — that is what makes a redo work
+// from a later process.
+//
+// Undo entries: stop at the oldest text-only entry. Such an entry comes from
+// write_cfg(..., snapshot=false) and carries the whole table text purely as an
+// in-process fallback; serializing it would duplicate a 40MB table on disk and
+// would leave history artifacts behind after a snapshot-disabled write. Nothing
+// older is reachable across processes anyway, so the boundary is where the
+// journal ends (same rolling-window reasoning as prune_history's keep=10).
+// An entry whose snapshot prune_history() already dropped fails the same way
+// ("history snapshot missing") whether or not it is journaled.
+StackPair journal_snapshot_of(const StackPair& pair) {
+    StackPair out;
+    for (const auto& e : pair.undo) {
+        if (!e.snap && e.existed) break;
+        out.undo.push_back(e);
+    }
+    out.redo = pair.redo;
+    return out;
+}
+
+// Writes {v:1,undo:[...],redo:[...]} atomically. Caller holds the path lock and
+// NOT g_reg_mu (this does disk IO). Best effort: a failure only costs
+// cross-process undo, never the table write that just succeeded.
+void journal_write(const std::string& abs_path, const StackPair& pair) {
+    const StackPair trimmed = journal_snapshot_of(pair);
+    json doc;
+    doc["v"] = 1;
+    json undo = json::array();
+    for (const auto& e : trimmed.undo) undo.push_back(journal_entry_to_json(e));
+    json redo = json::array();
+    for (const auto& e : trimmed.redo) redo.push_back(journal_entry_to_json(e));
+    doc["undo"] = std::move(undo);
+    doc["redo"] = std::move(redo);
+    const std::string path = journal_path(abs_path);
+    // Decide before touching the disk: write_bytes_atomic() creates the parent
+    // directory, so writing an empty document would leave an .editor_history
+    // behind even though there is no history to keep (this is what the
+    // snapshot=false / "create has no snapshot" contracts assert against).
+    const bool has_journal = !doc["undo"].empty() || !doc["redo"].empty();
+    if (!has_journal) {
+        if (cs::exists(path)) cs::remove_file(path);
+        return;
+    }
+    try {
+        sa_core::write_bytes_atomic(path, doc.dump());
+    } catch (const sa_core::FsError&) {
+        // journal is an optimization; never fail the write over it
+    }
+}
+
+// Reads the journal for abs_path. Caller holds the path lock, not g_reg_mu.
+//
+// Missing snapshot files are deliberately NOT filtered here: restore() then
+// reports exactly what is wrong ("history snapshot missing", or the B2 lossy
+// refusal), which is more actionable than a silently shortened history. Redo
+// entries have no snapshot by construction and must never be filtered.
+std::optional<StackPair> journal_read(const std::string& abs_path) {
+    const std::string path = journal_path(abs_path);
+    auto raw = cs::read_bytes(path);
+    if (!raw) return std::nullopt;
+    json doc = json::parse(*raw, nullptr, false);
+    if (doc.is_discarded() || !doc.is_object()) return std::nullopt;
+    StackPair pair;
+    pair.undo = journal_entries_from(doc.contains("undo") ? doc["undo"] : json());
+    pair.redo = journal_entries_from(doc.contains("redo") ? doc["redo"] : json());
+    return pair;
+}
+
+// path keys whose g_stacks entry has already been hydrated (or created) in this
+// process. Without it every write/undo would re-read the journal just to find
+// an entry it already holds.
+std::set<std::string> g_hydrated;
+
+// Loads the persisted stack into g_stacks when this process has not seen the
+// table yet. Caller holds the path lock; must NOT hold g_reg_mu.
+void hydrate_stack(const std::string& abs_path, const std::string& key) {
+    {
+        std::lock_guard<std::mutex> lk(g_reg_mu);
+        if (g_hydrated.count(key) != 0) return;
+    }
+    auto pair = journal_read(abs_path);
+    std::lock_guard<std::mutex> lk(g_reg_mu);
+    if (g_hydrated.count(key) != 0) return;  // another thread won the race
+    if (pair) {
+        StackPair& entry = g_stacks[key];
+        if (entry.undo.empty() && entry.redo.empty()) {
+            entry = std::move(*pair);
+        } else {
+            // A live stack beats the journal (this process already wrote).
+        }
+    }
+    g_hydrated.insert(key);
+}
+
+// Copies the current in-memory stack into the journal. Caller holds the path
+// lock; must NOT hold g_reg_mu.
+void journal_persist(const std::string& abs_path, const std::string& key) {
+    StackPair snapshot;
+    {
+        std::lock_guard<std::mutex> lk(g_reg_mu);
+        auto it = g_stacks.find(key);
+        if (it == g_stacks.end()) return;
+        snapshot = it->second;
+    }
+    journal_write(abs_path, snapshot);
+}
+
+// ---------------------------------------------------------------------------
 // _commit — the frozen seven-step pipeline (cfg_store.py:245-301).
 // Caller holds the path lock (L2); this takes L1 for stack registration only.
 // raw/lossy come from the single disk read (A7).
@@ -234,7 +408,43 @@ json commit(const std::string& abs_path, const json& data, const std::optional<s
     std::optional<std::string> snap_name;
     if (exists && snapshot) snap_name = write_snapshot(abs_path, *raw);
 
-    // (5) atomic write (transient-lock retry inside atomic_io).
+    // (5) undo stack: snapshot-backed entries never store table text (A8).
+    // Hydration runs first (outside g_reg_mu — it does disk IO) so a fresh
+    // process continues the table's history instead of starting empty (bug #6).
+    // The entry describes the state BEFORE this write (it is what undo must
+    // restore), so it is registered here rather than after the write.
+    // g_reg_mu must cover the lookup AND the mutation in one critical section:
+    // forget() erases the same map entry under only g_reg_mu (cloud_sync calls
+    // it after downloading a /Cfgs/*.json), so holding a reference past the
+    // unlock would dangle and make the push_back a use-after-free.
+    StackPair journal_state;
+    {
+        const std::string key = path_key(abs_path);
+        hydrate_stack(abs_path, key);
+        std::lock_guard<std::mutex> lk(g_reg_mu);
+        StackPair& entry = g_stacks[key];
+        StackEntry item;
+        item.snap = snap_name;
+        if (!snap_name && exists) item.text = read_text_from(raw);  // in-memory fallback
+        item.existed = exists;
+        item.had_bom = had_bom;
+        item.lossy = lossy;
+        entry.undo.push_back(std::move(item));
+        trim_keep_last(entry.undo, static_cast<size_t>(kHistoryLimit));
+        entry.redo.clear();  // a new write invalidates the redo line
+        journal_state = entry;
+    }
+
+    // (6) rolling prune of disk snapshots (A9), then persist the stack beside
+    // them (bug #6). Both run BEFORE the atomic write: a crash between the
+    // write and a later journal update would otherwise leave the file one
+    // revision ahead of its undo history. The journal holds only snapshot
+    // names (plus the rare text fallback), so this stays cheap. Best effort —
+    // a journal failure never fails the table write.
+    if (snap_name) prune_history(abs_path);
+    journal_write(abs_path, journal_state);
+
+    // (7) atomic write (transient-lock retry inside atomic_io).
     try {
         sa_core::write_bytes_atomic(abs_path, new_bytes);
     } catch (const sa_core::FsError& e) {
@@ -247,28 +457,6 @@ json commit(const std::string& abs_path, const json& data, const std::optional<s
     sa::bump("cfg.writes");
     sa::bump("cfg.write_bytes", static_cast<long long>(new_bytes.size()));
     std::optional<long long> new_mtime = stat_mtime_ns(abs_path);
-
-    // (6) undo stack: snapshot-backed entries never store table text (A8).
-    // g_reg_mu must cover the lookup AND the mutation in one critical section:
-    // forget() erases the same map entry under only g_reg_mu (cloud_sync calls
-    // it after downloading a /Cfgs/*.json), so holding a reference past the
-    // unlock would dangle and make the push_back a use-after-free.
-    {
-        std::lock_guard<std::mutex> lk(g_reg_mu);
-        StackPair& entry = g_stacks[path_key(abs_path)];
-        StackEntry item;
-        item.snap = snap_name;
-        if (!snap_name) item.text = read_text_from(raw);  // in-memory fallback
-        item.existed = exists;
-        item.had_bom = had_bom;
-        item.lossy = lossy;
-        entry.undo.push_back(std::move(item));
-        trim_keep_last(entry.undo, static_cast<size_t>(kHistoryLimit));
-        entry.redo.clear();  // a new write invalidates the redo line
-    }
-
-    // (7) rolling prune of disk snapshots (A9).
-    if (snap_name) prune_history(abs_path);
 
     json out;
     out["ok"] = true;
@@ -441,12 +629,23 @@ json apply_patch(const std::string& abs_path, const json& set, const json& remov
     }
 
     // (3) apply: remove first, then set (Python order; counts for applied_set).
-    long long n_set = 0, n_remove = 0;
+    // Row keys are always JSON strings, but callers may hand us numbers (CLI
+    // `--remove 9001`); coerce every element instead of silently skipping
+    // non-strings. `n_remove_unmatched` counts keys that were not present so the
+    // caller can surface "nothing removed" instead of a silent no-op (bug #1).
+    long long n_set = 0, n_remove = 0, n_remove_unmatched = 0;
     if (remove.is_array()) {
         for (const auto& k : remove) {
-            if (k.is_string() && data.contains(k.get<std::string>())) {
-                data.erase(k.get<std::string>());
+            if (k.is_null() || k.is_object() || k.is_array()) {
+                ++n_remove_unmatched;
+                continue;
+            }
+            std::string key = k.is_string() ? k.get<std::string>() : sa_core::py_str(k);
+            if (data.contains(key)) {
+                data.erase(key);
                 ++n_remove;
+            } else {
+                ++n_remove_unmatched;
             }
         }
     }
@@ -463,6 +662,7 @@ json apply_patch(const std::string& abs_path, const json& set, const json& remov
         json applied;
         applied["set"] = n_set;
         applied["remove"] = n_remove;
+        applied["remove_unmatched"] = n_remove_unmatched;
         result["applied"] = applied;
         result["data"] = data;  // merged table for the api cache refresh only
     }
@@ -474,6 +674,7 @@ json undo(const std::string& abs_path) {
     const std::string key = path_key(abs);
     const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
     std::lock_guard<std::recursive_mutex> lk(*path_lock_for(key));
+    hydrate_stack(abs, key);  // cross-process history (bug #6)
 
     StackEntry item;
     {
@@ -533,6 +734,8 @@ json undo(const std::string& abs_path) {
             trim_keep_last(entry.redo, static_cast<size_t>(kHistoryLimit));
         }
     }
+    // Cross-process durability: reflect the pop/push in the journal (bug #6).
+    journal_persist(abs, key);
     return result_with_data(abs, mtime_ns);
 }
 
@@ -541,6 +744,7 @@ json redo(const std::string& abs_path) {
     const std::string key = path_key(abs);
     const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
     std::lock_guard<std::recursive_mutex> lk(*path_lock_for(key));
+    hydrate_stack(abs, key);  // cross-process history (bug #6)
 
     StackEntry item;
     {
@@ -583,6 +787,8 @@ json redo(const std::string& abs_path) {
             trim_keep_last(entry.undo, static_cast<size_t>(kHistoryLimit));
         }
     }
+    // Cross-process durability: reflect the pop/push in the journal (bug #6).
+    journal_persist(abs, key);
     return result_with_data(abs, mtime_ns);
 }
 
@@ -610,8 +816,18 @@ json list_history(const std::string& abs_path) {
 }
 
 void forget(const std::string& abs_path) {
-    std::lock_guard<std::mutex> lk(g_reg_mu);
-    g_stacks.erase(path_key(cs::abs_path(abs_path)));
+    const std::string abs = cs::abs_path(abs_path);
+    const std::string key = path_key(abs);
+    {
+        std::lock_guard<std::mutex> lk(g_reg_mu);
+        g_stacks.erase(key);
+        // The journal is this stack's durable mirror, so it becomes stale for
+        // exactly the same reason (an out-of-band whole-file overwrite). Drop
+        // it too: otherwise a later undo would resurrect pre-overwrite history
+        // that a same-process undo can no longer reach (bug #6 consistency).
+        g_hydrated.erase(key);
+    }
+    cs::remove_file(journal_path(abs));  // outside g_reg_mu: this does disk IO
 }
 
 long long debug_stack_bytes() {
@@ -630,7 +846,10 @@ long long debug_stack_bytes() {
 
 void debug_reset_stacks() {
     std::lock_guard<std::mutex> lk(g_reg_mu);
+    // Simulates a fresh process: drop the in-memory stacks AND the hydrated
+    // marker so the next access re-reads the journal from disk (bug #6 tests).
     g_stacks.clear();
+    g_hydrated.clear();
 }
 
 }  // namespace cfg_store

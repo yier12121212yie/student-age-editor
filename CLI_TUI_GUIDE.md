@@ -127,13 +127,13 @@ backend_cli mods remove MyMod               # 删除
 # 列出当前模组的表
 backend_cli cfg list --mod test
 
-# 读取表 / 单条 / 单字段 / 键列表 / 元信息 / 前缀过滤
+# 读取表 / 单条 / 单字段 / 键列表 / 元信息 / 键过滤（--prefix startswith、--suffix endswith）
 backend_cli cfg get EvtCfg --mod test
 backend_cli cfg get EvtCfg --mod test --id 320101
 backend_cli cfg get EvtCfg --mod test --id 320101 --field title
 backend_cli cfg get EvtCfg --mod test --keys
 backend_cli cfg get EvtCfg --mod test --meta
-backend_cli cfg get TalkCfg --mod test --prefix 32 --suffix 3 --limit 50
+backend_cli cfg get TalkCfg --mod test --prefix 32 --suffix 3 --limit 50  # 两个过滤互相独立，均可逗号分隔多个值
 
 # 整表覆盖写入（PUT）
 backend_cli cfg set EvtCfg --mod test --file .\full_table.json
@@ -150,6 +150,11 @@ backend_cli cfg history EvtCfg --mod test
 backend_cli cfg history EvtCfg --mod test --undo
 backend_cli cfg history EvtCfg --mod test --redo
 ```
+
+`cfg history` 的快照存放在模组目录下的 `.editor_history/`；撤销 / 重做栈另外持久化为快照
+旁的 `.editor_history/<表名>.journal.json`，由下一个进程首次访问该表时惰性载入——因此
+默认的**内嵌模式**（每条命令一个进程）下 `--undo` / `--redo` 依然可用，不再局限于同一
+进程内的连续会话；云同步整文件覆盖表文件时会一并删除该 journal。
 
 ### 校验 / Bug 扫描 / 剧情
 
@@ -218,6 +223,21 @@ backend_cli cloud sync p_1 --direction download --files Cfgs/zh-cn/TalkCfg.json
 `--dry-run` 只预览不写入。输出逐行 `[ok|!!] <action> <rel>` 并给出
 `summary: upload=n download=n skip=n failed=n`。
 
+### 检查更新
+
+```powershell
+backend_cli update check                        # 查询 GitHub 最新发行版并比较本机版本
+backend_cli update check --json                 # 原样输出后端 JSON
+backend_cli update check --timeout 10           # GitHub 请求超时（秒，默认 6）
+backend_cli update check --current Alpha-v0.5   # 指定比较基准（默认用后端注入的版本号）
+backend_cli update check --update-url https://example.com/releases   # 覆盖发行页地址
+```
+
+`update check` 调 `GET /api/update/check`：抓取与版本比较都在后端完成，输出当前
+版本 / 最新版本 / 是否需要更新 / 发布时间 / 发行页 / 更新说明。**不做自动更新**，只把
+结果摆出来。失败（断网、GitHub 未鉴权限流 60 次/小时、旧后端无该端点）打印错误并以
+非 0 退出。REPL 里 `/update` 等价于 `update check`。
+
 ### AI 设置（权限模式）
 
 ```powershell
@@ -254,7 +274,20 @@ backend_cli settings no-code off     # 关闭
 输出 `no-code: on|off`；`on` / `off` 是写操作，文本输出带 `ok:` 前缀，`--json` 给
 完整信封 `{"ok":true,"settings":{"noCodeMode":…}}`。取值只接受 `on|off|show`
 （子命令别名 `nocode`），其余是用法错误、退出码 2；裸 `backend_cli settings`（不带
-子命令）与 `mods` / `cfg` 等命令族一致，落到交互模式而不是报错。
+子命令）与 `mods` / `cfg` 等命令族一致，落到交互模式而不是报错；而未知子命令
+（如 `backend_cli cfg badsub`）是用法错误、退出码 2，不再静默进交互模式。
+
+外观（白日/暗色）同源开关：
+
+```powershell
+backend_cli settings appearance show    # 查看当前值
+backend_cli settings appearance light   # 亮色（白日）
+backend_cli settings appearance dark    # 暗色
+backend_cli settings appearance system  # 跟随系统
+```
+
+落盘在 `editor_env.json` 的 `appearance_mode` 键，与 GUI 设置页一致；输出
+`appearance: light|dark|system`。取值只接受 `show|light|dark|system`。
 
 REPL 内用 `/settings`（无参 = 查看）或 `/settings no-code on|off`，欢迎面板与
 `/status` 都会显示 `无代码模式: 开 / 关 / 未知`（读一次后端，失败显示“未知”）。
@@ -296,7 +329,7 @@ slash 命令、Tab 候选菜单、↑↓ 历史（持久化于 `editor_root/.edi
 | `/status` | 工作区 / 模组 / 表 / 当前选中概览（含无代码模式开/关） |
 | `/settings [no-code on\|off\|show]` | 无代码模式开关（无参 = 查看，等价 `settings no-code`） |
 | `/search <关键词>` | 全局搜索对白（等价 `search` 子命令） |
-| `/mods /cfg /validate /bugfix /story /oobe /env /plugin /cloud /ai …` | 撇掉斜杠直接跑对应子命令（含各自参数） |
+| `/mods /cfg /validate /bugfix /story /oobe /env /plugin /cloud /ai /update …` | 撇掉斜杠直接跑对应子命令（含各自参数；裸 `/update` = `update check`） |
 | `/clear` | 清屏 |
 | `! <命令>` | 透传系统 shell（如 `!git status`） |
 | `/exit` `/quit` `/q` 裸 `exit` | 退出 |
@@ -386,8 +419,8 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 
 其余界面都是**居中蓝色粗边框弹窗**（Alpha-v0.3 的模态样式）：`a` 🤖 AI 助手、
 `c` ☁️ 云同步（Provider 轨 + 本地/远端双栏对比）、`p` 🧩 插件管理、
-`b` 🐞 Bug 扫描/修复，以及 `Ctrl-K` 🔍 全局搜索、`v` ● 校验结果、`?` ⌨️ 帮助、
-`confirm` 权限模式下的 ⚠ 审批框。
+`b` 🐞 Bug 扫描/修复、`u` ⬆️ 检查更新，以及 `Ctrl-K` 🔍 全局搜索、`v` ● 校验结果、
+`?` ⌨️ 帮助、`confirm` 权限模式下的 ⚠ 审批框。
 
 ### 快捷键
 
@@ -395,6 +428,7 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 |------|------|
 | `q` / `Ctrl-Q` | 退出（有未保存修改先弹确认框） |
 | `a` / `c` / `p` / `b` | 呼出 AI 助手 / 云同步 / 插件 / Bug 扫描弹窗（`Esc` 关闭） |
+| `u` | 呼出检查更新弹窗（`r` / `Enter` 查询 GitHub 最新发行版，`Esc` 关闭） |
 | `Ctrl-M` | 切换权限模式 `confirm`（变更前确认）⇄ `full`（直接执行） |
 | `Ctrl-N` | 切换无代码模式（编辑字段时选效果/人物，不写代码；与 GUI/CLI 同一开关） |
 | `?` | 开关帮助弹窗（任意键先行关闭） |

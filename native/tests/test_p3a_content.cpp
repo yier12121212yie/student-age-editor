@@ -241,6 +241,71 @@ TEST_CASE("p3a story import 解析 + 往返幂等", "[p3a][story]") {
           "ValueError: invalid literal for int() with base 10: 'abc'");
 }
 
+TEST_CASE("p3a story export->import fidelity", "[p3a][story][bug2]") {
+    P3aFixture fx;
+    auto& r = fx.router();
+    {
+        json t;
+        t["id"] = 101;
+        t["name"] = "小美";
+        json p;
+        p["101"] = t;
+        put_cfg(r, "PersonCfg", p);
+    }
+    {
+        json evt;
+        evt["id"] = 101;
+        evt["title"] = "往返";
+        evt["talkId"] = iarr({101001});
+        json et;
+        et["101"] = evt;
+        put_cfg(r, "EvtCfg", et);
+    }
+    {
+        json t1;
+        t1["id"] = 101001;
+        t1["roleIds"] = iarr({101});
+        t1["roleName"] = "小美别名";
+        t1["content"] = "第一句";
+        t1["nextTalk"] = iarr({101002});
+        json t2;
+        t2["id"] = 101002;
+        t2["roleIds"] = json::array();
+        t2["roleName"] = "男主";  // out-of-pool speaker
+        t2["content"] = "第二句";
+        t2["nextTalk"] = json::array();
+        json tbl;
+        tbl["101001"] = t1;
+        tbl["101002"] = t2;
+        put_cfg(r, "TalkCfg", tbl);
+    }
+
+    auto ex = call_router(r, "POST", "/api/story/export", {},
+                          json{{"evt_ids", sarr({"101"})}});
+    REQUIRE(ex.status == 200);
+    const std::string text = ex.json_payload["text"].get<std::string>();
+    INFO(text);
+    CHECK(text.find("----- END -----") != std::string::npos);
+
+    json ib;
+    ib["start_id"] = "300";
+    ib["text"] = text;
+    auto re = call_router(r, "POST", "/api/story/import", {}, ib);
+    REQUIRE(re.status == 200);
+    INFO(sa_core::py_dumps(re.json_payload));
+    const json& pv = re.json_payload["preview"];
+    // Both utterances survive (no collapse); header/END are not dialogue.
+    REQUIRE(pv.size() == 2);
+    const json& a = pv[0][1];
+    CHECK(a["content"] == "第一句");
+    CHECK(a["roleIds"] == iarr({101}));
+    CHECK(a["roleName"] == "小美别名");
+    const json& b = pv[1][1];
+    CHECK(b["content"] == "第二句");
+    CHECK(b["roleIds"].empty());
+    CHECK(b["roleName"] == "男主");
+}
+
 TEST_CASE("p3a story no mod selected", "[p3a][story]") {
     P3aFixture fx;
     auto& r = fx.router();

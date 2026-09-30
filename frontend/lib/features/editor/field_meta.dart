@@ -329,6 +329,116 @@ String? effectSuggestMode(String key) {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 全字段可视化输入（M1）：按 schema 类型 + 规则派生「视觉控件」。
+// 效果类字段一律返回 null（走 EffectHintField/搭建器），String 不升级
+// （纯文本与贴图路径另成体系，现有缩略图/选图控件已覆盖）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 字段的可视化输入形态；null = 维持原 文本框/下拉 路径。
+enum FieldVisual {
+  /// 无候选的 Number → 步进输入框（数字框自带加减，仍可手输精确值）。
+  numberBox,
+
+  /// 命中 [kFieldNumericHints] 区间的 Number → 步进框 + 区间滑杆。
+  numberSlider,
+
+  /// 音频引用（值为 AudioCfg id）→ 行内试听（可播 BGM/音效/配音字节）。
+  audioPick,
+
+  /// 对白/选项/事件跳转目标 → 「ID · 内容预览」浏览对话框。
+  jumpTarget,
+
+  /// 其余单值 Number ID 引用 → 带预览的浏览对话框（与下拉并存）。
+  idBrowse,
+
+  /// 带字典/ID 候选的 1D Array → 文本框下按序展示「ID·名称」chips，
+  /// 可移除、可左右移序。
+  multiIdChips,
+}
+
+/// 跳转目标字段（cfg:key）：这些 ID 手写最易错（前缀归属强校验），
+/// 统一升级浏览式选择；数组按序多选，Number 单选。
+const _kJumpTargetFields = <String>{
+  'EvtCfg:talkId',
+  'TalkCfg:nextTalk',
+  'TalkCfg:nextTalk2',
+  'TalkCfg:option',
+  'OptionCfg:talkId',
+  'OptionCfg:talkId2',
+  'OptionCfg:nextEvtId',
+};
+
+/// 音频引用字段的全局 key（忽略大小写）：值都是 AudioCfg 表 id。
+const _kAudioFieldKeys = <String>{
+  'audio',
+  'bgm',
+  'sound',
+  'clickaudio',
+  'entersound',
+  'music',
+};
+
+/// 数值字段的游戏语义区间提示：cfg:key → (min, max, step)。
+/// 只约束滑杆默认显示区间与步进值——步进框不受限；当前值越界时滑杆
+/// 轨道自动扩展包含它（永不钳制/覆盖用户数据）。区间依据本体口径：
+/// 好感阈值 ±999、概率权重 0~100、出现概率 0~1 等。
+const kFieldNumericHints = <String, (double, double, double)>{
+  'RelationCfg:condition': (-999, 999, 1),
+  'RelationCfg:upgradeCost': (0, 100, 1),
+  'RelationCfg:socialCapacity': (0, 50, 1),
+  'FriendRequestCfg:weight': (0, 100, 1),
+  'LoveBreakfastCfg:weight': (0, 100, 1),
+  'LoveRibbonCfg:weight': (0, 100, 1),
+  'NpcActivityCfg:appearRate': (0, 1, 0.05),
+  'NpcActivityCfg:cnt': (0, 10, 1),
+  'FishCfg:weight': (0, 100, 1),
+};
+
+bool _isAudioRef(String cfg, String key, FieldRule? rule) =>
+    rule?.idRefCfg == 'AudioCfg' ||
+    rule?.dictName == 'audios' ||
+    _kAudioFieldKeys.contains(key.toLowerCase());
+
+/// 派生字段的可视化输入形态（schema 编辑器与剧情图共用同一判定）。
+///
+/// 判定序与 `_FieldInput.build` 的分支序对齐：效果类 → 跳转 → 按类型分派。
+FieldVisual? fieldVisualFor(
+  String cfg,
+  String key,
+  String type,
+  FieldRule? rule,
+) {
+  if (type == 'String') return null;
+  if (isEffectLikeField(cfg, key, type)) return null;
+  final id = '$cfg:$key';
+  if (_kJumpTargetFields.contains(id)) return FieldVisual.jumpTarget;
+  switch (type) {
+    case 'Number':
+      if (_isAudioRef(cfg, key, rule)) return FieldVisual.audioPick;
+      if (kFieldNumericHints.containsKey(id)) return FieldVisual.numberSlider;
+      if (rule?.idRefCfg != null) return FieldVisual.idBrowse;
+      return FieldVisual.numberBox;
+    case '1D Array':
+      // vocals 是 [声ID, 音量] 的遗留扁平对：只升级试听，不做多选 chips。
+      if (key.toLowerCase() == 'vocals') return FieldVisual.audioPick;
+      final multiRef = rule != null &&
+          !rule.singleArray &&
+          (rule.idRefCfg != null || rule.dictName != null);
+      return multiRef ? FieldVisual.multiIdChips : null;
+    default:
+      return null;
+  }
+}
+
+/// 1D 文本层 token 拆分：与既有 `_namePreview`/多选合并共用一套分隔符约定
+/// （逗号/分号/顿号/换行），保证 chips 展示与写回文本完全等价。
+List<String> fieldTextTokens(String text) => text
+    .split(RegExp(r'[;，、,\n]'))
+    .map((e) => e.trim())
+    .where((e) => e.isNotEmpty)
+    .toList();
+
 /// 字段标签：覆盖表 → keyMaps[cfg][key] → KeyTranslator 兜底。
 String flowFieldLabel(AppState state, String cfg, String key) {
   final guide = kGuideFieldLabels[key];

@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:student_age_editor/core/api_client.dart';
+import 'package:student_age_editor/features/plugins/plugin_pane.dart'
+    show buildPluginScopedUrl;
 
 bool _backendUp = false;
 
@@ -32,5 +34,30 @@ void main() {
     if (r['selected'] == true && r['has_manifest'] == true) {
       expect(r['manifest'], isA<Map>());
     }
+  });
+
+  // 阶段 1d：manifest actions/form 声明的 url 属外部输入，拼全后必须仍在
+  // `/api/plugins/<id>/` 命名空间内（纯函数守卫用例，不依赖后端）。
+  group('plugin url 命名空间守卫（buildPluginScopedUrl）', () {
+    test('合法相对 url 拼入插件命名空间', () {
+      expect(buildPluginScopedUrl('p1', 'do'), '/api/plugins/p1/do');
+      expect(buildPluginScopedUrl('p1', '/do'), '/api/plugins/p1/do');
+      expect(buildPluginScopedUrl('p1', 'sub/dir'), '/api/plugins/p1/sub/dir');
+      // 中文/空格 id 被编码后前缀仍自洽。
+      expect(buildPluginScopedUrl('中文 mod', 'x'),
+          '/api/plugins/%E4%B8%AD%E6%96%87%20mod/x');
+    });
+
+    test('穿越命名空间的 `..` 声明一律拒绝', () {
+      expect(() => buildPluginScopedUrl('p1', '../../mods/delete'),
+          throwsStateError);
+      expect(() => buildPluginScopedUrl('p1', 'a/../../b'), throwsStateError);
+      expect(() => buildPluginScopedUrl('p1', '/../p1b/x'), throwsStateError);
+      expect(() => buildPluginScopedUrl('p1', '../../../etc/passwd'),
+          throwsStateError);
+      // 前缀相近的其它插件命名空间同样算越界。
+      expect(() => buildPluginScopedUrl('p1', '../p1admin/x'),
+          throwsStateError);
+    });
   });
 }

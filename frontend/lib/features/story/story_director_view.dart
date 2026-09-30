@@ -9,6 +9,7 @@ import '../../core/models.dart';
 import '../ai/tts_panel.dart';
 import '../editor/field_utils.dart';
 import '../editor/suggestion_text_field.dart';
+import '../nocode/role_picker.dart';
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
 
@@ -1167,8 +1168,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             borderRadius: BorderRadius.circular(5),
             border: Border.all(
               color: isCurrent
-                  ? const Color(0xFF6C5CE7)
-                  : (selected ? const Color(0xFF4A3DB8) : palette.surface),
+                  ? accentColor
+                  : (selected ? palette.accentDeep : palette.surface),
               width: isCurrent ? 1.5 : 1,
             ),
           ),
@@ -1181,7 +1182,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 size: 14,
                 color: hasBranch
                     ? palette.warning
-                    : (isCurrent ? const Color(0xFF6C5CE7) : palette.textHint),
+                    : (isCurrent ? accentColor : palette.textHint),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -1695,10 +1696,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           ),
           child: Row(
             children: [
-              const Icon(
+              Icon(
                 FluentIcons.video_24_regular,
                 size: 14,
-                color: Color(0xFF6C5CE7),
+                color: accentColor,
               ),
               const SizedBox(width: 6),
               Text(
@@ -1818,7 +1819,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: role.isHighlight
-              ? const Color(0xFF6C5CE7)
+              ? accentColor
               : palette.borderHover,
           width: role.isHighlight ? 2 : 1,
         ),
@@ -1908,7 +1909,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 decoration: BoxDecoration(
                   color: palette.tintAccent,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: const Color(0xFF5A4EB8)),
+                  border: Border.all(color: palette.accentDeep),
                 ),
                 child: Text(
                   '🎭 $emotionName (${role.actionCode})',
@@ -2105,6 +2106,31 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   if (v != null) setDialogState(() => selectedPerson = v);
                 },
               ),
+              // 无代码模式：下拉旁给一个带立绘的人物浏览面板入口
+              if (widget.state.noCodeMode) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    fluent.Button(
+                      onPressed: () async {
+                        final ids = await showRolePickerDialog(
+                            ctx, multi: false, title: '选择人物');
+                        if (ids != null && ids.isNotEmpty) {
+                          setDialogState(() => selectedPerson = ids.first);
+                        }
+                      },
+                      child: const Text('浏览人物…',
+                          style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('立绘网格，可按中文名搜索',
+                          style: TextStyle(
+                              fontSize: 10.5, color: palette.textHint)),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 12),
               const Text('表情与动作 (30xx):', style: TextStyle(fontSize: 12)),
               const SizedBox(height: 6),
@@ -2530,8 +2556,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             height: 36,
             child: fluent.FilledButton(
               onPressed: _save,
-              style: const fluent.ButtonStyle(
-                backgroundColor: WidgetStatePropertyAll(Color(0xFF6C5CE7)),
+              style: fluent.ButtonStyle(
+                backgroundColor: WidgetStatePropertyAll(accentColor),
               ),
               child: const Text(
                 '💾 保存修改至 Mod',
@@ -2630,8 +2656,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     Color bg = palette.card;
     Color fg = palette.textPrimary;
     if (primary) {
-      bg = const Color(0xFF6C5CE7);
-      fg = Colors.white;
+      bg = accentColor;
+      fg = palette.onAccent;
     } else if (danger) {
       bg = palette.tintDanger;
       fg = palette.statusDanger;
@@ -2783,7 +2809,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                                         color: palette.tintAccent,
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(
-                                          color: const Color(0xFF4A3DB8),
+                                          color: palette.accentDeep,
                                         ),
                                       ),
                                       child: Row(
@@ -3102,9 +3128,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   faceKey.isEmpty ? 'ID $id' : '立绘 $faceKey',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 9.5,
-                    color: Color(0xFF8B7B5E),
+                    color: palette.warmText,
                   ),
                 ),
               ],
@@ -3141,9 +3167,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   left: BorderSide(
                     width: 3,
                     color: selected
-                        ? const Color(0xFF6C5CE7)
+                        ? accentColor
                         : (isCurrent
-                              ? const Color(0xFFC97018)
+                              ? palette.amberText
                               : Colors.transparent),
                   ),
                 ),
@@ -3249,7 +3275,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           const SizedBox(height: 2),
           Text(
             '[$optId] → ${target.isEmpty ? '未设置跳转' : target}',
-            style: const TextStyle(fontSize: 10.5, color: Color(0xFF8B7B5E)),
+            style: TextStyle(fontSize: 10.5, color: palette.warmText),
           ),
         ],
       ),
@@ -3477,7 +3503,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               const SizedBox(width: 10),
               Text(
                 'ID: ${widget.talkId}',
-                style: const TextStyle(fontSize: 12, color: Color(0xFFC97018)),
+                style: TextStyle(fontSize: 12, color: palette.amberText),
               ),
               const Spacer(),
               Text(
@@ -3732,9 +3758,9 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12.5,
-              color: Color(0xFFC97018),
+              color: palette.amberText,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -4158,8 +4184,8 @@ class _ActionPill extends StatelessWidget {
     Color? borderColor = palette.borderHover;
 
     if (primary) {
-      bg = const Color(0xFF6C5CE7);
-      fg = Colors.white;
+      bg = accentColor;
+      fg = palette.onAccent;
       borderColor = null;
     } else if (danger) {
       bg = palette.tintDanger;

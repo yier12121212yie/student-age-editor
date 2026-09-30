@@ -107,7 +107,9 @@ jobs:
           GEN_OK=""
           for GEN in "Visual Studio 18 2026" "Visual Studio 17 2022"; do
             rm -rf build-native
-            if cmake -G "$GEN" -A x64 -T host=x64 -S native -B build-native; then
+            # SA_APP_VERSION：GET /api/version 与更新检查用的发行版本号，与产物命名同源
+            if cmake -G "$GEN" -A x64 -T host=x64 -S native -B build-native \
+                 -DSA_APP_VERSION="$RELEASE_VERSION"; then
               GEN_OK="$GEN"; break
             fi
           done
@@ -206,7 +208,8 @@ jobs:
         run: |
           # 本 job 已装 clang/cmake/ninja-build；与 native/build.sh 同法但显式
           # 构建三件套并收集到 build/native_bin 供 --prebuilt-backend 注入。
-          cmake -G Ninja -S native -B build-native-posix -DCMAKE_BUILD_TYPE=Release
+          cmake -G Ninja -S native -B build-native-posix -DCMAKE_BUILD_TYPE=Release \
+            -DSA_APP_VERSION="$RELEASE_VERSION"
           cmake --build build-native-posix
           mkdir -p build/native_bin
           cp build-native-posix/bin/backend build-native-posix/bin/backend_cli \
@@ -286,7 +289,8 @@ jobs:
           # build/native_bin 供 --prebuilt-backend 注入。
           if ! command -v ninja >/dev/null; then brew install ninja || true; fi
           GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"
-          cmake $GEN -S native -B build-native-posix -DCMAKE_BUILD_TYPE=Release
+          cmake $GEN -S native -B build-native-posix -DCMAKE_BUILD_TYPE=Release \
+            -DSA_APP_VERSION="$RELEASE_VERSION"
           cmake --build build-native-posix
           mkdir -p build/native_bin
           cp build-native-posix/bin/backend build-native-posix/bin/backend_cli \
@@ -342,6 +346,9 @@ jobs:
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
       - name: 交叉编译 native 后端（NDK，产物落 jniLibs/<abi>/）
         shell: bash
+        env:
+          # Android 的 backend .so 同样要带发行版本号（GET /api/version / 更新检查）
+          SA_APP_VERSION: ${{ env.RELEASE_VERSION }}
         run: bash native/android/android_build.sh
       - name: 注入内置资源包（可选，从 GitHub Release 下载，SHA-256 强校验）
         shell: bash
@@ -504,7 +511,8 @@ jobs:
           # 本步跑测试门禁，脚本复用同一目录增量编译秒级完成。
           # backend_gateway 为 POSIX-only 新二进制（native/gateway 子项目）；
           # 旧树缺该 target 时本次跳过完整打包，不阻塞其余发布通道。
-          cmake -G Ninja -S native -B native/build-server -DCMAKE_BUILD_TYPE=Release
+          cmake -G Ninja -S native -B native/build-server -DCMAKE_BUILD_TYPE=Release \
+            -DSA_APP_VERSION="$RELEASE_VERSION"
           if grep -rsw --include=CMakeLists.txt --exclude-dir='build*' backend_gateway native; then
             cmake --build native/build-server --target backend backend_gateway sa_tests
             echo "enabled=true" >> "$GITHUB_OUTPUT"

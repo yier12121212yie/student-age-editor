@@ -663,7 +663,8 @@ def build_server_linux_release(version):
     _step(1, "构建在线托管后端（backend + backend_gateway）...")
     os.makedirs(NATIVE_SERVER_BUILD_DIR, exist_ok=True)
     subprocess.run([cmake, "-S", NATIVE_DIR, "-B", NATIVE_SERVER_BUILD_DIR,
-                    "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"],
+                    "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+                    "-DSA_APP_VERSION=%s" % (version or "dev")],
                    cwd=ROOT, check=True)
     subprocess.run([cmake, "--build", NATIVE_SERVER_BUILD_DIR,
                     "--target", "backend", "backend_gateway"],
@@ -830,12 +831,16 @@ def _reset_backend_dist():
     os.makedirs(BACKEND_DIST)
 
 
-def build_backend_native(prebuilt_dir=None):
+def build_backend_native(prebuilt_dir=None, version=""):
     """Windows 后端：native C++ 三件套（backend/backend_cli/backend_tui）。
 
     prebuilt_dir 非空 → 从该目录拷三件套（CI 用，跳过自建，工具链缺失无所谓）；
     否则调用 CMake 构建 native/（复用/新建 NATIVE_BUILD_DIR，Release+Ninja，
     无 Ninja 回落 VS 生成器；vcvars 环境缺失时给出清晰报错）。
+
+    version → -DSA_APP_VERSION（GET /api/version 与更新检查用的发行版本号，
+    与产物命名同源；空则 "dev"）。走 --prebuilt-backend 时本函数不配置
+    CMake，注入由产生产物的那一步负责（release.yml 的 native 构建步骤）。
     """
     _step(1, "构建 native C++ 后端（backend/backend_cli/backend_tui）...")
     _reset_backend_dist()
@@ -870,7 +875,8 @@ def build_backend_native(prebuilt_dir=None):
             os.path.relpath(NATIVE_BUILD_DIR, ROOT),
             "Ninja" if ninja else "VS17"))
         subprocess.run([cmake, "-S", NATIVE_DIR, "-B", NATIVE_BUILD_DIR]
-                       + gen_args + ["-DCMAKE_BUILD_TYPE=Release"],
+                       + gen_args + ["-DCMAKE_BUILD_TYPE=Release",
+                                     "-DSA_APP_VERSION=%s" % (version or "dev")],
                        cwd=ROOT, env=env, check=True)
         build_cmd = [cmake, "--build", NATIVE_BUILD_DIR]
         if not ninja:
@@ -894,12 +900,13 @@ def build_backend_native(prebuilt_dir=None):
             "指向已含三件套的目录。" % (", ".join(missing), src))
 
 
-def build_backend_native_posix(prebuilt_dir=None):
+def build_backend_native_posix(prebuilt_dir=None, version=""):
     """Linux/macOS 后端：native C++ 三件套（backend/backend_cli/backend_tui）。
 
     镜像 Windows 的 build_backend_native，但工具链探测走 POSIX：cmake 必须
     在 PATH；ninja 优先，缺失时用 CMake 默认生成器（Unix Makefiles）。
     prebuilt_dir 非空 → 从该目录拷三件套（CI 预构建注入，跳过自建）。
+    version → -DSA_APP_VERSION（含义同 build_backend_native；空则 "dev"）。
     """
     _step(1, "构建 native C++ 后端（backend/backend_cli/backend_tui）...")
     _reset_backend_dist()
@@ -925,7 +932,8 @@ def build_backend_native_posix(prebuilt_dir=None):
             os.path.relpath(NATIVE_BUILD_DIR_POSIX, ROOT),
             "Ninja" if ninja else "default"))
         subprocess.run([cmake, "-S", NATIVE_DIR, "-B", NATIVE_BUILD_DIR_POSIX]
-                       + gen_args + ["-DCMAKE_BUILD_TYPE=Release"],
+                       + gen_args + ["-DCMAKE_BUILD_TYPE=Release",
+                                     "-DSA_APP_VERSION=%s" % (version or "dev")],
                        cwd=ROOT, check=True)
         subprocess.run([cmake, "--build", NATIVE_BUILD_DIR_POSIX],
                        cwd=ROOT, check=True)
@@ -1407,11 +1415,11 @@ def main():
     if not args.skip_backend:
         if args.target == "windows":
             # Windows 后端通道（波次 4）：native C++ 三件套 + 可选 aa_scan.exe
-            build_backend_native(args.prebuilt_backend)
+            build_backend_native(args.prebuilt_backend, version)
             build_aa_scan()
         else:
             # Linux/macOS 后端通道（波次 5）：native C++ 三件套 + 可选 aa_scan
-            build_backend_native_posix(args.prebuilt_backend)
+            build_backend_native_posix(args.prebuilt_backend, version)
             build_aa_scan()
     else:
         missing = [n for n in _native_bins()

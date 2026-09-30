@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+
 import '../../core/models.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
 import '../../core/app_theme.dart';
+import '../auth/auth_user_chip.dart';
 
 class StatusBar extends StatelessWidget {
   const StatusBar({
@@ -33,11 +35,19 @@ class StatusBar extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               const SizedBox(width: 10),
-              Icon(FluentIcons.branch_fork_24_regular, size: 13, color: palette.textMuted),
+              Icon(
+                FluentIcons.branch_fork_24_regular,
+                size: 13,
+                color: palette.textMuted,
+              ),
               const SizedBox(width: 6),
               _text('主分支'),
               const SizedBox(width: 14),
-              Icon(FluentIcons.arrow_sync_24_regular, size: 13, color: palette.textMuted),
+              Icon(
+                FluentIcons.arrow_sync_24_regular,
+                size: 13,
+                color: palette.textMuted,
+              ),
               const SizedBox(width: 6),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 240),
@@ -48,7 +58,10 @@ class StatusBar extends StatelessWidget {
                     key: ValueKey(state.modName),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: palette.textSecondary),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textSecondary,
+                    ),
                   ),
                 ),
               ),
@@ -56,12 +69,19 @@ class StatusBar extends StatelessWidget {
               AnimatedSwitcher(
                 duration: AppMotion.normal,
                 child: state.backendOnline
-                    ? const PulseDot(key: ValueKey('online'), color: Color(0xFF4CAF50), size: 8)
+                    ? PulseDot(
+                        key: ValueKey('online'),
+                        color: palette.statusOk,
+                        size: 8,
+                      )
                     : Container(
                         key: const ValueKey('offline'),
                         width: 8,
                         height: 8,
-                        decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFFE53935)),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: palette.danger,
+                        ),
                       ),
               ),
               const SizedBox(width: 6),
@@ -74,6 +94,8 @@ class StatusBar extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 14),
+              // 托管模式（M2.4）：用户名 + 登出；本机/桌面恒收起为零尺寸
+              const AuthUserChip(),
               _AnimatedText(text: 'AA: '),
               const SizedBox(width: 14),
               if (uiMode != null && onUiModeChanged != null)
@@ -83,12 +105,14 @@ class StatusBar extends StatelessWidget {
                     children: [
                       AnimatedSwitcher(
                         duration: AppMotion.fast,
-                        transitionBuilder: (c, a) => RotationTransition(turns: a, child: c),
+                        transitionBuilder: (c, a) =>
+                            RotationTransition(turns: a, child: c),
                         child: Icon(
-                            key: ValueKey(uiMode),
-                            _nextModeIcon(uiMode!.nextCycle()),
-                            size: 13,
-                            color: palette.textMuted),
+                          key: ValueKey(uiMode),
+                          _nextModeIcon(uiMode!.nextCycle()),
+                          size: 13,
+                          color: palette.textMuted,
+                        ),
                       ),
                       const SizedBox(width: 6),
                       Text(
@@ -103,9 +127,16 @@ class StatusBar extends StatelessWidget {
                 onTap: onToggleAi,
                 child: Row(
                   children: [
-                    Icon(FluentIcons.bot_24_regular, size: 13, color: palette.textMuted),
+                    Icon(
+                      FluentIcons.bot_24_regular,
+                      size: 13,
+                      color: palette.textMuted,
+                    ),
                     SizedBox(width: 6),
-                    Text('AI', style: TextStyle(fontSize: 12, color: palette.textMid)),
+                    Text(
+                      'AI',
+                      style: TextStyle(fontSize: 12, color: palette.textMid),
+                    ),
                     SizedBox(width: 10),
                   ],
                 ),
@@ -117,14 +148,15 @@ class StatusBar extends StatelessWidget {
     );
   }
 
-  Widget _text(String s) => Text(s, style: TextStyle(fontSize: 12, color: palette.textSecondary));
+  Widget _text(String s) =>
+      Text(s, style: TextStyle(fontSize: 12, color: palette.textSecondary));
 
   /// 目标模式的图标（循环切换按钮用）：创作=画笔，经典=列表，剧情图=流程图。
   IconData _nextModeIcon(UiMode m) => switch (m) {
-        UiMode.creation => FluentIcons.paint_brush_24_regular,
-        UiMode.classic => FluentIcons.list_24_regular,
-        UiMode.storyFlow => FluentIcons.flow_24_regular,
-      };
+    UiMode.creation => FluentIcons.paint_brush_24_regular,
+    UiMode.classic => FluentIcons.list_24_regular,
+    UiMode.storyFlow => FluentIcons.flow_24_regular,
+  };
 }
 
 class _AnimatedText extends StatelessWidget {
@@ -135,7 +167,11 @@ class _AnimatedText extends StatelessWidget {
     return AnimatedSwitcher(
       duration: AppMotion.fast,
       transitionBuilder: (c, a) => FadeTransition(opacity: a, child: c),
-      child: Text(key: ValueKey(text), text, style: TextStyle(fontSize: 12, color: palette.textSecondary)),
+      child: Text(
+        key: ValueKey(text),
+        text,
+        style: TextStyle(fontSize: 12, color: palette.textSecondary),
+      ),
     );
   }
 }

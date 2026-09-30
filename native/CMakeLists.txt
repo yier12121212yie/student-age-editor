@@ -10,6 +10,15 @@ project(StudentAgeNative
         DESCRIPTION "Native C++ backend for the StudentAge editor"
         LANGUAGES CXX)
 
+# Release version string baked into the binaries and reported by GET
+# /api/version (the value the update check compares against). Release tooling
+# passes the same string it uses for artifact names, e.g.
+#   -DSA_APP_VERSION=Alpha-v0.6
+# Local/dev builds keep "dev", which /api/update/check always reports as
+# outdated (see sa_core/app_version()).
+set(SA_APP_VERSION "dev" CACHE STRING
+    "Release version string reported by GET /api/version (e.g. Alpha-v0.6)")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

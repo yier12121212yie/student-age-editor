@@ -123,8 +123,58 @@ TEST_CASE("p7 parse: cfg get projections and guards", "[p7]") {
     auto p = run({"cfg", "get", "E", "--prefix", "bg,cg", "--suffix", "4", "--limit", "5"});
     REQUIRE(p.r == ParseResult::Ok);
     CHECK(p.c.prefix == "bg,cg");
-    CHECK(p.c.suffix == 4);
+    CHECK(p.c.suffix == "4");
     CHECK(p.c.limit == 5);
+}
+
+TEST_CASE("p7 parse/plan: cfg get prefix/suffix are independent filters", "[p7][bug3]") {
+    auto p = run({"cfg", "get", "E", "--prefix", "32"});
+    REQUIRE(p.r == ParseResult::Ok);
+    auto pl = plan(p.c);
+    REQUIRE(pl.ok);
+    REQUIRE(pl.reqs[0].query.size() == 1);
+    CHECK(pl.reqs[0].query[0] == std::make_pair(std::string("prefix"), std::string("32")));
+
+    auto s = run({"cfg", "get", "E", "--suffix", "1"});
+    REQUIRE(s.r == ParseResult::Ok);
+    auto sl = plan(s.c);
+    REQUIRE(sl.ok);
+    REQUIRE(sl.reqs[0].query.size() == 1);
+    CHECK(sl.reqs[0].query[0] == std::make_pair(std::string("suffix"), std::string("1")));
+}
+
+TEST_CASE("p7 parse: search accepts the global --mod", "[p7][bug7]") {
+    auto p = run({"search", "篮球场", "--mod", "test"});
+    REQUIRE(p.r == ParseResult::Ok);
+    CHECK(p.c.kind == Kind::Search);
+    CHECK(p.g.mod == "test");
+}
+
+TEST_CASE("p7 parse/plan: settings appearance", "[p7][bug9]") {
+    CHECK(run({"settings", "appearance", "bad"}).r == ParseResult::UsageError);
+    auto s = run({"settings", "appearance", "light"});
+    REQUIRE(s.r == ParseResult::Ok);
+    CHECK(s.c.kind == Kind::SettingsAppearance);
+    auto pl = plan(s.c);
+    REQUIRE(pl.ok);
+    CHECK(pl.reqs[0].method == "PUT");
+    CHECK(pl.reqs[0].path == "/api/settings/editor");
+    CHECK(pl.reqs[0].body == json{{"appearanceMode", "light"}});
+
+    auto sh = run({"settings", "appearance", "show"});
+    REQUIRE(sh.r == ParseResult::Ok);
+    auto shp = plan(sh.c);
+    REQUIRE(shp.ok);
+    CHECK(shp.reqs[0].method == "GET");
+}
+
+TEST_CASE("p7 repl-entry: only known commands may fall through to REPL", "[p7][bug11]") {
+    CHECK(references_known_commands_only({}));
+    CHECK(references_known_commands_only({"cfg"}));
+    CHECK(references_known_commands_only({"--json"}));
+    CHECK(references_known_commands_only({"--mod", "test", "cfg"}));
+    CHECK_FALSE(references_known_commands_only({"cfg", "badsub"}));
+    CHECK_FALSE(references_known_commands_only({"settings", "appearance2"}));
 }
 
 TEST_CASE("p7 parse: JSON-valued options are parsed or rejected", "[p7]") {
@@ -797,10 +847,11 @@ TEST_CASE("p7 plan: cloud commands hit the real cloud routes", "[p7]") {
     auto rep = plan(re.c);
     REQUIRE(rep.ok);
     CHECK(rep.reqs[0].path == "/api/cloud/list");
-    REQUIRE(rep.reqs[0].query.size() == 3);
+    REQUIRE(rep.reqs[0].query.size() == 4);
     CHECK(rep.reqs[0].query[0] == std::make_pair(std::string("provider_id"), std::string("p_1")));
     CHECK(rep.reqs[0].query[1] == std::make_pair(std::string("mod_name"), std::string("M")));
     CHECK(rep.reqs[0].query[2] == std::make_pair(std::string("path"), std::string("sub")));
+    CHECK(rep.reqs[0].query[3] == std::make_pair(std::string("recursive"), std::string("1")));
 }
 
 TEST_CASE("p7 plan: ai settings read/write and --file merge", "[p7]") {
@@ -1454,4 +1505,136 @@ TEST_CASE("p7 completion: ReplComplete sorts by score and dedupes by text", "[p7
 
     // 空池 = 无候选（不抛、不编造）。
     CHECK(ReplComplete("cfg get Ta", CompletionCtx{}).empty());
+}
+
+// ---------------------------------------------------------------------------
+// 检查更新（update check · GET /api/update/check）
+// ---------------------------------------------------------------------------
+
+TEST_CASE("p7 parse: update check options", "[p7]") {
+    CHECK(run({"update"}).r == ParseResult::UsageError);        // check 是必需子命令
+    CHECK(run({"update", "bogus"}).r == ParseResult::UsageError);
+
+    auto d = run({"update", "check"});
+    REQUIRE(d.r == ParseResult::Ok);
+    CHECK(d.c.kind == Kind::UpdateCheck);
+    CHECK(d.c.update_timeout == 6);  // 默认 6s
+    CHECK(d.c.update_url.empty());
+    CHECK(d.c.update_current.empty());
+
+    auto o = run({"update", "check", "--timeout", "9",
+                  "--update-url", "https://api.test/releases", "--current", "v1.2.3"});
+    REQUIRE(o.r == ParseResult::Ok);
+    CHECK(o.c.kind == Kind::UpdateCheck);
+    CHECK(o.c.update_timeout == 9);
+    CHECK(o.c.update_url == "https://api.test/releases");
+    CHECK(o.c.update_current == "v1.2.3");
+    // 子命令自己的 --timeout 不污染全局 --timeout（默认 30）。
+    CHECK(o.g.timeout == 30.0);
+}
+
+TEST_CASE("p7 plan: update check builds query timeout/current/url", "[p7]") {
+    auto d = run({"update", "check"});
+    REQUIRE(d.r == ParseResult::Ok);
+    auto dp = plan(d.c);
+    REQUIRE(dp.ok);
+    REQUIRE(dp.reqs.size() == 1);
+    CHECK(dp.reqs[0].method == "GET");
+    CHECK(dp.reqs[0].path == "/api/update/check");
+    REQUIRE(dp.reqs[0].query.size() == 1);  // timeout 始终传
+    CHECK(dp.reqs[0].query[0] == std::make_pair(std::string("timeout"), std::string("6")));
+    CHECK(dp.reqs[0].body.is_null());
+
+    auto o = run({"update", "check", "--timeout", "12", "--current", "v1.0.0",
+                  "--update-url", "https://example.test/releases"});
+    REQUIRE(o.r == ParseResult::Ok);
+    auto op = plan(o.c);
+    REQUIRE(op.ok);
+    REQUIRE(op.reqs.size() == 1);
+    REQUIRE(op.reqs[0].query.size() == 3);
+    CHECK(op.reqs[0].query[0] == std::make_pair(std::string("timeout"), std::string("12")));
+    CHECK(op.reqs[0].query[1] == std::make_pair(std::string("current"), std::string("v1.0.0")));
+    CHECK(op.reqs[0].query[2] ==
+          std::make_pair(std::string("url"), std::string("https://example.test/releases")));
+    CHECK(build_url("http://127.0.0.1:8765", op.reqs[0]) ==
+          "http://127.0.0.1:8765/api/update/check?timeout=12&current=v1.0.0"
+          "&url=https%3A//example.test/releases");
+}
+
+TEST_CASE("p7 format_text: update check success envelope", "[p7]") {
+    Command c;
+    c.kind = Kind::UpdateCheck;
+    json assets = json::array({json{{"name", "editor.zip"},
+                                    {"url", "https://example.test/editor.zip"},
+                                    {"size", 1572864}},
+                               json{{"name", "extra.zip"}, {"url", "u"}, {"size", 10}}});
+    json body{{"ok", true},
+              {"current", "v1.0.0"},
+              {"latest_tag", "v1.2.0"},
+              {"latest_name", "Release 1.2.0"},
+              {"prerelease", false},
+              {"published_at", "2024-05-01T00:00:00Z"},
+              {"html_url", "https://example.test/v1.2.0"},
+              {"notes", "第一行\n第二行"},
+              {"update_available", true},
+              {"assets", assets}};
+    auto s = format_text(c, body);
+    CHECK(s.find("当前版本: v1.0.0") != std::string::npos);
+    CHECK(s.find("最新版本: v1.2.0  Release 1.2.0") != std::string::npos);
+    CHECK(s.find("是否需要更新: 是") != std::string::npos);
+    CHECK(s.find("预发行版") == std::string::npos);  // 非预发布不标注
+    CHECK(s.find("发布时间: 2024-05-01T00:00:00Z") != std::string::npos);
+    CHECK(s.find("发行页: https://example.test/v1.2.0") != std::string::npos);
+    CHECK(s.find("第一行") != std::string::npos);
+    CHECK(s.find("第二行") != std::string::npos);
+    CHECK(s.find("附件: 2") != std::string::npos);
+    CHECK(s.find("editor.zip") != std::string::npos);
+    CHECK(s.find("1.5MB") != std::string::npos);
+    CHECK(compute_exit(200, body, c) == 0);
+
+    // 预发行版标注 + 已是最新。
+    auto pre = format_text(c, json{{"ok", true},
+                                   {"current", "v1.0.0"},
+                                   {"latest_tag", "v2.0.0-rc1"},
+                                   {"prerelease", true},
+                                   {"update_available", false}});
+    CHECK(pre.find("是否需要更新: 否") != std::string::npos);
+    CHECK(pre.find("预发行版: 是") != std::string::npos);
+
+    // notes 只铺前 20 行，其余引导到发行页。
+    std::string notes;
+    for (int i = 0; i < 25; ++i) notes += "L" + std::to_string(i) + "\n";
+    auto long_notes = format_text(c, json{{"ok", true}, {"notes", notes}});
+    CHECK(long_notes.find("L19") != std::string::npos);
+    CHECK(long_notes.find("L20") == std::string::npos);
+    CHECK(long_notes.find("…（完整说明见发行页）") != std::string::npos);
+}
+
+TEST_CASE("p7 format_text/exit: update check failure envelope", "[p7]") {
+    Command c;
+    c.kind = Kind::UpdateCheck;
+    json body{{"ok", false}, {"error", "network unreachable"}, {"current", "v1.0.0"}};
+    auto s = format_text(c, body);
+    CHECK(s.find("检查更新失败：network unreachable") != std::string::npos);
+    CHECK(compute_exit(200, body, c) == 1);
+    // ok 缺失（旧后端/异常体）不当作失败。
+    CHECK(compute_exit(200, json{{"current", "v1.0.0"}}, c) == 0);
+}
+
+TEST_CASE("p7 completion: update check is in the help/completion tables", "[p7]") {
+    auto has = [](const std::vector<CompletionItem>& v, const std::string& s) {
+        for (const auto& i : v)
+            if (i.value == s) return true;
+        return false;
+    };
+    CHECK(has(top_level_commands(), "update"));
+    CHECK(has(command_subcommands("update"), "check"));
+    CHECK(has(command_flags("update", "check"), "--timeout"));
+    CHECK(has(command_flags("update", "check"), "--update-url"));
+    CHECK(has(command_flags("update", "check"), "--current"));
+    CHECK(references_known_commands_only({"update", "check"}));
+    // usage/help 文本里也应出现新命令（名称 + 中文说明）。
+    const std::string help = usage_text();
+    CHECK(help.find("update") != std::string::npos);
+    CHECK(help.find("检查更新") != std::string::npos);
 }

@@ -1,7 +1,9 @@
 import 'dart:async' show unawaited;
-import 'dart:io' show Platform;
 import 'dart:ui' show AppExitResponse;
 
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
@@ -10,18 +12,20 @@ import 'core/api_client.dart';
 import 'core/app_theme.dart';
 import 'core/backend_launcher.dart';
 import 'core/models.dart';
+import 'core/platform_env.dart';
 import 'core/plugin_state.dart';
 import 'core/responsive.dart';
 import 'core/ui_mode.dart';
 import 'core/motion.dart';
+import 'core/update_check.dart';
+import 'features/auth/auth_state.dart';
+import 'features/auth/login_page.dart';
 import 'features/oobe/oobe_page.dart';
 import 'features/shell/classic_shell.dart';
 import 'features/shell/editor_shell.dart';
 import 'features/shell/mobile_shell.dart';
 import 'features/shell/shell_state.dart';
 import 'features/shell/story_flow_shell.dart';
-
-const accentColor = Color(0xFF6C5CE7);
 
 class StudentAgeEditorApp extends StatefulWidget {
   const StudentAgeEditorApp({super.key, this.forceOobe = false});
@@ -35,24 +39,33 @@ class StudentAgeEditorApp extends StatefulWidget {
 class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
   final AppState state = AppState();
   final PluginState pluginState = PluginState();
+  final AuthState _auth = AuthState();
   ShellState? _shell;
   UiMode _uiMode = UiMode.creation;
   bool _loaded = false;
   String? _loadError;
   bool _showOobe = false;
   bool _oobeSettled = false; // 本会话内用户已完成/跳过引导后不再重弹
+  bool _bootstrapping = false; // _bootstrap 防重入（启动与错误页重试可能并发）
+  bool _buildingBackend = false; // 错误页「编译并启动后端」进行中（仅 debug）
   AppLifecycleListener? _exitHandler;
 
   @override
   void initState() {
     super.initState();
-    _exitHandler = AppLifecycleListener(
-      onExitRequested: () async {
-        await BackendLauncher.instance.shutdownBackend();
-        return AppExitResponse.exit;
-      },
-    );
-    _bootstrap();
+    AppState.current = state; // 深层小控件（如无代码模式开关）同步全局态的挂点
+    AuthState.current = _auth; // 状态栏用户芯片等非 prop-drilling 消费
+    // 退出回收后端进程仅桌面有意义；Web 无进程可杀（onExitRequested 在浏览器
+    // 也不会触发），不注册。
+    if (!kIsWeb) {
+      _exitHandler = AppLifecycleListener(
+        onExitRequested: () async {
+          await BackendLauncher.instance.shutdownBackend();
+          return AppExitResponse.exit;
+        },
+      );
+    }
+    _startApp();
     _initUiMode();
     unawaited(AppTheme.init());
     // 跟随系统模式下，系统亮度变化时同步当前调色板
@@ -65,7 +78,11 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
 
   @override
   void dispose() {
+    if (AppState.current == state) AppState.current = null;
+    if (AuthState.current == _auth) AuthState.current = null;
+    ApiClient.instance.onUnauthorized = null;
     _exitHandler?.dispose();
+    _auth.dispose();
     super.dispose();
   }
 
@@ -78,6 +95,8 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
     };
     final shell = ShellState(defaultSidebarWidth: sidebar);
     unawaited(shell.loadSettings());
+    // 恢复上次会话的 AI 开合与两侧宽度（阶段 2 布局持久化）
+    unawaited(shell.loadLayout());
     // 插件卸载/刷新后，若当前打开的动态面板所属插件已不在列表，清掉选中态：
     // 否则壳层会一直停留在失效面板的“加载失败 + 重试”页。
     pluginState.addListener(() {
@@ -112,13 +131,43 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
     });
   }
 
+  /// 启动门控（M2.4 托管登录）：桌面/Android 直接进原流程（零变化）；
+  /// Web 先探测网关鉴权模式——local 直进；hosted 且无有效会话则停在登录页
+  /// （不跑 bootstrap，避免 schema/字典等接口被网关 401 刷屏），登录成功后
+  /// 由 [LoginPage.onLoggedIn] 回调继续 _bootstrap。
+  Future<void> _startApp() async {
+    if (kIsWeb) {
+      // 任何接口 401（token 过期等）→ 清会话回登录页
+      ApiClient.instance.onUnauthorized = _auth.logout;
+      await _auth.probe();
+      if (!mounted) return;
+      if (_auth.requiresLogin) {
+        setState(() {}); // 触发 ListenableBuilder 外的首帧兜底重建
+        return;
+      }
+    }
+    _bootstrap();
+  }
+
   Future<void> _bootstrap() async {
+    // 防重入：启动路径与错误页「重试」按钮（以及后台唤醒重连）可能并发
+    // 触发，双跑会对同一批端点发两遍请求、后写者覆盖先写者的 setState。
+    if (_bootstrapping) return;
+    _bootstrapping = true;
     try {
       await BackendLauncher.instance.ensureBackend();
+      // ping 先单独完成：它是「后端在线」的唯一判定源，必须最先定案。
       final ping = await ApiClient.instance.get('/api/ping');
-      final st = await ApiClient.instance.get('/api/state');
-      final schema = await ApiClient.instance.get('/api/schema');
-      final dicts = await ApiClient.instance.get('/api/dicts');
+      // state/schema/dicts 互不依赖（各自响应写回各自无依赖的 AppState 字段），
+      // 并行发出，把冷启动关键路径从三个串行往返压成一个。
+      final loaded = await Future.wait<dynamic>([
+        ApiClient.instance.get('/api/state'),
+        ApiClient.instance.get('/api/schema'),
+        ApiClient.instance.get('/api/dicts'),
+      ]);
+      final st = loaded[0];
+      final schema = loaded[1];
+      final dicts = loaded[2];
       if (!mounted) return;
       setState(() {
         state.workspaceRoot = st['workspace_root'] as String? ?? '';
@@ -132,17 +181,118 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
         state.gameSchema = (schema['game_schema'] as Map?)?.cast<String, dynamic>() ?? {};
         state.keyMaps = (dicts['key_maps'] as Map?)?.cast<String, dynamic>() ?? {};
         state.gameDicts = (dicts['game_dicts'] as Map?)?.cast<String, dynamic>() ?? {};
-      state.backendOnline = ping['ok'] == true;
+        state.backendOnline = ping['ok'] == true;
         _loaded = true;
       });
       // 后端就绪后拉取插件列表与面板声明（失败静默，插件页内可手动重试）
       unawaited(pluginState.refresh());
-      await _checkOobe();
+      // 编辑器共享设置与 OOBE 状态互不依赖（两端点、各自内部消化错误），
+      // 并行执行，冷启动少一个串行往返。
+      await Future.wait<void>([
+        _syncEditorSettings(),
+        _checkOobe(),
+      ]);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loadError = e.toString();
       });
+    } finally {
+      _bootstrapping = false;
+    }
+  }
+
+  /// 编辑器共享设置：无代码模式开关 + 外观（白日/暗色，三端共享）。
+  /// 旧后端无此端点时两者都保持本地现状，不报错。
+  Future<void> _syncEditorSettings() async {
+    try {
+      final ed = await ApiClient.instance
+          .get('/api/settings/editor')
+          .timeout(const Duration(seconds: 8));
+      final s = ed is Map ? ed['settings'] : null;
+      final nc = s is Map && s['noCodeMode'] == true;
+      if (mounted) state.setNoCodeMode(nc);
+      await _syncSharedAppearance(ed);
+    } catch (e) {
+      // 旧后端无此端点属正常；留 debug 日志便于排查真实故障。
+      if (kDebugMode) debugPrint('[bootstrap] settings/editor 同步失败: $e');
+    }
+  }
+
+  /// 开发模式（flutter run）：从 native 源码增量构建后端并拉起，成功后重跑
+  /// _bootstrap 进入正常界面；失败把构建输出摘要显示回错误页。
+  Future<void> _buildAndStartBackend() async {
+    if (_buildingBackend) return;
+    setState(() {
+      _buildingBackend = true;
+      _loadError = null;
+    });
+    final result = await BackendLauncher.instance.buildSourceBackend();
+    if (!mounted) return;
+    setState(() => _buildingBackend = false);
+    if (result.ok) {
+      _bootstrap();
+    } else {
+      setState(() => _loadError = result.log.isEmpty ? '编译并启动后端失败' : result.log);
+    }
+  }
+
+  /// 把后端共享外观值（明暗模式 + 用户主题色）同步到本地（三端统一的关键一步）。
+  ///
+  /// 两个键同一条规则：
+  /// - 后端从没写过该键（meta.XxxExplicit=false）：把本地已选值**种子上传**，
+  ///   避免老用户在本机选的设置被后端默认值盖掉；
+  /// - 后端写过且与本地不同：采纳后端值，除非用户本次会话已经手动选过；
+  /// - 任何写失败都静默：本机观感已生效，共享值下次启动再对齐。
+  Future<void> _syncSharedAppearance(dynamic ed) async {
+    if (ed is! Map) return;
+    // init 幂等（同一 future）：确保 prefs 里的本地选择先落地再做种子/回灌裁决。
+    await AppTheme.init();
+    final s = ed['settings'];
+    final meta = ed['meta'];
+    final raw = s is Map ? s['appearanceMode'] : null;
+    final shared = AppThemeMode.fromPrefsValue(raw is String ? raw : null);
+    final explicit =
+        meta is Map && meta['appearanceModeExplicit'] == true;
+    try {
+      if (!explicit) {
+        // 种子迁移：只在值非默认（暗色）时写，避免无意义写入。
+        if (AppTheme.mode.value != AppThemeMode.dark) {
+          // PUT 前复查：等待期间用户可能刚手动选了外观，种子不得盖过它。
+          if (AppTheme.userTouchedThisSession) return;
+          await ApiClient.instance.put('/api/settings/editor',
+              body: {'appearanceMode': AppTheme.mode.value.prefsValue});
+        }
+      } else if (!AppTheme.userTouchedThisSession &&
+          AppTheme.mode.value != shared) {
+        await AppTheme.apply(shared);
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('[appearance] 共享值同步失败（忽略）: $e');
+    }
+    await _syncSharedAccentColor(s, meta);
+  }
+
+  /// 用户主题色的共享同步：裁决逻辑与明暗模式完全同款（见上）。
+  Future<void> _syncSharedAccentColor(dynamic s, dynamic meta) async {
+    final raw = s is Map ? s['themeColor'] : null;
+    final shared = AppAccentColor.parse(raw is String ? raw : null);
+    final explicit =
+        meta is Map && meta['themeColorExplicit'] == true;
+    try {
+      if (!explicit) {
+        if (AppTheme.accentSeed != kDefaultAccent) {
+          if (AppTheme.userTouchedAccentThisSession) return;
+          await ApiClient.instance.put('/api/settings/editor',
+              body: {'themeColor': AppAccentColor.toHex(AppTheme.accentSeed)});
+        }
+      } else if (!AppTheme.userTouchedAccentThisSession &&
+          shared != null &&
+          AppTheme.accentSeed != shared) {
+        await AppTheme.setAccent(shared, userIntent: false);
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('[accent] 共享主题色同步失败（忽略）: $e');
     }
   }
 
@@ -151,7 +301,9 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
   Future<void> _checkOobe() async {
     if (_oobeSettled) return;
     try {
-      final envRaw = Platform.environment['EDITOR_OOBE']?.trim().toLowerCase() ?? '';
+      // 环境变量覆盖仅桌面有效；Web 上 envValue 恒 null（等价无该变量）。
+      final envRaw =
+          envValue('EDITOR_OOBE')?.trim().toLowerCase() ?? '';
       final forced = widget.forceOobe ||
           (envRaw.isNotEmpty && const {'1', 'true', 'yes', 'on'}.contains(envRaw));
       bool firstRun = false;
@@ -182,18 +334,12 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
   }
 
   /// 构建 Fluent 主题（亮/暗共用强调色与字体，亮色为新增）。
+  ///
+  /// accent 色阶随用户主题色变化：默认品牌紫沿用历史七档，自定义色派生。
   fluent.FluentThemeData _fluentTheme(Brightness brightness) {
     return fluent.FluentThemeData(
       brightness: brightness,
-      accentColor: fluent.AccentColor.swatch(const <String, Color>{
-        'normal': accentColor,
-        'dark': Color(0xFF5A4BD1),
-        'darker': Color(0xFF4A3DB8),
-        'darkest': Color(0xFF3B3096),
-        'light': Color(0xFF8B7FEF),
-        'lighter': Color(0xFFA99FF4),
-        'lightest': Color(0xFFC7C0F9),
-      }),
+      accentColor: fluent.AccentColor.swatch(accentSwatch()),
       visualDensity: VisualDensity.standard,
       fontFamily: 'Microsoft YaHei',
       scaffoldBackgroundColor: palette.bg,
@@ -203,7 +349,7 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: AppTheme.mode,
+      listenable: AppTheme.changes,
       builder: (context, _) {
         final mode = AppTheme.mode.value;
         return fluent.FluentApp(
@@ -220,15 +366,30 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
             // 壳基于 Fluent UI，但部分控件（InkWell/PopupMenuButton 等）来自 Material，
             // 全局提供透明 Material 祖先满足其渲染校验
             type: MaterialType.transparency,
-            child: _loaded && _shell != null
-                ? (_showOobe
-                    ? OobePage(
-                        onFinished: _onOobeFinished,
-                        forced: widget.forceOobe,
-                        onUiModeChanged: _setUiMode,
-                      )
-                    : _buildShell())
-                : _buildLoading(),
+            child: ListenableBuilder(
+              listenable: _auth,
+              builder: (context, _) {
+                // 托管登录门（M2.4）：Web + hosted + 无有效会话时只渲染
+                // 登录页；探测中（unknown）走下方 loading，本机模式恒不命中。
+                if (_auth.requiresLogin) {
+                  return LoginPage(
+                    auth: _auth,
+                    onLoggedIn: () => unawaited(_bootstrap()),
+                  );
+                }
+                return _loaded && _shell != null
+                    ? (_showOobe
+                        ? OobePage(
+                            onFinished: _onOobeFinished,
+                            forced: widget.forceOobe,
+                            onUiModeChanged: _setUiMode,
+                          )
+                        // 启动静默检查宿主：包住壳层，拿到 Navigator/Overlay 之下的
+                        // context，才能用 fluent.displayInfoBar 弹「发现新版本」。
+                        : _UpdateCheckHost(child: _buildShell()))
+                    : _buildLoading();
+              },
+            ),
           ),
         );
       },
@@ -237,7 +398,13 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
 
   Widget _buildShell() {
     final shell = _shell!;
-    return AnimatedSwitcher(
+    // Opaque palette background at the shell root: the shells are bare Columns
+    // with no Scaffold, so without this the window's default dark clear color
+    // shows through in light mode while text uses the light palette -> dark on
+    // dark (bug #4).
+    return ColoredBox(
+      color: palette.bg,
+      child: AnimatedSwitcher(
       duration: AppMotion.normal,
       switchInCurve: AppMotion.easeOut,
       switchOutCurve: AppMotion.easeOut,
@@ -259,6 +426,7 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
           }
           return CreationShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
         },
+      ),
       ),
     );
   }
@@ -284,14 +452,15 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           value: null,
-                          color: Color.lerp(const Color(0xFF6C5CE7), const Color(0xFF8B7FEF), (v * 2) % 1),
+                          // 品牌紫 → 当前外观的浅一档（dark=#8B7FEF 与历史同值）
+                          color: Color.lerp(accentColor, palette.accentLight, (v * 2) % 1),
                         ),
                       ),
                       Container(
                         width: 8,
                         height: 8,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF6C5CE7).withValues(alpha: 0.9 - 0.4 * v),
+                          color: accentColor.withValues(alpha: 0.9 - 0.4 * v),
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -317,7 +486,7 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
                   ],
                 ),
               ] else ...[
-                const ScaleFade(child: Icon(FluentIcons.error_circle_24_regular, color: Colors.redAccent, size: 32)),
+                ScaleFade(child: Icon(FluentIcons.error_circle_24_regular, color: palette.danger, size: 32)),
                 const SizedBox(height: 12),
                 // 错误详情可能很长：限宽限高并允许滚动，避免小窗纵向溢出
                 FadeSlide(
@@ -336,21 +505,124 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
                 const SizedBox(height: 16),
                 FadeSlide(
                   delay: const Duration(milliseconds: 160),
-                  child: fluent.Button(
-                    onPressed: () {
-                      setState(() {
-                        _loadError = null;
-                        _loaded = false;
-                      });
-                      _bootstrap();
-                    },
-                    child: const Text('重试'),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 开发模式（flutter run）且后端连不上：提供源码构建入口，
+                          // 产物未构建时自动增量编译（首次可能需要几分钟）。
+                          if (kDebugMode && BackendLauncher.supportsSpawn) ...[
+                            fluent.Button(
+                              onPressed:
+                                  _buildingBackend ? null : _buildAndStartBackend,
+                              child: _buildingBackend
+                                  ? const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        ),
+                                        SizedBox(width: 8),
+                                        Text('构建中…'),
+                                      ],
+                                    )
+                                  : const Text('编译并启动后端'),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          fluent.Button(
+                            onPressed: _buildingBackend
+                                ? null
+                                : () {
+                                    setState(() {
+                                      _loadError = null;
+                                      _loaded = false;
+                                    });
+                                    _bootstrap();
+                                  },
+                            child: const Text('重试'),
+                          ),
+                        ],
+                      ),
+                      if (kDebugMode && BackendLauncher.supportsSpawn)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(
+                            _buildingBackend
+                                ? '正在从源码构建后端（native），首次可能需要几分钟…'
+                                : '开发模式：也可在仓库根运行 python run_dev.py 一键启动',
+                            style: TextStyle(
+                                color: palette.textMuted, fontSize: 11)),
+                        ),
+                    ],
                   ),
                 ),
               ],
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 启动静默检查宿主：首帧后（后端已就绪）查一次最新发行版。
+///
+/// - 关闭自动检查、或距上次尝试不足 24h → 不发请求（UpdateState.maybeStartupCheck）；
+/// - 发现未跳过的新版本 → 弹一条 InfoBar（含「复制发行页链接」）；
+/// - 任何失败都静默：用户仍可在设置页手动检查，启动路径绝不因网络问题报错。
+class _UpdateCheckHost extends StatefulWidget {
+  const _UpdateCheckHost({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_UpdateCheckHost> createState() => _UpdateCheckHostState();
+}
+
+class _UpdateCheckHostState extends State<_UpdateCheckHost> {
+  bool _scheduled = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // 首帧后再查：此时壳层已挂载，InfoBar 有可用的 Overlay。
+    if (!_scheduled) {
+      _scheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+    }
+    return widget.child;
+  }
+
+  Future<void> _check() async {
+    if (!mounted) return;
+    final s = UpdateState.instance;
+    await s.load();
+    await s.ensureVersion();
+    final r = await s.maybeStartupCheck();
+    if (r == null || !mounted) return;
+    final current = r.current.isEmpty ? '未知' : r.current;
+    fluent.displayInfoBar(
+      context,
+      builder: (ctx, close) => fluent.InfoBar(
+        title: Text('发现新版本 ${r.latestTag}'),
+        content: Text(
+          '当前版本 $current。可在「设置 → 关于 · 检查更新」查看发行说明，'
+          '或把发行页链接复制到浏览器下载。',
+          style: const TextStyle(fontSize: 12),
+        ),
+        action: fluent.Button(
+          onPressed: () {
+            if (r.htmlUrl.isEmpty) return;
+            Clipboard.setData(ClipboardData(text: r.htmlUrl));
+          },
+          child: const Text('复制发行页链接', style: TextStyle(fontSize: 11)),
+        ),
+        severity: fluent.InfoBarSeverity.info,
       ),
     );
   }

@@ -10,12 +10,16 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../settings/settings_page.dart';
 import '../files/file_viewer.dart' show ImagePreview;
+import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart';
 import 'effect_hint_field.dart';
 import 'field_meta.dart';
 import 'field_utils.dart';
+import 'id_ref_picker.dart';
+import '../resources/local_import.dart' show importLocalAssets;
 import 'section_card.dart';
 import 'suggestion_text_field.dart';
+import 'visual_fields.dart';
 import '../../core/app_theme.dart';
 
 /// Schema 驱动数据编辑器：左侧条目列表 + 右侧字段表单。
@@ -31,9 +35,14 @@ class SchemaEditorView extends StatefulWidget {
     this.selectedId,
     this.onSelectedIdChanged,
     this.reloadToken = 0,
+    this.onDirtyChanged,
   });
   final AppState state;
   final String cfgName;
+
+  /// 脏状态上报（阶段 2b）：宿主（编辑区页签）据此在关闭/切换页签前
+  /// 弹确认，避免「切页签即丢改动」被静默吞掉。
+  final ValueChanged<bool>? onDirtyChanged;
 
   /// 事件预览回调：cfgName 为 EvtCfg 且用户点击「预览」时携带当前条目 ID 触发。
   final ValueChanged<String>? onPreview;
@@ -55,6 +64,10 @@ class SchemaEditorView extends StatefulWidget {
 
   /// 外部刷新信号（撤销/重做成功后自增）：变化时重新加载磁盘内容并更新 mtime。
   final int reloadToken;
+
+  /// 测试探针（性能 P0-1）：本视图 State 的 build 次数。仅供 Widget 测试
+  /// 断言「dirty 期间连续编辑不再触发全视图重建」，不参与任何 UI 逻辑。
+  static int debugBuildCount = 0;
 
   @override
   State<SchemaEditorView> createState() => _SchemaEditorViewState();
@@ -81,6 +94,109 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   final Map<String, List<(String, String)>> _idCandidatesCache = {};
   // EvtCfg 官方基础 ID 缓存（懒加载一次，失败记为空集）
   Set<int>? _cachedBaseIds;
+
+  // ---------------- 阶段 2a：Mod 串档守卫 ----------------
+  // 当前 _data 所属的 modRoot。外部切换（模组页 / AI 面板的 setMod）会
+  // 把服务端沙箱根切走，而本视图仍持旧 Mod 的数据；此时保存 = 旧数据写
+  // 新沙箱（串档）。与 story_flow_workspace 同一策略：监听 AppState，弹
+  // 确认重载；用户选「先留在旧画面」则记下 root 禁保存（_save 拒绝）。
+  String? _loadedModRoot;
+  String? _externalModRefusedRoot;
+
+  // ---------------- 阶段 2b：保存链路加固 ----------------
+  bool _saving = false; // 重入门：双击/移动端连点保存按钮时直接忽略
+
+  // 编辑代数：每次真实编辑事件 +1（新增/删除条目与字段编辑都算）。
+  // 注意不能只在 clean→dirty 转变时递增：唯一消费点 _saveInner 用
+  // 「发送时快照 vs 当前值」判断在途保存期间有无新编辑，若 dirty 期间
+  // 编辑不推进代数，保存响应会把在途的新编辑误标成已落盘并清 dirty。
+  int _editGen = 0;
+
+  void _setDirty(bool v) {
+    if (_dirty == v) return;
+    _dirty = v;
+    widget.onDirtyChanged?.call(v);
+  }
+
+  /// 字段编辑回调统一入口：推进编辑代数 + 首次置脏。
+  ///
+  /// 性能 P0-1：已脏时只推进代数、不再 setState——dirty 期间每键一次的
+  /// 全视图重建会让所有字段行走 didUpdateWidget/文本同步链路。代数前进
+  /// 本身不依赖重建（在途保存的 dirty 守卫照常工作），首次 clean→dirty
+  /// 的那次重建保留（脏标记 UI 需要它）。
+  void _markDirty() {
+    _editGen++;
+    if (_dirty) return;
+    setState(() => _setDirty(true));
+  }
+
+  void _notify(String msg, fluent.InfoBarSeverity sev) {
+    if (!mounted) return;
+    fluent.displayInfoBar(
+      context,
+      builder: (ctx, close) =>
+          fluent.InfoBar(title: Text(msg), severity: sev),
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    widget.state.addListener(_onAppStateChanged);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    widget.state.removeListener(_onAppStateChanged);
+    _filterDebounce?.cancel();
+    super.dispose();
+  }
+
+  /// AppState 广播（AA 轮询等也会触发）：只关心 modRoot 是否已不属于我。
+  void _onAppStateChanged() {
+    if (!mounted) return;
+    if (widget.state.modRoot == _loadedModRoot) return;
+    if (widget.state.modRoot == _externalModRefusedRoot) return; // 已选先留在旧画面
+    _reloadForExternalMod();
+  }
+
+  Future<void> _reloadForExternalMod() async {
+    if (_dirty) {
+      final action = await fluent.showDialog<String>(
+        context: context,
+        builder: (ctx) => fluent.ContentDialog(
+          title: const Text('Mod 已被外部切换'),
+          content: const Text(
+            '当前视图仍显示旧 Mod 的未保存修改，但保存目标已随 Mod 切换变更，'
+            '继续编辑会把旧数据写进新 Mod。是否放弃这些修改并重载？',
+            style: TextStyle(fontSize: 12.5),
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () => Navigator.pop(ctx, 'later'),
+              child: const Text('先留在旧画面'),
+            ),
+            fluent.Button(
+              onPressed: () => Navigator.pop(ctx, 'discard'),
+              child: const Text('放弃并重载'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (action != 'discard') {
+        _externalModRefusedRoot = widget.state.modRoot;
+        _notify('视图已陈旧，保存被禁止，直到重载新 Mod',
+            fluent.InfoBarSeverity.warning);
+        return;
+      }
+    }
+    await _load();
+    if (!mounted) return;
+    _notify('已跟随外部切换到 Mod：${widget.state.modName}',
+        fluent.InfoBarSeverity.success);
+  }
 
   void _rebuildSortedIds() {
     final ids = _data.keys.toList();
@@ -116,12 +232,6 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       if (_filter.trim().toLowerCase() == _appliedFilter) return;
       setState(_applyFilter);
     });
-  }
-
-  @override
-  void dispose() {
-    _filterDebounce?.cancel();
-    super.dispose();
   }
 
   void _applyFilter() {
@@ -196,20 +306,46 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   }
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
   void didUpdateWidget(covariant SchemaEditorView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cfgName != widget.cfgName ||
-        oldWidget.reloadToken != widget.reloadToken) {
+    if (oldWidget.cfgName != widget.cfgName) {
       _load();
+    } else if (oldWidget.reloadToken != widget.reloadToken) {
+      // 撤销/重做强制刷新：有未保存改动时先问，不静默覆盖（阶段 2b）。
+      if (_dirty) {
+        _confirmReloadFromDisk();
+      } else {
+        _load();
+      }
     } else if (widget.selectedId != null && widget.selectedId != _selectedId) {
       setState(() => _selectedId = widget.selectedId);
     }
+  }
+
+  Future<void> _confirmReloadFromDisk() async {
+    final action = await fluent.showDialog<String>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: const Text('磁盘内容已变化'),
+        content: Text(
+          '撤销/重做等操作已改写磁盘上的 ${widget.cfgName}，'
+          '而当前视图有未保存修改。重载将放弃本地修改。',
+          style: const TextStyle(fontSize: 12.5),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx, 'keep'),
+            child: const Text('保留我的修改'),
+          ),
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx, 'reload'),
+            child: const Text('放弃并重载'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'reload') await _load();
   }
 
   Future<void> _load() async {
@@ -218,6 +354,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       _missing = false;
       _error = null;
     });
+    // 请求发起时锁定服务端沙箱根：响应回来后数据就属于它。
+    final reqRoot = widget.state.modRoot;
     try {
       // S3：经典编辑器确实需要全表 → getBig 把 40MB 解码搬进后台 isolate
       final r = await ApiClient.instance.getBig('/api/cfg/${widget.cfgName}');
@@ -228,13 +366,15 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       _mtimeNs = r['mtime_ns'] is int ? r['mtime_ns'] as int : null;
       _missing = r['exists'] == false;
       _loaded = true;
+      _loadedModRoot = reqRoot;
+      _externalModRefusedRoot = null;
       _rebuildSortedIds();
       if (widget.selectedId != null && _data.containsKey(widget.selectedId)) {
         _selectedId = widget.selectedId;
       } else {
         _selectedId = _sortedIds.isNotEmpty ? _sortedIds.first : null;
       }
-      _dirty = false;
+      _setDirty(false);
     });
       if (widget.onSelectedIdChanged != null) {
         widget.onSelectedIdChanged!(_selectedId);
@@ -249,11 +389,34 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   }
 
   Future<void> _save({bool force = false}) async {
+    // 重入门（阶段 2b）：校验弹窗、409 冲突弹窗、网络往返都是多个 await，
+    // 期间按钮仍可点——双击会产生两个 PUT 竞写同一张表。
+    if (_saving) return;
+    // 串档守卫（阶段 2a）：外部切了 Mod 而用户选了「先留在旧画面」——
+    // 此时保存 = 旧 Mod 数据写进新沙箱。
+    if (_loadedModRoot != null && widget.state.modRoot != _loadedModRoot) {
+      _notify(
+        'Mod 已在别处切换，视图仍为旧 Mod 数据，禁止保存——请重载后再试',
+        fluent.InfoBarSeverity.error,
+      );
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      await _saveInner(force: force);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveInner({required bool force}) async {
     // 保存前指南校验：请求失败（网络/后端旧版本）时静默降级，直接保存不阻塞
     List<Map<String, dynamic>>? issues;
     try {
+      // 性能 P0-3：校验请求同样携带全表 _data，jsonEncode 走 postRaw 的
+      // 后台 isolate，不在 UI isolate 上冻结输入。
       final r = await ApiClient.instance
-          .post('/api/validate', body: {'cfg': widget.cfgName, 'data': _data})
+          .postRaw('/api/validate', body: {'cfg': widget.cfgName, 'data': _data})
           .timeout(const Duration(seconds: 30));
       final raw = r is Map ? r['issues'] : null;
       final list = <Map<String, dynamic>>[];
@@ -289,79 +452,65 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       }
     }
 
-    try {
-      final resp = await ApiClient.instance.put(
-        '/api/cfg/${widget.cfgName}',
-        body: {
-          'data': _data,
-          // 乐观锁：加载时的磁盘 mtime，被外部改写时后端返回 409
-          'expect_mtime_ns': _mtimeNs,
-          if (force) 'force': true,
-        },
-      );
-      if (!mounted) return;
-      if (resp is Map && resp['mtime_ns'] is int) {
-        _mtimeNs = resp['mtime_ns'] as int;
-      }
-      setState(() => _dirty = false);
-      // 结果提示：错误/警告优先于成功提示
-      if (nError > 0) {
-        fluent.displayInfoBar(
-          context,
-          builder: (ctx, close) => fluent.InfoBar(
-            title: Text('已保存，但指南校验发现 $nError 个错误'),
-            severity: fluent.InfoBarSeverity.warning,
-          ),
+    var retryForce = force;
+    for (var attempt = 0;; attempt++) {
+      // 非阻塞保存（性能 P0-3）：整表 jsonEncode 由 putRaw 搬进后台
+      // isolate（compute），40MB 表在 UI isolate 上曾是数秒冻结。
+      // 此前这里还先做 jsonDecode(jsonEncode(_data)) 快照；现直接发
+      // _data，编码期间用户继续编辑最多把当次键入混进本次保存，
+      // 而「响应后是否清 dirty」由下面的 genAtSend 守卫兜住：发送后
+      // 推进的新编辑保持 dirty，由下次保存带走。
+      final genAtSend = _editGen;
+      try {
+        final resp = await ApiClient.instance.putRaw(
+          '/api/cfg/${widget.cfgName}',
+          body: {
+            'data': _data,
+            // 乐观锁：加载时的磁盘 mtime，被外部改写时后端返回 409
+            'expect_mtime_ns': _mtimeNs,
+            if (retryForce) 'force': true,
+          },
         );
-      } else if (nWarn > 0) {
-        final extra = nInfo > 0 ? '、$nInfo 条提示' : '';
-        fluent.displayInfoBar(
-          context,
-          builder: (ctx, close) => fluent.InfoBar(
-            title: Text('已保存，但有 $nWarn 条警告$extra'),
-            severity: fluent.InfoBarSeverity.warning,
-          ),
-        );
-      } else {
-        fluent.displayInfoBar(
-          context,
-          builder: (ctx, close) => const fluent.InfoBar(
-            title: Text('已保存'),
-            severity: fluent.InfoBarSeverity.success,
-          ),
-        );
-      }
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      if (e.statusCode == 409) {
-        // 误操作保护：文件已被外部修改（可能被游戏或其他端改写）
-        final action = await _showConflictDialog(widget.cfgName);
         if (!mounted) return;
-        if (action == 'reload') {
-          await _load(); // 重新加载磁盘内容（放弃本地修改）
-        } else if (action == 'force') {
-          await _save(force: true); // 强制覆盖
+        if (resp is Map && resp['mtime_ns'] is int) {
+          _mtimeNs = resp['mtime_ns'] as int;
+        }
+        // 在途无新编辑才认定已落盘；有则保持 dirty（下次保存带走）。
+        if (_editGen == genAtSend) _setDirty(false);
+        // 结果提示：错误/警告优先于成功提示
+        if (nError > 0) {
+          _notify('已保存，但指南校验发现 $nError 个错误',
+              fluent.InfoBarSeverity.warning);
+        } else if (nWarn > 0) {
+          final extra = nInfo > 0 ? '、$nInfo 条提示' : '';
+          _notify('已保存，但有 $nWarn 条警告$extra',
+              fluent.InfoBarSeverity.warning);
+        } else {
+          _notify('已保存', fluent.InfoBarSeverity.success);
         }
         return;
-      }
-      fluent.displayInfoBar(
-        context,
-        builder: (ctx, close) => fluent.InfoBar(
-          title: Text('保存失败'),
-          content: Text(e.toString()),
-          severity: fluent.InfoBarSeverity.error,
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        fluent.displayInfoBar(
-          context,
-          builder: (ctx, close) => fluent.InfoBar(
-            title: Text('保存失败'),
-            content: Text(e.toString()),
-            severity: fluent.InfoBarSeverity.error,
-          ),
-        );
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        if (e.statusCode == 409 && attempt == 0) {
+          // 误操作保护：文件已被外部修改（可能被游戏或其他端改写）
+          final action = await _showConflictDialog(widget.cfgName);
+          if (!mounted) return;
+          if (action == 'reload') {
+            await _load(); // 重新加载磁盘内容（放弃本地修改）
+            return;
+          }
+          if (action == 'force') {
+            retryForce = true; // 强制覆盖：仅重试一轮
+            continue;
+          }
+          return;
+        }
+        _notify('保存失败：$e', fluent.InfoBarSeverity.error);
+        return;
+      } catch (e) {
+        if (!mounted) return;
+        _notify('保存失败：$e', fluent.InfoBarSeverity.error);
+        return;
       }
     }
   }
@@ -402,18 +551,48 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       _data[id] = {'id': id};
       _rebuildSortedIds();
       _selectedId = id;
-      _dirty = true;
+      _editGen++; // 新增条目是真实编辑：推进代数（P0-1，见 _markDirty 注释）
+      _setDirty(true);
     });
   }
 
-  void _deleteEntry(String id) {
+  /// 删除条目：先确认（阶段 2b）。点选列表项右侧的删除图标曾是直接
+  /// 生效的，误触一次就把整条记录从内存里抹掉（保存后即丢数据）。
+  Future<void> _deleteEntry(String id) async {
+    final rec = _data[id];
+    final name = rec is Map
+        ? KeyTranslator(widget.state).entryName(id, rec.cast<String, dynamic>())
+        : '#$id';
+    final ok = await fluent.showDialog<bool>(
+          context: context,
+          builder: (ctx) => fluent.ContentDialog(
+            title: const Text('删除条目'),
+            content: Text(
+              '确定删除 $name（ID: $id）？保存后该条目将从磁盘移除。',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+            actions: [
+              fluent.Button(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              fluent.FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ==
+        true;
+    if (!ok || !mounted) return;
     setState(() {
       _data.remove(id);
       _rebuildSortedIds();
       if (_selectedId == id) {
         _selectedId = _sortedIds.isNotEmpty ? _sortedIds.first : null;
       }
-      _dirty = true;
+      _editGen++; // 删除条目是真实编辑：推进代数（P0-1，见 _markDirty 注释）
+      _setDirty(true);
     });
   }
 
@@ -559,7 +738,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
       builder: (ctx) => fluent.ContentDialog(
         title: const Text('指南校验未通过'),
         content: SizedBox(
-          width: 480,
+          // 固定 480 宽在手机屏直接横向溢出（保存校验在手机端可达），
+          // 桌面维持 480，窄屏贴边（同选图器公式）。
+          width: min(480, MediaQuery.sizeOf(ctx).width - 72),
           height: 340,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -652,6 +833,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
 
   @override
   Widget build(BuildContext context) {
+    SchemaEditorView.debugBuildCount++; // 测试探针（P0-1）
     if (!_loaded) {
       return const Center(
         child: SizedBox(
@@ -720,7 +902,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                               color: palette.tintAccent,
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(
-                                color: const Color(0xFF4A3DB8),
+                                color: palette.accentDeep,
                               ),
                             ),
                             child: Row(
@@ -750,10 +932,15 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                       cursor: SystemMouseCursors.click,
                       child: GestureDetector(
                         onTap: _addEntry,
-                        child: Icon(
-                          FluentIcons.add_24_regular,
-                          size: 15,
-                          color: palette.textMuted,
+                        // 裸 15px 图标当按钮手机几乎点不中：加内衬扩到 ≥40 热区。
+                        behavior: HitTestBehavior.opaque,
+                        child: Padding(
+                          padding: EdgeInsets.all(isMobileWidth(context) ? 12 : 0),
+                          child: Icon(
+                            FluentIcons.add_24_regular,
+                            size: isMobileWidth(context) ? 20 : 15,
+                            color: palette.textMuted,
+                          ),
                         ),
                       ),
                     ),
@@ -837,7 +1024,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                             const SizedBox(width: 10),
                           ],
                           fluent.FilledButton(
-                            onPressed: () => _save(),
+                            onPressed: _saving ? null : () => _save(),
                             style: const fluent.ButtonStyle(
                               padding: WidgetStatePropertyAll(
                                 EdgeInsets.symmetric(
@@ -864,7 +1051,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         translator: translator,
                         gameDicts: widget.state.gameDicts,
                         loadIdCandidates: _loadIdCandidates,
-                        onChanged: () => setState(() => _dirty = true),
+                        onChanged: _markDirty,
+                        noCodeMode: widget.state.noCodeMode,
                       ),
                     ),
                   ],
@@ -907,6 +1095,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                     ),
                     Text(
                       'ID: $id',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 11,
                         color: palette.textHint,
@@ -917,10 +1107,16 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
               ),
               GestureDetector(
                 onTap: () => _deleteEntry(id),
-                child: Icon(
-                  FluentIcons.delete_24_regular,
-                  size: 14,
-                  color: palette.textHint,
+                // 行内 14px 删除图标手机易误触相邻的「选中条目」手势：
+                // 移动端扩出 ≥44 宽热区。
+                behavior: HitTestBehavior.opaque,
+                child: Padding(
+                  padding: EdgeInsets.all(isMobileWidth(context) ? 15 : 0),
+                  child: Icon(
+                    FluentIcons.delete_24_regular,
+                    size: isMobileWidth(context) ? 17 : 14,
+                    color: palette.textHint,
+                  ),
                 ),
               ),
             ],
@@ -960,7 +1156,8 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           loadIdCandidates: _loadIdCandidates,
           currentIndex: currentIndex,
           totalItems: _sortedIds.length,
-          onChanged: () => setState(() => _dirty = true),
+          noCodeMode: widget.state.noCodeMode,
+          onChanged: _markDirty,
           onSave: () => _save(),
         ),
       ),
@@ -1104,8 +1301,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                             translator: translator,
                             gameDicts: widget.state.gameDicts,
                             loadIdCandidates: _loadIdCandidates,
-                            onChanged: () => setState(() => _dirty = true),
+                            onChanged: _markDirty,
                             classic: true,
+                            noCodeMode: widget.state.noCodeMode,
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -1125,7 +1323,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                         SizedBox(
                           width: double.infinity,
                           child: fluent.FilledButton(
-                            onPressed: () => _save(),
+                            onPressed: _saving ? null : () => _save(),
                             child: Text('💾 保存修改至 ${widget.cfgName}'),
                           ),
                         ),
@@ -1180,8 +1378,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
             translator: translator,
             gameDicts: widget.state.gameDicts,
             loadIdCandidates: _loadIdCandidates,
-            onChanged: () => setState(() => _dirty = true),
+            onChanged: _markDirty,
             classic: true,
+            noCodeMode: widget.state.noCodeMode,
           ),
         ),
         const SizedBox(height: 8),
@@ -1197,9 +1396,9 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           width: double.infinity,
           height: 32,
           child: fluent.FilledButton(
-            onPressed: () => _save(),
-            style: const fluent.ButtonStyle(
-              backgroundColor: WidgetStatePropertyAll(Color(0xFF6C5CE7)),
+            onPressed: _saving ? null : () => _save(),
+            style: fluent.ButtonStyle(
+              backgroundColor: WidgetStatePropertyAll(accentColor),
             ),
             child: Text('💾 保存修改至 ${widget.cfgName}'),
           ),
@@ -1224,6 +1423,7 @@ class _MobileFormPage extends StatelessWidget {
     required this.onSave,
     this.currentIndex = -1,
     this.totalItems = 0,
+    this.noCodeMode = false,
   });
 
   final String cfgName;
@@ -1238,6 +1438,7 @@ class _MobileFormPage extends StatelessWidget {
   final VoidCallback onSave;
   final int currentIndex;
   final int totalItems;
+  final bool noCodeMode;
 
   @override
   Widget build(BuildContext context) {
@@ -1286,6 +1487,7 @@ class _MobileFormPage extends StatelessWidget {
           gameDicts: gameDicts,
           loadIdCandidates: loadIdCandidates,
           onChanged: onChanged,
+          noCodeMode: noCodeMode,
         ),
       ),
     );
@@ -1309,8 +1511,8 @@ class _ClassicToolButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = onPressed != null;
-    final bg = primary ? const Color(0xFF6C5CE7) : palette.card;
-    final fg = primary ? Colors.white : palette.textPrimary;
+    final bg = primary ? accentColor : palette.card;
+    final fg = primary ? palette.onAccent : palette.textPrimary;
     return Opacity(
       opacity: enabled ? 1 : 0.45,
       child: MouseRegion(
@@ -1359,6 +1561,7 @@ class _FieldForm extends StatefulWidget {
     required this.onChanged,
     required this.loadIdCandidates,
     this.classic = false,
+    this.noCodeMode = false,
   });
   final String cfgName;
   final Map<String, dynamic> record;
@@ -1373,6 +1576,9 @@ class _FieldForm extends StatefulWidget {
 
   /// 经典布局：以两列表格（属性名称 | 属性值）呈现字段。
   final bool classic;
+
+  /// 无代码模式（后端共享开关）：效果字段点选 + 参数表单，人物字段出浏览面板。
+  final bool noCodeMode;
 
   @override
   State<_FieldForm> createState() => _FieldFormState();
@@ -1506,6 +1712,7 @@ class _FieldFormState extends State<_FieldForm> {
                   rule: fieldRuleFor(widget.cfgName, key),
                   gameDicts: gameDicts,
                   idCandidates: widget.loadIdCandidates,
+                  noCodeMode: widget.noCodeMode,
                   onChanged: (v) {
                     record[key] = v;
                     widget.onChanged();
@@ -1634,6 +1841,7 @@ class _FieldFormState extends State<_FieldForm> {
                 rule: fieldRuleFor(widget.cfgName, key),
                 gameDicts: gameDicts,
                 idCandidates: widget.loadIdCandidates,
+                noCodeMode: widget.noCodeMode,
                 onChanged: (v) {
                   record[key] = v;
                   widget.onChanged();
@@ -1667,6 +1875,7 @@ class _FieldInput extends StatefulWidget {
     this.gameDicts = const {},
     this.fieldKey,
     this.idCandidates,
+    this.noCodeMode = false,
   });
   /// 所属配置表名：效果/条件类字段判定要用（与剧情图共用规则表）。
   final String cfgName;
@@ -1677,6 +1886,9 @@ class _FieldInput extends StatefulWidget {
   final Map<String, dynamic> gameDicts;
   /// 原始字段 key，用于决定走 effect/condition/cost 哪套提示
   final String? fieldKey;
+
+  /// 无代码模式：效果字段点选（空输入出候选 + 参数表单），人物字段出浏览面板。
+  final bool noCodeMode;
 
   /// ID 引用候选加载器（rule.idRefCfg 指定的配置表，懒加载 + 上层缓存）。
   final Future<List<(String, String)>> Function(String cfg)? idCandidates;
@@ -1861,6 +2073,32 @@ class _FieldInputState extends State<_FieldInput> {
     }
   }
 
+  /// 下拉候选渲染上限（性能 P0-2）：fluent.ComboBox 非虚拟化，候选全量
+  /// 物化会让近千项字典在每次 build/打开下拉时都卡。超过上限只渲染前
+  /// [_kMaxComboItems] 项；有当前值时把它置顶（去重），保证截断后
+  /// ComboBox 的 value 仍能匹配、选中项始终可见。≤ 上限原样返回零开销。
+  static const int _kMaxComboItems = 200;
+
+  List<(String, String)> _comboItems(
+      List<(String, String)> opts, String currentId) {
+    final pinned = (currentId.isNotEmpty && _optIndex.containsKey(currentId))
+        ? (currentId, _optIndex[currentId] ?? '')
+        : null;
+    if (opts.length <= _kMaxComboItems &&
+        (pinned == null || (opts.isNotEmpty && opts.first.$1 == currentId))) {
+      return opts;
+    }
+    final seen = <String>{if (pinned != null) currentId};
+    final out = <(String, String)>[];
+    if (pinned != null) out.add(pinned);
+    for (final o in opts) {
+      if (!seen.add(o.$1)) continue; // 已置顶的当前值去重
+      out.add(o);
+      if (out.length >= _kMaxComboItems) break;
+    }
+    return out;
+  }
+
   /// 名称预览：把输入中的 ID 解析成「ID → 名称」（支持逗号/分号/顿号多值）。
   /// 查名走 [_optIndex]（与最近一次 [_options()] 同步），不逐 token 线性扫。
   String? _namePreview(String text) {
@@ -1888,6 +2126,8 @@ class _FieldInputState extends State<_FieldInput> {
 
   /// 弹出「ID · 预览」候选列表（可多选），确定后追加为逗号分隔多值。
   Future<void> _pickIdsFromList() async {
+    // 无代码模式下的人物表引用：换成带立绘的浏览面板。
+    if (widget.noCodeMode && _isRoleField) return _pickRoles();
     final cfg = widget.rule?.idRefCfg;
     if (cfg == null) return;
     final opts = _options();
@@ -1903,13 +2143,58 @@ class _FieldInputState extends State<_FieldInput> {
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
-    final merged = [...existing, ...picked.where((e) => !existing.contains(e))];
+    // P0-2：合并去重用 Set 查找，替代对 existing 的逐项 List.contains。
+    final existingSet = existing.toSet();
+    final merged = [...existing, ...picked.where((e) => !existingSet.contains(e))];
     final newText = merged.join(', ');
     _ctrl.text = newText;
     _ctrl.selection = TextSelection.collapsed(offset: newText.length);
     try {
       widget.onChanged(ValueCodec.decode(newText, widget.type));
     } catch (_) {}
+    setState(() {});
+  }
+
+  /// 人物引用字段：字典 roles（speaker 等）或 PersonCfg 表引用（roleIds 等）。
+  bool get _isRoleField {
+    final rule = widget.rule;
+    return rule != null && (rule.dictName == 'roles' || rule.idRefCfg == 'PersonCfg');
+  }
+
+  /// 无代码模式「选人物」：浏览面板（立绘网格）选 id 写回。
+  /// Number/String 单选替换；数组类多选并入现值（已含项置灰防重复）。
+  Future<void> _pickRoles() async {
+    final single = widget.type == 'Number' || widget.type == 'String';
+    final existing = _ctrl.text
+        .split(RegExp(r'[;，、,\n]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final ids = await showRolePickerDialog(
+      context,
+      multi: !single,
+      title: '选择人物',
+      exclude: single ? const {} : existing.toSet(),
+    );
+    if (!mounted || ids == null || ids.isEmpty) return;
+    if (single) {
+      final id = ids.first;
+      if (widget.type == 'Number') {
+        widget.onChanged(num.tryParse(id) ?? id);
+      } else {
+        try {
+          widget.onChanged(ValueCodec.decode(id, widget.type));
+        } catch (_) {}
+      }
+      _ctrl.text = id;
+    } else {
+      final merged = {...existing, ...ids}.join(', ');
+      _ctrl.text = merged;
+      _ctrl.selection = TextSelection.collapsed(offset: merged.length);
+      try {
+        widget.onChanged(ValueCodec.decode(merged, widget.type));
+      } catch (_) {}
+    }
     setState(() {});
   }
 
@@ -1921,6 +2206,96 @@ class _FieldInputState extends State<_FieldInput> {
         .where((e) => e.isNotEmpty)
         .toList();
     return tokens.isEmpty ? '' : tokens.first;
+  }
+
+  // ── M1 全字段可视化输入 ──────────────────────────────────────────────
+
+  /// 本字段的可视化形态（判定真源在 field_meta，与剧情图共用）。
+  FieldVisual? get _visual => fieldVisualFor(
+      widget.cfgName, widget.fieldKey ?? '', widget.type, widget.rule);
+
+  /// Number 当前值（步进框显示值与试听 ID 的同一来源）。
+  num? get _numberValue {
+    final v = widget.value;
+    if (v is num) return v;
+    if (v is String) return num.tryParse(v);
+    return null;
+  }
+
+  /// 有序 ID 列表整体重写文本框并回写值（chips 移序/移除与浏览对话框共用）。
+  void _applyTokens(List<String> tokens) {
+    final newText = tokens.join(', ');
+    _ctrl.text = newText;
+    _ctrl.selection = TextSelection.collapsed(offset: newText.length);
+    try {
+      widget.onChanged(ValueCodec.decode(newText, widget.type));
+    } catch (_) {}
+    setState(() {});
+  }
+
+  /// 浏览对话框：Number 单选即写回；数组类多选（按对话框内顺序写回）。
+  Future<void> _browseIds() async {
+    final opts = _options();
+    if (opts.isEmpty) return;
+    final single = widget.type == 'Number';
+    final picked = await showIdBrowseDialog(
+      context,
+      title: '浏览候选（${widget.rule?.idRefCfg ?? widget.rule?.dictName ?? ''}）',
+      options: opts,
+      multi: !single,
+      initialSelected: single
+          ? (_firstToken().isEmpty ? const [] : [_firstToken()])
+          : fieldTextTokens(_ctrl.text),
+      audition: _visual == FieldVisual.audioPick,
+    );
+    if (!mounted || picked == null || picked.isEmpty) return;
+    if (single) {
+      final id = picked.first;
+      final n = num.tryParse(id);
+      widget.onChanged(n ?? id);
+      _ctrl.text = id;
+      setState(() {});
+    } else {
+      _applyTokens(picked);
+    }
+  }
+
+  /// M3：从本地导入音频（后端顺手登记 AudioCfg）并把 audio_id 写回字段。
+  /// Number 字段直接写 id；1D Array（vocals 组）按序追加（去重）。登记失败
+  /// 时文件已落盘，提示用户到 AudioCfg 手动补登记。
+  Future<void> _importLocalAudio() async {
+    final saved =
+        await importLocalAssets(context, kind: 'audio', registerAudio: true);
+    if (!mounted || saved.isEmpty) return;
+    final id = saved.first['audio_id'];
+    if (id == null) {
+      await fluent.showDialog<void>(
+        context: context,
+        builder: (ctx) => fluent.ContentDialog(
+          title: const Text('音频已写入，登记失败'),
+          content: Text(
+              '文件已存为 ${saved.first['path'] ?? '（未知路径）'}，但自动登记 AudioCfg 未成功，请手动补一条 AudioCfg 并填入该路径。'),
+          actions: [
+            fluent.Button(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    final idText = '$id';
+    if (widget.type == '1D Array') {
+      final tokens = fieldTextTokens(_ctrl.text);
+      if (tokens.contains(idText)) return;
+      _applyTokens([...tokens, idText]);
+    } else {
+      final n = num.tryParse(idText);
+      widget.onChanged(n ?? idText);
+      _ctrl.text = idText;
+      setState(() {});
+    }
   }
 
   /// 贴图类字段「选图」：打开共享大窗口选择器，确认后按前缀约定写回。
@@ -2071,6 +2446,8 @@ class _FieldInputState extends State<_FieldInput> {
         // 模式也交给 field_meta 推断（roles→action、screenEffect→screen…），
         // 与 EffectHintField 内部的兜底推断同解
         mode: effectSuggestMode(fieldKey),
+        noCodeMode: widget.noCodeMode,
+        gameDicts: widget.gameDicts,
         onChanged: widget.onChanged,
       );
     }
@@ -2091,16 +2468,19 @@ class _FieldInputState extends State<_FieldInput> {
       } else {
         currentId = widget.value == null ? '' : ValueCodec.encode(widget.value);
       }
-      final currentName = opts
-          .where((o) => o.$1 == currentId)
-          .map((o) => o.$2)
-          .firstOrNull;
+      final currentName = _optIndex[currentId];
+      // P0-2：存在性判断走 [_optIndex]（_options() 同步维护的 id→名称
+      // 索引），替代对全候选的 any/where 线性扫——大字典每次 build 两趟 O(n)。
+      final hasCurrent = currentId.isNotEmpty && _optIndex.containsKey(currentId);
       return Row(
         children: [
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 220, minWidth: 120),
-            child: fluent.ComboBox<String>(
-              value: opts.any((o) => o.$1 == currentId) ? currentId : null,
+          // 窄屏加固（H）：下拉用 Flexible 包裹——宽屏仍 ≤220，窄屏先收缩让位
+          // 给动作按钮，避免固定 220 把行撑溢出。
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220, minWidth: 120),
+              child: fluent.ComboBox<String>(
+              value: hasCurrent ? currentId : null,
               isExpanded: true,
               placeholder: Text(
                 currentName != null && currentName.isNotEmpty
@@ -2110,7 +2490,7 @@ class _FieldInputState extends State<_FieldInput> {
                 overflow: TextOverflow.ellipsis,
               ),
               items: [
-                for (final o in opts)
+                for (final o in _comboItems(opts, currentId))
                   fluent.ComboBoxItem(
                     value: o.$1,
                     child: Text(
@@ -2132,24 +2512,38 @@ class _FieldInputState extends State<_FieldInput> {
                     widget.onChanged(v);
                   }
                   _ctrl.text = v;
+                  setState(() {}); // 本行 name 预览/选中态随自身重建刷新（P0-1 后父级不再逐键重建）
                 }
               },
             ),
+          ),
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                fluent.TextBox(
-                  controller: _ctrl,
-                  onChanged: (_) {
-                    widget.onChanged(
-                      ValueCodec.decode(_ctrl.text, widget.type),
-                    );
-                    setState(() {});
-                  },
-                ),
+                // M1：Number 字段升级为步进框（手输精确值能力保留）。
+                if (widget.type == 'Number')
+                  NumberStepField(
+                    value: _numberValue,
+                    hint: kFieldNumericHints['${widget.cfgName}:$rawKey'],
+                    onChanged: (n) {
+                      widget.onChanged(n);
+                      _ctrl.text = n.toString();
+                      setState(() {});
+                    },
+                  )
+                else
+                  fluent.TextBox(
+                    controller: _ctrl,
+                    onChanged: (_) {
+                      widget.onChanged(
+                        ValueCodec.decode(_ctrl.text, widget.type),
+                      );
+                      setState(() {});
+                    },
+                  ),
                 if (_namePreview(_ctrl.text) case final preview?)
                   Padding(
                     padding: const EdgeInsets.only(top: 3),
@@ -2164,33 +2558,79 @@ class _FieldInputState extends State<_FieldInput> {
               ],
             ),
           ),
-          if (_isTalkBg) ...[
-            const SizedBox(width: 8),
-            // 当前背景缩略图（单击预览大图）
-            GestureDetector(
-              onTap: currentId.isNotEmpty ? () => _previewBgId(currentId) : null,
-              child: BgIdThumb(id: currentId),
+          // 窄屏加固（H）：尾部动作改为可换行的 Wrap——宽屏单行排布与原先
+          // 视觉一致，窄屏自动折行，杜绝固定按钮组把行撑溢出。
+          Flexible(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (_isTalkBg) ...[
+                  // 当前背景缩略图（单击预览大图）
+                  GestureDetector(
+                    onTap:
+                        currentId.isNotEmpty ? () => _previewBgId(currentId) : null,
+                    child: BgIdThumb(id: currentId),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: fluent.Button(
+                      onPressed: _pickBgForTalk,
+                      child:
+                          const Text('选背景图', style: TextStyle(fontSize: 11)),
+                    ),
+                  ),
+                ] else if (texPrefix != null && isSingleArray) ...[
+                  _texThumbSlot(),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: fluent.Button(
+                      onPressed: _pickTexFromAssets,
+                      child: const Text('选图', style: TextStyle(fontSize: 11)),
+                    ),
+                  ),
+                ],
+                // 无代码模式：人物引用（speaker/Number dict roles 等）走立绘浏览面板
+                if (widget.noCodeMode && _isRoleField)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: fluent.Button(
+                      onPressed: _pickRoles,
+                      child: const Text('选人物', style: TextStyle(fontSize: 11)),
+                    ),
+                  ),
+                // M1：音频引用行内试听（当前 ID 的字节可播即可点）+ M3 本地导入
+                if (_visual == FieldVisual.audioPick) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: AudioAuditionButton(audioId: currentId),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: fluent.Button(
+                      onPressed: _importLocalAudio,
+                      child: const Text('导入', style: TextStyle(fontSize: 11)),
+                    ),
+                  ),
+                ],
+                // M1：ID 引用/跳转目标——下拉之外的有序浏览对话框（与下拉并存）
+                if (_visual == FieldVisual.idBrowse ||
+                    _visual == FieldVisual.jumpTarget ||
+                    _visual == FieldVisual.audioPick)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: fluent.Button(
+                      onPressed: opts.isEmpty ? null : _browseIds,
+                      child: Text(
+                        _visual == FieldVisual.jumpTarget ? '浏览跳转目标' : '浏览',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+                  ),
+              ],
             ),
-            const SizedBox(width: 6),
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: fluent.Button(
-                onPressed: _pickBgForTalk,
-                child: const Text('选背景图', style: TextStyle(fontSize: 11)),
-              ),
-            ),
-          ] else if (texPrefix != null && isSingleArray) ...[
-            const SizedBox(width: 8),
-            _texThumbSlot(),
-            const SizedBox(width: 6),
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: fluent.Button(
-                onPressed: _pickTexFromAssets,
-                child: const Text('选图', style: TextStyle(fontSize: 11)),
-              ),
-            ),
-          ],
+          ),
         ],
       );
     }
@@ -2201,10 +2641,14 @@ class _FieldInputState extends State<_FieldInput> {
     // （Number/单选/固定选项已由上方 ComboBox 覆盖；2D 指令字段走 EffectHintField）。
     final useSuggest =
         opts.isNotEmpty && (widget.type == 'String' || widget.type == '1D Array');
-    // ID 引用的多值字段：文本框旁提供「从列表选择」入口
+    // M1：可视化形态的 Number 不再走裸文本框（有候选时由上方 ComboBox 分支接管）。
+    final useNumber = widget.type == 'Number' && _visual != null;
+    // ID 引用的多值字段：文本框旁提供选择入口（跳转/数组多升级为有序浏览对话框）
     final canPickIds = widget.type == '1D Array' &&
-        widget.rule?.idRefCfg != null &&
-        opts.isNotEmpty;
+        opts.isNotEmpty &&
+        (widget.rule?.idRefCfg != null ||
+            _visual == FieldVisual.multiIdChips ||
+            _visual == FieldVisual.jumpTarget);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2219,55 +2663,134 @@ class _FieldInputState extends State<_FieldInput> {
               const SizedBox(width: 8),
             ],
             Expanded(
-              child: useSuggest
-                  ? SuggestionTextField(
-                      controller: _ctrl,
-                      focusNode: _focusNode,
-                      source: _suggestSource,
-                      multivalued: isArray,
-                      maxLines: multiline ? 3 : 1,
-                      onChanged: (_) {
-                        try {
-                          widget.onChanged(
-                              ValueCodec.decode(_ctrl.text, widget.type));
-                        } catch (_) {}
+              child: useNumber
+                  ? NumberStepField(
+                      value: _numberValue,
+                      hint: kFieldNumericHints['${widget.cfgName}:$rawKey'],
+                      onChanged: (n) {
+                        widget.onChanged(n);
+                        _ctrl.text = n.toString();
                         setState(() {});
                       },
                     )
-                  : fluent.TextBox(
-                      controller: _ctrl,
-                      maxLines: multiline ? 3 : 1,
-                      onChanged: (_) {
-                        try {
-                          widget.onChanged(
-                              ValueCodec.decode(_ctrl.text, widget.type));
-                        } catch (_) {}
-                        setState(() {});
-                      },
-                    ),
+                  : useSuggest
+                      ? SuggestionTextField(
+                          controller: _ctrl,
+                          focusNode: _focusNode,
+                          source: _suggestSource,
+                          multivalued: isArray,
+                          maxLines: multiline ? 3 : 1,
+                          onChanged: (_) {
+                            try {
+                              widget.onChanged(
+                                  ValueCodec.decode(_ctrl.text, widget.type));
+                            } catch (_) {}
+                            setState(() {});
+                          },
+                        )
+                      : fluent.TextBox(
+                          controller: _ctrl,
+                          maxLines: multiline ? 3 : 1,
+                          onChanged: (_) {
+                            try {
+                              widget.onChanged(
+                                  ValueCodec.decode(_ctrl.text, widget.type));
+                            } catch (_) {}
+                            setState(() {});
+                          },
+                        ),
             ),
-            if (canPickIds) ...[
-              const SizedBox(width: 8),
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: fluent.Button(
-                  onPressed: _pickIdsFromList,
-                  child: const Text('从列表选择', style: TextStyle(fontSize: 11)),
-                ),
+            // 窄屏加固（H）：尾部动作改为可换行的 Wrap——宽屏单行与原先一致，
+            // 窄屏自动折行，杜绝固定按钮组把行撑溢出。
+            Flexible(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (canPickIds)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: fluent.Button(
+                        // M1：跳转目标/数组多选升级为「有序浏览」（顺序即语义）；
+                        // 人物引用在无代码模式仍走立绘面板。
+                        onPressed: () {
+                          if (widget.noCodeMode && _isRoleField) {
+                            _pickRoles();
+                          } else if (_visual == FieldVisual.jumpTarget ||
+                              _visual == FieldVisual.multiIdChips) {
+                            _browseIds();
+                          } else {
+                            _pickIdsFromList();
+                          }
+                        },
+                        child: Text(
+                          widget.noCodeMode && _isRoleField
+                              ? '选人物'
+                              : _visual == FieldVisual.jumpTarget
+                                  ? '浏览跳转目标'
+                                  : _visual == FieldVisual.multiIdChips
+                                      ? '多选'
+                                      : '从列表选择',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    ),
+                  // M1：音频引用（无候选的 Number 或 vocals 对）——首 token 试听 + M3 导入
+                  if (_visual == FieldVisual.audioPick) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: AudioAuditionButton(audioId: _firstToken()),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: fluent.Button(
+                        onPressed: _importLocalAudio,
+                        child: const Text('导入', style: TextStyle(fontSize: 11)),
+                      ),
+                    ),
+                  ],
+                  if (widget.noCodeMode && _isRoleField && !canPickIds)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: fluent.Button(
+                        onPressed: _pickRoles,
+                        child:
+                            const Text('选人物', style: TextStyle(fontSize: 11)),
+                      ),
+                    ),
+                  if (texPrefix != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: fluent.Button(
+                        onPressed: _pickTexFromAssets,
+                        child: const Text('选图', style: TextStyle(fontSize: 11)),
+                      ),
+                    ),
+                ],
               ),
-            ],
-            if (texPrefix != null) ...[
-              const SizedBox(width: 8),
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: fluent.Button(
-                  onPressed: _pickTexFromAssets,
-                  child: const Text('选图', style: TextStyle(fontSize: 11)),
-                ),
-              ),
-            ],
+            ),
           ],
         ),
+        // M1：多值 ID 引用数组——文本框下按序展示「ID · 名称」chips，可移序/移除。
+        if (_visual == FieldVisual.multiIdChips &&
+            _ctrl.text.trim().isNotEmpty) ...[
+          const SizedBox(height: 5),
+          ValueNameChips(
+            tokens: fieldTextTokens(_ctrl.text),
+            nameOf: (t) => _optIndex[t],
+            onRemove: (i) {
+              final ts = fieldTextTokens(_ctrl.text)..removeAt(i);
+              _applyTokens(ts);
+            },
+            onMove: (from, to) {
+              final ts = fieldTextTokens(_ctrl.text);
+              final id = ts.removeAt(from);
+              ts.insert(to.clamp(0, ts.length), id);
+              _applyTokens(ts);
+            },
+          ),
+        ],
         if (preview != null)
           Padding(
             padding: const EdgeInsets.only(top: 3),
@@ -2296,18 +2819,39 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
   final TextEditingController _queryCtrl = TextEditingController();
   final Set<String> _selected = {};
 
+  /// 输入防抖：过滤是对全量候选的线性扫描 + 整表重建，逐字符即时过滤在
+  /// 长列表下会卡输入法，停顿 200ms 后才应用过滤词。
+  Timer? _debounce;
+
+  /// 过滤结果缓存：以数据源 identity + 长度 + 过滤词为失效判据（在 getter
+  /// 里每次核对，最稳），勾选触发的 setState 直接复用上次扫描结果。
+  List<(String, String)>? _filterCache;
+  List<(String, String)>? _filterCacheSource;
+  String _filterCacheQuery = '';
+
   @override
   void dispose() {
+    // 防抖定时器必须随 State 释放，否则 dispose 后 setState 报错。
+    _debounce?.cancel();
     _queryCtrl.dispose();
     super.dispose();
   }
 
   List<(String, String)> get _filtered {
+    final source = widget.options;
     final q = _queryCtrl.text.trim();
-    if (q.isEmpty) return widget.options;
-    return widget.options
-        .where((o) => o.$1.contains(q) || o.$2.contains(q))
-        .toList();
+    if (q.isEmpty) return source;
+    if (identical(_filterCacheSource, source) &&
+        _filterCacheSource!.length == source.length &&
+        _filterCacheQuery == q) {
+      return _filterCache!;
+    }
+    final result =
+        source.where((o) => o.$1.contains(q) || o.$2.contains(q)).toList();
+    _filterCache = result;
+    _filterCacheSource = source;
+    _filterCacheQuery = q;
+    return result;
   }
 
   @override
@@ -2316,7 +2860,9 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
     return fluent.ContentDialog(
       title: Text(widget.title),
       content: SizedBox(
-        width: 460,
+        // 候选多选弹窗（编辑器「从列表选择」在手机端可达）：固定 460 宽
+        // 会溢出，桌面维持 460，窄屏贴边。
+        width: min(460, MediaQuery.sizeOf(context).width - 72),
         height: 380,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2324,7 +2870,13 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
             fluent.TextBox(
               controller: _queryCtrl,
               placeholder: '筛选 ID 或内容…',
-              onChanged: (_) => setState(() {}),
+              // 防抖：输入过程中不重建列表，停顿 200ms 后再应用过滤词。
+              onChanged: (_) {
+                _debounce?.cancel();
+                _debounce = Timer(const Duration(milliseconds: 200), () {
+                  if (mounted) setState(() {});
+                });
+              },
             ),
             const SizedBox(height: 8),
             Expanded(

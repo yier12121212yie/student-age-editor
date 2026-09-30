@@ -15,6 +15,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
@@ -22,22 +23,45 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../../core/app_theme.dart';
+import '../../core/responsive.dart';
+import 'local_import.dart' show importLocalAssets;
 
 // ---------------- 进程级字节缓存 ----------------
 
 /// tex key → PNG/WebP 字节的进程级缓存（null = 已加载但失败，避免反复请求）。
+///
+/// LRU 上限 [_maxBytes]：画廊连续翻看几十张 1080p 原图时旧实现只进不出，
+/// 原图字节常驻可到上百 MB，低端手机直接 OOM。Map 插入序即 LRU 序
+/// （命中/写入都先 remove 再放回头部），超限时从最旧端淘汰。
 class TexBytesCache {
   TexBytesCache._();
   static final Map<String, Uint8List?> _cache = {};
   static final Map<String, Future<Uint8List?>> _inflight = {};
+  static int _bytes = 0;
+  static const int _maxBytes = 64 * 1024 * 1024;
+
+  static void _put(String key, Uint8List? bytes) {
+    _bytes -= _cache.remove(key)?.length ?? 0;
+    _cache[key] = bytes;
+    _bytes += bytes?.length ?? 0;
+    while (_bytes > _maxBytes && _cache.length > 1) {
+      var oldest = _cache.keys.first;
+      if (oldest == key) oldest = _cache.keys.elementAt(1);
+      _bytes -= _cache.remove(oldest)?.length ?? 0;
+    }
+  }
 
   static Uint8List? peek(String key) => _cache[key];
 
   /// 命中缓存直接返回；未命中发起请求并去重并发。
   static Future<Uint8List?> load(String key) {
     if (key.isEmpty) return Future.value(null);
-    final cached = _cache[key];
-    if (_cache.containsKey(key)) return Future.value(cached);
+    if (_cache.containsKey(key)) {
+      // 触碰即续命：移到 LRU 尾部。
+      final cached = _cache.remove(key);
+      _cache[key] = cached;
+      return Future.value(cached);
+    }
     final inflight = _inflight[key];
     if (inflight != null) return inflight;
     final f = _fetch(key).whenComplete(() => _inflight.remove(key));
@@ -50,21 +74,30 @@ class TexBytesCache {
       final r = await ApiClient.instance
           .post('/api/aa/preview', body: {'kind': 'tex', 'key': key});
       final data = r['data'];
-      final bytes = data is String ? base64Decode(data) : null;
-      _cache[key] = bytes;
+      // 大图 base64 解码（数百 KB~数 MB 字符串）搬去后台 isolate：
+      // 主 isolate 同步解是手机端滑画廊掉帧的直接原因。
+      final bytes = data is String
+          ? (data.length > 256 * 1024
+              ? await compute(_base64DecodeIsolate, data)
+              : base64Decode(data))
+          : null;
+      _put(key, bytes);
       return bytes;
     } catch (_) {
-      _cache[key] = null;
+      _put(key, null);
       return null;
     }
   }
 
   /// 测试隔离用。
-  static void clear() => _cache.clear();
+  static void clear() {
+    _cache.clear();
+    _bytes = 0;
+  }
 
   /// 测试注入：直接填充缓存，跳过网络栈（假时钟下 http 栈不与 pumpAndSettle
   /// 交错完成）。
-  static void debugPut(String key, Uint8List? bytes) => _cache[key] = bytes;
+  static void debugPut(String key, Uint8List? bytes) => _put(key, bytes);
 
   /// 字段 url 值 → 候选 tex key 列表：原样 + 去 bg/ cg/ 路径前缀。
   /// 本体数据 url 带 `bg/`、`cg/` 前缀而 AA 索引 key 不带，两个方向都可能命中。
@@ -88,10 +121,13 @@ class TexBytesCache {
       if (bytes != null) return bytes;
     }
     // 全部未命中：把负结果缓存到首个候选，避免同值反复试探
-    if (firstKey != null && !_cache.containsKey(firstKey)) _cache[firstKey] = null;
+    if (firstKey != null && !_cache.containsKey(firstKey)) _put(firstKey, null);
     return bytes;
   }
 }
+
+/// [compute] 入口：后台 isolate base64 解码。
+Uint8List _base64DecodeIsolate(String b64) => base64Decode(b64);
 
 // ---------------- 合并元数据（mod + 本体） ----------------
 
@@ -147,6 +183,19 @@ Future<String?> bgIdForKey(String pickedKey) async {
 
 // ---------------- 异步缩略图组件 ----------------
 
+/// 解码宽度上限（物理像素）：显示宽（逻辑像素）× devicePixelRatio 向上取整，
+/// 夹在 32–4096。尺寸未知（约束无限且无显式宽）返回 null，保持原始解码尺寸。
+///
+/// 阶段 4d：只降采样、不改显示尺寸——cacheWidth 不小于盒宽×DPR，渲染盒
+/// 仍是原来的约束，因此视觉不变；上限 4096 只在极端大屏+原图超大时才生效。
+int? _decodeCacheWidth(BuildContext context, {required double? logicalWidth}) {
+  final w = logicalWidth;
+  if (w == null || !w.isFinite || w <= 0) return null;
+  final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1;
+  final px = (w * (dpr > 0 ? dpr : 1)).ceil();
+  return math.min(4096, math.max(32, px));
+}
+
 /// 按需加载的缩略图：命中缓存即显，未命中后台加载后刷新。
 class TexThumb extends StatefulWidget {
   const TexThumb({
@@ -198,7 +247,16 @@ class _TexThumbState extends State<TexThumb> {
     final bytes = _bytes;
     Widget child;
     if (bytes != null) {
-      child = Image.memory(bytes, fit: widget.fit, gaplessPlayback: true);
+      // 缩略图盒宽决定解码宽度：画廊 172 / 面板 56 / 悬停浮层 340 这类小盒
+      // 不需要 1920×1080 原图常驻解码位图。
+      child = LayoutBuilder(
+        builder: (context, box) => Image.memory(
+          bytes,
+          fit: widget.fit,
+          gaplessPlayback: true,
+          cacheWidth: _decodeCacheWidth(context, logicalWidth: box.maxWidth),
+        ),
+      );
     } else {
       child = Center(
         child: Icon(
@@ -361,10 +419,97 @@ class _HoverTexPreviewState extends State<HoverTexPreview> {
 
   @override
   Widget build(BuildContext context) {
+    // 触屏没有 hover 事件：窄屏下点按直接进全屏预览，悬停浮层仅桌面生效。
+    if (isMobileWidth(context)) {
+      return GestureDetector(
+        onTap: () {
+          if (TexBytesCache.keyCandidates(widget.keyName).isEmpty) return;
+          openFullImagePreview(context, widget.keyName);
+        },
+        child: widget.child,
+      );
+    }
     return MouseRegion(
       onEnter: (_) => _enter(),
       onExit: (_) => _exit(),
       child: widget.child,
+    );
+  }
+}
+
+// ---------------- 移动端全屏图片预览 ----------------
+
+/// 全屏预览一张 tex 图片（双指缩放/拖拽平移）。供选图器底部选中条与
+/// [HoverTexPreview] 的触屏分支共用。
+Future<void> openFullImagePreview(BuildContext context, String keyName,
+    {String? subtitle}) {
+  return Navigator.of(context).push(MaterialPageRoute<void>(
+    builder: (_) => _MobileImagePreviewPage(keyName: keyName, subtitle: subtitle),
+  ));
+}
+
+class _MobileImagePreviewPage extends StatelessWidget {
+  const _MobileImagePreviewPage({required this.keyName, this.subtitle});
+  final String keyName;
+  final String? subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: FutureBuilder<Uint8List?>(
+              future: TexBytesCache.loadSmart(keyName),
+              builder: (context, snap) {
+                final bytes = snap.data;
+                if (bytes == null) {
+                  return Center(
+                    child: snap.connectionState == ConnectionState.waiting
+                        ? const CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2)
+                        : const Text('图片不可用（资源缺失或未导出）',
+                            style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  );
+                }
+                return InteractiveViewer(
+                  maxScale: 6,
+                  child: Center(
+                    child: Image.memory(bytes, fit: BoxFit.contain),
+                  ),
+                );
+              },
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 4, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      subtitle ?? keyName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    // 44×44 触控热区
+                    child: const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: Icon(Icons.close, size: 22, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -409,16 +554,39 @@ class ImageAssetPickerDialog extends StatefulWidget {
 
 class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   List<String> _tex = [];
-  List<String> _cgKeys = const [];
+
+  /// CG 页签候选（scope=flow）。用 Set：「其他」页签要逐 key contains，
+  /// List 是 O(n) 每次过滤全量扫，Set 摊平成 O(1)。
+  Set<String> _cgKeys = const {};
   Map<String, List<int>> _meta = {};
   bool _loading = true;
-  bool _scanning = false;
   String _error = '';
+
+  /// 扫描/轮询态：纯视觉进度，走 ValueNotifier 局部订阅（顶栏图标 + 空态按钮），
+  /// 轮询开始与结束不再重建整页画廊与预览区（阶段 4c）。
+  final ValueNotifier<bool> _scanning = ValueNotifier<bool>(false);
 
   _AssetTab _tab = _AssetTab.all;
   String _filter = '';
+
+  /// 过滤结果缓存：_filtered 在每次 build 与 _revealKey 里被调用，几千
+  /// key 的逐项扫描不该重复付。键 = 数据版本 + 页签 + 过滤词；数据版本
+  /// 在 _tex/_cgKeys 变化处（_loadKeys/_loadCgKeys/本地导入）递增失效。
+  int _dataVersion = 0;
+  List<String>? _filteredCache;
+  String _filteredCacheKey = '';
   final Set<String> _selected = {};
   String? _previewKey;
+
+  /// 「导入本地图片…」进行中标记（按钮禁用，避免重复弹选择器）。
+  bool _importing = false;
+
+  /// 网格滚动控制器：导入成功后把新 key 滚进可视区。
+  final ScrollController _gridScroll = ScrollController();
+
+  /// tile key → GlobalKey。只给需要「滚进可视区」的 tile 用：同一 key 复用
+  /// 同一实例（GlobalKey 按实例比对，不能每帧新建），随对话框一起释放。
+  final Map<String, GlobalKey> _tileKeys = {};
 
   @override
   void initState() {
@@ -426,6 +594,13 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     _selected.addAll(widget.initialSelected);
     _previewKey = widget.initialSelected.isEmpty ? null : widget.initialSelected.first;
     _loadKeys();
+  }
+
+  @override
+  void dispose() {
+    _scanning.dispose();
+    _gridScroll.dispose();
+    super.dispose();
   }
 
   Future<void> _loadKeys() async {
@@ -452,6 +627,8 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
         _tex = ((r['tex'] as List?) ?? const []).cast<String>();
         _meta = meta;
         _loading = false;
+        // 索引数据变了：_filtered 的过滤缓存作废（版本号失效判据）。
+        _dataVersion++;
       });
       _loadCgKeys();
     } catch (e) {
@@ -472,7 +649,8 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       );
       if (!mounted) return;
       setState(() {
-        _cgKeys = ((r['tex'] as List?) ?? const []).cast<String>();
+        _cgKeys = ((r['tex'] as List?) ?? const []).cast<String>().toSet();
+        _dataVersion++; // _cgKeys 变了：过滤缓存作废
       });
     } catch (_) {
       // CG 过滤失败只影响该页签，保持空列表
@@ -480,9 +658,12 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   }
 
   /// 扫描游戏资源并轮询直到完成（与资源页/资产面板流程一致）。
+  ///
+  /// 阶段 4c：轮询期间只写 [_scanning]，订阅方仅顶栏图标与空态按钮两处；
+  /// 索引数据到位才是结构性变化，仍由 [_loadKeys] 的 setState 重建画廊。
   Future<void> _scan() async {
-    if (_scanning) return;
-    setState(() => _scanning = true);
+    if (_scanning.value) return;
+    _scanning.value = true;
     try {
       var status = await ApiClient.instance
           .post('/api/aa/scan')
@@ -498,11 +679,17 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     } catch (_) {
       // 扫描失败保持空列表与错误提示
     } finally {
-      if (mounted) setState(() => _scanning = false);
+      if (mounted) _scanning.value = false;
     }
   }
 
   List<String> get _filtered {
+    // (页签, 过滤词) × 数据版本缓存：数据未变时直接复用上次的过滤结果，
+    // 切页签/敲搜索词之外的重建（选中、预览切换）不再全量扫描。
+    final q = _filter.trim().toLowerCase();
+    final cacheKey = '$_dataVersion|${_tab.index}|$q';
+    final cached = _filteredCache;
+    if (cached != null && _filteredCacheKey == cacheKey) return cached;
     Iterable<String> pool = switch (_tab) {
       _AssetTab.bg => _tex.where((k) => k.startsWith('bg/')),
       _AssetTab.cg => _cgKeys,
@@ -510,9 +697,11 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
           (k) => !k.startsWith('bg/') && !_cgKeys.contains(k)),
       _AssetTab.all => _tex,
     };
-    final q = _filter.trim().toLowerCase();
     if (q.isNotEmpty) pool = pool.where((k) => k.toLowerCase().contains(q));
-    return pool.toList();
+    final result = pool.toList();
+    _filteredCache = result;
+    _filteredCacheKey = cacheKey;
+    return result;
   }
 
   void _onTapTile(String key) {
@@ -533,19 +722,96 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     Navigator.of(context).pop(_selected.toList());
   }
 
+  /// 后端 `path`（`Textures/a.png`）→ 画廊用的 tex key（`a.png` 去扩展名前的
+  /// 原样 key；索引里带子目录的 key 形如 `bg/img_x`，故只裁 `Textures/` 前缀）。
+  static String _texKeyOfPath(String path) {
+    const prefix = 'Textures/';
+    return path.startsWith(prefix) ? path.substring(prefix.length) : path;
+  }
+
+  /// 从本地电脑导入图片：选中项自动预勾选 + 滚进可视区，用户确认即回传。
+  Future<void> _importLocal() async {
+    if (_importing) return;
+    setState(() => _importing = true);
+    List<Map<String, dynamic>> saved;
+    try {
+      saved = await importLocalAssets(context, kind: 'image');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+    if (!mounted || saved.isEmpty) return;
+    final keys = [
+      for (final s in saved)
+        _texKeyOfPath((s['path'] ?? '').toString()),
+    ].where((k) => k.isNotEmpty).toList();
+    if (keys.isEmpty) return;
+    // 清掉搜索词再重读索引，否则新 key 可能被当前过滤条件挡住看不见。
+    _filter = '';
+    _tab = _AssetTab.all;
+    await _loadKeys();
+    if (!mounted) return;
+    // _tex 是 cast() 视图，不能直接 add：合并成新列表再赋值。
+    setState(() {
+      final merged = [..._tex];
+      for (final k in keys) {
+        // 后端索引还没收进这批文件时本地补一份，保证 tile 能渲染、能确认回传。
+        if (!merged.contains(k)) merged.add(k);
+      }
+      _tex = merged;
+      _dataVersion++; // 本地导入的 key 进池了：过滤缓存作废
+      if (widget.multiSelect) {
+        _selected.addAll(keys);
+      } else {
+        _selected
+          ..clear()
+          ..add(keys.first);
+      }
+      _previewKey = keys.first;
+    });
+    _revealKey(keys.first);
+  }
+
+  /// 滚到并高亮某个 key：先按比例粗定位（让 tile 进入构建范围），
+  /// 下一帧用 [GlobalObjectKey] 精确 ensureVisible。
+  void _revealKey(String key) {
+    final list = _filtered;
+    final idx = list.indexOf(key);
+    if (idx < 0) return;
+    if (_gridScroll.hasClients) {
+      final pos = _gridScroll.position;
+      if (pos.hasContentDimensions && list.length > 1 && pos.maxScrollExtent > 0) {
+        pos.jumpTo(pos.maxScrollExtent * idx / (list.length - 1));
+      }
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final tileContext = _tileKeys[key]?.currentContext;
+      if (tileContext == null) return;
+      await Scrollable.ensureVisible(
+        tileContext,
+        alignment: 0.25,
+        duration: const Duration(milliseconds: 200),
+      );
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final screen = MediaQuery.sizeOf(context);
     // ContentDialog 默认 constraints 上限 368 且自带 20 padding：大窗口必须
-    // 显式传 constraints，内容宽度相应减去左右 padding。
-    final w = math.min(960.0, screen.width - 60);
-    final h = math.min(700.0, screen.height - 150);
+    // 显式传 constraints，内容宽度相应减去左右 padding。手机上贴边，内容
+    // 高度预留标题+按钮行与系统栏，避免再叠头部约束顶破屏幕。
+    final mobile = isMobileWidth(context);
+    final w = mobile ? screen.width - 24 : math.min(960.0, screen.width - 60);
+    final h = mobile
+        ? math.max(320.0, screen.height - 250)
+        : math.min(700.0, screen.height - 150);
     return fluent.ContentDialog(
       constraints: BoxConstraints(maxWidth: w, maxHeight: h + 140),
       title: Row(
         children: [
-          const Icon(FluentIcons.image_24_regular,
-              size: 15, color: Color(0xFF6C5CE7)),
+          Icon(FluentIcons.image_24_regular,
+              size: 15, color: accentColor),
           const SizedBox(width: 8),
           Expanded(child: Text(widget.title)),
           Text(
@@ -562,6 +828,11 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
         child: _buildBody(),
       ),
       actions: [
+        // 从本地电脑导入：后端落盘到 Textures/，成功后自动预勾选新 key。
+        fluent.Button(
+          onPressed: _importing ? null : _importLocal,
+          child: Text(_importing ? '导入中…' : '导入本地图片…'),
+        ),
         fluent.Button(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('取消'),
@@ -595,13 +866,32 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       return _buildEmpty(
         icon: FluentIcons.image_24_regular,
         label: '尚未扫描游戏资源，无法浏览立绘 / 背景图片',
-        action: fluent.FilledButton(
-          onPressed: _scanning ? null : _scan,
-          child: Text(_scanning ? '扫描中…' : '扫描游戏资源'),
+        action: ListenableBuilder(
+          listenable: _scanning,
+          builder: (context, _) => fluent.FilledButton(
+            onPressed: _scanning.value ? null : _scan,
+            child: Text(_scanning.value ? '扫描中…' : '扫描游戏资源'),
+          ),
         ),
       );
     }
     final list = _filtered;
+    if (isMobileWidth(context)) {
+      // 窄屏下固定 300px 预览侧栏会把网格压成负宽：改单栏网格 + 底部选中条，
+      // 点选中条看全屏大图（HoverTexPreview 那套悬停浮层触屏不可用）。
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildTopBar(),
+          Divider(height: 1, color: palette.border),
+          Expanded(child: _buildGrid(list)),
+          if (_previewKey != null) ...[
+            Divider(height: 1, color: palette.border),
+            _buildMobileSelectionBar(),
+          ],
+        ],
+      );
+    }
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -618,6 +908,55 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
         VerticalDivider(width: 1, color: palette.border),
         SizedBox(width: 300, child: _buildPreviewPane()),
       ],
+    );
+  }
+
+  /// 移动端底部选中条：缩略图 + key + 尺寸，整条可点，点开全屏大图。
+  Widget _buildMobileSelectionBar() {
+    final key = _previewKey!;
+    final size = _meta[key];
+    return GestureDetector(
+      onTap: () => openFullImagePreview(
+        context,
+        key,
+        subtitle: size != null ? '$key  ·  ${size[0]}×${size[1]}' : key,
+      ),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 56,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        child: Row(
+          children: [
+            TexThumb(
+              keyName: key,
+              width: 44,
+              height: 44,
+              fit: BoxFit.contain,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(key,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12, color: palette.textPrimary)),
+                  Text(
+                    size != null ? '${size[0]}×${size[1]} · 点击查看大图' : '点击查看大图',
+                    style: TextStyle(fontSize: 10.5, color: palette.textHint),
+                  ),
+                ],
+              ),
+            ),
+            Icon(FluentIcons.zoom_in_24_regular,
+                size: 15, color: palette.textHint),
+          ],
+        ),
+      ),
     );
   }
 
@@ -643,42 +982,60 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   }
 
   Widget _buildTopBar() {
+    final tabs = [
+      _tabBtn(_AssetTab.all, '全部'),
+      const SizedBox(width: 4),
+      _tabBtn(_AssetTab.bg, '背景'),
+      const SizedBox(width: 4),
+      _tabBtn(_AssetTab.cg, 'CG'),
+      const SizedBox(width: 4),
+      _tabBtn(_AssetTab.other, '其他'),
+    ];
+    final searchBox = fluent.TextBox(
+      placeholder: '搜索资源 key',
+      prefix: const Icon(FluentIcons.search_24_regular, size: 13),
+      style: const TextStyle(fontSize: 12),
+      onChanged: (v) => setState(() => _filter = v),
+    );
+    final scanBtn = fluent.Tooltip(
+      message: '重新扫描游戏资源',
+      // 轮询态只重建这一个图标（阶段 4c）
+      child: ListenableBuilder(
+        listenable: _scanning,
+        builder: (context, _) => fluent.IconButton(
+          icon: _scanning.value
+              ? const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(FluentIcons.arrow_sync_24_regular, size: 14),
+          onPressed: _scanning.value ? null : _scan,
+        ),
+      ),
+    );
+    if (isMobileWidth(context)) {
+      // 窄屏拆两行：页签+刷新一行、搜索整行（单行 200px 固定搜索框必溢出）。
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(children: [...tabs, const Spacer(), scanBtn]),
+            const SizedBox(height: 8),
+            searchBox,
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       child: Row(
         children: [
-          _tabBtn(_AssetTab.all, '全部'),
-          const SizedBox(width: 4),
-          _tabBtn(_AssetTab.bg, '背景'),
-          const SizedBox(width: 4),
-          _tabBtn(_AssetTab.cg, 'CG'),
-          const SizedBox(width: 4),
-          _tabBtn(_AssetTab.other, '其他'),
+          ...tabs,
           const Spacer(),
-          Flexible(
-            child: SizedBox(
-              width: 200,
-              child: fluent.TextBox(
-                placeholder: '搜索资源 key',
-                prefix: const Icon(FluentIcons.search_24_regular, size: 13),
-                style: const TextStyle(fontSize: 12),
-                onChanged: (v) => setState(() => _filter = v),
-              ),
-            ),
-          ),
+          Flexible(child: SizedBox(width: 200, child: searchBox)),
           const SizedBox(width: 6),
-          fluent.Tooltip(
-            message: '重新扫描游戏资源',
-            child: fluent.IconButton(
-              icon: _scanning
-                  ? const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(FluentIcons.arrow_sync_24_regular, size: 14),
-              onPressed: _scanning ? null : _scan,
-            ),
-          ),
+          scanBtn,
         ],
       ),
     );
@@ -691,7 +1048,8 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       child: GestureDetector(
         onTap: () => setState(() => _tab = tab),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding: EdgeInsets.symmetric(
+              horizontal: 10, vertical: isMobileWidth(context) ? 10 : 4),
           decoration: BoxDecoration(
             color: selected ? palette.tintAccent : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
@@ -717,6 +1075,7 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       );
     }
     return GridView.builder(
+      controller: _gridScroll,
       padding: const EdgeInsets.all(8),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 172,
@@ -734,6 +1093,8 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     final selected = _selected.contains(key);
     final isPreviewing = _previewKey == key;
     return MouseRegion(
+      // 稳定 key：导入后 _revealKey 靠它把 tile 滚进可视区。
+      key: _tileKeys.putIfAbsent(key, () => GlobalKey(debugLabel: 'tex:$key')),
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: () => _onTapTile(key),
@@ -765,12 +1126,12 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
                         child: Container(
                           width: 18,
                           height: 18,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF6C5CE7),
+                          decoration: BoxDecoration(
+                            color: accentColor,
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(FluentIcons.check_24_regular,
-                              size: 11, color: Colors.white),
+                          child: Icon(FluentIcons.check_24_regular,
+                              size: 11, color: palette.onAccent),
                         ),
                       ),
                   ],

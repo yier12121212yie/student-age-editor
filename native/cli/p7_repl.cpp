@@ -63,7 +63,8 @@ std::string LowerAscii(std::string s) {
 // is stripped and the words run as ordinary tokens). `settings` is NOT here:
 // /settings is handled below so the bare form can default to `show`.
 const char* kPassThrough[] = {"mods",  "cfg", "validate", "bugfix", "story", "oobe",
-                              "env",   "ai",  "plugin",   "plugins", "cloud", "search"};
+                              "env",   "ai",  "plugin",   "plugins", "cloud", "search",
+                              "update"};
 
 // A cyan-bordered welcome panel, the Alpha REPL's banner.
 void PrintBanner(const std::string& workspace, size_t mods_count,
@@ -119,6 +120,7 @@ void PrintHelp() {
         {"/story …", "剧情文本导入导出", "/story export --evt 101"},
         {"/plugin …", "插件管理", "/plugin list"},
         {"/cloud …", "云同步与 Provider 管理", "/cloud providers"},
+        {"/update [check]", "检查 GitHub 最新发行版", "/update"},
         {"/ai …", "AI 设置", "/ai settings"},
         {"/oobe …  /env …", "OOBE 状态 / editor_env 键值", "/env get workspace_root"},
         {"/clear", "清屏", "/clear"},
@@ -832,6 +834,9 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
                 if (head == p) passthrough = true;
             if (passthrough) {
                 std::vector<std::string> tokens = split_repl_tokens(rest);
+                // 裸 /update 补上必需子命令 = update check（与 /settings 一样取默认值）；
+                // `/update check …` 原样透传。
+                if (head == "update" && tokens.empty()) tokens.push_back("check");
                 tokens.insert(tokens.begin(),
                               head == "plugins" ? std::string("plugin") : head);
                 last_tokens = tokens;

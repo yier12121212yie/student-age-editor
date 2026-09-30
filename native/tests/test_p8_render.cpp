@@ -222,6 +222,72 @@ TEST_CASE("Snapshot: cloud modal surfaces the DryRun/summary and provider errors
     REQUIRE(Contains(out, "错误: provider not found"));
 }
 
+// -------------------------------------------------------------- update (u)
+namespace {
+AppState UpdateFixture() {
+    AppState s = FreshFixture();
+    s.page = Page::Update;
+    s.update_loaded = true;
+    s.update_ok = true;
+    s.update_current = "Alpha-v0.3";
+    s.update_latest_tag = "Alpha-v0.4";
+    s.update_latest_name = "暑期更新";
+    s.update_published_at = "2025-08-01T10:00:00Z";
+    s.update_html_url = "https://github.com/o/r/releases/tag/Alpha-v0.4";
+    s.update_notes = "新功能:\n- 检查更新\n- 修复若干问题";
+    s.update_available = true;
+    s.update_assets = {UpdateAsset{"editor-win64.zip", "https://example.com/a.zip", 15728640},
+                       UpdateAsset{"editor-linux.tar.gz", "https://example.com/b.tar.gz", 1024}};
+    s.status = "发现新版本 Alpha-v0.4";
+    return s;
+}
+}  // namespace
+
+TEST_CASE("Snapshot: update modal prompts before the first check", "[p8]") {
+    AppState s = FreshFixture();
+    s.page = Page::Update;
+    std::string out = RenderPageToString(s, 90, 20);
+    REQUIRE(Contains(out, "⬆️ 检查更新"));
+    REQUIRE(Contains(out, "按 r 检查更新"));
+    REQUIRE(Contains(out, "r / Enter 检查更新"));
+    // The browse panes are hidden behind the modal.
+    REQUIRE_FALSE(Contains(out, "📦 Mods / Cfgs"));
+}
+
+TEST_CASE("Snapshot: update modal lists versions, notes and the first asset", "[p8]") {
+    std::string out = RenderPageToString(UpdateFixture(), 100, 26);
+    REQUIRE(Contains(out, "当前版本: Alpha-v0.3"));
+    REQUIRE(Contains(out, "最新版本: Alpha-v0.4  暑期更新"));
+    REQUIRE(Contains(out, "是否需要更新: 有可用更新"));
+    REQUIRE(Contains(out, "类型: 正式版"));
+    REQUIRE(Contains(out, "发布时间: 2025-08-01T10:00:00Z"));
+    REQUIRE(Contains(out, "发行页: https://github.com/o/r/releases/tag/Alpha-v0.4"));
+    REQUIRE(Contains(out, "更新说明:"));
+    REQUIRE(Contains(out, "检查更新"));
+    REQUIRE(Contains(out, "修复若干问题"));
+    REQUIRE(Contains(out, "附件: 2 个  首个: editor-win64.zip  15.0 MB"));
+
+    // 预发行版 + 已是最新：同一套字段换两个值。
+    AppState pre = UpdateFixture();
+    pre.update_prerelease = true;
+    pre.update_available = false;
+    std::string p = RenderPageToString(pre, 100, 26);
+    REQUIRE(Contains(p, "类型: 预发行版 (prerelease)"));
+    REQUIRE(Contains(p, "是否需要更新: 已是最新"));
+}
+
+TEST_CASE("Snapshot: update modal surfaces a failed check", "[p8]") {
+    AppState s = FreshFixture();
+    s.page = Page::Update;
+    s.update_loaded = true;
+    s.update_ok = false;
+    s.update_error = "无法连接 api.github.com";
+    s.status = "检查更新失败: 无法连接 api.github.com";
+    std::string out = RenderPageToString(s, 90, 20);
+    REQUIRE(Contains(out, "错误: 无法连接 api.github.com"));
+    REQUIRE(Contains(out, "按 r 重试"));
+}
+
 TEST_CASE("Snapshot: the status bar carries the permission mode", "[p8]") {
     AppState s = FreshFixture();
     REQUIRE(Contains(RenderPageToString(s, 100, 14), "权限: confirm"));
@@ -278,6 +344,7 @@ TEST_CASE("Snapshot: help documents the Alpha modal keys", "[p8]") {
     s.show_help = true;
     std::string out = RenderPageToString(s, 100, 30);
     REQUIRE(Contains(out, "a / c / p / b"));
+    REQUIRE(Contains(out, "u             检查更新"));
     REQUIRE(Contains(out, "Ctrl-M"));
     REQUIRE(Contains(out, "confirm"));
     REQUIRE(Contains(out, "Tab/Shift+Tab"));

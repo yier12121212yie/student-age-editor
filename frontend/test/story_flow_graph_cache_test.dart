@@ -333,7 +333,9 @@ void main() {
     );
     final g = await tester.startGesture(at);
     await tester.pump();
-    final card0 = debugNodeCardBuilds;
+    // debugNodeCardBuilds 已随阶段 4a（墓碑共享集合）移除：卡片实例创建
+    // 与 build 一一对应（identical 复用短路），用 debugSlotCardsBuilt 计数。
+    final card0 = debugSlotCardsBuilt;
     final pan0 = vp.value.pan;
     await g.moveTo(at + const Offset(-140, -90));
     await tester.pump();
@@ -346,7 +348,7 @@ void main() {
       reason: '手势没落在空白处：起点点到了节点，测的就不是平移',
     );
     expect(
-      debugNodeCardBuilds - card0,
+      debugSlotCardsBuilt - card0,
       0,
       reason: '平移重建了卡片：视口改动必须只换矩阵，不得走 setState',
     );
@@ -355,8 +357,9 @@ void main() {
 
   // ---------- S4 C2：卡片实例缓存门控 ----------
   // 旧实现 didUpdateWidget 无条件 _slotsTier=-1：宿主每次重建都为全部节点
-  // 新建卡片+端口表+世界足迹（~2,500 分配/帧），bench 的 debugNodeCardBuilds
-  // 只数「已挂载卡片」的 build，掩盖了分配本身。新门控：
+  // 新建卡片+端口表+世界足迹（~2,500 分配/帧），旧探针 debugNodeCardBuilds
+  // （阶段 4a 随「每卡片一次墓碑 HTTP」的 FutureBuilder 一并移除）只数
+  // 「已挂载卡片」的 build，掩盖了分配本身。新门控：
   //   纯宿主重泵 → _buildSlots 0 次；内容签名变化 → 恰 1 次；拖拽帧 → 只
   //   重建 Positioned 包装（debugSlotCardsBuilt == 0）且节点跟手。
   group('C2 槽位门控：重泵 0 次 + 负向对照各 1 次', () {
@@ -438,7 +441,6 @@ void main() {
       await tester.pump(); // 按下选中的那次重建不记入帧成本
       final slots0 = debugBuildSlotsCalls;
       final built0 = debugSlotCardsBuilt;
-      final builds0 = debugNodeCardBuilds;
       final before = tester.getTopLeft(nodeText('甲'));
       for (var i = 0; i < 30; i++) {
         await g.moveBy(const Offset(6, 4));
@@ -447,8 +449,11 @@ void main() {
       await g.up();
       await tester.pump();
 
-      expect(debugSlotCardsBuilt - built0, 0, reason: '拖拽帧不得新建卡片实例');
-      expect(debugNodeCardBuilds - builds0, 0, reason: 'identical child 短路：卡片连 build 都不该进');
+      expect(
+        debugSlotCardsBuilt - built0,
+        0,
+        reason: '拖拽帧不得新建卡片实例（identical 短路：卡片连 build 都不该进）',
+      );
       expect(
         debugBuildSlotsCalls - slots0,
         30,

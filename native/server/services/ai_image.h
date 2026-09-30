@@ -48,8 +48,9 @@ std::string build_multipart(const std::string& boundary,
 namespace update_check {
 
 // check_update -> result dict. `url_override` (else EDITOR_UPDATE_URL else
-// the GitHub releases URL) and `current` (else "Alpha-v0.1") are injection
-// seams for tests / integration. Never throws.
+// the GitHub releases URL) and `current` (else sa_core::app_version(), the
+// release string injected at configure time) are injection seams for tests /
+// integration. Never throws.
 json check_update(int timeout = 6, const std::string& url_override = "",
                   const std::string& current = "");
 
@@ -62,7 +63,8 @@ bool should_update(const std::string& latest_tag, const std::string& current);
 }  // namespace update_check
 
 // Register /api/ai/image/{generate,edit} and /api/update/check (additive; the
-// Python backend exposes update only via its CLI/TUI, not HTTP).
+// Python backend exposes update only via its CLI/TUI, not HTTP) plus the
+// additive GET /api/version (app + release version + core version).
 void register_ai_image_routes(Router& r);
 void register_update_routes(Router& r);
 

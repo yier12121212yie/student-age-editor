@@ -37,6 +37,7 @@ import '../../core/app_theme.dart';
 import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
 import '../files/file_viewer.dart' show ImagePreview;
+import '../nocode/effect_block_editor.dart';
 import '../resources/image_asset_picker.dart';
 import 'story_flow_field_codec.dart';
 import 'story_logic.dart';
@@ -69,7 +70,16 @@ class FlowInspectorPanel extends StatefulWidget {
     required this.showAdvanced,
     required this.onToggleAdvanced,
     required this.onClose,
+    this.noCodeMode = false,
+    this.gameDicts = const {},
   });
+
+  /// 无代码模式：为效果类字段追加「积木编辑」入口（schema 编辑器同款形态，
+  /// 见 nocode/effect_block_editor.dart）。默认关——宿主未接线时行为与旧版一致。
+  final bool noCodeMode;
+
+  /// 字典池（game_dicts），透传给搭建器的槽位下拉；宿主从 AppState 注入。
+  final Map<String, dynamic> gameDicts;
 
   /// 被编辑的节点 id（多选与 missing 节点由宿主**不挂载本面板**表达；
   /// 传空串时面板只出空态，不渲染任何编辑器）。
@@ -446,12 +456,62 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       );
     }
     final bgExtras = _bgExtrasFor(meta, ctl);
-    return bgExtras == null
+    final blockExtras = _blockEditorExtra(meta, ctl);
+    final extras = <Widget>[?bgExtras, ?blockExtras];
+    return extras.isEmpty
         ? editor
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [editor, bgExtras],
+            children: [editor, ...extras],
           );
+  }
+
+  /// 无代码模式：效果类字段追加一行「积木编辑」入口。
+  ///
+  /// 面板依旧不落库：结果文本经 [FlowInspectorPanel.onFieldChanged] 交宿主
+  /// 解析、标脏、记撤销步；控制器与内联卡片同实例，写回即双向同步。
+  Widget? _blockEditorExtra(FieldMeta meta, TextEditingController ctl) {
+    if (!widget.noCodeMode || !meta.editable || !meta.effectLike) return null;
+    final mode = meta.suggestMode ?? effectSuggestMode(meta.key) ?? 'effect';
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        children: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => _openBlockEditor(meta, ctl, mode),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: palette.panel,
+                  borderRadius: BorderRadius.circular(AppRadius.s),
+                  border: Border.all(color: palette.border),
+                ),
+                child: Text('积木编辑',
+                    style:
+                        TextStyle(fontSize: 10.5, color: palette.textBody)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openBlockEditor(
+      FieldMeta meta, TextEditingController ctl, String mode) async {
+    final out = await showEffectBlockEditor(
+      context,
+      text: ctl.text,
+      mode: mode,
+      gameDicts: widget.gameDicts,
+      singleRow: meta.replaceWholeOnAccept,
+    );
+    if (!mounted || out == null || out == ctl.text) return;
+    ctl.text = out;
+    widget.onFieldChanged(widget.nodeId, meta.key, out);
   }
 
   /// TalkCfg.bg 字段扩展行：当前背景缩略图（单击预览）+「选背景图」入口。
@@ -832,7 +892,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.tune, size: 13, color: Color(0xFF6C5CE7)),
+          Icon(Icons.tune, size: 13, color: accentColor),
           const SizedBox(width: AppSpace.xs),
           Flexible(
             child: Text(

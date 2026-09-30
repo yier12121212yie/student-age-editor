@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -7,6 +5,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/plugin_state.dart';
+import '../../core/zip_staging.dart';
 
 /// 插件管理页：列表 / 卸载 / 安装 zip / 重载。
 /// 声明型插件常开无启用态（后端的 enable/disable 恒 410），故不提供启用/停用。
@@ -38,8 +37,8 @@ class _PluginsPageState extends State<PluginsPage> {
         actions: [
           fluent.Button(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           fluent.FilledButton(
-            style: const fluent.ButtonStyle(
-              backgroundColor: WidgetStatePropertyAll(Colors.red),
+            style: fluent.ButtonStyle(
+              backgroundColor: WidgetStatePropertyAll(palette.danger),
             ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('卸载'),
@@ -56,27 +55,31 @@ class _PluginsPageState extends State<PluginsPage> {
     }
   }
 
-  /// 选择本地 zip 安装：先拷贝到应用可写临时目录，再按路径提交后端
-  /// （对齐资源包导入流程，绕过 base64 与体积上限）。
+  /// 选择本地 zip 安装：载荷由 zip_staging 决定——桌面=拷贝到应用可写临时
+  /// 目录后按路径提交（绕过 base64 与体积上限）；web=base64 上传端点。
   Future<void> _install() async {
     if (_busy) return;
     const typeGroup = XTypeGroup(label: '插件包', extensions: ['zip']);
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
     if (file == null) return;
     setState(() => _busy = true);
-    Directory? tmpDir;
+    StagedZip? staged;
     try {
-      tmpDir = await Directory.systemTemp.createTemp('plugin_import_');
-      final dest = '${tmpDir.path}${Platform.pathSeparator}${file.name}';
-      await File(file.path).copy(dest);
-      await _ps.installZip(dest, file.name);
+      staged = await stageZipForInstall(
+        file,
+        const ZipStageOptions(
+          pathEndpoint: '/api/plugins/install_path',
+          uploadEndpoint: '/api/plugins/install_upload',
+          tempPrefix: 'plugin_import_',
+        ),
+      );
+      await _ps.installStaged(staged);
       if (mounted) _showInfo('插件安装成功');
     } catch (e) {
       if (mounted) _showError('安装失败：$e');
     } finally {
-      // 后端已读完 zip，临时目录不再需要（失败也一并清理）。
       try {
-        if (tmpDir != null) await tmpDir.delete(recursive: true);
+        await staged?.cleanup();
       } catch (_) {}
       if (mounted) setState(() => _busy = false);
     }

@@ -1,10 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
 import 'field_utils.dart';
 import '../../core/app_theme.dart';
+import '../../core/responsive.dart';
+import '../nocode/effect_block_editor.dart';
+import '../nocode/effect_slot_form.dart';
 import 'suggestion_text_field.dart';
 
 /// 全角标点 → 半角映射（官方指南仅允许英文符号；顿号按逗号处理）。
@@ -58,6 +62,8 @@ class EffectHintField extends StatefulWidget {
     required this.fieldKey,
     required this.onChanged,
     this.mode,
+    this.noCodeMode = false,
+    this.gameDicts = const {},
   });
 
   final dynamic value;
@@ -68,6 +74,13 @@ class EffectHintField extends StatefulWidget {
   /// 显式指定提示模式（action/screen/cost/condition/effect）；
   /// 为空时按 fieldKey 推断（roles→action、screenEffect→screen、其余沿用原规则）。
   final String? mode;
+
+  /// 无代码模式（后端共享开关）：空输入即出候选、带参数槽候选走表单补全，
+  /// 并提供「浏览效果」目录入口。关闭时保持传统"打字出候选、接受即插模板"。
+  final bool noCodeMode;
+
+  /// 参数表单的字典池（/api/dicts game_dicts），无代码模式槽选择用。
+  final Map<String, dynamic> gameDicts;
 
   @override
   State<EffectHintField> createState() => _EffectHintFieldState();
@@ -128,7 +141,13 @@ class _EffectHintFieldState extends State<EffectHintField> {
   @override
   void didUpdateWidget(covariant EffectHintField oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.value != widget.value) {
+    // 性能 P0-4：语义等价则不回写，与 _FieldInput 的同步闸门同一契约。
+    // 此前按 oldWidget.value != widget.value（List/Map 是恒等比较，父级
+    // 一次重建传新列表实例即成立）+ encode 结果不同就整段重写 _ctrl.text，
+    // 会把输入中态规范化（"4001,0.5" → "4001, 0.5"）并把光标弹到末尾，
+    // 每次父级重建都打断连续输入。needsResync 只在「现文本 decode 后与
+    // 新值不等」即编解码语义真的不匹配时才重置。
+    if (ValueCodec.needsResync(_ctrl.text, widget.value, widget.type)) {
       final enc = ValueCodec.encode(widget.value);
       if (_ctrl.text != enc) {
         _ctrl.text = enc;
@@ -167,6 +186,11 @@ class _EffectHintFieldState extends State<EffectHintField> {
           Suggestion(
             e['code']?.toString() ?? '',
             e['desc']?.toString() ?? '',
+            template: e['raw_code']?.toString() ?? e['code']?.toString() ?? '',
+            slots: [
+              for (final s in (e['slots'] as List? ?? const []).cast<Map>())
+                SuggestionSlot.fromJson(s),
+            ],
           ),
       ];
     } catch (_) {
@@ -257,10 +281,63 @@ class _EffectHintFieldState extends State<EffectHintField> {
     });
   }
 
+  /// 无代码模式：浏览目录选完一条（可能经过槽表单），按现有分隔符追加到文本。
+  void _appendCode(String code) {
+    final text = _ctrl.text.trim();
+    final sep = text.isEmpty || !text.contains(',') ? (text.isEmpty ? '' : ', ') : ', ';
+    // 已有内容且末行用了分号（2D 换行分隔）→ 跟随分号风格。
+    final joiner = text.isNotEmpty && text.lastIndexOf(';') > text.lastIndexOf(',') ? '; ' : sep;
+    final normalized = _normalizeFullWidth('$text$joiner$code');
+    _ctrl.value = TextEditingValue(
+      text: normalized,
+      selection: TextSelection.collapsed(offset: normalized.length),
+    );
+    _onTextChanged(normalized);
+  }
+
+  Future<void> _browseCatalog() async {
+    final code = await showEffectCatalogBrowser(
+      context,
+      mode: _mode,
+      gameDicts: widget.gameDicts,
+      title: _mode == 'action' ? '浏览人物指令' : (_mode == 'screen' ? '浏览屏幕效果' : '浏览效果'),
+    );
+    if (code != null && code.isNotEmpty) _appendCode(code);
+  }
+
+  /// 无代码模式的「积木编辑」：把整段文本交给可视化搭建器，
+  /// 确认后整串写回并触发校验（1D 字段如 screenEffect 强制单行）。
+  Future<void> _openBlockEditor() async {
+    final out = await showEffectBlockEditor(
+      context,
+      text: _ctrl.text,
+      mode: _mode,
+      gameDicts: widget.gameDicts,
+      singleRow: _is1D,
+      title: switch (_mode) {
+        'action' => '积木编辑指令',
+        'screen' => '积木编辑屏幕效果',
+        'condition' => '积木编辑条件',
+        'cost' => '积木编辑消耗',
+        _ => '积木编辑效果',
+      },
+    );
+    if (out == null) return;
+    _ctrl.value = TextEditingValue(
+      text: out,
+      selection: TextSelection.collapsed(offset: out.length),
+    );
+    _onTextChanged(out);
+  }
+
   @override
   Widget build(BuildContext context) {
     // 浮层是否展开由补全框自己决定，父级重建时按它的实时状态出提示文案。
     final overlayOpen = _fieldKey.currentState?.overlayOpen ?? false;
+    // 触屏窄屏：文案不提 Tab/Enter/↑↓（手机键盘给不了这些键），按钮行允许
+    // 纵向堆叠，10.5px 的小字在手机上提到 12px。
+    final mobile = isMobileWidth(context);
+    final hintTextSize = mobile ? 12.0 : 10.5;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -269,13 +346,66 @@ class _EffectHintFieldState extends State<EffectHintField> {
           controller: _ctrl,
           focusNode: _focusNode,
           maxLines: _is1D ? 1 : 4,
-          placeholder: _is1D
-              ? '输入屏幕效果代码（如 4001,0.5），支持关键字检索候选…'
-              : '输入关键字或指令代码进行检索（支持拼音、大小写、数学符号如 > >= ≤ 等）…',
+          placeholder: widget.noCodeMode
+              ? '聚焦即显示候选（最近使用在前），点击选择、参数走表单；也可直接输入…'
+              : _is1D
+                  ? '输入屏幕效果代码（如 4001,0.5），支持关键字检索候选…'
+                  : '输入关键字或指令代码进行检索（支持拼音、大小写、数学符号如 > >= ≤ 等）…',
           source: _source,
           multivalued: true,
+          suggestOnEmpty: widget.noCodeMode,
+          slotResolver: widget.noCodeMode
+              ? (s) => showEffectSlotForm(context, suggestion: s, gameDicts: widget.gameDicts)
+              : null,
+          onSuggestionAccepted: (s) =>
+              reportUsage(_mode, s.template.isNotEmpty ? s.template : s.code),
           onChanged: _onTextChanged,
         ),
+        if (widget.noCodeMode) ...[
+          const SizedBox(height: 4),
+          // 窄屏下按钮 + 说明文字并排放会挤爆，换成上下堆叠。
+          if (mobile)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    fluent.Button(
+                      onPressed: _browseCatalog,
+                      child: const Text('浏览效果目录…', style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 6),
+                    fluent.Button(
+                      onPressed: _openBlockEditor,
+                      child: const Text('积木编辑', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text('选择后可继续手改代码；接受的效果会进入下次「最近使用」',
+                    style: TextStyle(fontSize: hintTextSize, color: palette.textHint)),
+              ],
+            )
+          else
+            Row(
+              children: [
+                fluent.Button(
+                  onPressed: _browseCatalog,
+                  child: const Text('浏览效果目录…', style: TextStyle(fontSize: 11)),
+                ),
+                const SizedBox(width: 6),
+                fluent.Button(
+                  onPressed: _openBlockEditor,
+                  child: const Text('积木编辑', style: TextStyle(fontSize: 11)),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('选择后可继续手改代码；接受的效果会进入下次「最近使用」',
+                      style: TextStyle(fontSize: hintTextSize, color: palette.textHint)),
+                ),
+              ],
+            ),
+        ],
         const SizedBox(height: 6),
         Container(
           width: double.infinity,
@@ -306,10 +436,13 @@ class _EffectHintFieldState extends State<EffectHintField> {
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(
-              overlayOpen
-                  ? '候选 $_candidateCount 项 · Tab/Enter 补全 · ↑↓ 切换 · 点击插入'
-                  : '候选 $_candidateCount 项 · Tab 补全 · 点击插入',
-              style: TextStyle(fontSize: 10.5, color: palette.textHint),
+              // 「Tab/Enter 补全 · ↑↓ 切换」是桌面键盘教学，触屏无意义。
+              mobile
+                  ? '候选 $_candidateCount 项 · 点击候选插入'
+                  : overlayOpen
+                      ? '候选 $_candidateCount 项 · Tab/Enter 补全 · ↑↓ 切换 · 点击插入'
+                      : '候选 $_candidateCount 项 · Tab 补全 · 点击插入',
+              style: TextStyle(fontSize: hintTextSize, color: palette.textHint),
             ),
           ),
       ],

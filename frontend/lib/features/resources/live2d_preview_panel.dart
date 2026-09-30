@@ -1,11 +1,23 @@
 import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 
-/// Live2D Preview Panel - Model browser and expression preview.
+/// Live2D 模型面板：模型库 + 表达式渲染预览。
+///
+/// 后端契约（native，见并行实现）：
+///   * GET  /api/live2d/models  -> {models:[{path,name,expressions:[...]}]}
+///   * POST /api/live2d/render  {path, expression} -> {ok,mime:'image/png',data:base64}
+///
+/// 渲染结果按 `path|expression` 内存缓存，重复点击零请求。旧的
+/// `/plugin/live2d/models`（已退役的 Python 插件服务，后端无该路由）与
+/// 「动画」假计时器一并移除——渲染是静态 PNG，无需本地帧循环。
 class Live2DPreviewPanel extends StatefulWidget {
   const Live2DPreviewPanel({super.key});
 
@@ -14,97 +26,220 @@ class Live2DPreviewPanel extends StatefulWidget {
 }
 
 class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
-  bool _isLoading = true;
-  List<Map<String, dynamic>> _models = [];
-  Map<String, dynamic>? _selectedModel;
-  String? _selectedExpression;
-  
-  // Animation playback state
-  bool _isPlaying = false;
-  double _currentTime = 0.0;
+  bool _isLoadingModels = true;
+  String? _modelsError;
+  List<Map<String, dynamic>> _models = const [];
+
+  Map<String, dynamic>? _selected;
+  String? _curExpr;
+
+  /// `path|expression` → PNG 字节。会话级内存缓存。
+  final Map<String, Uint8List> _renderCache = {};
+  Uint8List? _renderBytes;
+  bool _rendering = false;
+  String? _renderError;
+
+  /// 渲染序号：慢响应回来时若已切模型/表达式，直接丢弃（防串图）。
+  int _renderSeq = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadModels();
+  }
+
+  // ---------------- 模型列表 ----------------
 
   Future<void> _loadModels() async {
+    setState(() {
+      _isLoadingModels = true;
+      _modelsError = null;
+    });
     try {
-      final res = await ApiClient.instance.get('/plugin/live2d/models');
-      
+      final res = await ApiClient.instance.get('/api/live2d/models');
+      final list = (res is Map ? res['models'] : null);
+      final models = <Map<String, dynamic>>[
+        if (list is List)
+          for (final m in list)
+            if (m is Map) m.cast<String, dynamic>(),
+      ];
+      if (!mounted) return;
       setState(() {
-        _models = (res['models'] as List?)?.map((m) => m as Map<String, dynamic>).toList() ?? [];
-        _isLoading = false;
-        
-        if (_models.isNotEmpty) {
-          _selectModel(_models[0]);
-        }
+        _models = models;
+        _isLoadingModels = false;
       });
+      if (models.isNotEmpty) {
+        await _selectModel(models.first);
+      } else {
+        setState(() {
+          _selected = null;
+          _renderBytes = null;
+        });
+      }
     } catch (e) {
-      print('[Live2DPreview] Failed to load models: $e');
-      setState(() => _isLoading = false);
+      if (!mounted) return;
+      setState(() {
+        _isLoadingModels = false;
+        _modelsError = '$e';
+      });
     }
   }
 
-  void _selectModel(Map<String, dynamic> model) {
+  Future<void> _selectModel(Map<String, dynamic> model) async {
+    final exprs = _expressions(model);
     setState(() {
-      _selectedModel = model;
-      _selectedExpression = model['expressions']?.isNotEmpty == true 
-          ? model['expressions'][0] 
-          : null;
-      _currentTime = 0.0;
+      _selected = model;
+      _curExpr = exprs.isNotEmpty ? exprs.first : null;
+      _renderError = null;
+      _renderBytes = null;
     });
+    // 选中即渲染默认表达式（列表首项；无表达式则渲染基础姿态）。
+    await _render(model, _curExpr);
   }
 
-  void _togglePlayback() {
-    setState(() {
-      _isPlaying = !_isPlaying;
-      
-      if (_isPlaying) {
-        _startAnimation();
-      } else {
-        _stopAnimation();
-      }
-    });
+  // ---------------- 渲染 ----------------
+
+  List<String> _expressions(Map<String, dynamic> model) {
+    final raw = model['expressions'];
+    if (raw is! List) return const [];
+    return [
+      for (final e in raw)
+        if (e is String)
+          e
+        else if (e is Map)
+          (e['name'] ?? e['id'] ?? '').toString(),
+    ]..removeWhere((s) => s.isEmpty);
   }
 
-  void _startAnimation() {
-    Timer.periodic(const Duration(milliseconds: 50), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      
+  String _cacheKey(String path, String? expr) => '$path|${expr ?? ''}';
+
+  Future<void> _render(Map<String, dynamic>? model, String? expr) async {
+    if (model == null) return;
+    final path = (model['path'] ?? '').toString();
+    if (path.isEmpty) return;
+    final key = _cacheKey(path, expr);
+
+    // 命中缓存：直接上屏，零请求。
+    final cached = _renderCache[key];
+    if (cached != null) {
       setState(() {
-        _currentTime += 0.1;
-        
-        if (_currentTime > 10.0) {
-          _currentTime = 0.0;
-        }
+        _renderBytes = cached;
+        _renderError = null;
+        _rendering = false;
       });
+      return;
+    }
+
+    final seq = ++_renderSeq;
+    setState(() {
+      _rendering = true;
+      _renderError = null;
     });
+    try {
+      final res = await ApiClient.instance.post('/api/live2d/render',
+          body: {'path': path, 'expression': expr ?? ''});
+      final ok = res is Map && res['ok'] == true;
+      final data = res is Map ? res['data'] : null;
+      if (!ok || data is! String || data.isEmpty) {
+        final msg = (res is Map ? res['error'] : null)?.toString() ?? '后端未返回图像';
+        throw ApiException(200, msg);
+      }
+      // 大包 base64（Live2D 渲染 PNG 可达数 MB）搬去后台 isolate 解码：
+      // 主 isolate 同步解是预览掉帧源之一，与 TexBytesCache/_loadTex 同一
+      // 256KB 阈值；小包仍同步解，免付 isolate 拷贝开销。
+      final bytes = data.length > 256 * 1024
+          ? await compute(_base64DecodeIsolate, data)
+          : base64Decode(data);
+      _renderCache[key] = bytes;
+      if (!mounted || seq != _renderSeq) return; // 已被更新的渲染取代
+      setState(() {
+        _renderBytes = bytes;
+        _rendering = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted || seq != _renderSeq) return;
+      setState(() => _rendering = false);
+      _showRenderError(e.message);
+    } catch (e) {
+      if (!mounted || seq != _renderSeq) return;
+      setState(() => _rendering = false);
+      _showRenderError('$e');
+    }
   }
 
-  void _stopAnimation() {
-    // Timer automatically cancels on dispose
+  void _showRenderError(String msg) {
+    setState(() => _renderError = msg);
+    if (!mounted) return;
+    fluent.displayInfoBar(context,
+        builder: (ctx, close) => fluent.InfoBar(
+              severity: fluent.InfoBarSeverity.error,
+              title: const Text('Live2D 渲染失败'),
+              content: Text(msg),
+            ));
   }
 
-  Widget _buildModelGrid() {
-    if (_models.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              FluentIcons.person_24_regular,
-              size: 64,
-              color: Colors.grey,
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              '暂无 Live2D 模型',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey),
-            ),
-          ],
+  // ---------------- UI ----------------
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _buildHeader(),
+        Divider(height: 1, thickness: 1, color: palette.border),
+        Expanded(
+          child: _isLoadingModels
+              ? const Center(child: fluent.ProgressRing())
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      width: 250,
+                      child: _buildModelList(),
+                    ),
+                    VerticalDivider(width: 1, color: palette.border),
+                    Expanded(child: _buildPreview()),
+                  ],
+                ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      height: 44,
+      color: palette.bg,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Row(
+        children: [
+          Icon(FluentIcons.person_24_regular, size: 16, color: accentColor),
+          const SizedBox(width: 8),
+          Text('Live2D 模型库',
+              style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: palette.textHigh)),
+          const Spacer(),
+          fluent.Button(
+            onPressed: _isLoadingModels ? null : _loadModels,
+            child: const Text('刷新列表'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModelList() {
+    if (_modelsError != null) {
+      return _Empty(
+        icon: FluentIcons.error_circle_24_regular,
+        text: '模型列表加载失败：$_modelsError',
       );
     }
-
+    if (_models.isEmpty) {
+      return const _Empty(
+          icon: FluentIcons.person_24_regular, text: '暂无 Live2D 模型');
+    }
     return GridView.builder(
       padding: const EdgeInsets.all(8),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -114,310 +249,256 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
         mainAxisSpacing: 8,
       ),
       itemCount: _models.length,
-      itemBuilder: (context, index) {
-        final model = _models[index];
-        final isSelected = _selectedModel?['id'] == model['id'];
-        
-        return Card(
-          color: isSelected
-              ? (Theme.of(context).brightness == Brightness.light
-                  ? Colors.blue.shade50
-                  : Colors.blue.withOpacity(0.1))
-              : null,
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: () => _selectModel(model),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
+      itemBuilder: (context, i) {
+        final m = _models[i];
+        final name = (m['name'] ?? m['path'] ?? '').toString();
+        final exprCount = _expressions(m).length;
+        final selected =
+            _selected != null && _selected!['path'] == m['path'];
+        return GestureDetector(
+          onTap: () => _selectModel(m),
+          child: Container(
+            decoration: BoxDecoration(
+              color: selected ? palette.tintAccent : palette.card,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: selected ? accentColor : palette.border),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Container(
-                    width: double.infinity,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          _getModelColor(model).withOpacity(0.3),
-                          Colors.transparent,
-                        ],
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Center(
+                          child: Icon(FluentIcons.person_24_regular,
+                              size: 40, color: _tint(name)),
+                        ),
                       ),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Stack(
-                      children: [
-                        Positioned(
-                          right: 8,
-                          top: 8,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.black26,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '${model['expressions']?.length ?? 0}',
-                              style: const TextStyle(
-                                  fontSize: 10, color: Colors.white),
-                            ),
-                          ),
-                        ),
-                        Center(
-                          child: Icon(
-                            FluentIcons.person_24_regular,
-                            size: 48,
-                            color: _getModelColor(model),
-                          ),
-                        ),
-                      ],
-                    ),
+                      Positioned(
+                        right: 4,
+                        top: 4,
+                        child: _Badge(count: exprCount),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  model['id'] as String,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w500),
-                ),
-                Text(
-                  '${model['expressions']?.length ?? 0} 个表情',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
+                const SizedBox(height: 6),
+                Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: palette.textHigh)),
+                Text('$exprCount 个表情',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted)),
               ],
             ),
-          ),
           ),
         );
       },
     );
   }
 
-  Color _getModelColor(Map<String, dynamic> model) {
-    // Generate consistent color based on model ID hash
-    final hash = model['id'].hashCode.abs();
-    final hue = hash % 360;
-    return HSLColor.fromAHSL(
-      0.8,
-      hue.toDouble(),
-      0.6,
-      0.5,
-    ).toColor();
-  }
-
-  Widget _buildPreviewSection() {
-    if (_selectedModel == null) {
-      return const SizedBox.shrink();
+  Widget _buildPreview() {
+    final model = _selected;
+    if (model == null) {
+      return const _Empty(
+          icon: FluentIcons.image_24_regular, text: '请选择一个模型');
     }
-
-    final expressions = _selectedModel!['expressions'] as List<dynamic>? ?? [];
-
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        children: [
-          // Preview area
-          Container(
-            height: 300,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.grey.shade100,
-                  Colors.grey.shade50,
-                ],
-              ),
-            ),
+    final exprs = _expressions(model);
+    return Column(
+      children: [
+        Expanded(
+          child: Container(
+            width: double.infinity,
+            color: palette.bgDeep,
             child: Stack(
               children: [
-                // Actual preview would be loaded from asset extractor or render service
-                Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                if (_renderBytes != null && !_rendering)
+                  Positioned.fill(
+                    child: InteractiveViewer(
+                      maxScale: 6,
+                      child: Center(
+                        child: Image.memory(_renderBytes!,
+                            fit: BoxFit.contain, gaplessPlayback: true),
+                      ),
+                    ),
+                  )
+                else if (_rendering)
+                  const Positioned.fill(
+                    child: Center(child: fluent.ProgressRing()),
+                  )
+                else if (_renderError != null)
+                  Positioned.fill(
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(FluentIcons.error_circle_24_regular,
+                              size: 32, color: palette.statusDanger),
+                          const SizedBox(height: 10),
+                          Text('渲染失败：$_renderError',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 12.5, color: palette.textSecondary)),
+                          const SizedBox(height: 10),
+                          fluent.Button(
+                            onPressed: () => _render(model, _curExpr),
+                            child: const Text('重试'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  Positioned.fill(
+                    child: Center(
+                      child: Text('正在准备预览…',
+                          style: TextStyle(
+                              fontSize: 12, color: palette.textHint)),
+                    ),
+                  ),
+                if (_curExpr != null && _renderBytes != null && !_rendering)
+                  Positioned(
+                    left: 10,
+                    bottom: 10,
+                    child: _Badge(label: _curExpr!, muted: true),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        // 表达式选择条
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          color: palette.panel,
+          child: exprs.isEmpty
+              ? Text('该模型无可用表达式',
+                  style: TextStyle(fontSize: 12, color: palette.textMuted))
+              : SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
                     children: [
-                      Icon(
-                        Icons.image_outlined,
-                        size: 48,
-                        color: Colors.grey[400],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${_selectedExpression?.toUpperCase() ?? "NO PREVIEW"}',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.grey[600],
-                          fontWeight: FontWeight.w500,
+                      for (final e in exprs)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: _ExprButton(
+                            label: e,
+                            active: e == _curExpr,
+                            onTap: () {
+                              setState(() => _curExpr = e);
+                              _render(model, e);
+                            },
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),
-                
-                // Playback controls overlay
-                if (_isPlaying)
-                  Positioned(
-                    bottom: 8,
-                    left: 0,
-                    right: 0,
-                    child: LinearProgressIndicator(
-                      value: _currentTime / 10.0,
-                      minHeight: 2,
-                      backgroundColor: Colors.grey.shade300,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          
-          // Expression selector
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: expressions.map((expr) {
-                  final isSelected = _selectedExpression == expr;
-                  
-                  return ElevatedButton(
-                    key: ValueKey(expr),
-                    onPressed: () {
-                      setState(() => _selectedExpression = expr);
-                      // Trigger actual rendering here
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isSelected
-                          ? Theme.of(context).primaryColor
-                          : Colors.grey.shade200,
-                      foregroundColor:
-                          isSelected ? Colors.white : Colors.black87,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      child: Text(
-                        expr.toString().capitalize(),
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-          ),
-          
-          // Playback control bar
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Theme.of(context).brightness == Brightness.light
-                  ? Colors.grey.shade50
-                  : Colors.grey.shade900,
-              borderRadius: const BorderRadius.only(
-                bottomLeft: Radius.circular(8),
-                bottomRight: Radius.circular(8),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                IconButton(
-                  icon: const Icon(FluentIcons.stop_24_regular),
-                  tooltip: '停止播放',
-                  onPressed: _togglePlayback,
-                  color: _isPlaying ? Colors.red : Colors.grey,
-                ),
-                Text(
-                  '播放时长：${_currentTime.toStringAsFixed(1)}s',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                IconButton(
-                  icon: Icon(
-                    _isPlaying 
-                        ? Icons.pause_rounded 
-                        : Icons.play_arrow_rounded,
-                  ),
-                  tooltip: _isPlaying ? '暂停' : '播放',
-                  onPressed: _togglePlayback,
-                  color: _isPlaying ? Colors.blue : Colors.grey,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return Column(
-      children: [
-        // Header toolbar
-        Padding(
-          padding: const EdgeInsets.all(8),
-          child: Row(
-            children: [
-              Text(
-                'Live2D 模型库',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              const Spacer(),
-              ElevatedButton.icon(
-                onPressed: _loadModels,
-                icon: const Icon(FluentIcons.arrow_sync_24_regular),
-                label: const Text('刷新列表'),
-              ),
-            ],
-          ),
-        ),
-        
-        // Split view
-        Expanded(
-          child: Row(
-            children: [
-              // Model list panel
-              Container(
-                width: 250,
-                decoration: BoxDecoration(
-                  border: Border(
-                    right: BorderSide(
-                      color: Colors.grey.shade200,
-                      width: 1,
-                    ),
-                  ),
-                ),
-                child: _buildModelGrid(),
-              ),
-              
-              // Preview panel
-              Expanded(
-                child: _selectedModel == null
-                    ? const Center(child: Text('请选择一个模型'))
-                    : _buildPreviewSection(),
-              ),
-            ],
-          ),
         ),
       ],
     );
   }
+
+  /// 由名称派生稳定的图标色（两模式同值，走 HSL，不用 Colors.*）。
+  Color _tint(String name) {
+    final hue = name.hashCode.abs() % 360;
+    return HSLColor.fromAHSL(
+            0.85, hue.toDouble(), 0.55, palette.isLight ? 0.42 : 0.62)
+        .toColor();
+  }
 }
 
-// Extension for capitalize
-extension StringX on String {
-  String capitalize() {
-    if (isEmpty) return this;
-    return this[0].toUpperCase() + substring(1);
+// ---------------- compute 入口 ----------------
+
+/// [compute] 回调：后台 isolate 解码 base64。必须是顶层函数才能跨 isolate 发送
+/// （与 api_client._decodeTableIsolate 同款写法）。
+Uint8List _base64DecodeIsolate(String b64) => base64Decode(b64);
+
+// ---------------- 小组件 ----------------
+
+class _ExprButton extends StatelessWidget {
+  const _ExprButton(
+      {required this.label, required this.active, required this.onTap});
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: active ? accentColor : palette.surface,
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(color: active ? accentColor : palette.border),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: active ? palette.onAccent : palette.textBody),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  const _Badge({this.count, this.label, this.muted = false});
+  final int? count;
+  final String? label;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = label ?? '${count ?? 0}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: muted ? palette.scrimWeak : accentColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(text,
+          style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: muted ? palette.textBody : palette.onAccent)),
+    );
+  }
+}
+
+class _Empty extends StatelessWidget {
+  const _Empty({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 44, color: palette.textHint),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(text,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: palette.textSecondary)),
+          ),
+        ],
+      ),
+    );
   }
 }

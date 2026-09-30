@@ -138,6 +138,7 @@ bool ParsePage(const std::string& name, p8::Page& out) {
     else if (name == "agent") out = p8::Page::Agent;
     else if (name == "plugins" || name == "plugin") out = p8::Page::Plugins;
     else if (name == "cloud") out = p8::Page::Cloud;
+    else if (name == "update") out = p8::Page::Update;
     else return false;
     return true;
 }
@@ -172,19 +173,41 @@ int main(int argc, char** argv) {
     int width = 90, height = 24;
 
     bool explicit_url = false;
+    auto usage = []() {
+        std::cerr << "用法: backend_tui [--url URL | --port N] [--data-root DIR] "
+                     "[--agent-config FILE] [--width N] [--height N] "
+                     "[--render-check PAGE|all] [--connect]\n";
+    };
+    // `--opt` and `--opt=value` forms are both accepted; an unrecognized option
+    // is a usage error instead of being silently ignored (bug #8: a dropped
+    // `--url=…` left the default 8770 target and self-started a backend).
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
+        std::string inline_val;
+        std::string opt = a;
+        auto eq = a.find('=');
+        if (eq != std::string::npos) {
+            opt = a.substr(0, eq);
+            inline_val = a.substr(eq + 1);
+        }
         auto next = [&](std::string& dst) {
-            if (i + 1 < argc) dst = argv[++i];
+            if (!inline_val.empty()) dst = inline_val;
+            else if (i + 1 < argc) dst = argv[++i];
         };
-        if (a == "--url") { next(url); explicit_url = true; }
-        else if (a == "--port") { std::string p; next(p); url = "http://127.0.0.1:" + p; explicit_url = true; }
-        else if (a == "--agent-config") next(config_path);
-        else if (a == "--data-root") next(data_root);
-        else if (a == "--width") { std::string p; next(p); width = std::atoi(p.c_str()); }
-        else if (a == "--height") { std::string p; next(p); height = std::atoi(p.c_str()); }
-        else if (a == "--render-check") next(render_page);
-        else if (a == "--connect") connect_probe = true;
+        if (opt == "--url") { next(url); explicit_url = true; }
+        else if (opt == "--port") { std::string p; next(p); url = "http://127.0.0.1:" + p; explicit_url = true; }
+        else if (opt == "--agent-config") next(config_path);
+        else if (opt == "--data-root") next(data_root);
+        else if (opt == "--width") { std::string p; next(p); width = std::atoi(p.c_str()); }
+        else if (opt == "--height") { std::string p; next(p); height = std::atoi(p.c_str()); }
+        else if (opt == "--render-check") next(render_page);
+        else if (opt == "--connect") connect_probe = true;
+        else if (opt == "--help" || opt == "-h") { usage(); return 0; }
+        else if (!a.empty() && a[0] == '-') {
+            std::cerr << "error: 未知参数: " << a << "\n";
+            usage();
+            return 2;
+        }
     }
     if (url.empty()) url = "http://127.0.0.1:8770";
     else explicit_url = true;  // P8_BACKEND_URL counts as an explicit target too
@@ -216,7 +239,8 @@ int main(int argc, char** argv) {
 
     if (!render_page.empty()) {
         if (render_page == "all") {
-            for (const char* p : {"main", "bugfix", "agent", "plugins", "cloud"}) {
+            for (const char* p :
+                 {"main", "bugfix", "agent", "plugins", "cloud", "update"}) {
                 p8::Page page;
                 if (!ParsePage(p, page)) continue;
                 std::cout << "==== render-check: " << p << " ====\n";

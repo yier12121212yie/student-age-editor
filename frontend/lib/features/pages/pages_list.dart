@@ -76,7 +76,7 @@ class PagesList extends StatelessWidget {
                       child: Row(
                         children: [
                           Icon(_icons[page.id] ?? FluentIcons.table_24_regular,
-                              size: 16, color: const Color(0xFF6C5CE7)),
+                              size: 16, color: accentColor),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Column(

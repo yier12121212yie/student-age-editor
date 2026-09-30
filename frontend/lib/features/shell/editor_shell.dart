@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
-import '../ai/ai_panel.dart';
-import '../settings/settings_page.dart';
+import 'ai_dock.dart';
 import 'activity_bar.dart';
 import 'editor_area.dart';
 import 'shell_state.dart';
@@ -54,79 +54,50 @@ class CreationShell extends StatelessWidget {
                     shell: shell,
                     pluginState: pluginState,
                   ),
-                  // 侧边栏宽度平滑跟手
-                  AnimatedContainer(
-                    duration: AppMotion.fast,
-                    curve: AppMotion.easeOut,
-                    width: shell.sidebarWidth,
-                    child: SidePaneView(
-                      pane: shell.pane,
-                      state: state,
-                      shell: shell,
-                      pluginState: pluginState,
-                      controller: shell.controller,
-                      aiSettings: shell.aiSettings,
-                      onAiChanged: shell.setAiSettings,
-                      width: shell.sidebarWidth,
-                      uiMode: uiMode,
-                      onUiModeChanged: onUiModeChanged,
-                    ),
-                  ),
-                  ResizeHandle(
-                    width: shell.sidebarWidth,
-                    min: ShellState.minSidebarWidth,
-                    max: ShellState.maxSidebarWidth,
-                    defaultWidth: shell.defaultSidebarWidth,
-                    onChanged: shell.setSidebarWidth,
-                  ),
-                  Expanded(
-                    child: EditorArea(state: state, controller: shell.controller),
-                  ),
-                  // AI 面板：宽度 + 透明度 + 位移动画
-                  AnimatedContainer(
-                    duration: AppMotion.normal,
-                    curve: AppMotion.easeOut,
-                    width: shell.aiOpen ? shell.aiWidth + 5 : 0,
-                    child: ClipRect(
-                      child: OverflowBox(
-                        alignment: Alignment.centerRight,
-                        maxWidth: shell.aiWidth + 5,
-                        minWidth: shell.aiWidth + 5,
-                        child: AnimatedOpacity(
-                          duration: AppMotion.normal,
+                  // 侧边栏宽度平滑跟手（拖拽只重建此子树，阶段 1 局部化）
+                  ValueListenableBuilder<double>(
+                    valueListenable: shell.sidebarWidthV,
+                    builder: (context, sidebarWidth, _) => Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        AnimatedContainer(
+                          duration: AppMotion.fast,
                           curve: AppMotion.easeOut,
-                          opacity: shell.aiOpen ? 1 : 0,
-                          child: AnimatedSlide(
-                            duration: AppMotion.normal,
-                            curve: AppMotion.easeOut,
-                            offset: shell.aiOpen ? Offset.zero : const Offset(0.08, 0),
-                            child: shell.aiOpen
-                                ? Row(
-                                    children: [
-                                      ResizeHandle(
-                                        width: shell.aiWidth,
-                                        min: ShellState.minAiWidth,
-                                        max: ShellState.maxAiWidth,
-                                        defaultWidth: ShellState.defaultAiWidth,
-                                        inverted: true,
-                                        onChanged: shell.setAiWidth,
-                                      ),
-                                      SizedBox(
-                                        width: shell.aiWidth,
-                                        child: AiPanel(
-                                          state: state,
-                                          settings: shell.settingsLoaded ? shell.aiSettings : AiSettings(),
-                                          onChanged: shell.setAiSettings,
-                                          onOpenSettings: () => shell.selectPane(SidePane.settings),
-                                        ),
-                                      ),
-                                    ],
-                                  )
-                                : const SizedBox.shrink(),
+                          width: sidebarWidth,
+                          child: SidePaneView(
+                            pane: shell.pane,
+                            state: state,
+                            shell: shell,
+                            pluginState: pluginState,
+                            controller: shell.controller,
+                            aiSettings: shell.aiSettings,
+                            onAiChanged: shell.setAiSettings,
+                            width: sidebarWidth,
+                            uiMode: uiMode,
+                            onUiModeChanged: onUiModeChanged,
                           ),
                         ),
-                      ),
+                        ResizeHandle(
+                          width: sidebarWidth,
+                          min: ShellState.minSidebarWidth,
+                          max: ShellState.maxSidebarWidth,
+                          defaultWidth: shell.defaultSidebarWidth,
+                          onChanged: shell.setSidebarWidth,
+                        ),
+                      ],
                     ),
+                  ),
+                  Expanded(
+                    child: EditorArea(
+                      state: state,
+                      controller: shell.controller,
+                    ),
+                  ),
+                  // AI 面板：共享停靠组件（拖宽/折叠条/持久化统一处理）
+                  AiDock(
+                    state: state,
+                    shell: shell,
+                    onOpenSettings: () => shell.selectPane(SidePane.settings),
                   ),
                 ],
               ),

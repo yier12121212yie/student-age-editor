@@ -13,6 +13,7 @@
 #include "sa_core/http_client.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/strings.h"
+#include "sa_core/version.h"
 #include "ai_image.h"
 
 using namespace sa;
@@ -261,4 +262,23 @@ TEST_CASE("update route (additive) returns the check_update dict", "[p4][update]
     REQUIRE(resp.status == 200);
     CHECK(resp.json_payload["latest_tag"] == "Alpha-v9.9");
     CHECK(resp.json_payload["update_available"] == true);
+
+    // Without ?current= the route compares against the release version injected
+    // at configure time (-DSA_APP_VERSION; "dev" when unset).
+    auto dflt = sat::call_router(r, "GET", "/api/update/check", {{"url", srv.base() + "/gh"}});
+    REQUIRE(dflt.status == 200);
+    CHECK(dflt.json_payload["current"] == sa_core::app_version());
+}
+
+TEST_CASE("version route (additive): app + injected release version", "[p4][update][routes]") {
+    Router r;
+    register_update_routes(r);
+    auto resp = sat::call_router(r, "GET", "/api/version", {});
+    REQUIRE(resp.status == 200);
+    CHECK(resp.json_payload["ok"] == true);
+    CHECK(resp.json_payload["app"] == sa_core::app_name());
+    CHECK(resp.json_payload["version"] == sa_core::app_version());
+    CHECK(resp.json_payload["core_version"] == sa_core::version());
+    // The injected release version is never empty: dev builds say "dev".
+    CHECK_FALSE(std::string(resp.json_payload["version"]).empty());
 }

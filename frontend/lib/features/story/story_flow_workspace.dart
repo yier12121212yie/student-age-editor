@@ -16,6 +16,7 @@ import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
 import '../resources/image_asset_picker.dart' show TexThumb;
 import 'story_flow_clipboard.dart';
+import 'story_flow_drop.dart';
 import 'story_flow_field_codec.dart';
 import 'story_flow_graph.dart';
 import 'story_flow_inspector.dart';
@@ -26,7 +27,9 @@ import 'story_flow_relayout.dart';
 import 'story_flow_node_presets.dart';
 import 'story_flow_side_toolbar.dart';
 import 'story_flow_suggest.dart';
+import 'story_flow_templates.dart';
 import 'story_logic.dart';
+import 'tombstone_node_widget.dart';
 
 /// C7 观测计数：evtTitles 派生扫描过的 EvtCfg 行数（kDebugMode 才累加）。
 /// 准出：跨多次 _bumpGraph 保持不变（标题只随 EvtCfg 重载重算）。
@@ -169,6 +172,12 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   /// GET /api/cfg 返回的各表 mtime_ns：保存时回传做乐观锁冲突检测。
   final Map<String, int?> _tableMtime = {};
 
+  /// 阶段 4a：P8 墓碑集合的 story 级共享缓存。随 [_load] **单次**拉取
+  /// GET /api/cfg/deleted_talks（旧实现每卡片 FutureBuilder 各拉一次，
+  /// 几十个节点=几十次 HTTP），原样传下给画布；删除成功/保存删行后
+  /// reload() 刷新。生命周期与本工作区（=一个 story 视图）一致。
+  final TombstoneStore _tombstones = TombstoneStore();
+
   // 节点位置
   Map<String, Offset> _positions = {};
   Map<String, dynamic> _flowFile = {};
@@ -218,6 +227,10 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   bool _assetsOpen = false;
   String? _dragHoverNode;
 
+  // M6 拖源面板：「模板」「效果」（与媒体资产面板互斥折叠，窄屏不并排溢出）
+  bool _templatesOpen = false;
+  bool _effectsOpen = false;
+
   @override
   void initState() {
     super.initState();
@@ -238,6 +251,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     // _vpListen 归画布 State 所有，不能在这里 dispose。
     _vpIdle.dispose();
     _positionsRev.dispose();
+    // 画布 State 只订阅不持有，墓碑集合归本工作区 dispose。
+    _tombstones.dispose();
     // 防抖中的布局回写必须立即冲刷：直接 cancel 会吞掉最近 800ms 的
     // 节点移动（切 UI 模式 / 关窗口时最后几次拖拽丢失）
     final pending = _layoutSaveTimer;
@@ -358,6 +373,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       _error = '';
     });
     try {
+      // 阶段 4a：墓碑集合随 story 数据**单次**加载（与全表同批并发，
+      // 不额外增加瀑布延迟；reload 自吞错误，不会拖垮加载）。
+      final tombstonesFuture = _tombstones.reload();
       // S3：TalkCfg/OptionCfg 只探 meta（mtime），不再拉 9.8 万行全表；
       // 舞台数据改由 _selectEventInner 的 ?prefix= 小批量按需加载。
       final results = await Future.wait([
@@ -378,6 +396,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         // 记下磁盘版本号，保存时回传做乐观锁
         _tableMtime[t] = _asInt(results[i]['mtime_ns']);
       }
+      await tombstonesFuture;
       // 卡型声明：插件 flow_cards 在前、内置节点预设在后（first-match 即插件优先）
       List<Map<String, dynamic>> pluginCards = [];
       try {
@@ -467,6 +486,16 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   Future<void> _writeLayoutFile() async {
+    // 阶段 2e 回写守卫（放在防抖到期后的真正写盘点，覆盖全部触发源）：
+    // 1) _flowLoaded==false 说明 .editor_flow.json 读取失败（400 不存在不算），
+    //    此时 _flowFile 是残缺/空映射，回写一次就把磁盘布局整体清空——
+    //    删事件旁路（_flowFile.remove 后 _persistLayout）曾以此事故重演；
+    // 2) 外部 setMod 后用户选了「先留在旧画面」，_flowFile 属旧 Mod，
+    //    写进新沙箱同样是串档。
+    if (!_flowLoaded) return;
+    if (_loadedModRoot != null && widget.state.modRoot != _loadedModRoot) {
+      return;
+    }
     // 序列化推迟到这里结算（C3）：拖拽期间每帧只有 _positionsRev.value++，
     // 全量坐标复制只发生在真正回写前的一次。
     _settleDirtyPositions();
@@ -776,6 +805,10 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         _menuItem('copy', batch ? '复制 ${_selection.nodes.length} 个节点' : '复制'),
         _menuItem('paste', '粘贴', enabled: _hasClip),
         _menuItem(
+          'saveTemplate',
+          batch ? '存为模板（${_selection.nodes.length} 个节点）' : '存为模板',
+        ),
+        _menuItem(
           'relayout',
           '重排 ${_selection.nodes.length} 个节点',
           enabled: batch,
@@ -791,11 +824,15 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
           fieldForEdge(edge.kind) == null ? '终端跳转边（改选项的 nextEvtId）' : '删除连线',
           enabled: fieldForEdge(edge.kind) != null,
         ),
+        // M6：把这条边改挂到孪生字段（nextTalk↔nextTalk2 / talkId↔talkId2）。
+        if (fieldForEdge(edge.kind) case final f? when kEdgeFieldAlternates[f] != null)
+          _menuItem('retargetEdge', '改挂到 ${kEdgeFieldAlternates[f]}'),
         _menuItem('separator', ''),
       ] else ...[
         _menuItem('paste', '粘贴', enabled: _hasClip),
         _menuItem('addTalk', '添加对白'),
         _menuItem('addOption', '添加选项'),
+        _menuItem('templates', '场景模板…'),
         _menuItem('separator', ''),
       ],
       _menuItem('undo', '撤销', enabled: _history.canUndo),
@@ -845,7 +882,31 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         _addTalkAfterSelected();
       case 'addOption':
         _addOptionForSelected();
+      case 'saveTemplate':
+        _saveSelectionAsTemplate();
+      case 'templates':
+        _openTemplateGallery(_worldOfScreen(tap.screen));
+      case 'retargetEdge':
+        if (edge != null) _retargetEdge(edge);
     }
+  }
+
+  /// 画布本地（widget）坐标 → 世界坐标；画布未挂好时退回锚点。
+  Offset _worldOfScreen(Offset local) {
+    final st = _graphKey.currentState;
+    if (st == null) return _addAnchor;
+    return st.viewportListenable.value.toWorld(local);
+  }
+
+  /// 把边改挂到孪生字段（nextTalk↔nextTalk2 / talkId↔talkId2）。
+  void _retargetEdge(FlowEdge edge) {
+    final fromField = fieldForEdge(edge.kind);
+    final toField = fromField == null ? null : kEdgeFieldAlternates[fromField];
+    if (fromField == null || toField == null) return;
+    final record = _stageTalks[edge.from] ?? _stageOpts[edge.from];
+    if (record == null) return;
+    retargetEdgeField(record, fromField, toField, edge.to);
+    setState(_markEdited);
   }
 
   PopupMenuItem<String> _menuItem(
@@ -932,6 +993,176 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       _selection = FlowSelection(nodes: pasted);
       _markEdited();
     });
+  }
+
+  // ---------- 场景模板（M6：模板画廊 / 存为模板 / 连线字段切换）----------
+
+  /// 模板库（mod 作用域 `.editor_flow_templates.json`）：
+  /// merge/remove 都是「现有全文 + 一条改动」整体回写，所以要缓存原文。
+  List<FlowSceneTemplate> _templates = const [];
+  String? _templatesFileText;
+  String? _templatesModRoot;
+  bool _templatesLoading = false;
+
+  Future<void> _ensureTemplatesLoaded() async {
+    if (_templatesLoading) return;
+    if (_templatesModRoot == widget.state.modRoot) return;
+    _templatesLoading = true;
+    var text = '';
+    try {
+      final r = await ApiClient.instance.get(
+        '/api/tools/read',
+        query: {'path': '.editor_flow_templates.json'},
+      );
+      final t = r['text'];
+      if (t is String) text = t;
+    } on ApiException catch (e) {
+      // 400 = 文件不存在 / 沙箱拒绝：空库是正解，其余失败提示但不打断。
+      if (e.statusCode != 400 && mounted) {
+        _toast('模板库读取失败: $e', fluent.InfoBarSeverity.warning);
+      }
+    } catch (e) {
+      if (mounted) _toast('模板库读取失败: $e', fluent.InfoBarSeverity.warning);
+    }
+    if (!mounted) return;
+    setState(() {
+      _templatesFileText = text;
+      _templates = decodeTemplatesFile(text);
+      _templatesModRoot = widget.state.modRoot;
+      _templatesLoading = false;
+    });
+  }
+
+  Future<void> _writeTemplatesFile(String content) async {
+    await ApiClient.instance.put(
+      '/api/tools/write',
+      body: {'path': '.editor_flow_templates.json', 'content': content},
+    );
+    _templatesFileText = content;
+    setState(() => _templates = decodeTemplatesFile(content));
+  }
+
+  /// 打开模板画廊；选中模板后以 [worldOrigin]（画布世界坐标）为落点应用。
+  /// 内置模板与「我的模板」文件合并展示，内置不可删（deletable 只认 isUser）。
+  Future<void> _openTemplateGallery([Offset? worldOrigin]) async {
+    await _ensureTemplatesLoaded();
+    if (!mounted) return;
+    final t = await showFlowTemplateGallery(
+      context,
+      templates: [...kBuiltinSceneTemplates, ..._templates],
+      onDelete: _deleteTemplate,
+    );
+    if (t == null || !mounted) return;
+    _applyTemplate(t, worldOrigin ?? _canvasCenterWorld);
+  }
+
+  /// 画布可视区中心的世界坐标（模板默认落点）。
+  Offset get _canvasCenterWorld {
+    final st = _graphKey.currentState;
+    final box = _graphKey.currentContext?.findRenderObject() as RenderBox?;
+    if (st == null || box == null || !box.hasSize) return _addAnchor;
+    final vp = st.viewportListenable.value;
+    return vp.toWorld(box.size.center(Offset.zero));
+  }
+
+  void _applyTemplate(FlowSceneTemplate t, Offset origin) {
+    final evtId = _evtId;
+    if (evtId == null) {
+      _toast('请先选择事件', fluent.InfoBarSeverity.warning);
+      return;
+    }
+    // 与粘贴子图同一条链路：ID 重编号 + 越界保护都委托 cloneSubgraphInto。
+    final res = applySceneTemplate(
+      evtId: evtId,
+      prefixes: _prefixes,
+      talks: _stageTalks,
+      opts: _stageOpts,
+      origin: origin,
+      template: t,
+    );
+    if (!res.ok) {
+      _toast(res.error ?? '模板应用失败', fluent.InfoBarSeverity.error);
+      return;
+    }
+    res.positions.forEach((id, pos) => _positions[id] = pos);
+    _markLayoutDirty();
+    setState(() {
+      _selection = FlowSelection(nodes: res.newNodes);
+      _markEdited();
+    });
+    _toast('已按「${t.name}」创建 ${res.newNodes.length} 个节点',
+        fluent.InfoBarSeverity.success);
+  }
+
+  /// 把当前选中子图存为模板（我的模板）：命名 → 抽取 → 落盘。
+  Future<void> _saveSelectionAsTemplate() async {
+    final sel = _selection.nodes;
+    if (sel.isEmpty) {
+      _toast('请先选中要存为模板的节点', fluent.InfoBarSeverity.warning);
+      return;
+    }
+    final name = await _promptTemplateName();
+    if (name == null || !mounted) return;
+    final t = extractSceneTemplate(
+      selected: sel,
+      talks: _stageTalks,
+      opts: _stageOpts,
+      positions: _positions,
+      name: name,
+      id: 'user_${DateTime.now().millisecondsSinceEpoch}',
+    );
+    if (t.nodes.isEmpty) {
+      _toast('选区里没有可入模板的节点', fluent.InfoBarSeverity.warning);
+      return;
+    }
+    try {
+      await _writeTemplatesFile(mergeTemplateIntoFile(_templatesFileText, t));
+      _templatesModRoot = widget.state.modRoot;
+      _toast('模板「$name」已保存（${t.nodes.length} 个节点）',
+          fluent.InfoBarSeverity.success);
+    } catch (e) {
+      _toast('模板保存失败: $e', fluent.InfoBarSeverity.error);
+    }
+  }
+
+  Future<void> _deleteTemplate(String id) async {
+    try {
+      await _writeTemplatesFile(removeTemplateFromId(_templatesFileText, id));
+    } catch (e) {
+      if (mounted) _toast('模板删除失败: $e', fluent.InfoBarSeverity.error);
+    }
+  }
+
+  Future<String?> _promptTemplateName() {
+    final ctl = TextEditingController(text: '新模板');
+    return fluent.showDialog<String>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: const Text('存为场景模板'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('模板保存到当前 Mod，之后在「场景模板」画廊一键创建。'),
+            const SizedBox(height: 12),
+            fluent.TextBox(controller: ctl, autofocus: true),
+          ],
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          fluent.FilledButton(
+            onPressed: () {
+              final name = ctl.text.trim();
+              Navigator.pop(ctx, name.isEmpty ? null : name);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// 已保存内容：两张表各探一次后端栈，都空才提示；成功后重读两表重建舞台。
@@ -1141,6 +1372,11 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       return false;
     }
     if (!mounted) return false;
+    // 阶段 4a：补丁保存删了行 = 后端可能新立墓碑，刷新共享集合
+    // （单飞拉取，内容变化才 bump 版本；不发则画布墓碑态滞后到重载）。
+    if (talkPatch.remove.isNotEmpty || optPatch.remove.isNotEmpty) {
+      unawaited(_tombstones.reload());
+    }
     setState(() => _dirty = false);
     _toast('已保存', fluent.InfoBarSeverity.success);
     return true;
@@ -2312,6 +2548,136 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     );
   }
 
+  // ---------- 统一拖放接受（M6 深度融合） ----------
+
+  /// 全局屏幕坐标（DragTarget details.offset）→ 画布本地坐标。
+  /// 画布 RenderBox 未挂好时原样返回（与画布位于窗口原点的旧行为等价）。
+  Offset _canvasLocal(Offset global) {
+    final box = _graphKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize) return global;
+    return box.globalToLocal(global);
+  }
+
+  /// 拖放统一入口：命中节点 → 资产写字段（旧语义）/ 效果追加行；
+  /// 空白落点 → 按拖源类型在落点新建内容。
+  void _acceptFlowDrop(String? nodeId, Offset world, FlowDropRef ref) {
+    switch (ref) {
+      case FlowAssetDropRef(:final asset):
+        if (nodeId != null) {
+          _applyAssetDrop(nodeId, asset);
+          return;
+        }
+        _spawnTalkForAsset(world, asset);
+      case FlowTemplateDropRef(:final template):
+        // 模板不论是否命中节点都以落点为原点整组创建（入口落在落点）
+        _applyTemplate(template, world);
+      case FlowEffectDropRef effect:
+        if (nodeId != null) {
+          _appendEffectRow(nodeId, effect);
+          return;
+        }
+        _spawnTalkForEffect(world, effect);
+    }
+  }
+
+  /// 空白落点新建一个种子对白节点（三类「空白建内容」的公共尾部）。
+  /// 返回新节点 id；ID 分配越界/未选事件时 toast 并返回 null。
+  String? _spawnTalkAt(
+    Offset world, {
+    String? content,
+    Map<String, dynamic> seed = const {},
+  }) {
+    final evtId = _evtId;
+    if (evtId == null) {
+      _toast('请先选择事件', fluent.InfoBarSeverity.warning);
+      return null;
+    }
+    final newId = appendTalkId(null, evtId, _stageTalks);
+    if (!_talkIdUsable(newId)) {
+      _toast(
+        newId.isEmpty
+            ? '无法分配对白 ID'
+            : '该事件的对白编号已用尽（再分配会越出事件前缀），无法添加',
+        fluent.InfoBarSeverity.warning,
+      );
+      return null;
+    }
+    _stageTalks[newId] = {
+      'id': int.tryParse(newId) ?? 0,
+      'roleIds': <dynamic>[],
+      'content': content ?? '【新对白】',
+      'nextTalk': <dynamic>[],
+      'nextTalk2': <dynamic>[],
+      'option': <dynamic>[],
+      ...seed,
+    };
+    // 落点即节点锚点（世界坐标），登记进 _positions 并随布局回写落盘
+    _positions[newId] = world;
+    _markLayoutDirty();
+    setState(() {
+      _selection = FlowSelection.ofNode(newId);
+      _markEdited();
+    });
+    return newId;
+  }
+
+  /// 空白落点放媒体资产：先建种子对白节点，再原样走 [_applyAssetDrop]
+  /// 的既有匹配链路写字段（BgCfg/AudioCfg url 匹配、相册 CG 插播放CG、
+  /// 多候选弹选择框），与拖到已有节点完全同一套语义。
+  void _spawnTalkForAsset(Offset world, FlowAssetRef ref) {
+    final isTex = ref.kind != 'aud';
+    final id = _spawnTalkAt(
+      world,
+      content: isTex ? '【贴图：${ref.key}】' : '【音频：${ref.key}】',
+    );
+    if (id == null) return;
+    _applyAssetDrop(id, ref);
+  }
+
+  /// 空白落点放效果行：新建带该效果的对白节点（效果字段 = 2D 数组单行）。
+  void _spawnTalkForEffect(Offset world, FlowEffectDropRef effect) {
+    final row = effect.parseRow();
+    if (row == null) {
+      _toast(
+        '效果码「${effect.code}」无法解析为效果行',
+        fluent.InfoBarSeverity.warning,
+      );
+      return;
+    }
+    final label = effect.desc.isEmpty ? effect.code : effect.desc;
+    final id = _spawnTalkAt(world, content: '【$label】', seed: {
+      'effect': [row],
+    });
+    if (id == null) return;
+    _toast('已创建带效果的对白节点：$label', fluent.InfoBarSeverity.success);
+  }
+
+  /// 命中已有节点拖入效果行：追加进 effect 2D 数组（不覆盖已有行），
+  /// 与资产写字段同一条编辑链路（同步内联输入框 + 合并撤销粒度）。
+  void _appendEffectRow(String nodeId, FlowEffectDropRef effect) {
+    final rec = _stageTalks[nodeId];
+    if (rec == null) return;
+    final row = effect.parseRow();
+    if (row == null) {
+      _toast(
+        '效果码「${effect.code}」无法解析为效果行',
+        fluent.InfoBarSeverity.warning,
+      );
+      return;
+    }
+    final existing = rec['effect'];
+    final rows = <dynamic>[
+      if (existing is List)
+        for (final r in existing) r is List ? [...r] : r,
+      row,
+    ];
+    rec['effect'] = rows;
+    _syncNodeCtl(nodeId, 'effect');
+    setState(() => _markEdited(mergeKey: 'field:$nodeId:effect'));
+    final label = effect.desc.isEmpty ? effect.code : effect.desc;
+    _toast('已为对白 $nodeId 追加效果：$label', fluent.InfoBarSeverity.success);
+  }
+
   /// 多个候选时弹选择框（id + name + url 列表）。
   Future<(String, Map<String, dynamic>)?> _pickCfgDialog(
     String tableName,
@@ -2357,7 +2723,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
-                          color: const Color(0xFF6C5CE7),
+                          color: accentColor,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -2436,24 +2802,74 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
               flowCards: _flowCards,
               assetsOpen: _assetsOpen,
               aiOpen: widget.aiOpen,
-              onToggleAssets: () => setState(() => _assetsOpen = !_assetsOpen),
+              onToggleAssets: () => setState(() {
+                _assetsOpen = !_assetsOpen;
+                // 三个拖源面板互斥折叠：窄窗口下不并排溢出
+                if (_assetsOpen) {
+                  _templatesOpen = false;
+                  _effectsOpen = false;
+                }
+              }),
               onToggleAi: widget.onToggleAi ?? () {},
               onAddTalk: _addTalkAfterSelected,
               onAddOption: _addOptionForSelected,
               onAddCard: _addPluginCard,
+              onOpenTemplates: _openTemplateGallery,
+              templatesOpen: _templatesOpen,
+              onToggleTemplates: () {
+                setState(() {
+                  _templatesOpen = !_templatesOpen;
+                  if (_templatesOpen) {
+                    _assetsOpen = false;
+                    _effectsOpen = false;
+                  }
+                });
+                // 「我的模板」并入面板展示（内置库恒在；读文件失败静默保持内置）
+                if (_templatesOpen) unawaited(_ensureTemplatesLoaded());
+              },
+              effectsOpen: _effectsOpen,
+              onToggleEffects: () => setState(() {
+                _effectsOpen = !_effectsOpen;
+                if (_effectsOpen) {
+                  _assetsOpen = false;
+                  _templatesOpen = false;
+                }
+              }),
               onOpenPlugins: widget.onOpenPlugins,
               onOpenSettings: widget.onOpenSettings,
             ),
           ),
         ),
-        // 媒体资产浮动面板
+        // 浮动拖源面板（三选一互斥）：媒体资产 / 模板 / 效果
         if (_assetsOpen)
           Positioned(
             left: 62,
             top: 48,
             bottom: 16,
             width: 300,
-            child: FlowAssetPanel(state: widget.state),
+            child: FlowAssetPanel(
+              state: widget.state,
+              enabled: _evtId != null,
+            ),
+          )
+        else if (_templatesOpen)
+          Positioned(
+            left: 62,
+            top: 48,
+            bottom: 16,
+            width: FlowTemplatePalette.panelWidth,
+            child: FlowTemplatePalette(
+              enabled: _evtId != null,
+              templates: [...kBuiltinSceneTemplates, ..._templates],
+            ),
+          )
+        else if (_effectsOpen)
+          Positioned(
+            left: 62,
+            top: 48,
+            bottom: 16,
+            width: FlowEffectPalette.panelWidth,
+            child: FlowEffectPalette(enabled: _evtId != null),
           ),
         // 右侧完整参数面板（仅单选非 missing 节点）。top:48 让开右上操作簇。
         if (_inspectorTarget case final id?)
@@ -2466,6 +2882,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
               nodeId: id,
               cfgName: _cfgOf(id)!,
               record: _nodeRec(id)!,
+              noCodeMode: widget.state.noCodeMode,
+              gameDicts: widget.state.gameDicts,
               metas: _metasFor(_cfgOf(id)!),
               fieldController: _nodeCtlFor,
               fieldFocus: _nodeFocusFor,
@@ -2561,10 +2979,10 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     // 每帧跟着重绘。
     return ValueListenableBuilder<int>(
       valueListenable: _positionsRev,
-      builder: (context, positionsRev, _) => DragTarget<FlowAssetRef>(
+      builder: (context, positionsRev, _) => DragTarget<FlowDropRef>(
         onWillAcceptWithDetails: (_) => true,
         onMove: (details) {
-          final id = _graphKey.currentState?.hitNodeAt(details.offset);
+          final id = _graphKey.currentState?.hitNodeAt(_canvasLocal(details.offset));
           if (id != _dragHoverNode) setState(() => _dragHoverNode = id);
         },
         onLeave: (_) {
@@ -2573,9 +2991,12 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
           }
         },
         onAcceptWithDetails: (details) {
-          final node = _graphKey.currentState?.hitNodeAt(details.offset);
+          final local = _canvasLocal(details.offset);
+          final node = _graphKey.currentState?.hitNodeAt(local);
+          // 落点世界坐标 = 画布本地坐标过视口逆变换（空白落点建节点用）
+          final world = _worldOfScreen(local);
           setState(() => _dragHoverNode = null);
-          if (node != null) _applyAssetDrop(node, details.data);
+          _acceptFlowDrop(node, world, details.data);
         },
         builder: (context, candidate, rejected) {
           _syncViewportSource();
@@ -2587,6 +3008,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             selection: _selection,
             expandedNodes: _expandedNodes,
             highlightNode: _dragHoverNode,
+            // 阶段 4a：story 级共享墓碑集合，卡片同步读（每 story 一次
+            // GET /api/cfg/deleted_talks，取代旧的每卡片一次）。
+            tombstones: _tombstones,
             onContextMenu: _onContextMenu,
             onUndo: _undo,
             onRedo: _redo,
@@ -2654,12 +3078,12 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: const Color(0xFFE67E22).withValues(alpha: 0.15),
+                color: palette.flowCheck.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text(
+              child: Text(
                 '未保存',
-                style: TextStyle(fontSize: 10.5, color: Color(0xFFE67E22)),
+                style: TextStyle(fontSize: 10.5, color: palette.flowCheck),
               ),
             ),
           ],
@@ -2698,7 +3122,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: primary
-                  ? const Color(0xFF6C5CE7)
+                  ? accentColor
                   : enabled
                   ? palette.hover
                   : Colors.transparent,
@@ -2711,7 +3135,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                   icon,
                   size: 13,
                   color: primary
-                      ? Colors.white
+                      ? palette.onAccent
                       : enabled
                       ? palette.textSecondary
                       : palette.iconDisabled,
@@ -2722,7 +3146,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                   style: TextStyle(
                     fontSize: 11.5,
                     color: primary
-                        ? Colors.white
+                        ? palette.onAccent
                         : enabled
                         ? palette.textPrimary
                         : palette.iconDisabled,
@@ -2889,7 +3313,7 @@ class _EventChipState extends State<_EventChip> {
                           borderRadius: BorderRadius.circular(5),
                           border: Border.all(
                             color: sel
-                                ? const Color(0xFF6C5CE7)
+                                ? accentColor
                                 : Colors.transparent,
                           ),
                         ),
@@ -2899,7 +3323,7 @@ class _EventChipState extends State<_EventChip> {
                               Icons.event_note,
                               size: 13,
                               color: sel
-                                  ? const Color(0xFF6C5CE7)
+                                  ? accentColor
                                   : palette.textHint,
                             ),
                             const SizedBox(width: 6),
@@ -2997,10 +3421,10 @@ class _EventChipState extends State<_EventChip> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.alt_route,
                     size: 14,
-                    color: Color(0xFF6C5CE7),
+                    color: accentColor,
                   ),
                   const SizedBox(width: 6),
                   Flexible(
@@ -3091,7 +3515,7 @@ class _ModChip extends StatelessWidget {
                           : Icons.inventory_2_outlined,
                       size: 14,
                       color: m.name == modName
-                          ? const Color(0xFF6C5CE7)
+                          ? accentColor
                           : palette.textHint,
                     ),
                     const SizedBox(width: 8),
@@ -3157,10 +3581,10 @@ class _ModChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
+              Icon(
                 Icons.inventory_2_outlined,
                 size: 14,
-                color: Color(0xFF6C5CE7),
+                color: accentColor,
               ),
               const SizedBox(width: 6),
               Flexible(

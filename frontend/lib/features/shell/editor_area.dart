@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+
 import '../../core/history_client.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
@@ -75,81 +77,89 @@ class _EditorAreaState extends State<EditorArea> {
             ),
             Divider(height: 1, color: palette.border),
           ],
-        Expanded(
-          child: ListenableBuilder(
-            listenable: widget.controller,
-            builder: (context, _) {
-              final doc = widget.controller.current;
-              Widget content;
-              if (doc == null) {
-                content = const _WelcomeView(key: ValueKey('welcome'));
-              } else if (doc.kind == 'cfg') {
-                content = SchemaEditorView(
-                  key: ValueKey(doc),
-                  state: widget.state,
-                  cfgName: doc.cfgName,
-                  classic: widget.classic,
-                  reloadToken: _cfgReloadToken,
-                  onPreview: (evtId) =>
-                      widget.controller.open(OpenDoc.preview(eventId: evtId)),
-                  onOpenSearch: widget.onOpenSearch,
-                );
-              } else if (doc.kind == 'page') {
-                final page = pageById(doc.pageId);
-                if (page != null) {
-                  content = EditorPageView(
+          Expanded(
+            child: ListenableBuilder(
+              listenable: widget.controller,
+              builder: (context, _) {
+                final doc = widget.controller.current;
+                Widget content;
+                if (doc == null) {
+                  content = const _WelcomeView(key: ValueKey('welcome'));
+                } else if (doc.kind == 'cfg') {
+                  content = SchemaEditorView(
                     key: ValueKey(doc),
                     state: widget.state,
-                    page: page,
+                    cfgName: doc.cfgName,
                     classic: widget.classic,
+                    reloadToken: _cfgReloadToken,
+                    onDirtyChanged: (v) => widget.controller.markDirty(doc, v),
                     onPreview: (evtId) =>
                         widget.controller.open(OpenDoc.preview(eventId: evtId)),
                     onOpenSearch: widget.onOpenSearch,
                   );
+                } else if (doc.kind == 'page') {
+                  final page = pageById(doc.pageId);
+                  if (page != null) {
+                    content = EditorPageView(
+                      key: ValueKey(doc),
+                      state: widget.state,
+                      page: page,
+                      classic: widget.classic,
+                      onPreview: (evtId) => widget.controller.open(
+                        OpenDoc.preview(eventId: evtId),
+                      ),
+                      onOpenSearch: widget.onOpenSearch,
+                    );
+                  } else {
+                    content = const _WelcomeView(key: ValueKey('welcome'));
+                  }
+                } else if (doc.kind == 'preview') {
+                  final view = EventPreviewView(
+                    key: ValueKey(doc),
+                    state: widget.state,
+                    controller: widget.controller,
+                    eventId: doc.eventId,
+                  );
+                  content = !widget.classic
+                      ? view
+                      : Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: SectionCard(title: '事件预览', child: view),
+                        );
                 } else {
-                  content = const _WelcomeView(key: ValueKey('welcome'));
+                  final view = FileViewer(
+                    key: ValueKey(doc),
+                    state: widget.state,
+                    path: doc.path,
+                    title: doc.title,
+                  );
+                  content = !widget.classic
+                      ? view
+                      : Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: SectionCard(title: '文件 ', child: view),
+                        );
                 }
-              } else if (doc.kind == 'preview') {
-                final view = EventPreviewView(
-                  key: ValueKey(doc),
-                  state: widget.state,
-                  controller: widget.controller,
-                  eventId: doc.eventId,
+                return AnimatedSwitcher(
+                  duration: AppMotion.normal,
+                  switchInCurve: AppMotion.easeOut,
+                  switchOutCurve: AppMotion.easeOut,
+                  transitionBuilder: (child, anim) {
+                    final slide = Tween<Offset>(
+                      begin: const Offset(0, 0.02),
+                      end: Offset.zero,
+                    ).animate(anim);
+                    return FadeTransition(
+                      opacity: anim,
+                      child: SlideTransition(position: slide, child: child),
+                    );
+                  },
+                  child: content,
                 );
-                content = !widget.classic
-                    ? view
-                    : Padding(
-                        padding: const EdgeInsets.all(10),
-                        child: SectionCard(title: '事件预览', child: view),
-                      );
-              } else {
-                final view = FileViewer(
-                  key: ValueKey(doc),
-                  state: widget.state,
-                  path: doc.path,
-                  title: doc.title,
-                );
-                content = !widget.classic
-                    ? view
-                    : Padding(
-                        padding: const EdgeInsets.all(10),
-                        child: SectionCard(title: '文件 ', child: view),
-                      );
-              }
-              return AnimatedSwitcher(
-                duration: AppMotion.normal,
-                switchInCurve: AppMotion.easeOut,
-                switchOutCurve: AppMotion.easeOut,
-                transitionBuilder: (child, anim) {
-                  final slide = Tween<Offset>(begin: const Offset(0, 0.02), end: Offset.zero).animate(anim);
-                  return FadeTransition(opacity: anim, child: SlideTransition(position: slide, child: child));
-                },
-                child: content,
-              );
-            },
+              },
+            ),
           ),
-        ),
-      ],
+        ],
       ),
     );
   }
@@ -160,6 +170,51 @@ class _TabBar extends StatelessWidget {
   final EditorController controller;
   final VoidCallback? onUndo;
   final VoidCallback? onRedo;
+
+  /// 页签脏守卫确认（阶段 2b）：视图切走后其内存改动即丢失，必须问一句。
+  Future<bool> _confirmDiscard(
+    BuildContext context,
+    OpenDoc doc,
+    String action,
+  ) async {
+    final ok = await fluent.showDialog<bool>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: Text('$action${doc.title}'),
+        content: const Text(
+          '该页签有未保存修改，继续将丢失这些改动。',
+          style: TextStyle(fontSize: 12.5),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          fluent.FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Future<void> _switchTo(BuildContext context, OpenDoc target) async {
+    final cur = controller.current;
+    if (cur != null && cur != target && controller.isDirty(cur)) {
+      if (!await _confirmDiscard(context, cur, '切换到其它页签')) return;
+    }
+    controller.open(target);
+  }
+
+  Future<void> _closeTab(BuildContext context, OpenDoc doc) async {
+    if (controller.isDirty(doc) && !await _confirmDiscard(context, doc, '关闭')) {
+      return;
+    }
+    controller.closeDoc(doc);
+  }
+
   static IconData _tabIcon(OpenDoc doc) {
     if (doc.kind == 'cfg') return FluentIcons.table_24_regular;
     final i = doc.path.lastIndexOf('.');
@@ -189,7 +244,10 @@ class _TabBar extends StatelessWidget {
               Expanded(
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 4,
+                  ),
                   itemCount: controller.docs.length,
                   separatorBuilder: (_, _) => const SizedBox(width: 2),
                   itemBuilder: (context, i) {
@@ -198,27 +256,28 @@ class _TabBar extends StatelessWidget {
                     return _TabItem(
                       doc: doc,
                       selected: selected,
-                      onTap: () => controller.open(doc),
-                      onClose: () => controller.close(i),
+                      onTap: () => _switchTo(context, doc),
+                      onClose: () => _closeTab(context, doc),
                       icon: _tabIcon(doc),
                     );
                   },
                 ),
               ),
-              // 撤销/重做仅对 cfg 文档生效（历史按表维度记录在 .editor_history）
-              if (!isMob) ...[
-                _HistoryButton(
-                  icon: FluentIcons.arrow_undo_24_regular,
-                  label: '撤销 (Ctrl+Z)',
-                  onTap: canHistory ? onUndo : null,
-                ),
-                _HistoryButton(
-                  icon: FluentIcons.arrow_redo_24_regular,
-                  label: '重做 (Ctrl+Y)',
-                  onTap: canHistory ? onRedo : null,
-                ),
-                const SizedBox(width: 4),
-              ],
+              // 撤销/重做仅对 cfg 文档生效（历史按表维度记录在 .editor_history）。
+              // 移动端同样提供（触屏唯一的 undo 入口，否则该能力只能靠键盘）。
+              _HistoryButton(
+                icon: FluentIcons.arrow_undo_24_regular,
+                label: isMob ? '撤销' : '撤销 (Ctrl+Z)',
+                touch: isMob,
+                onTap: canHistory ? onUndo : null,
+              ),
+              _HistoryButton(
+                icon: FluentIcons.arrow_redo_24_regular,
+                label: isMob ? '重做' : '重做 (Ctrl+Y)',
+                touch: isMob,
+                onTap: canHistory ? onRedo : null,
+              ),
+              const SizedBox(width: 4),
             ],
           ),
         );
@@ -229,10 +288,18 @@ class _TabBar extends StatelessWidget {
 
 /// 标签栏右侧的撤销/重做小按钮（仅 cfg 文档激活时可用）。
 class _HistoryButton extends StatefulWidget {
-  const _HistoryButton({required this.icon, required this.label, this.onTap});
+  const _HistoryButton({
+    required this.icon,
+    required this.label,
+    this.onTap,
+    this.touch = false,
+  });
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
+
+  /// 移动端：热区放大到接近整条 44 标签栏，图标增大。
+  final bool touch;
   @override
   State<_HistoryButton> createState() => _HistoryButtonState();
 }
@@ -242,6 +309,7 @@ class _HistoryButtonState extends State<_HistoryButton> {
   @override
   Widget build(BuildContext context) {
     final enabled = widget.onTap != null;
+    final hoverBg = enabled && _hover ? palette.panel : Colors.transparent;
     return Tooltip(
       message: widget.label,
       waitDuration: const Duration(milliseconds: 500),
@@ -251,19 +319,24 @@ class _HistoryButtonState extends State<_HistoryButton> {
         onExit: (_) => setState(() => _hover = false),
         child: GestureDetector(
           onTap: widget.onTap,
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
-            padding: const EdgeInsets.all(5),
-            decoration: BoxDecoration(
-              color: enabled && _hover ? palette.panel : Colors.transparent,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Icon(
-              widget.icon,
-              size: 14,
-              color: enabled
-                  ? (_hover ? palette.textHigh : palette.textSecondary)
-                  : palette.textHint,
+          child: SizedBox(
+            width: widget.touch ? 40 : null,
+            height: widget.touch ? 40 : null,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+              padding: EdgeInsets.all(widget.touch ? 8 : 5),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: hoverBg,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Icon(
+                widget.icon,
+                size: widget.touch ? 18 : 14,
+                color: enabled
+                    ? (_hover ? palette.textHigh : palette.textSecondary)
+                    : palette.textHint,
+              ),
             ),
           ),
         ),
@@ -273,7 +346,13 @@ class _HistoryButtonState extends State<_HistoryButton> {
 }
 
 class _TabItem extends StatefulWidget {
-  const _TabItem({required this.doc, required this.selected, required this.onTap, required this.onClose, required this.icon});
+  const _TabItem({
+    required this.doc,
+    required this.selected,
+    required this.onTap,
+    required this.onClose,
+    required this.icon,
+  });
   final OpenDoc doc;
   final bool selected;
   final VoidCallback onTap;
@@ -303,8 +382,8 @@ class _TabItemState extends State<_TabItem> {
             color: widget.selected
                 ? palette.card
                 : _hover
-                    ? palette.panel
-                    : palette.bg,
+                ? palette.panel
+                : palette.bg,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: widget.selected ? palette.borderHover : Colors.transparent,
@@ -316,7 +395,11 @@ class _TabItemState extends State<_TabItem> {
               TweenAnimationBuilder<double>(
                 tween: Tween(begin: 0, end: widget.selected ? 1 : 0),
                 duration: AppMotion.fast,
-                builder: (context, v, child) => Icon(widget.icon, size: 13, color: Color.lerp(palette.textMuted, const Color(0xFF6C5CE7), v)),
+                builder: (context, v, child) => Icon(
+                  widget.icon,
+                  size: 13,
+                  color: Color.lerp(palette.textMuted, accentColor, v),
+                ),
                 child: Icon(widget.icon),
               ),
               const SizedBox(width: 6),
@@ -324,8 +407,14 @@ class _TabItemState extends State<_TabItem> {
                 duration: AppMotion.fast,
                 style: TextStyle(
                   fontSize: 12,
-                  fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal,
-                  color: widget.selected ? palette.textHigh : _hover ? palette.textPrimary : palette.textSecondary,
+                  fontWeight: widget.selected
+                      ? FontWeight.w600
+                      : FontWeight.normal,
+                  color: widget.selected
+                      ? palette.textHigh
+                      : _hover
+                      ? palette.textPrimary
+                      : palette.textSecondary,
                 ),
                 child: Text(widget.doc.title),
               ),
@@ -343,7 +432,9 @@ class _TabItemState extends State<_TabItem> {
                       duration: AppMotion.fast,
                       padding: const EdgeInsets.all(2),
                       decoration: BoxDecoration(
-                        color: _closeHover ? palette.borderHover : Colors.transparent,
+                        color: _closeHover
+                            ? palette.borderHover
+                            : Colors.transparent,
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: AnimatedRotation(
@@ -352,7 +443,9 @@ class _TabItemState extends State<_TabItem> {
                         child: Icon(
                           FluentIcons.dismiss_24_regular,
                           size: 12,
-                          color: _closeHover ? palette.textHigh : palette.textHint,
+                          color: _closeHover
+                              ? palette.textHigh
+                              : palette.textHint,
                         ),
                       ),
                     ),
@@ -373,14 +466,21 @@ class _WelcomeView extends StatefulWidget {
   State<_WelcomeView> createState() => _WelcomeViewState();
 }
 
-class _WelcomeViewState extends State<_WelcomeView> with SingleTickerProviderStateMixin {
+class _WelcomeViewState extends State<_WelcomeView>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _c;
   late final Animation<double> _float;
   @override
   void initState() {
     super.initState();
-    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200))..repeat(reverse: true);
-    _float = Tween<double>(begin: -6, end: 6).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat(reverse: true);
+    _float = Tween<double>(
+      begin: -6,
+      end: 6,
+    ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
   }
 
   @override
@@ -410,40 +510,72 @@ class _WelcomeViewState extends State<_WelcomeView> with SingleTickerProviderSta
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: palette.surface),
                   boxShadow: [
-                    BoxShadow(color: const Color(0xFF6C5CE7).withValues(alpha: 0.12), blurRadius: 24, offset: const Offset(0, 8)),
+                    BoxShadow(
+                      color: accentColor.withValues(alpha: 0.12),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
                   ],
                 ),
-                child: const Icon(FluentIcons.box_24_regular, size: 36, color: Color(0xFF6C5CE7)),
+                child: Icon(
+                  FluentIcons.box_24_regular,
+                  size: 36,
+                  color: accentColor,
+                ),
               ),
             ),
             const SizedBox(height: 20),
             FadeSlide(
               delay: Duration(milliseconds: 120),
-              child: Text('学生时代模组编辑器', style: TextStyle(fontSize: 20, color: palette.textHigh, fontWeight: FontWeight.w600)),
+              child: Text(
+                '学生时代模组编辑器',
+                style: TextStyle(
+                  fontSize: 20,
+                  color: palette.textHigh,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
             const SizedBox(height: 8),
             FadeSlide(
               delay: Duration(milliseconds: 220),
               offset: Offset(0, 8),
-              child: Text('从左侧选择一个模组，然后从配置表开始编辑', style: TextStyle(fontSize: 13, color: palette.textMuted)),
+              child: Text(
+                '从左侧选择一个模组，然后从配置表开始编辑',
+                style: TextStyle(fontSize: 13, color: palette.textMuted),
+              ),
             ),
             const SizedBox(height: 20),
             // 提示按平台区分：移动端没有键盘快捷键，引导用顶部搜索入口
             FadeSlide(
               delay: const Duration(milliseconds: 360),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(color: palette.card, borderRadius: BorderRadius.circular(20), border: Border.all(color: palette.surface)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: palette.card,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: palette.surface),
+                ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(FluentIcons.lightbulb_24_regular, size: 12, color: Color(0xFF6C5CE7)),
+                    Icon(
+                      FluentIcons.lightbulb_24_regular,
+                      size: 12,
+                      color: accentColor,
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       MediaQuery.sizeOf(context).width < 720
                           ? '提示：点击右上角搜索图标全局搜索配置'
                           : '提示：按 Ctrl+F 全局搜索配置',
-                      style: TextStyle(fontSize: 11, color: palette.textSecondary),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: palette.textSecondary,
+                      ),
                     ),
                   ],
                 ),

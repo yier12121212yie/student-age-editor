@@ -341,6 +341,40 @@ std::vector<FieldSuggestion> BackendApi::ParseRoles(const Json& body) {
     return out;
 }
 
+UpdateResult BackendApi::ParseUpdate(const Json& body) {
+    UpdateResult r;
+    if (!body.is_object()) {
+        r.error = "官方版本信息格式异常";
+        return r;
+    }
+    r.ok = body.value("ok", false);
+    // current 在成功/失败两种形态里都有，先取出来（失败时弹窗也显示当前版本）。
+    r.current = body.value("current", std::string());
+    if (!r.ok) {
+        r.error = body.value("error", std::string("检查更新失败"));
+        return r;
+    }
+    r.latest_tag = body.value("latest_tag", std::string());
+    r.latest_name = body.value("latest_name", std::string());
+    r.published_at = body.value("published_at", std::string());
+    r.html_url = body.value("html_url", std::string());
+    r.notes = body.value("notes", std::string());
+    r.update_available = body.value("update_available", false);
+    r.prerelease = body.value("prerelease", false);
+    if (body.contains("assets") && body.at("assets").is_array()) {
+        for (const Json& a : body.at("assets")) {
+            if (!a.is_object()) continue;
+            UpdateAsset asset;
+            asset.name = a.value("name", std::string());
+            asset.url = a.value("url", std::string());
+            if (a.contains("size") && a.at("size").is_number())
+                asset.size = a.at("size").get<long long>();
+            r.assets.push_back(std::move(asset));
+        }
+    }
+    return r;
+}
+
 SaveResult BackendApi::InterpretSave(int http_status, const Json& body) {
     SaveResult r;
     std::string code =
@@ -381,8 +415,11 @@ Json BackendApi::Call(const std::string& method, const std::string& path, const 
     req.headers.emplace_back("Content-Type", "application/json");
     req.timeout_seconds = 30.0;
     if (body) req.body = body->dump();
-    // 安全批次 B：连桌面后端（loopback）时携带进程令牌。
+    // 安全批次 B：连桌面后端（loopback）时携带进程令牌；loopback 必须跳过系统
+    // 代理会话，否则默认 WinHTTP 会话会把 127.0.0.1 交给企业代理吞掉，探测对
+    // 活着的后端报 12029（bug #8）。
     if (is_loopback_base(base_)) {
+        req.bypass_proxy = true;
         static const std::string kBackendToken = read_backend_token();
         if (!kBackendToken.empty())
             req.headers.emplace_back("X-Backend-Token", kBackendToken);
@@ -681,6 +718,31 @@ CloudSyncSummary BackendApi::CloudSync(const std::string& provider_id,
         return s;
     }
     return InterpretSync(body);
+}
+
+UpdateResult BackendApi::CheckUpdate(const std::string& current, std::string* err) {
+    UpdateResult r;
+    if (err) err->clear();
+    // timeout 交给后端的 GitHub 请求（默认 6 秒是同一口径）；current 非空时
+    // 显式带上，空则由后端用它自己编译进去的版本号兜底。
+    std::string path = "/api/update/check?timeout=6";
+    if (!current.empty()) path += "&current=" + sa_core::http::quote_component(current);
+    int status = 0;
+    Json body = Call("GET", path, nullptr, &status, err);
+    if (!err->empty()) {
+        r.error = *err;
+        return r;
+    }
+    if (status != 200) {
+        r.error = body.value("error",
+                             std::string("检查更新失败 (HTTP " + std::to_string(status) + ")"));
+        *err = r.error;
+        return r;
+    }
+    r = ParseUpdate(body);
+    // 该路由失败也回 200 + {ok:false}：把 ok 翻成 *err，调用方两种口径都能用。
+    if (!r.ok) *err = r.error;
+    return r;
 }
 
 std::string BackendApi::LoadPermissionMode(std::string* err) {

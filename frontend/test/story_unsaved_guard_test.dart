@@ -1,14 +1,17 @@
-// 故事编排视图（StoryDirectorView）的未保存修改保护回归测试。
-// 覆盖：点击当前事件不丢修改、dirty 时切换事件弹确认、保存失败中止切换。
+// 故事编排视图（StoryDirectorView）与移动端事件详情页的未保存修改保护回归测试。
+// 覆盖：点击当前事件不丢修改、dirty 时切换事件弹确认、保存失败中止切换；
+// 移动端（阶段 2c）：编辑后返回弹确认、取消保留、保存成功后放行。
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/core/models.dart';
+import 'package:student_age_editor/features/story/story_detail_mobile_page.dart';
 import 'package:student_age_editor/features/story/story_director_view.dart';
 
 const _evtCfg = {
@@ -144,5 +147,132 @@ void main() {
         reason: '保存失败后确认对话框应已关闭');
     // 让「保存失败」InfoBar 的自动关闭 Timer 过期，避免测试收尾报 pending timer
     await tester.pump(const Duration(seconds: 6));
+  });
+
+  // ---------------- 移动端事件详情页（阶段 2c） ----------------
+  group('移动端详情页未保存守卫', () {
+    Future<void> pumpDetail(WidgetTester tester, {bool failSave = false}) async {
+      // HapticFeedback 走平台通道：测试环境无真实处理器时 await 永挂
+      // （保存链路卡在 MobileHaptic.success），必须 mock 成 no-op。
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform,
+              (call) async => null);
+      tester.view.physicalSize = const Size(500, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      ApiClient.instance.client = MockClient((req) async {
+        final path = req.url.path;
+        if (req.method == 'GET' && path.startsWith('/api/cfg/')) {
+          final name = path.split('/').last;
+          final data = switch (name) {
+            'EvtCfg' => const {
+                '1000': {'id': 1000, 'title': '事件A', 'talkId': <dynamic>[1000001]},
+              },
+            'TalkCfg' => const {
+                '1000001': {
+                  'id': 1000001,
+                  'content': '原始内容A',
+                  'roleIds': <dynamic>[],
+                },
+              },
+            _ => const <String, dynamic>{},
+          };
+          return http.Response(
+              jsonEncode({'cfg': name, 'data': data, 'exists': true}), 200,
+              headers: {'content-type': 'application/json'});
+        }
+        if (req.method == 'POST' && path == '/api/story/event/save') {
+          if (failSave) {
+            return http.Response(jsonEncode({'error': '模拟保存失败'}), 500);
+          }
+          return http.Response(jsonEncode({'ok': true}), 200,
+              headers: {'content-type': 'application/json'});
+        }
+        return http.Response(jsonEncode({'error': 'not found'}), 404);
+      });
+      await tester.pumpWidget(fluent.FluentApp(
+        home: Builder(builder: (ctx) => Scaffold(
+              body: Center(
+                child: TextButton(
+                  key: const Key('go_detail'),
+                  onPressed: () => Navigator.push(
+                    ctx,
+                    MaterialPageRoute(
+                      builder: (_) => const StoryDetailMobilePage(
+                          modName: 'm', eventId: '1000'),
+                    ),
+                  ),
+                  child: const Text('进入详情页'),
+                ),
+              ),
+            )),
+      ));
+      await tester.tap(find.byKey(const Key('go_detail')));
+      await tester.pumpAndSettle();
+      expect(find.text('事件A'), findsWidgets,
+          reason: '直达详情也应回填事件元数据，而不是「事件不存在」');
+    }
+
+    Finder contentBox() => find.byWidgetPredicate((w) =>
+        w is TextField &&
+        (w.decoration?.hintText ?? '').startsWith('输入对白内容'));
+
+    Future<void> editContent(WidgetTester tester, String text) async {
+      final box = contentBox();
+      await tester.ensureVisible(box);
+      await tester.enterText(box, text);
+      await tester.pump();
+    }
+
+    testWidgets('编辑后返回弹确认，取消保留修改', (tester) async {
+      await pumpDetail(tester);
+      await editContent(tester, '改过的对白');
+
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('有未保存修改'), findsOneWidget);
+
+      await tester.tap(find.text('留在本页'));
+      await tester.pumpAndSettle();
+      expect(find.text('有未保存修改'), findsNothing);
+      expect(tester.widget<TextField>(contentBox()).controller?.text,
+          '改过的对白');
+      // 仍在详情页且再次返回仍会拦
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('有未保存修改'), findsOneWidget);
+      await tester.tap(find.text('放弃并离开'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('go_detail')), findsOneWidget);
+    });
+
+    testWidgets('保存成功后经对话框「好」直接返回列表', (tester) async {
+      await pumpDetail(tester);
+      await editContent(tester, '改过的对白');
+
+      await tester.tap(find.byTooltip('保存'));
+      await tester.pumpAndSettle();
+      expect(find.text('保存成功'), findsOneWidget);
+      expect(find.text('有未保存修改'), findsNothing);
+
+      await tester.tap(find.text('好')); // 成功对话框设计上连带退出详情页
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('go_detail')), findsOneWidget);
+    });
+
+    testWidgets('保存失败后返回仍被拦截', (tester) async {
+      await pumpDetail(tester, failSave: true);
+      await editContent(tester, '改过的对白');
+
+      await tester.tap(find.byTooltip('保存'));
+      await tester.pumpAndSettle();
+      // 失败提示对话框关闭
+      await tester.tap(find.text('确定'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.text('有未保存修改'), findsOneWidget);
+    });
   });
 }

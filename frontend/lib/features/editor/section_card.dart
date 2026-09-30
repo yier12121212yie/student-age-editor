@@ -34,7 +34,7 @@ class _SectionCardState extends State<SectionCard> {
           color: palette.panel,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: _hover ? palette.borderHover : palette.surface),
-          boxShadow: _hover ? [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 12, offset: const Offset(0, 4))] : [],
+          boxShadow: _hover ? [BoxShadow(color: palette.scrimWeak, blurRadius: 12, offset: const Offset(0, 4))] : [],
         ),
         transform: Matrix4.identity()..translateByDouble(0.0, _hover ? -1.0 : 0.0, 0.0, 1.0),
         padding: widget.padding,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
 import '../../core/ui_mode.dart';
@@ -49,11 +50,23 @@ class SidePaneView extends StatelessWidget {
     Widget child;
     switch (pane) {
       case SidePane.mods:
-        child = ModsPage(key: const ValueKey('mods'), state: state, controller: controller);
+        child = ModsPage(
+          key: const ValueKey('mods'),
+          state: state,
+          controller: controller,
+        );
       case SidePane.pages:
-        child = PagesList(key: const ValueKey('pages'), state: state, controller: controller);
+        child = PagesList(
+          key: const ValueKey('pages'),
+          state: state,
+          controller: controller,
+        );
       case SidePane.files:
-        child = FileTreePage(key: const ValueKey('files'), state: state, controller: controller);
+        child = FileTreePage(
+          key: const ValueKey('files'),
+          state: state,
+          controller: controller,
+        );
       case SidePane.resources:
         child = ResourcesPage(key: const ValueKey('resources'), state: state);
       case SidePane.base:
@@ -66,12 +79,13 @@ class SidePaneView extends StatelessWidget {
         child = _pluginsView();
       case SidePane.settings:
         child = SettingsPage(
-            key: const ValueKey('settings'),
-            settings: aiSettings,
-            settingsLoaded: shell.settingsLoaded,
-            onChanged: onAiChanged,
-            uiMode: uiMode,
-            onUiModeChanged: onUiModeChanged);
+          key: const ValueKey('settings'),
+          settings: aiSettings,
+          settingsLoaded: shell.settingsLoaded,
+          onChanged: onAiChanged,
+          uiMode: uiMode,
+          onUiModeChanged: onUiModeChanged,
+        );
     }
     return SizedBox(
       width: width,
@@ -79,7 +93,8 @@ class SidePaneView extends StatelessWidget {
         duration: AppMotion.normal,
         switchInCurve: AppMotion.easeOut,
         switchOutCurve: AppMotion.easeOut,
-        transitionBuilder: (child, anim) => FadeTransition(opacity: anim, child: child),
+        transitionBuilder: (child, anim) =>
+            FadeTransition(opacity: anim, child: child),
         child: child,
       ),
     );
@@ -89,11 +104,17 @@ class SidePaneView extends StatelessWidget {
   Widget _pluginsView() {
     final active = shell.activePluginPanel;
     if (active == null || active.trim().isEmpty) {
-      return PluginsPage(key: const ValueKey('plugins'), pluginState: pluginState);
+      return PluginsPage(
+        key: const ValueKey('plugins'),
+        pluginState: pluginState,
+      );
     }
     final parts = active.split('/');
     if (parts.isEmpty || parts.first.isEmpty) {
-      return PluginsPage(key: const ValueKey('plugins'), pluginState: pluginState);
+      return PluginsPage(
+        key: const ValueKey('plugins'),
+        pluginState: pluginState,
+      );
     }
     return PluginPane(
       key: ValueKey('panel-$active'),
@@ -123,6 +144,10 @@ class ResizeHandle extends StatefulWidget {
   final ValueChanged<double> onChanged;
   final bool inverted;
 
+  /// 命中区宽度（视觉线仍为 1px 居中）：5px 时很难 grab 到。
+  /// 与面板并排布局时不可按 Row 相加，须用 Stack 叠放，见 AiDock._panel。
+  static const double hitWidth = 9;
+
   @override
   State<ResizeHandle> createState() => _ResizeHandleState();
 }
@@ -142,27 +167,33 @@ class _ResizeHandleState extends State<ResizeHandle> {
         onHorizontalDragEnd: (_) => setState(() => _dragging = false),
         onHorizontalDragUpdate: (d) {
           final delta = widget.inverted ? -d.delta.dx : d.delta.dx;
-          widget.onChanged((widget.width + delta).clamp(widget.min, widget.max));
+          widget.onChanged(
+            (widget.width + delta).clamp(widget.min, widget.max),
+          );
         },
         onDoubleTap: () => widget.onChanged(widget.defaultWidth),
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          width: 5,
-          color: _dragging
-              ? const Color(0xFF6C5CE7).withValues(alpha: 0.18)
-              : _hover
-                  ? const Color(0xFF6C5CE7).withValues(alpha: 0.08)
-                  : Colors.transparent,
-          child: Center(
-            child: AnimatedContainer(
-              duration: AppMotion.fast,
-              width: 1,
-              height: double.infinity,
-              color: _dragging
-                  ? const Color(0xFF6C5CE7)
-                  : _hover
-                      ? palette.borderHover
-                      : palette.border,
+        child: Tooltip(
+          message: '拖动调整宽度 · 双击恢复默认',
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            // 命中区取 [hitWidth]，视觉线仍为 1px 居中
+            width: ResizeHandle.hitWidth,
+            color: _dragging
+                ? accentColor.withValues(alpha: 0.18)
+                : _hover
+                ? accentColor.withValues(alpha: 0.08)
+                : Colors.transparent,
+            child: Center(
+              child: AnimatedContainer(
+                duration: AppMotion.fast,
+                width: 1,
+                height: double.infinity,
+                color: _dragging
+                    ? accentColor
+                    : _hover
+                    ? palette.borderHover
+                    : palette.border,
+              ),
             ),
           ),
         ),

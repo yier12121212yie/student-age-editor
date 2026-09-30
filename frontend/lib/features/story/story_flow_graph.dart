@@ -21,7 +21,6 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/app_theme.dart';
 import '../../core/history_client.dart';
-import '../../core/save_service.dart';
 import '../editor/field_meta.dart';
 import '../editor/suggestion_text_field.dart';
 import 'story_flow_models.dart';
@@ -90,19 +89,16 @@ const double kLodFullUp = 0.60, kLodFullDown = 0.58;
 /// LOD 档位：2=完整卡片，1=仅标题条，0=无 Widget（由连线 painter 画色块）。
 const int kLodBlocks = 0, kLodTitle = 1, kLodFull = 2;
 
-/// 基准探针（test/story_flow_bench_test.dart）：节点卡片 build 次数。
-/// 纯平移/缩放一帧应为 **0**（视口只换矩阵，卡片实例按档缓存复用）；
-/// 只有换档、宿主数据变化或卡片首次进入可见区才会 build。
-@visibleForTesting
-int debugNodeCardBuilds = 0;
-
 /// 基准探针：连线 painter 的 paint 次数（每次是一整批边的全量重绘）。
 @visibleForTesting
 int debugEdgePaintCount = 0;
 
 /// S0 护栏新增：性能计数器
 /// - debugBuildSlotsCalls: _buildSlots 调用次数（应随宿主重建频率）
-/// - debugSlotCardsBuilt: 每次 _buildSlots 构建的卡片数量
+/// - debugSlotCardsBuilt: 每次 _buildSlots 构建的卡片数量。
+///   兼作原 debugNodeCardBuilds 的替代探针：卡片实例按 [_contentSig]
+///   缓存、identical 复用，「新建卡片实例」与「卡片进 build」一一对应，
+///   纯平移/缩放/拖拽一帧应为 **0**。
 /// - debugLayoutSnapshots: 布局快照写入次数
 /// - debugWorkspaceBuilds: workspace setState({}) 触发次数（拖拽期间应为 0）
 /// - debugFlowFieldMetasBuilds: inlineMetas 重算次数
@@ -153,6 +149,7 @@ class StoryFlowGraph extends StatefulWidget {
     this.selection = FlowSelection.none,
     this.expandedNodes = const {},
     this.highlightNode,
+    this.tombstones,
     this.fieldInvalid = _noFieldInvalid,
     this.fieldDirty = _noFieldDirty,
     this.inlineMetas = _noInlineMetas,
@@ -195,6 +192,13 @@ class StoryFlowGraph extends StatefulWidget {
 
   /// 资产拖拽悬停高亮的节点。
   final String? highlightNode;
+
+  /// P8 墓碑集合（阶段 4a）：story 级共享、随 story 数据单次拉取，
+  /// talk/option 卡片**同步**读 [TombstoneStore.contains] 判墓碑渲染。
+  /// 旧实现每卡片 `FutureBuilder(future: isDeleted(id))` 各发一次
+  /// GET /api/cfg/deleted_talks，几十个节点=几十次 HTTP。
+  /// null = 宿主未接墓碑，talk/option 一律按普通卡片渲染。
+  final TombstoneStore? tombstones;
 
   /// 该字段写回失败（解析不动）：卡片/内联红字只标这一个字段。
   final bool Function(String nodeId, String field) fieldInvalid;
@@ -263,7 +267,31 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   final FocusNode _focus = FocusNode(debugLabel: 'storyFlowCanvas');
 
   @override
+  void initState() {
+    super.initState();
+    // 阶段 4a：订阅共享墓碑集合。reload() 只在内容变化时 notify——
+    // 删除成功/保存删行的刷新触发点不一定伴随宿主 setState，
+    // 靠这里把变化转成一次重建（version 已并入 _contentSig）。
+    widget.tombstones?.addListener(_onTombstonesChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant StoryFlowGraph oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.tombstones, widget.tombstones)) {
+      oldWidget.tombstones?.removeListener(_onTombstonesChanged);
+      widget.tombstones?.addListener(_onTombstonesChanged);
+    }
+  }
+
+  void _onTombstonesChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   void dispose() {
+    _longPressTimer?.cancel();
+    widget.tombstones?.removeListener(_onTombstonesChanged);
     _focus.dispose();
     _vp.dispose();
     super.dispose();
@@ -319,6 +347,34 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   /// 当前跟踪的唯一指针 id：只接管左键/触摸，忽略附加指针与悬停 move；
   /// up/cancel 收不到时（窗口外释放、系统抢占）配合 _onPointerCancel 复位。
   int? _activePointer;
+
+  // ---------- 触控：双指缩放 + 长按菜单 ----------
+  /// 活跃触摸/触笔指针 → 最近一帧屏幕(local)坐标。鼠标不入此表：
+  /// 鼠标永远单指针，右键/滚轮已有自己的路径，混入会让 pinch 状态机分叉。
+  final Map<int, Offset> _touchPositions = {};
+
+  /// 双指及以上视为 pinch（进入时第二指落下的瞬间完成快照）。
+  bool get _pinching => _touchPositions.length >= 2;
+
+  /// pinch 起始快照：跨度/缩放/焦点下的世界点。
+  /// 缩放全程保持「起始焦点下的世界内容钉在当前焦点下」，两指中点
+  /// 平移时内容跟着抓走，不会漂。
+  double _pinchStartSpan = 1;
+  double _pinchStartScale = 1;
+  Offset _pinchStartWorld = Offset.zero;
+
+  /// pinch 退化为单指平移后，抑制该指针抬起时的 <4px「点击」语义
+  /// （捏合结束抬指不是点击，不该清空选中集）。
+  int? _suppressTapPointer;
+
+  /// 长按菜单：触摸/触笔单指按下 ~500ms 未超出 slop → 走与右键完全
+  /// 相同的命中判定与 onContextMenu（菜单本体在宿主）。
+  Timer? _longPressTimer;
+  int? _longPressPointer;
+  Offset _longPressLocal = Offset.zero;
+
+  bool _isTouchKind(PointerDownEvent e) =>
+      e.kind == PointerDeviceKind.touch || e.kind == PointerDeviceKind.stylus;
 
   // ---------- 虚线路径缓存 ----------
   /// 世界坐标下虚线路径与缩放无关，故平移/缩放帧可整体复用；图内容、
@@ -464,9 +520,25 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       return;
     }
     // 只接管左键/触摸：右键、中键此前会被当普通按下触发平移/拉线，
-    // 与系统菜单手势打架；拖拽进行中忽略第二根指针
-    if (_activePointer != null || (e.buttons & kPrimaryButton) == 0) return;
+    // 与系统菜单手势打架；拖拽进行中忽略第二根指针。
+    // 触摸/触笔额外走多指追踪：第二指落下即进 pinch；第三指起忽略。
+    // 触摸进行中忽略鼠标，避免两套指针状态交叉。
+    if ((e.buttons & kPrimaryButton) == 0) return;
+    if (_isTouchKind(e)) {
+      if (_pinching) return;
+      _touchPositions[e.pointer] = e.localPosition;
+      if (_touchPositions.length >= 2) {
+        _enterPinch();
+        return;
+      }
+      if (_activePointer != null) return;
+    } else if (_touchPositions.isNotEmpty || _activePointer != null) {
+      return;
+    }
     _activePointer = e.pointer;
+    // 新手势开始：清除上一 pinch 留下的「抬指不点击」标记（指针 id 单调
+    // 递增本不会撞，显式清掉防语义泄漏）。
+    _suppressTapPointer = null;
     final local = e.localPosition;
     final world = _toCanvas(local);
     // Shift 在按下瞬间定调（增删/框选），整次手势内不再重新读取。
@@ -486,6 +558,7 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
           _wireFromWorld = _nodeAnchor(n) + port.pos;
           _wireToLocal = local;
           _takeCanvasFocus();
+          _armLongPress(e.pointer, local);
           setState(() {});
           return;
         }
@@ -531,6 +604,7 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
               : (next.nodes.isEmpty ? {n.id} : next.nodes),
         );
         _takeCanvasFocus();
+        _armLongPress(e.pointer, local);
         setState(() {});
         return;
       }
@@ -540,11 +614,13 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       _mode = _DragMode.marquee;
       _marqueeFrom = _marqueeTo = world;
       _takeCanvasFocus();
+      _armLongPress(e.pointer, local);
       setState(() {});
       return;
     }
     _mode = _DragMode.pan;
     _takeCanvasFocus();
+    _armLongPress(e.pointer, local);
   }
 
   /// 右键上报：端口/卡片 → 边 → 空白。菜单本体与动作全在宿主。
@@ -601,8 +677,21 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   }
 
   void _onPointerMove(PointerMoveEvent e) {
+    // 触摸轨迹与 pinch 不依赖 _activePointer：pinch 期间两指都未认领。
+    if (_touchPositions.containsKey(e.pointer)) {
+      _touchPositions[e.pointer] = e.localPosition;
+      if (_pinching) {
+        _applyPinch();
+        return;
+      }
+    }
     if (e.pointer != _activePointer) return;
     final local = e.localPosition;
+    // 长按计时：指针位移超出触摸 slop 即取消（拖动不是长按）。
+    if (_longPressTimer != null &&
+        (local - _longPressLocal).distance > kTouchSlop) {
+      _cancelLongPress();
+    }
     switch (_mode) {
       case _DragMode.node:
         _applySnap((local - _dragStartLocal) / _scale);
@@ -622,7 +711,16 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   }
 
   void _onPointerUp(PointerUpEvent e) {
+    // pinch 成员抬指：剩指退化为平移（该指抬起不再触发 <4px 点击语义）；
+    // 全部抬起则收场。注意 wasPinching 要在 remove 前取样。
+    final wasPinching = _pinching;
+    final had = _touchPositions.remove(e.pointer) != null;
+    if (wasPinching && had) {
+      _pinchMemberExited();
+      return;
+    }
     if (e.pointer != _activePointer) return;
+    _cancelLongPress();
     _activePointer = null;
     final local = e.localPosition;
     final mode = _mode;
@@ -648,7 +746,9 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
         _commitMarquee();
         setState(() {});
       case _DragMode.pan:
-        if ((local - _dragStartLocal).distance < 4) {
+        // pinch 退化后的抬指不是点击，不清选中集。
+        if (e.pointer != _suppressTapPointer &&
+            (local - _dragStartLocal).distance < 4) {
           final hit = _hitEdge(local);
           if (hit != null) {
             widget.onSelectionChanged(
@@ -661,6 +761,7 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
             widget.onSelectionChanged(FlowSelection.none);
           }
         }
+        _suppressTapPointer = null;
       case _DragMode.none:
         break;
     }
@@ -744,15 +845,126 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   /// 必须复位拖拽态，否则桌面端悬停 move 仍按残留 _mode 触发，
   /// 节点会不按键跟随鼠标、幻影连线悬挂。
   void _onPointerCancel(PointerCancelEvent e) {
+    final wasPinching = _pinching;
+    final had = _touchPositions.remove(e.pointer) != null;
+    if (wasPinching && had) {
+      _pinchMemberExited();
+      return;
+    }
     if (e.pointer != _activePointer) return;
     _activePointer = null;
+    _cancelLongPress();
     if (_mode == _DragMode.none) return;
+    _abortSingleGesture();
+    setState(() {});
+  }
+
+  /// pinch 中一指离场（抬起或被取消）后的收场：剩指退化为平移，
+  /// 全部离场则复位。调用方需已把该指针从 [_touchPositions] 移除。
+  void _pinchMemberExited() {
+    _activePointer = null;
+    _mode = _DragMode.none;
+    if (_touchPositions.length == 1) {
+      final remaining = _touchPositions.keys.single;
+      _activePointer = remaining;
+      _mode = _DragMode.pan;
+      _dragStartLocal = _touchPositions[remaining]!;
+      _dragStartPan = _pan;
+      _suppressTapPointer = remaining;
+    }
+    setState(() {});
+  }
+
+  /// 终止进行中的单指手势（长按触发菜单 / 进入 pinch 前调用）。
+  /// [revertNodeDrag] 时把已被单指拖动的节点组弹回起点——两指按下或
+  /// 长按不是拖拽意图，散乱半个身位的节点比「没拖」更糟。
+  void _abortSingleGesture({bool revertNodeDrag = false}) {
+    if (revertNodeDrag && _mode == _DragMode.node) {
+      for (final id in _dragNodeIds) {
+        final start = _dragStartPos[id];
+        if (start != null) widget.onMoveNode(id, start);
+      }
+    }
     _mode = _DragMode.none;
     _wireFrom = null;
     _wireField = null;
     _wireFromWorld = Offset.zero;
     _dragNodeIds = const [];
     _dragStartPos.clear();
+    _snapGuides = const [];
+  }
+
+  // ---------- 触控手势核心 ----------
+
+  /// 第二指落下：快照 pinch 基准（跨度/焦点/焦点下世界点），并终止
+  /// 单指正在进行的拖拽/拉线/框选。
+  void _enterPinch() {
+    _cancelLongPress();
+    _abortSingleGesture(revertNodeDrag: true);
+    _activePointer = null;
+    final pts = _touchPositions.values.toList();
+    final span = (pts[0] - pts[1]).distance;
+    final focal = Offset(
+      (pts[0].dx + pts[1].dx) / 2,
+      (pts[0].dy + pts[1].dy) / 2,
+    );
+    _pinchStartSpan = span > 0 ? span : 1;
+    _pinchStartScale = _scale;
+    _pinchStartWorld = _toCanvas(focal);
+    _applyPinch();
+    setState(() {});
+  }
+
+  /// 由当前两指几何推出新视口：scale 按跨度比值相对**起始**缩放缩放
+  /// （clamp 到画布上下限），pan 保持起始焦点下的世界点钉在当前两指
+  /// 中点下（内容跟手不漂）。
+  void _applyPinch() {
+    final pts = _touchPositions.values.toList();
+    if (pts.length < 2) return;
+    final span = (pts[0] - pts[1]).distance;
+    final focal = Offset(
+      (pts[0].dx + pts[1].dx) / 2,
+      (pts[0].dy + pts[1].dy) / 2,
+    );
+    final nextScale = (_pinchStartScale * span / _pinchStartSpan).clamp(
+      FlowViewport.minScale,
+      FlowViewport.maxScale,
+    );
+    _vp.value = FlowViewport(
+      nextScale.toDouble(),
+      focal - _pinchStartWorld * nextScale,
+    );
+  }
+
+  // ---------- 长按菜单 ----------
+
+  void _armLongPress(int pointer, Offset local) {
+    _cancelLongPress();
+    _longPressPointer = pointer;
+    _longPressLocal = local;
+    _longPressTimer = Timer(kLongPressTimeout, _onLongPressElapsed);
+  }
+
+  void _cancelLongPress() {
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+    _longPressPointer = null;
+  }
+
+  /// 长按成立：终止进行中的手势（节点弹回起点），走与右键完全相同的
+  /// 命中判定上报菜单；此后该指针的 up 被 _activePointer=null 吞掉。
+  void _onLongPressElapsed() {
+    _longPressTimer = null;
+    if (_pinching ||
+        _activePointer == null ||
+        _activePointer != _longPressPointer ||
+        _mode == _DragMode.none) {
+      return;
+    }
+    final local = _longPressLocal;
+    _abortSingleGesture(revertNodeDrag: true);
+    _activePointer = null;
+    _reportContextMenu(local);
     setState(() {});
   }
 
@@ -992,6 +1204,10 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       Object.hashAllUnordered(widget.expandedNodes),
       widget.selection,
       widget.highlightNode,
+      // 阶段 4a：墓碑集合版本号。集合内容变化（reload 后 bump）必须作废
+      // 卡片缓存，否则被删/被恢复的节点还按旧集合渲染；无变化的刷新
+      // version 不动，整批卡片原样复用。
+      widget.tombstones?.version,
     );
     for (final id in widget.expandedNodes) {
       for (final m in widget.inlineMetas(id)) {
@@ -1070,6 +1286,7 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       fieldController: widget.fieldController,
       onFieldChanged: widget.onFieldChanged,
       onDeleteNode: widget.onDeleteNode,
+      tombstones: widget.tombstones,
     );
     _cards[n.id] = card;
     return card;
@@ -1191,6 +1408,7 @@ class _FlowNodeCard extends StatelessWidget {
     required this.fieldController,
     required this.onFieldChanged,
     required this.onDeleteNode,
+    required this.tombstones,
     this.titleOnly = false,
   });
 
@@ -1218,6 +1436,11 @@ class _FlowNodeCard extends StatelessWidget {
   final void Function(String nodeId, String field, String text) onFieldChanged;
   final ValueChanged<String> onDeleteNode;
 
+  /// 阶段 4a：story 级共享墓碑集合，由画布原样递下（与上面六个通道同理：
+  /// 卡片实例被缓存复用，自己去读全局会在集合变更后渲染出旧值）。
+  /// null = 宿主未接墓碑，talk/option 按普通卡片渲染。
+  final TombstoneStore? tombstones;
+
   /// LOD 中档：只画标题条。低缩放下正文与端口都不可读，省掉整段排版。
   final bool titleOnly;
 
@@ -1233,32 +1456,47 @@ class _FlowNodeCard extends StatelessWidget {
 
   Color get _borderColor {
     if (selected) return _tint;
-    if (highlighted) return const Color(0xFF27AE60);
+    if (highlighted) return palette.flowAudio;
     return palette.border;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (kDebugMode) debugNodeCardBuilds++;
-
     final card = _buildCard(context);
 
     // P8: 墓碑节点（已删除但仍被引用）渲染为占位方块。
-    if (node.kind == FlowNodeKind.talk || node.isOption) {
-      return FutureBuilder<bool>(
-        future: isDeleted(node.id),
-        builder: (context, snap) {
-          if (snap.data != true) return card;
-          return TombstoneNodeWidget(
-            id: node.id,
-            onRestore: () async {
-              await deleteRecord(
-                cfgName: node.isOption ? 'OptionCfg' : 'TalkCfg',
-                id: node.id,
+    // 阶段 4a：同步读 story 级共享的 [TombstoneStore]——旧实现每张
+    // talk/option 卡片包一层 `FutureBuilder(future: isDeleted(id))`，
+    // 一次加载 = 节点数那么多次 GET /api/cfg/deleted_talks。
+    if ((node.kind == FlowNodeKind.talk || node.isOption) &&
+        tombstones?.contains(node.id) == true) {
+      return TombstoneNodeWidget(
+        id: node.id,
+        store: tombstones,
+        onRestore: () async {
+          // 阶段 2d：删除失败不再静默——不本地摘节点 + toast 报因，
+          // 否则画布「删掉了」而磁盘记录/墓碑还在，下次加载死灰复燃。
+          try {
+            await deleteRecord(
+              cfgName: node.isOption ? 'OptionCfg' : 'TalkCfg',
+              id: node.id,
+            );
+            // 删除落盘 = 墓碑集合可能变化：刷新共享集合（单飞拉取，
+            // 内容变了才 bump version → _contentSig 变 → 卡片重渲染）。
+            await tombstones!.reload();
+            onDeleteNode(node.id);
+          } catch (e) {
+            if (context.mounted) {
+              fluent.displayInfoBar(
+                context,
+                builder: (ctx, close) => fluent.InfoBar(
+                  title: const Text('删除节点失败'),
+                  content: Text('$e'),
+                  severity: fluent.InfoBarSeverity.error,
+                ),
               );
-              onDeleteNode(node.id);
-            },
-          );
+            }
+          }
         },
       );
     }
@@ -1341,7 +1579,7 @@ class _FlowNodeCard extends StatelessWidget {
             : highlighted
             ? [
                 BoxShadow(
-                  color: const Color(0xFF27AE60).withValues(alpha: 0.3),
+                  color: palette.flowAudio.withValues(alpha: 0.3),
                   blurRadius: 10,
                 ),
               ]
@@ -1421,30 +1659,30 @@ class _FlowNodeCard extends StatelessWidget {
     final chips = <Widget>[
       if (!node.isOption) ...[
         if (node.bgId.isNotEmpty)
-          _badge(Icons.landscape, node.bgId, const Color(0xFF3498DB)),
+          _badge(Icons.landscape, node.bgId, palette.flowBg),
         if (node.audioId.isNotEmpty)
-          _badge(Icons.music_note, node.audioId, const Color(0xFF27AE60)),
+          _badge(Icons.music_note, node.audioId, palette.flowAudio),
         if (node.timeStr.isNotEmpty)
-          _badge(Icons.schedule, node.timeStr, const Color(0xFF95A5A6)),
+          _badge(Icons.schedule, node.timeStr, palette.flowTime),
         if (node.fxSummary.isNotEmpty)
-          _badge(Icons.auto_fix_high, node.fxSummary, const Color(0xFFE91E63)),
+          _badge(Icons.auto_fix_high, node.fxSummary, palette.flowFx),
         if (node.hasCheck)
-          _badge(Icons.fact_check, '检定', const Color(0xFFE67E22)),
+          _badge(Icons.fact_check, '检定', palette.flowCheck),
       ] else ...[
         if (node.mainCount.isNotEmpty)
           _badge(
             Icons.call_made,
             '主${node.mainCount}',
-            const Color(0xFF27AE60),
+            palette.flowAudio,
           ),
         if (node.sideCount.isNotEmpty)
           _badge(
             Icons.call_split,
             '支${node.sideCount}',
-            const Color(0xFFE67E22),
+            palette.flowCheck,
           ),
         if (node.nextEvtId.isNotEmpty)
-          _badge(Icons.logout, '→${node.nextEvtId}', const Color(0xFF95A5A6)),
+          _badge(Icons.logout, '→${node.nextEvtId}', palette.flowTime),
       ],
     ];
     return Container(
@@ -1591,7 +1829,7 @@ class _FlowNodeCard extends StatelessWidget {
             tooltip: '删除该节点（或选中后按 Delete）',
             icon: Icons.delete_outline,
             label: '删除',
-            color: const Color(0xFFE74C3C),
+            color: palette.flowMissing,
             onTap: () => onDeleteNode(node.id),
           ),
         ],
@@ -1911,7 +2149,7 @@ class _FieldInputState extends State<_FieldInput> {
               '解析失败，未写入存档',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 9, color: const Color(0xFFE74C3C)),
+              style: TextStyle(fontSize: 9, color: palette.flowMissing),
             ),
           ),
       ],
@@ -1936,14 +2174,14 @@ class _FieldInputState extends State<_FieldInput> {
           if (meta.required)
             Text(
               '*',
-              style: TextStyle(fontSize: 9, color: const Color(0xFFE74C3C)),
+              style: TextStyle(fontSize: 9, color: palette.flowMissing),
             ),
           if (widget.dirty)
             Padding(
               padding: EdgeInsets.only(left: AppSpace.xxs),
               child: Text(
                 '已改',
-                style: TextStyle(fontSize: 8, color: const Color(0xFFE67E22)),
+                style: TextStyle(fontSize: 8, color: palette.flowCheck),
               ),
             ),
         ],
@@ -1959,11 +2197,11 @@ Color flowNodeTint(FlowNode node) {
     final hex = int.tryParse(node.cardColor.replaceFirst('#', ''), radix: 16);
     if (hex != null) return Color(0xFF000000 | hex);
   }
-  if (node.isMissing) return const Color(0xFFE74C3C);
-  if (node.isOption) return const Color(0xFF6C5CE7);
-  if (node.hasCheck) return const Color(0xFFE67E22);
-  if (node.isNarrator) return const Color(0xFF95A5A6);
-  return const Color(0xFF3498DB);
+  if (node.isMissing) return palette.flowMissing;
+  if (node.isOption) return accentColor;
+  if (node.hasCheck) return palette.flowCheck;
+  if (node.isNarrator) return palette.flowTime;
+  return palette.flowBg;
 }
 
 /// 端口标签：与 flowPortKinds 的端口类型一一对应。
@@ -1990,15 +2228,15 @@ Color _portColor(FlowEdgeKind kind) {
   switch (kind) {
     case FlowEdgeKind.next:
     case FlowEdgeKind.checkPass:
-      return const Color(0xFF27AE60);
+      return palette.flowAudio;
     case FlowEdgeKind.checkFail:
-      return const Color(0xFFE67E22);
+      return palette.flowCheck;
     case FlowEdgeKind.option:
     case FlowEdgeKind.optionMain:
     case FlowEdgeKind.optionSide:
-      return const Color(0xFF6C5CE7);
+      return accentColor;
     case FlowEdgeKind.nextEvt:
-      return const Color(0xFF95A5A6);
+      return palette.flowTime;
   }
 }
 
@@ -2104,7 +2342,7 @@ class _FlowEdgesPainter extends CustomPainter {
     ..strokeWidth = 2;
   final Paint _guide = Paint()..style = PaintingStyle.stroke;
   final Paint _marqueeFill = Paint()
-    ..color = const Color(0xFF6C5CE7).withValues(alpha: 0.12);
+    ..color = accentColor.withValues(alpha: 0.12);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2165,7 +2403,7 @@ class _FlowEdgesPainter extends CustomPainter {
     if (r == null) return;
     _stroke
       ..strokeWidth = 1
-      ..color = const Color(0xFF6C5CE7);
+      ..color = accentColor;
     canvas
       ..drawRect(r, _marqueeFill)
       ..drawRect(r, _stroke);
@@ -2180,7 +2418,7 @@ class _FlowEdgesPainter extends CustomPainter {
     if (gs.isEmpty) return;
     final view = viewport.worldRect(size);
     _guide
-      ..color = const Color(0xFF6C5CE7)
+      ..color = accentColor
       ..strokeWidth = 1 / scale;
     for (final g in gs) {
       if (g.vertical) {
@@ -2211,7 +2449,7 @@ class _FlowEdgesPainter extends CustomPainter {
         _block,
       );
       if (selection.nodes.contains(n.id)) {
-        _blockStroke.color = const Color(0xFFFFFFFF);
+        _blockStroke.color = palette.chipSep;
         canvas.drawRRect(
           RRect.fromRectAndRadius(r, const Radius.circular(AppRadius.m)),
           _blockStroke,

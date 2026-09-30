@@ -17,6 +17,7 @@
 #include "sa_core/strings.h"
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
+#include "sa_core/version.h"
 #include "server/httpd.h"
 #include "p4_util.h"
 
@@ -412,7 +413,9 @@ static json empty_result(const std::string& current) {
 }
 
 json check_update(int timeout, const std::string& url_override, const std::string& current_in) {
-    std::string current = current_in.empty() ? "Alpha-v0.1" : current_in;
+    // The installed version is the release string baked in at configure time
+    // (-DSA_APP_VERSION=Alpha-v0.x); ?current= stays as an injection seam.
+    std::string current = current_in.empty() ? sa_core::app_version() : current_in;
     std::string url = url_override;
     if (url.empty()) {
         if (std::string u = sa_core::paths::getenv_utf8("EDITOR_UPDATE_URL"); !u.empty())
@@ -519,6 +522,18 @@ void register_ai_image_routes(Router& r) {
 }
 
 void register_update_routes(Router& r) {
+    // GET /api/version (additive: Python had no such endpoint). The single
+    // source of the release version for all three fronts -- the Flutter app
+    // reads it instead of a --dart-define, CLI/TUI just print it, and the
+    // update check uses the same value as its default "current".
+    r.get(R"(/api/version)", [](const Req&) -> Resp {
+        json body;
+        body["ok"] = true;
+        body["app"] = sa_core::app_name();
+        body["version"] = sa_core::app_version();
+        body["core_version"] = sa_core::version();
+        return Resp::Json(200, std::move(body));
+    });
     // GET /api/update/check (additive: the Python backend only exposes this via
     // its CLI/TUI). Optional ?timeout=N, ?url=..., ?current=... for tests.
     r.get(R"(/api/update/check)", [](const Req& req) -> Resp {
