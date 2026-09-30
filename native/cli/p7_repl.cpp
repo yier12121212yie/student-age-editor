@@ -54,6 +54,54 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
+// Terminal columns of a UTF-8 string: East-Asian wide/fullwidth codepoints take
+// two columns, every other codepoint one. Only the REPL banner needs it — to
+// size the '─' rules under text that mixes CJK and ASCII (byte length would
+// overcount the CJK glyphs threefold).
+size_t DisplayWidth(const std::string& s) {
+    size_t cols = 0;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char b = static_cast<unsigned char>(s[i]);
+        unsigned int cp = b;
+        size_t n = 1;
+        if (b >= 0xF0) {
+            cp = b & 0x07u;
+            n = 4;
+        } else if (b >= 0xE0) {
+            cp = b & 0x0Fu;
+            n = 3;
+        } else if (b >= 0xC0) {
+            cp = b & 0x1Fu;
+            n = 2;
+        }
+        for (size_t k = 1; k < n && i + k < s.size(); ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
+        i += n;
+        const bool wide = (cp >= 0x1100 && cp <= 0x115F) ||    // Hangul Jamo
+                          (cp >= 0x2E80 && cp <= 0xA4CF) ||    // CJK … Yi
+                          (cp >= 0xAC00 && cp <= 0xD7A3) ||    // Hangul syllables
+                          (cp >= 0xF900 && cp <= 0xFAFF) ||    // CJK compat ideographs
+                          (cp >= 0xFE30 && cp <= 0xFE4F) ||    // CJK compat forms
+                          (cp >= 0xFF00 && cp <= 0xFF60) ||    // Fullwidth forms
+                          (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+                          (cp >= 0x20000 && cp <= 0x3FFFD);    // CJK ext. B+
+        cols += wide ? 2 : 1;
+    }
+    return cols;
+}
+
+// '─' (U+2500) as a UTF-8 string: repeating it fills a rule one terminal column
+// per copy. A multibyte narrow char literal ('─') is rejected by clang, which
+// builds the macOS and Android ships.
+const char* kRule = "─";
+
+std::string Rule(size_t cols) {
+    std::string s;
+    s.reserve(cols * 3);
+    for (size_t i = 0; i < cols; ++i) s += kRule;
+    return s;
+}
+
 std::string LowerAscii(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -72,8 +120,10 @@ void PrintBanner(const std::string& workspace, size_t mods_count,
                  const std::string& current_mod, const std::string& no_code_text) {
     const std::string title = "学生时代 · Editor CLI — 类 Claude Code";
     const std::string sub = "输入 /help 查看命令 · Tab 补全菜单 · @提及 · !shell · Ctrl+D 退出";
-    size_t w = std::max({title.size(), sub.size()}) + 2;
-    std::string line(static_cast<size_t>(w) + 2, '─');
+    // Column-accurate width: the banner text mixes CJK (2 columns, 3 bytes)
+    // with ASCII, so byte length would overcount and overshoot the rules.
+    size_t w = std::max(DisplayWidth(title), DisplayWidth(sub)) + 2;
+    std::string line = Rule(w + 2);
     auto put = [&](const std::string& s) { std::fputs(s.c_str(), stdout); };
     if (Style::Enabled()) {
         put(Style::Cyan("╭" + line + "╮") + "\n");
@@ -95,7 +145,7 @@ void PrintBanner(const std::string& workspace, size_t mods_count,
          << (current_mod.empty() ? "-" : current_mod) << "\n"
          << "无代码模式: " << no_code_text << "（/settings no-code on|off 切换）\n";
     put(grid.str());
-    put(std::string(60, '─') + "\n");
+    put(Rule(60) + "\n");
     put(Style::Dim("提示: 直接输入 /mods list 或 @EvtCfg 试试；Tab 弹出候选菜单，空行 Tab 看高频命令。") +
         "\n");
 }

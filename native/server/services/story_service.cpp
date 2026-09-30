@@ -574,7 +574,11 @@ class Parser {
             auto cps = content::to_codepoints(t);
             bool all_dash = !cps.empty();
             for (uint32_t c : cps) {
-                if (c != 0x2014 && c != 0x2015 && c != 0xFF3F && c != '-' && c != '—') {
+                // U+2014 (em dash) / U+2015 (horizontal bar) / U+FF3F (fullwidth
+                // low line) / ASCII hyphen. Written as codepoints: a multibyte
+                // narrow char literal ('—') is rejected by clang, which builds
+                // the macOS and Android ships.
+                if (c != 0x2014 && c != 0x2015 && c != 0xFF3F && c != '-') {
                     all_dash = false;
                     break;
                 }
