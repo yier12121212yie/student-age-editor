@@ -1,3 +1,8 @@
+// `java.util.Properties` must be imported rather than fully qualified: inside a
+// build script `java` resolves to the Gradle JavaPluginExtension, so
+// `java.util.Properties()` fails to compile ("Unresolved reference 'util'").
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -6,6 +11,24 @@ plugins {
     // (jniLibs/, built by native/android/android_build.sh; MainActivity.kt
     // System.loadLibrary + nativeStart).
 }
+
+// 正式签名用的 keystore 不入库（.gitignore: *.keystore / key.properties）。
+// 凭证只来自 keystore/key.properties（gitignored，CI 由 secrets 注入）。
+// 安全批次 A：删除 "studentage2024"/"studentage" 硬编码兜底 —— 密码写进
+// 源码等于把签名权公开（历史泄露的 key 必须轮换，见 SECURITY_AUDIT_REPORT）。
+// 这些 val 必须留在脚本顶层：`android {}` 是 lambda，写在其内部的局部变量
+// 对下方 afterEvaluate 的签名守卫不可见（Kotlin DSL 会报 Unresolved
+// reference 'hasReleaseSigning'）。
+val keystoreDir = file("${project.projectDir}/../keystore")
+val releaseKeystore = File(keystoreDir, "release.keystore")
+val keyProps = Properties().apply {
+    val f = File(keystoreDir, "key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val hasReleaseSigning = releaseKeystore.exists() &&
+    !keyProps.getProperty("storePassword").isNullOrBlank() &&
+    !keyProps.getProperty("keyAlias").isNullOrBlank() &&
+    !keyProps.getProperty("keyPassword").isNullOrBlank()
 
 android {
     namespace = "com.studentage.editor"
@@ -34,23 +57,7 @@ android {
         // 统一放到下方 buildTypes 内按 release/debug 分别声明。
     }
 
-    // 正式签名用的 keystore 不入库（.gitignore: *.keystore / key.properties）。
-    // 凭证只来自 keystore/key.properties（gitignored，CI 由 secrets 注入）。
-    // 安全批次 A：删除 "studentage2024"/"studentage" 硬编码兜底 —— 密码写进
-    // 源码等于把签名权公开（历史泄露的 key 必须轮换，见 SECURITY_AUDIT_REPORT）。
-    // release 任务在真正执行前由下方任务级守卫强校验签名材料，缺失直接抛异常
-    // 中断（debug 构建不受影响，配置期仍然可以完整求值）。
-    val keystoreDir = file("${project.projectDir}/../keystore")
-    val releaseKeystore = File(keystoreDir, "release.keystore")
-    val keyProps = java.util.Properties().apply {
-        val f = File(keystoreDir, "key.properties")
-        if (f.exists()) f.inputStream().use { load(it) }
-    }
-    val hasReleaseSigning = releaseKeystore.exists() &&
-        !keyProps.getProperty("storePassword").isNullOrBlank() &&
-        !keyProps.getProperty("keyAlias").isNullOrBlank() &&
-        !keyProps.getProperty("keyPassword").isNullOrBlank()
-
+    // 签名材料与 hasReleaseSigning 见脚本顶层（afterEvaluate 守卫也要用）。
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
