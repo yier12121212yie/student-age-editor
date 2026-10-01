@@ -15,6 +15,8 @@
 ///   取反 = 把行第二元素（secondary）的符号写成负（negate ⇔ secondary<0）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
@@ -237,6 +239,7 @@ class EffectBlockEditor extends StatefulWidget {
     this.gameDicts = const {},
     this.singleRow = false,
     this.title = '积木编辑',
+    this.embedded = false,
   });
 
   final String initialText;
@@ -246,6 +249,11 @@ class EffectBlockEditor extends StatefulWidget {
   /// 单行约束（screenEffect：一句话只能一个屏幕效果）。true 时加行按钮禁用并提示。
   final bool singleRow;
   final String title;
+
+  /// 内嵌形态（无代码模式）：直接铺进字段行，**没有任何文本输入**——
+  /// 去掉「原始文本」通道与取消/确定按钮，行变更即时写回 [onResult]；
+  /// 文本无法解析时退化为只读原文展示，绝不覆写数据。
+  final bool embedded;
 
   /// 提交结果：null=取消；非空=确认后的整串文本。宿主用它写回并触发校验。
   final void Function(String? text) onResult;
@@ -261,6 +269,9 @@ class EffectBlockEditorState extends State<EffectBlockEditor> {
   String? _hint; // 交互提示（无槽/单行约束/原始应用失败等）
   String? _loadError;
   late final TextEditingController _rawCtrl;
+
+  /// 内嵌形态的写回防抖：连续点「上移/删除」只回写一次。
+  Timer? _emitDebounce;
 
   String get _browserTitle => switch (widget.mode) {
         'action' => '浏览人物指令',
@@ -287,12 +298,37 @@ class EffectBlockEditorState extends State<EffectBlockEditor> {
 
   @override
   void dispose() {
+    _emitDebounce?.cancel();
     _rawCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadInitial() async {
-    final t = widget.initialText.trim();
+  @override
+  void didUpdateWidget(covariant EffectBlockEditor old) {
+    super.didUpdateWidget(old);
+    if (!widget.embedded) return;
+    final t = widget.initialText;
+    if (t == old.initialText) return;
+    // 自己写回产生的回声（父级把同一串文本又传回来）不重解析，否则会打断编辑。
+    if (t == serializeBlockRows(_rows)) return;
+    _reload(t);
+  }
+
+  /// 外部改值（撤销回滚、切换字段、宿主重载）后重新拆行。
+  void _reload(String text) {
+    _emitDebounce?.cancel();
+    _loading = true;
+    _loadError = null;
+    _hint = null;
+    _rows = [];
+    _rawCtrl.text = text;
+    _loadText(text);
+  }
+
+  Future<void> _loadInitial() => _loadText(widget.initialText);
+
+  Future<void> _loadText(String raw) async {
+    final t = raw.trim();
     if (t.isEmpty) {
       if (mounted) setState(() => _loading = false);
       return;
@@ -305,14 +341,29 @@ class EffectBlockEditorState extends State<EffectBlockEditor> {
         _rows = rows;
         _rawCtrl.text = serializeBlockRows(_rows);
       } else {
-        _loadError = '当前文本无法解析，可在下方「原始文本」中修正后重新应用';
+        _loadError = widget.embedded
+            ? '这段内容暂时无法拆成积木，已按原样保留'
+            : '当前文本无法解析，可在下方「原始文本」中修正后重新应用';
       }
     });
   }
 
   // ---------- 行操作（仅顶层；nested 子行可编辑不可增删移） ----------
 
-  void _afterRowsChanged() => _rawCtrl.text = serializeBlockRows(_rows);
+  void _afterRowsChanged() {
+    _rawCtrl.text = serializeBlockRows(_rows);
+    _emit();
+  }
+
+  /// 内嵌形态：行变更即时写回（防抖 250ms）。对话框形态无副作用——
+  /// 结果只在点「确定」时经 [_commit] 交给宿主。
+  void _emit() {
+    if (!widget.embedded) return;
+    _emitDebounce?.cancel();
+    _emitDebounce = Timer(const Duration(milliseconds: 250), () {
+      if (mounted) widget.onResult(serializeBlockRows(_rows));
+    });
+  }
 
   void _move(int i, int delta) {
     final j = i + delta;
@@ -444,7 +495,59 @@ class EffectBlockEditorState extends State<EffectBlockEditor> {
     // 而行卡片/原始文本头部用了 InkWell（需要 Material 才能画水波、避免断言）。
     return Material(
       type: MaterialType.transparency,
-      child: Column(
+      child: widget.embedded ? _embeddedBuild() : _dialogBuild(),
+    );
+  }
+
+  /// 内嵌形态：只有积木行 + 加行按钮（+ 解析失败的只读原文），
+  /// **没有原始文本通道、没有取消/确定** —— 这是"开启后零代码输入"的落点。
+  Widget _embeddedBuild() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _body(),
+        if (_hint != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(2, 6, 2, 0),
+            child: Text(_hint!,
+                style:
+                    TextStyle(fontSize: 11, color: palette.warning, height: 1.35)),
+          ),
+      ],
+    );
+  }
+
+  /// 解析失败/后端不可达：只读展示原文，绝不覆写。
+  Widget _embeddedUnparsed() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          _loadError ?? '这段内容暂时无法拆成积木，已按原样保留',
+          style: TextStyle(fontSize: 11, color: palette.warning, height: 1.35),
+        ),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: palette.card,
+            borderRadius: BorderRadius.circular(AppRadius.xs),
+            border: Border.all(color: palette.border),
+          ),
+          child: SelectableText(
+            widget.initialText,
+            style: const TextStyle(fontSize: 11, fontFamily: 'Consolas'),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text('如需手改，请关闭无代码模式（设置页 / 状态栏开关）。',
+            style: TextStyle(fontSize: 10, color: palette.textHint)),
+      ],
+    );
+  }
+
+  Widget _dialogBuild() {
+    return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(child: _body()),
@@ -469,12 +572,14 @@ class EffectBlockEditorState extends State<EffectBlockEditor> {
             ],
           ),
         ],
-      ),
     );
   }
 
   Widget _body() {
     if (_loading) return const Center(child: fluent.ProgressRing());
+    // 内嵌形态 + 解析失败：只读原文，不给加行按钮（避免在无法解析的
+    // 数据上继续叠加，也避免任何写回）。
+    if (widget.embedded && _loadError != null) return _embeddedUnparsed();
     final addBtn = _addButton();
     if (_rows.isEmpty) {
       return Column(
@@ -495,16 +600,24 @@ class EffectBlockEditorState extends State<EffectBlockEditor> {
         ],
       );
     }
+    // 内嵌形态没有高度约束（父级是可变高文档流），用 Column 铺开；
+    // 对话框形态保留 Expanded+ListView 以撑满固定高度的弹窗。
+    final cards = [
+      for (var i = 0; i < _rows.length; i++) _rowCard(_rows[i], i, top: true),
+    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.only(bottom: 4),
-            itemCount: _rows.length,
-            itemBuilder: (c, i) => _rowCard(_rows[i], i, top: true),
+        if (widget.embedded)
+          ...cards
+        else
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.only(bottom: 4),
+              itemCount: cards.length,
+              itemBuilder: (c, i) => cards[i],
+            ),
           ),
-        ),
         const SizedBox(height: 6),
         addBtn,
       ],

@@ -15,6 +15,32 @@ String cln(dynamic v) {
   return s.endsWith('.0') ? s.replaceAll(_tailZero, '') : s;
 }
 
+/// 无代码模式的事件 ID 自动分配：在 `min..max` 家族内取第一个空闲位。
+/// 优先「最大已用 + 1」，被占则顺序上探；家族全占返回 null。
+///
+/// 导演视图用 8000~8999、剧情工作台用 7 位 `1xxxxxx`，两者共用本函数。
+String? allocEventId(
+  Iterable<String> existing, {
+  int min = 1000000,
+  int max = 1999999,
+}) {
+  final ids = {for (final s in existing) s};
+  var maxN = min - 1;
+  var seen = false;
+  for (final s in ids) {
+    final n = int.tryParse(s);
+    if (n != null && n >= min && n <= max) {
+      seen = true;
+      if (n > maxN) maxN = n;
+    }
+  }
+  var id = seen ? maxN + 1 : min;
+  while (id <= max && ids.contains(id.toString())) {
+    id++;
+  }
+  return id > max ? null : id.toString();
+}
+
 /// 值 → 字符串列表（单值包一层，列表拍平一层）。
 List<String> ensureList(dynamic v) {
   if (v == null || v == '') return [];

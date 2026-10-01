@@ -22,6 +22,7 @@
 // layer portable is what lets test_gateway.cpp parse configs directly.
 #pragma once
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,16 @@ struct Account {
     int kdf_iterations = 0;        // v2 有效；0 == 解析时取 kKdfIterationsDefault
 };
 
+// 自助注册（自托管网页端）：默认关闭；开启后可选择要求邀请码。新账号写入
+// 独立的 credentials 文件（Config::accounts_file），gateway.json 保持管理员
+// 只读。见 gw_accounts.h。
+struct RegistrationCfg {
+    bool enabled = false;          // 安全默认：关闭
+    std::string invite_code;       // 空 == 开放注册；非空 == 必须精确匹配
+    int max_accounts = 0;          // 0 == 不限（含 gateway.json 预置账号）
+    int min_password_length = 8;   // 注册密码最短字符数
+};
+
 struct AiRelayCfg {
     bool enabled = false;
     std::string provider = "openai_compatible";
@@ -64,8 +75,14 @@ struct Config {
     int instance_max = 8;
     int idle_minutes = 30;
     std::string state_dir;         // resolved (defaults to <root>/.gateway)
-    std::vector<Account> accounts;
+    // 自助注册账号的持久化文件（默认为 <state_dir>/accounts.json）；由
+    // parse_config 派生，管理员无需配置。
+    std::string accounts_file;
+    // 安全批次：注册写入是低频但并发的，用 std::deque 保证既有 Account*
+    // 在 push_back 后不失效（vector 扩容会让代理/进程池持有的指针悬空）。
+    std::deque<Account> accounts;
     AiRelayCfg ai;
+    RegistrationCfg registration;
     // 托管模式 SSRF 护栏（安全批次 A）：true 时网关 fork 的 backend 以
     // --cloud-public-only 启动，云同步出站 URL 强校验为公网地址。
     bool cloud_public_only = true;
@@ -95,6 +112,11 @@ bool load_config(const std::string& path, Config* out, std::string* err);
 
 // Lowercase hex of exactly `len` chars?
 bool is_hex_lower(std::string_view s, std::size_t len);
+
+// Account names become a path component under user_data_root, so they are held
+// to a boring slug: [A-Za-z0-9_-]+, non-empty. Shared by gateway.json parsing
+// and self-registration so the two can never diverge.
+bool valid_account_name(std::string_view name);
 
 // 16 random bytes rendered as 32 lowercase hex chars (std::random_device).
 std::string random_salt_hex();

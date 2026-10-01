@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "sa_core/http_client.h"
+#include "sa_core/paths.h"
 #include "sa_core/strings.h"
 #include "sa_core/util.h"
 
@@ -17,6 +18,12 @@ namespace {
 
 sa::Resp err_json(int status, const char* message) {
     return sa::Resp::Json(status, sa::json{{"error", message}});
+}
+
+// 带稳定 code 的错误信封：前端按 code 映射本地化文案，避免匹配英文 error。
+sa::Resp err_code(int status, const char* message, const char* code) {
+    return sa::Resp::Json(status,
+                          sa::json{{"error", message}, {"code", code}});
 }
 
 bool under(std::string_view path, std::string_view pfx) {
@@ -226,6 +233,93 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         sa::json out;
         out["token"] = token;
         out["name"] = a->name;
+        out["expires_in"] = g.cfg.session_ttl_hours * 3600LL;
+        return sa::Resp::Json(200, std::move(out));
+    });
+
+    // ---- GET /api/auth/registration --------------------------------------
+    // Public signup policy so the login screen can show/hide the signup form.
+    // Never reveals the invite code, only whether one is required.
+    r.get(R"(/api/auth/registration)", [&g](const sa::Req& req) -> sa::Resp {
+        (void)req;
+        const RegistrationCfg& reg = g.cfg.registration;
+        sa::json out;
+        out["enabled"] = reg.enabled;
+        out["invite_required"] = !reg.invite_code.empty();
+        out["min_password_length"] = reg.enabled ? reg.min_password_length : 0;
+        return sa::Resp::Json(200, std::move(out));
+    });
+
+    // ---- POST /api/auth/register -----------------------------------------
+    // Self-service signup: admin-gated by registration.enabled, optionally
+    // invite-code gated, name/password validated, credential persisted to the
+    // registered-accounts file, then a session is issued (auto-login).
+    r.post(R"(/api/auth/register)", [&g](const sa::Req& req) -> sa::Resp {
+        const RegistrationCfg& reg = g.cfg.registration;
+        if (!reg.enabled) return err_code(403, "registration disabled",
+                                          "registration_disabled");
+        std::string name, password, invite;
+        if (req.body.is_object()) {
+            if (req.body.contains("name") && req.body.at("name").is_string())
+                name = req.body.at("name").get<std::string>();
+            if (req.body.contains("password") && req.body.at("password").is_string())
+                password = req.body.at("password").get<std::string>();
+            if (req.body.contains("invite_code") && req.body.at("invite_code").is_string())
+                invite = req.body.at("invite_code").get<std::string>();
+        }
+        // 限速复用登录限速器（固定键）：挡邀请码爆破与重复注册尝试，
+        // 同时挡 PBKDF2 算力耗尽。成功即清零。
+        static const char kRegKey[] = "__register__";
+        if (!g.login_limiter.allow(kRegKey))
+            return err_code(429, "too many attempts; retry later", "rate_limited");
+        if (!valid_account_name(name)) {
+            g.login_limiter.record_fail(kRegKey);
+            return err_code(400, "invalid account name", "invalid_name");
+        }
+        if (static_cast<int>(password.size()) < reg.min_password_length) {
+            g.login_limiter.record_fail(kRegKey);
+            return err_code(400, "password too short", "weak_password");
+        }
+        if (!reg.invite_code.empty() &&
+            !secure_equals(invite, reg.invite_code)) {
+            g.login_limiter.record_fail(kRegKey);
+            return err_code(403, "invalid invite code", "invalid_invite");
+        }
+        if (!g.accounts)
+            return err_code(500, "registration unavailable", "server_error");
+        Account created;
+        {
+            // 原子化「重名检查 + 上限检查 + 落盘 + 并入运行时 cfg」。
+            std::lock_guard<std::mutex> lk(g.accounts_mu);
+            if (g.cfg.find_account(name)) {
+                g.login_limiter.record_fail(kRegKey);
+                return err_code(409, "account already exists", "name_taken");
+            }
+            if (reg.max_accounts > 0 &&
+                static_cast<int>(g.cfg.accounts.size()) >= reg.max_accounts) {
+                g.login_limiter.record_fail(kRegKey);
+                return err_code(403, "account limit reached", "account_limit");
+            }
+            std::string aerr;
+            if (!g.accounts->add(name, password, &created, &aerr)) {
+                g.login_limiter.record_fail(kRegKey);
+                std::fprintf(stderr, "[gateway] register '%s' failed: %s\n",
+                             name.c_str(), aerr.c_str());
+                // 同名已存在（文件与内存竞态）也给 409，其余按服务端错误。
+                if (aerr == "account already exists")
+                    return err_code(409, "account already exists", "name_taken");
+                return err_code(500, "registration failed", "server_error");
+            }
+            g.cfg.accounts.push_back(created);
+        }
+        // 工作区目录先建好（进程池启动时也会兜底创建）。
+        sa_core::paths::create_dirs(created.dir);
+        g.login_limiter.record_success(kRegKey);
+        std::fprintf(stderr, "[gateway] registered account '%s'\n", name.c_str());
+        std::string token = g.sessions->issue(created.name);
+        sa::json out;
+        out["token"] = token;
+        out["name"] = created.name;
         out["expires_in"] = g.cfg.session_ttl_hours * 3600LL;
         return sa::Resp::Json(200, std::move(out));
     });

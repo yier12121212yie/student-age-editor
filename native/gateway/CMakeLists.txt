@@ -8,6 +8,7 @@
 # so the Catch2 suite can drive the exact same routes/ban-table/sessions code
 # in-process without duplicating it. main.cpp holds only the CLI + boot wiring.
 add_library(sa_gateway STATIC
+    gw_accounts.cpp
     gw_config.cpp
     gw_sessions.cpp
     gw_usage.cpp

@@ -9,6 +9,7 @@ import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
+import '../../core/no_code_mode.dart';
 import '../../core/platform_env.dart';
 import '../ai/mcp/mcp_types.dart';
 import '../../core/responsive.dart';
@@ -1243,23 +1244,23 @@ class _SettingsPageState extends State<SettingsPage> {
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const _AppearanceSection(),
+                _AppearanceSection(),
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const _SaveValidateSection(),
+                _SaveValidateSection(),
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const _NoCodeModeSection(),
+                _NoCodeModeSection(),
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const _ResourcePackSection(),
+                _ResourcePackSection(),
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
-                const UpdateCheckSection(),
+                UpdateCheckSection(),
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
@@ -1922,19 +1923,15 @@ class _NoCodeModeSectionState extends State<_NoCodeModeSection> {
 
   Future<void> _toggle(bool v) async {
     setState(() => _on = v);
-    try {
-      await ApiClient.instance.put(
-        '/api/settings/editor',
-        body: {'noCodeMode': v},
-      );
-      // 写穿成功即同步全局态：编辑器字段表单据此切换点选/输入形态。
-      AppState.current?.setNoCodeMode(v);
-    } catch (e) {
-      if (!mounted) return;
+    // 写穿逻辑收在 core/no_code_mode.dart：字段级逃生口（"关闭无代码模式以手动
+    // 编辑"）与这里共用同一份"写穿 + 失败回滚"。
+    final ok = await persistNoCodeMode(v);
+    if (!mounted) return;
+    if (!ok) {
       // 写失败回滚开关（旧后端无该端点时保持关闭，不假装生效）
       setState(() {
         _on = !v;
-        _error = '保存失败：$e';
+        _error = '保存失败：无法写穿后端共享设置';
       });
     }
   }

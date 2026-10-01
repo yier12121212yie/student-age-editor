@@ -1064,7 +1064,7 @@ class _Toolbar extends StatelessWidget {
           backBtn,
           nextBtn,
           const SizedBox(width: 8),
-          const _VDiv(),
+          _VDiv(),
           _ToolButton(
             icon: FluentIcons.arrow_sync_24_regular,
             tooltip: '重新加载',
@@ -1079,7 +1079,7 @@ class _Toolbar extends StatelessWidget {
           ),
           fullscreenBtn,
           muteBtn,
-          const _VDiv(),
+          _VDiv(),
           _ToolButton(
             icon: FluentIcons.draw_shape_24_regular,
             tooltip: '画笔模式：圈出内容让 AI 修改',
@@ -1381,8 +1381,12 @@ class _BrushOverlayState extends State<_BrushOverlay> {
 }
 
 class _BrushPainter extends CustomPainter {
-  _BrushPainter({this.rect});
+  _BrushPainter({this.rect})
+      : _light = palette.isLight,
+        _accent = accentColor;
   final Rect? rect;
+  final bool _light;
+  final Color _accent;
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(
@@ -1414,7 +1418,8 @@ class _BrushPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _BrushPainter old) => old.rect != rect;
+  bool shouldRepaint(covariant _BrushPainter old) =>
+      old.rect != rect || old._light != _light || old._accent != _accent;
 }
 
 // ---------------- 圈选结果弹窗 ----------------

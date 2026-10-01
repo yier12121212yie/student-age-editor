@@ -6,6 +6,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart'; // 导入后可以使用 palette.xxx
 import '../../core/mobile_widgets.dart';
+import '../../core/models.dart';
 import 'story_editor_mobile.dart';
 
 // 移除 unused imports
@@ -106,6 +107,60 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
   }
 
   String? _error;
+
+  /// 无代码模式（后端共享开关）：跳转 ID 只选不敲。
+  bool get _noCode => AppState.current?.noCodeMode ?? false;
+
+  /// 无代码模式的跳转目标选择：列出本事件对白，点选写回。
+  Future<void> _pickTalkTarget(MobileOptionCfg option,
+      {required bool second}) async {
+    final current =
+        (second ? option.talkId2 : option.talkId).map((e) => e.toString()).toSet();
+    final picked = await showDialog<List<String>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(second ? '选择失败跳转目标' : '选择跳转目标',
+            style: const TextStyle(fontSize: 14)),
+        content: SizedBox(
+          width: 420,
+          height: 420,
+          child: _talks.isEmpty
+              ? const Center(child: Text('本事件没有可选对白'))
+              : ListView.builder(
+                  itemCount: _talks.length,
+                  itemBuilder: (c, i) {
+                    final t = _talks[i];
+                    final content = t.content.toString();
+                    final preview = content.length > 24
+                        ? '${content.substring(0, 24)}…'
+                        : content;
+                    return ListTile(
+                      dense: true,
+                      selected: current.contains(t.id),
+                      title: Text('${t.id} · $preview',
+                          style: const TextStyle(fontSize: 12)),
+                      onTap: () => Navigator.pop(ctx, [t.id]),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (second) {
+        option.talkId2 = picked;
+      } else {
+        option.talkId = picked;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -943,30 +998,35 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                 SizedBox(height: 8),
                 
                 // 正常分支（第一个条件）
-                TextField(
-                  decoration: InputDecoration(
-                    hintText: '选择第一句话的事件 ID（留空表示直接结束）',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide: BorderSide.none,
-                    ),
-                    filled: true,
-                    fillColor: AppTheme.palette.bgDeep2.withValues(alpha: 0.5),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  ),
-                  controller: TextEditingController(text: option.talkId.join(', ')),
-                  onChanged: (value) {
-                    // 暂时不处理，因为 talkId 是 List
-                    // TODO: 改为支持多选的 UI
-                  },
-                ),
-                
-                // 失败分支（第二个条件）
-                if (option.talkId2.isNotEmpty) ...[
-                  SizedBox(height: 6),
+                if (_noCode)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          option.talkId.isEmpty
+                              ? '（留空 = 直接结束）'
+                              : option.talkId.join(', '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: option.talkId.isEmpty
+                                ? AppTheme.palette.textHint
+                                : AppTheme.palette.textPrimary,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => _pickTalkTarget(option, second: false),
+                        child: const Text('选跳转…',
+                            style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  )
+                else
                   TextField(
                     decoration: InputDecoration(
-                      hintText: '选择失败后的跳转 ID（可选）',
+                      hintText: '选择第一句话的事件 ID（留空表示直接结束）',
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
                         borderSide: BorderSide.none,
@@ -975,11 +1035,57 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                       fillColor: AppTheme.palette.bgDeep2.withValues(alpha: 0.5),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     ),
-                    controller: TextEditingController(text: option.talkId2.join(', ')),
+                    controller: TextEditingController(text: option.talkId.join(', ')),
                     onChanged: (value) {
-                      // 暂时不处理
+                      // 暂时不处理，因为 talkId 是 List
+                      // TODO: 改为支持多选的 UI
                     },
                   ),
+                
+                // 失败分支（第二个条件）
+                if (option.talkId2.isNotEmpty) ...[
+                  SizedBox(height: 6),
+                  if (_noCode)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            option.talkId2.join(', '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: AppTheme.palette.textPrimary),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              _pickTalkTarget(option, second: true),
+                          child: const Text('选跳转…',
+                              style: TextStyle(fontSize: 12)),
+                        ),
+                      ],
+                    )
+                  else
+                    TextField(
+                      decoration: InputDecoration(
+                        hintText: '选择失败后的跳转 ID（可选）',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(6),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor:
+                            AppTheme.palette.bgDeep2.withValues(alpha: 0.5),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6),
+                      ),
+                      controller:
+                          TextEditingController(text: option.talkId2.join(', ')),
+                      onChanged: (value) {
+                        // 暂时不处理
+                      },
+                    ),
                 ],
               ],
             ),

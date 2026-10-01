@@ -557,7 +557,7 @@ class MdView extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = data.trim();
     if (text.isEmpty) {
-      return busy ? const TypingDots() : const SizedBox.shrink();
+      return busy ? TypingDots() : const SizedBox.shrink();
     }
     final segments = _split(text);
     if (segments.length == 1) {

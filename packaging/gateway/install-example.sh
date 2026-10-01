@@ -29,7 +29,7 @@ fi
 info() { echo "[gateway] $*"; }
 die()  { echo "[gateway] 错误：$*" >&2; exit 1; }
 
-# ------------------------------------------- 1) 专用系统用户（WEB_GUIDE §2.3 步骤3）----
+# ------------------------------------------- 1) 专用系统用户（WEB_GUIDE §2.4 步骤3）----
 if getent passwd "$EDITOR_USER" >/dev/null 2>&1; then
   info "用户 $EDITOR_USER 已存在，跳过创建"
 else

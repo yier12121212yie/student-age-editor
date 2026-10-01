@@ -704,7 +704,7 @@ class _MobileMorePage extends StatelessWidget {
           onTap: () => _push(
             context,
             '人物关系图',
-            const RelationGraphView(),
+            RelationGraphView(),
           ),
         ),
         _moreCard(
@@ -714,7 +714,7 @@ class _MobileMorePage extends StatelessWidget {
           onTap: () => _push(
             context,
             '事件时间轴',
-            const TimelineView(),
+            TimelineView(),
           ),
         ),
         _moreCard(

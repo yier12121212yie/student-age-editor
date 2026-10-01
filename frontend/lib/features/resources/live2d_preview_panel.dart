@@ -237,7 +237,7 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
       );
     }
     if (_models.isEmpty) {
-      return const _Empty(
+      return _Empty(
           icon: FluentIcons.person_24_regular, text: '暂无 Live2D 模型');
     }
     return GridView.builder(
@@ -306,7 +306,7 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
   Widget _buildPreview() {
     final model = _selected;
     if (model == null) {
-      return const _Empty(
+      return _Empty(
           icon: FluentIcons.image_24_regular, text: '请选择一个模型');
     }
     final exprs = _expressions(model);

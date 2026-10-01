@@ -46,9 +46,18 @@ class AuthState extends ChangeNotifier {
   bool _busy = false;
   String? _error;
 
+  // 自助注册策略（GET /api/auth/registration，公开端点）。默认关闭；
+  // 探测失败一律视为不可注册（安全默认）。
+  bool _registrationEnabled = false;
+  bool _inviteRequired = false;
+  int _minPasswordLength = 8;
+
   AuthMode get mode => _mode;
   String? get name => _name;
   bool get busy => _busy;
+  bool get registrationEnabled => _registrationEnabled;
+  bool get inviteRequired => _inviteRequired;
+  int get minPasswordLength => _minPasswordLength;
 
   /// 登录失败/校验提示文案（登录后成功清空）。
   String? get error => _error;
@@ -103,6 +112,29 @@ class AuthState extends ChangeNotifier {
       _mode = AuthMode.local;
       await _clearSession();
     }
+    // hosted 时拉取注册策略，登录页据此显示/隐藏注册入口。
+    if (_mode == AuthMode.hosted) await loadRegistrationPolicy();
+    notifyListeners();
+  }
+
+  /// 拉取公开的注册策略（GET /api/auth/registration）。非 Web 部署或请求
+  /// 失败时保持关闭（安全默认）。可在登录页打开时再次调用以刷新。
+  Future<void> loadRegistrationPolicy() async {
+    if (!_isWeb) return;
+    try {
+      final resp = await ApiClient.instance
+          .get('/api/auth/registration')
+          .timeout(const Duration(seconds: 8));
+      if (resp is Map) {
+        _registrationEnabled = resp['enabled'] == true;
+        _inviteRequired = resp['invite_required'] == true;
+        final minLen = resp['min_password_length'];
+        if (minLen is int && minLen > 0) _minPasswordLength = minLen;
+      }
+    } catch (_) {
+      _registrationEnabled = false;
+      _inviteRequired = false;
+    }
     notifyListeners();
   }
 
@@ -135,17 +167,7 @@ class AuthState extends ChangeNotifier {
       final n = resp['name'] is String && (resp['name'] as String).isNotEmpty
           ? resp['name'] as String
           : trimmed;
-      _token = token;
-      _name = n;
-      _mode = AuthMode.hosted;
-      ApiClient.instance.accessToken = token;
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_tokenKey, token);
-        await prefs.setString(_nameKey, n);
-      } catch (_) {
-        // prefs 写失败仅影响下次冷启动免登，本次会话照常。
-      }
+      await _adoptSession(token, n);
       return true;
     } on ApiException catch (e) {
       // 后端对账号不存在与密码错误返回同一形态（防枚举）。
@@ -162,6 +184,94 @@ class AuthState extends ChangeNotifier {
     }
   }
 
+  /// 自助注册。成功与 [login] 同效：签发并持久化会话、自动登录进编辑器。
+  /// 失败仅记录 [error]，不抛。
+  ///
+  /// 错误按后端稳定 `code` 映射为本地化文案（见 gateway gw_proxy.cpp）：
+  /// registration_disabled / invalid_name / weak_password / invalid_invite /
+  /// name_taken / account_limit / rate_limited。
+  Future<bool> register(String name, String password,
+      {String inviteCode = ''}) async {
+    if (_busy) return false;
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      _fail('请输入用户名');
+      return false;
+    }
+    if (password.length < _minPasswordLength) {
+      _fail('密码至少 $_minPasswordLength 位');
+      return false;
+    }
+    if (_inviteRequired && inviteCode.trim().isEmpty) {
+      _fail('请输入邀请码');
+      return false;
+    }
+    _busy = true;
+    _error = null;
+    notifyListeners();
+    try {
+      final resp = await ApiClient.instance.post('/api/auth/register', body: {
+        'name': trimmed,
+        'password': password,
+        'invite_code': inviteCode.trim(),
+      }).timeout(const Duration(seconds: 30));
+      final token = resp is Map ? resp['token'] : null;
+      if (token is! String || token.isEmpty) {
+        _fail('注册响应异常，请稍后重试');
+        return false;
+      }
+      final n = resp['name'] is String && (resp['name'] as String).isNotEmpty
+          ? resp['name'] as String
+          : trimmed;
+      await _adoptSession(token, n);
+      return true;
+    } on ApiException catch (e) {
+      _fail(_registerError(e));
+      return false;
+    } catch (_) {
+      _fail('无法连接服务器，请稍后重试');
+      return false;
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  static String _registerError(ApiException e) {
+    switch (e.code) {
+      case 'registration_disabled':
+        return '服务器未开放注册';
+      case 'invalid_name':
+        return '用户名不合法（仅限字母、数字、下划线、短横线）';
+      case 'weak_password':
+        return '密码不符合要求';
+      case 'invalid_invite':
+        return '邀请码错误';
+      case 'name_taken':
+        return '用户名已被占用';
+      case 'account_limit':
+        return '账号数量已达上限';
+      case 'rate_limited':
+        return '操作过于频繁，请稍后再试';
+    }
+    return '注册失败（HTTP ${e.statusCode}）';
+  }
+
+  /// 建立会话：写入内存态 + 注入 [ApiClient] + 持久化（供冷启动免登）。
+  Future<void> _adoptSession(String token, String name) async {
+    _token = token;
+    _name = name;
+    _mode = AuthMode.hosted;
+    ApiClient.instance.accessToken = token;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_tokenKey, token);
+      await prefs.setString(_nameKey, name);
+    } catch (_) {
+      // prefs 写失败仅影响下次冷启动免登，本次会话照常。
+    }
+  }
+
   /// 清会话回登录页：手动登出与 [ApiClient.onUnauthorized]（401 过期）共用。
   void logout() {
     _token = null;
@@ -174,6 +284,13 @@ class AuthState extends ChangeNotifier {
 
   void _fail(String msg) {
     _error = msg;
+    notifyListeners();
+  }
+
+  /// 清空错误提示（登录/注册表单切换时用）。
+  void clearError() {
+    if (_error == null) return;
+    _error = null;
     notifyListeners();
   }
 

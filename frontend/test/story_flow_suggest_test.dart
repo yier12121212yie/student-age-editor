@@ -27,8 +27,9 @@ FieldMeta metaFor(String cfg, String key, String type) {
     type: type,
     label: key,
     section: 'common',
+    cfg: cfg,
     effectLike: effectLike,
-    suggestMode: effectLike ? effectSuggestMode(key) : null,
+    suggestMode: effectLike ? effectSuggestMode(cfg, key) : null,
     multivalued: type == '1D Array' || type == '2D Array',
     rule: fieldRuleFor(cfg, key),
   );

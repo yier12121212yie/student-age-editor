@@ -93,6 +93,15 @@ bool is_hex_lower(std::string_view s, std::size_t len) {
     return true;
 }
 
+bool valid_account_name(std::string_view name) {
+    if (name.empty()) return false;
+    for (char c : name) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'))
+            return false;
+    }
+    return true;
+}
+
 std::string random_salt_hex() {
     std::random_device rd;
     std::string raw;
@@ -285,12 +294,7 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
         if (!get_str(a, "name", &acc.name, err)) return false;
         // Name becomes a path component under user_data_root: keep it to a
         // boring slug (also excludes '.', '..', hidden dirs and drive-ish).
-        bool bad_name = acc.name.empty();
-        for (char c : acc.name) {
-            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'))
-                bad_name = true;
-        }
-        if (bad_name) {
+        if (!valid_account_name(acc.name)) {
             *err = "bad account name (use [A-Za-z0-9_-]+): '" + acc.name + "'";
             return false;
         }
@@ -386,6 +390,33 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
     // false 需要管理员显式关闭护栏（自托管纯内网场景）；解析时放行，
     // main() 会把该开关传给 fork 出的每个 backend 实例。
     if (!get_bool(j, "cloud_public_only", &out->cloud_public_only, err)) return false;
+
+    // --- registration（自助注册，默认关闭）-----------------------------------
+    if (j.contains("registration")) {
+        const auto& reg = j["registration"];
+        if (!reg.is_object()) {
+            *err = "'registration' must be an object";
+            return false;
+        }
+        if (!get_bool(reg, "enabled", &out->registration.enabled, err)) return false;
+        if (!get_str(reg, "invite_code", &out->registration.invite_code, err)) return false;
+        long long max_accounts = out->registration.max_accounts;
+        if (!get_int(reg, "max_accounts", &max_accounts, err)) return false;
+        if (max_accounts < 0) {
+            *err = "registration.max_accounts must be >= 0";
+            return false;
+        }
+        out->registration.max_accounts = static_cast<int>(max_accounts);
+        long long min_pw = out->registration.min_password_length;
+        if (!get_int(reg, "min_password_length", &min_pw, err)) return false;
+        if (min_pw < 1 || min_pw > 1024) {
+            *err = "registration.min_password_length must be in 1..1024";
+            return false;
+        }
+        out->registration.min_password_length = static_cast<int>(min_pw);
+    }
+    // 注册账号落盘位置派生自 state_dir（<state_dir>/accounts.json）。
+    out->accounts_file = sa_core::paths::join(out->state_dir, "accounts.json");
     return true;
 }
 

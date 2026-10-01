@@ -4,6 +4,8 @@
 // Endpoint ownership (all registered BEFORE the /api/* proxy catch-all so the
 // ordered Router picks them first):
 //   POST /api/auth/login    — verify credentials, mint a Bearer session.
+//   POST /api/auth/register — self-service signup (admin-gated), mint a session.
+//   GET  /api/auth/registration — public signup policy (enabled/invite).
 //   GET  /api/auth/whoami   — Bearer -> {name}.
 //   POST /api/auth/logout   — Bearer -> drop the token.
 //   GET  /api/ai/policy     — Bearer; supply policy from gateway.json ai_relay.
@@ -22,6 +24,7 @@
 #include "server/httpd.h"
 #include "server/services/ai_relay_routes.h"
 
+#include "gw_accounts.h"
 #include "gw_config.h"
 #include "gw_sessions.h"
 #include "gw_usage.h"
@@ -58,6 +61,13 @@ struct Gateway {
     Config cfg;
     std::unique_ptr<Sessions> sessions;
     std::unique_ptr<UsageStore> usage;
+    // 自助注册账号的持久化存储（<state_dir>/accounts.json）。可能为空
+    // （测试/未启用注册的部署），注册路由对此防御。
+    std::unique_ptr<RegisteredAccounts> accounts;
+    // 串行化 cfg.accounts 的注册写入：注册低频但并发，push_back 与同名检查
+    // 必须原子。登录/代理读路径不加锁——cfg.accounts 是 std::deque，插入
+    // 不会使既有 Account* 失效。
+    std::mutex accounts_mu;
     sa::ai_relay::RelaySettings relay;  // resolved from cfg.ai (usable gated)
     LoginRateLimiter login_limiter;     // 登录滑动窗口限速（安全批次 A）
 #ifndef _WIN32

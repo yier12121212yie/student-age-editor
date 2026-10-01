@@ -7,8 +7,21 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../ai/tts_panel.dart';
+import '../editor/field_meta.dart'
+    show
+        NoCodeShape,
+        effectSuggestMode,
+        fieldHelpText,
+        fieldRuleFor,
+        noCodeShapeFor;
 import '../editor/field_utils.dart';
+import '../editor/id_ref_picker.dart' show showIdBrowseDialog;
 import '../editor/suggestion_text_field.dart';
+import '../nocode/entity_picker.dart'
+    show EntityKindMeta, entityKindForRule, showEntityPicker;
+import '../nocode/no_code_exit.dart';
+import '../nocode/no_code_ref_field.dart';
+import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
@@ -516,6 +529,38 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     }
     return map;
   }
+
+  /// 无代码模式：导演视图的码/ID 字段不再给文本输入框。
+  bool get _noCode => widget.state.noCodeMode;
+
+  /// 当前事件的对白候选（id · 内容预览），给跳转目标选择用。
+  List<(String, String)> _talkOptions() {
+    final out = <(String, String)>[];
+    for (final e in _stageTalks.entries) {
+      final rec = e.value;
+      final content = rec is Map ? cln(rec['content']) : '';
+      final preview =
+          content.length > 16 ? '${content.substring(0, 16)}…' : content;
+      out.add((e.key, preview));
+    }
+    return out;
+  }
+
+  Future<List<String>?> _pickTalkIds({
+    bool multi = true,
+    List<String> initial = const [],
+  }) {
+    return showIdBrowseDialog(
+      context,
+      title: multi ? '选择跳转目标（多选）' : '选择跳转目标',
+      options: _talkOptions(),
+      multi: multi,
+      initialSelected: initial,
+    );
+  }
+
+  Future<List<String>?> _pickRoleIds({bool multi = true}) =>
+      showRolePickerDialog(context, multi: multi, title: '选择人物');
 
   void _insertTalk() {
     final cur = _talkId;
@@ -1416,14 +1461,28 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       flex: 4,
                       child: SizedBox(
                         height: 32,
-                        child: _RolesSearchField(
-                          value: roleIds,
-                          roles: _allRoles(),
-                          onChanged: (list) {
-                            talk['roleIds'] = list;
-                            _dirty = true;
-                          },
-                        ),
+                        child: _noCode
+                            ? NoCodeRefField(
+                                value: roleIds.join(', '),
+                                pickLabel: '选人物…',
+                                onDisableNoCode: () => exitNoCodeMode(context),
+                                onPick: () async {
+                                  final ids = await _pickRoleIds();
+                                  if (ids == null) return;
+                                  setState(() {
+                                    talk['roleIds'] = ids;
+                                    _dirty = true;
+                                  });
+                                },
+                              )
+                            : _RolesSearchField(
+                                value: roleIds,
+                                roles: _allRoles(),
+                                onChanged: (list) {
+                                  talk['roleIds'] = list;
+                                  _dirty = true;
+                                },
+                              ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -1443,14 +1502,28 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       flex: 4,
                       child: SizedBox(
                         height: 32,
-                        child: _RolesSearchField(
-                          value: highlights,
-                          roles: _allRoles(),
-                          onChanged: (list) {
-                            talk['highlights'] = list;
-                            _dirty = true;
-                          },
-                        ),
+                        child: _noCode
+                            ? NoCodeRefField(
+                                value: highlights.join(', '),
+                                pickLabel: '选人物…',
+                                onDisableNoCode: () => exitNoCodeMode(context),
+                                onPick: () async {
+                                  final ids = await _pickRoleIds();
+                                  if (ids == null) return;
+                                  setState(() {
+                                    talk['highlights'] = ids;
+                                    _dirty = true;
+                                  });
+                                },
+                              )
+                            : _RolesSearchField(
+                                value: highlights,
+                                roles: _allRoles(),
+                                onChanged: (list) {
+                                  talk['highlights'] = list;
+                                  _dirty = true;
+                                },
+                              ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -1545,20 +1618,39 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                       Expanded(
                         child: SizedBox(
                           height: 30,
-                          child: fluent.TextBox(
-                            controller: TextEditingController(text: nextTalk),
-                            placeholder: '如: 8002 (空则顺延)',
-                            onChanged: (v) {
-                              final list = v
-                                  .split(',')
-                                  .map((s) => s.trim())
-                                  .where((s) => s.isNotEmpty)
-                                  .map((s) => int.tryParse(s) ?? s)
-                                  .toList();
-                              talk['nextTalk'] = list;
-                              _dirty = true;
-                            },
-                          ),
+                          child: _noCode
+                              ? NoCodeRefField(
+                                  value: nextTalk,
+                                  pickLabel: '选跳转…',
+                                  emptyText: '（空 = 顺延）',
+                                  onDisableNoCode: () => exitNoCodeMode(context),
+                                  onPick: () async {
+                                    final ids = await _pickTalkIds(
+                                      initial: ensureList(talk['nextTalk'])
+                                          .map(cln)
+                                          .toList(),
+                                    );
+                                    if (ids == null) return;
+                                    setState(() {
+                                      talk['nextTalk'] = ids;
+                                      _dirty = true;
+                                    });
+                                  },
+                                )
+                              : fluent.TextBox(
+                                  controller: TextEditingController(text: nextTalk),
+                                  placeholder: '如: 8002 (空则顺延)',
+                                  onChanged: (v) {
+                                    final list = v
+                                        .split(',')
+                                        .map((s) => s.trim())
+                                        .where((s) => s.isNotEmpty)
+                                        .map((s) => int.tryParse(s) ?? s)
+                                        .toList();
+                                    talk['nextTalk'] = list;
+                                    _dirty = true;
+                                  },
+                                ),
                         ),
                       ),
                     ],
@@ -2134,12 +2226,16 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               const SizedBox(height: 12),
               const Text('表情与动作 (30xx):', style: TextStyle(fontSize: 12)),
               const SizedBox(height: 6),
-              fluent.TextBox(
-                controller: TextEditingController(text: actionCode),
-                onChanged: (v) => actionCode = v.trim(),
-                placeholder: '如 3000(普通), 3001(开心), 3002(生气)',
-              ),
-              const SizedBox(height: 8),
+              // 无代码模式：不给代码输入框，只能用下方预设（要填自定义码请先
+              // 关闭无代码模式）。预设按钮本身就是"选"，保留不受影响。
+              if (!widget.state.noCodeMode) ...[
+                fluent.TextBox(
+                  controller: TextEditingController(text: actionCode),
+                  onChanged: (v) => actionCode = v.trim(),
+                  placeholder: '如 3000(普通), 3001(开心), 3002(生气)',
+                ),
+                const SizedBox(height: 8),
+              ],
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
@@ -2355,36 +2451,70 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
           ),
           const SizedBox(height: 4),
-          fluent.TextBox(
-            controller: TextEditingController(text: rolesStr),
-            placeholder: '支持模糊连打 (例: 0,3000 或 白雨移动-250)',
-            onChanged: (v) {
-              if (talk != null) {
-                talk['roles'] = v
-                    .split(';')
-                    .map((s) => s.trim())
-                    .where((s) => s.isNotEmpty)
-                    .toList();
+          if (_noCode)
+            NoCodeEffectField(
+              value: rolesTo2d(talk?['roles']),
+              type: '2D Array',
+              cfg: 'TalkCfg',
+              fieldKey: 'roles',
+              mode: 'action',
+              gameDicts: widget.state.gameDicts,
+              onChanged: (v) {
+                if (talk == null) return;
+                talk['roles'] = rolesFrom2d(v);
                 _dirty = true;
-              }
-            },
-          ),
+                setState(() {});
+              },
+              onDisableNoCode: () => exitNoCodeMode(context),
+            )
+          else
+            fluent.TextBox(
+              controller: TextEditingController(text: rolesStr),
+              placeholder: '支持模糊连打 (例: 0,3000 或 白雨移动-250)',
+              onChanged: (v) {
+                if (talk != null) {
+                  talk['roles'] = v
+                      .split(';')
+                      .map((s) => s.trim())
+                      .where((s) => s.isNotEmpty)
+                      .toList();
+                  _dirty = true;
+                }
+              },
+            ),
           const SizedBox(height: 10),
           Text(
             '屏幕效果(40xx):',
             style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
           ),
           const SizedBox(height: 4),
-          fluent.TextBox(
-            controller: TextEditingController(text: screenEffect),
-            placeholder: '输入效果关键字调出提示(如抖动或CG名字)...',
-            onChanged: (v) {
-              if (talk != null) {
-                talk['screenEffect'] = v.trim();
+          if (_noCode)
+            NoCodeEffectField(
+              value: talk?['screenEffect'],
+              type: '1D Array',
+              cfg: 'TalkCfg',
+              fieldKey: 'screenEffect',
+              mode: 'screen',
+              gameDicts: widget.state.gameDicts,
+              onChanged: (v) {
+                if (talk == null) return;
+                talk['screenEffect'] = v;
                 _dirty = true;
-              }
-            },
-          ),
+                setState(() {});
+              },
+              onDisableNoCode: () => exitNoCodeMode(context),
+            )
+          else
+            fluent.TextBox(
+              controller: TextEditingController(text: screenEffect),
+              placeholder: '输入效果关键字调出提示(如抖动或CG名字)...',
+              onChanged: (v) {
+                if (talk != null) {
+                  talk['screenEffect'] = v.trim();
+                  _dirty = true;
+                }
+              },
+            ),
           const SizedBox(height: 6),
           Wrap(
             spacing: 4,
@@ -2610,20 +2740,39 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             width: 60,
             child: SizedBox(
               height: 28,
-              child: fluent.TextBox(
-                controller: TextEditingController(text: target),
-                style: const TextStyle(fontSize: 11),
-                placeholder: '跳转ID',
-                onChanged: (v) {
-                  if (opt is Map) {
-                    opt['talkId'] = v
-                        .split(',')
-                        .map((s) => int.tryParse(s.trim()) ?? s.trim())
-                        .toList();
-                    _dirty = true;
-                  }
-                },
-              ),
+              child: _noCode
+                  ? NoCodeRefField(
+                      value: target,
+                      pickLabel: '选…',
+                      compact: true,
+                      emptyText: '选…',
+                      onPick: () async {
+                        if (opt is! Map) return;
+                        final ids = await _pickTalkIds(
+                          multi: false,
+                          initial: ensureList(opt['talkId']).map(cln).toList(),
+                        );
+                        if (ids == null) return;
+                        setState(() {
+                          opt['talkId'] = ids;
+                          _dirty = true;
+                        });
+                      },
+                    )
+                  : fluent.TextBox(
+                      controller: TextEditingController(text: target),
+                      style: const TextStyle(fontSize: 11),
+                      placeholder: '跳转ID',
+                      onChanged: (v) {
+                        if (opt is Map) {
+                          opt['talkId'] = v
+                              .split(',')
+                              .map((s) => int.tryParse(s.trim()) ?? s.trim())
+                              .toList();
+                          _dirty = true;
+                        }
+                      },
+                    ),
             ),
           ),
           MouseRegion(
@@ -3329,6 +3478,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         audioCfg: _audioCfg,
         translator: translator,
         dirty: _dirty,
+        noCodeMode: widget.state.noCodeMode,
+        talkOptions: _talkOptions(),
+        bgOptions: _allBgs(),
+        audioOptions: _allAudios(),
         onChanged: () => setState(() => _dirty = true),
         onSave: _save,
         onAddOption: _addOption,
@@ -3353,6 +3506,10 @@ class _TalkEditorPane extends StatefulWidget {
     required this.onSave,
     required this.onAddOption,
     required this.onRemoveOption,
+    this.noCodeMode = false,
+    this.talkOptions = const [],
+    this.bgOptions = const {},
+    this.audioOptions = const {},
   });
   final String talkId;
   final Map<String, dynamic> talk;
@@ -3366,6 +3523,16 @@ class _TalkEditorPane extends StatefulWidget {
   final VoidCallback onSave;
   final VoidCallback onAddOption;
   final void Function(String optId) onRemoveOption;
+
+  /// 无代码模式：码字段铺内联积木、引用字段只读+选择，不再出现文本输入框。
+  final bool noCodeMode;
+
+  /// 跳转目标候选（id · 内容预览）。
+  final List<(String, String)> talkOptions;
+
+  /// 背景/音频候选（id → 名称）。
+  final Map<String, String> bgOptions;
+  final Map<String, String> audioOptions;
 
   @override
   State<_TalkEditorPane> createState() => _TalkEditorPaneState();
@@ -3474,6 +3641,86 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     return names.isEmpty ? '旁白' : names.join('、');
   }
 
+  // ---------- 无代码模式：只选不敲 ----------
+
+  bool get _noCode => widget.noCodeMode;
+
+  Future<void> _pickTalkIds(String key, {bool multi = true}) async {
+    final ids = await showIdBrowseDialog(
+      context,
+      title: multi ? '选择跳转目标（多选）' : '选择跳转目标',
+      options: widget.talkOptions,
+      multi: multi,
+      initialSelected: ensureList(widget.talk[key]).map(cln).toList(),
+    );
+    if (ids == null) return;
+    setState(() => _setField(key, ids));
+  }
+
+  Future<void> _pickRoles(String key, {bool multi = true}) async {
+    final ids = await showRolePickerDialog(context, multi: multi, title: '选择人物');
+    if (ids == null) return;
+    setState(() => _setField(key, ids));
+  }
+
+  Future<void> _pickDict(
+    String key,
+    Map<String, String> options,
+    String title,
+  ) async {
+    final ids = await showIdBrowseDialog(
+      context,
+      title: title,
+      options: [for (final e in options.entries) (e.key, e.value)],
+      multi: false,
+      initialSelected: const [],
+    );
+    if (ids == null || ids.isEmpty) return;
+    setState(() => _setField(key, num.tryParse(ids.first) ?? ids.first));
+  }
+
+  /// 无代码模式下的「标签 + 只读/选择控件」：与 [_labelField] 同款头部，
+  /// 但 body 由调用方给（NoCodeRefField / NoCodeEffectField），不含文本框。
+  Widget _labelled(
+    String label,
+    String key,
+    Widget child, {
+    Widget? trailing,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: palette.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                key,
+                style: TextStyle(fontSize: 11, color: palette.textFaint),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(child: child),
+              if (trailing != null) ...[const SizedBox(width: 8), trailing],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   String _fieldLabel(String key) {
     final custom = widget.translator.translate(key, 'TalkCfg');
     return _talkLabels[key] ?? (custom == key ? key : custom);
@@ -3523,17 +3770,33 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               padding: const EdgeInsets.all(16),
               children: [
                 _section('角色与台词', [
-                  _labelField(
-                    '说话人群组',
-                    'roleIds',
-                    '输入角色 ID，逗号隔开',
-                    _roleIdsCtrl,
-                    (v) => _setField('roleIds', _splitIds(v)),
-                    trailing: Text(
-                      _roleNamesPreview(),
-                      style: TextStyle(fontSize: 11, color: palette.textHint),
+                  if (_noCode)
+                    _labelled(
+                      '说话人群组',
+                      'roleIds',
+                      NoCodeRefField(
+                        value: _roleIdsCtrl.text,
+                        pickLabel: '选人物…',
+                        onPick: () => _pickRoles('roleIds'),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                      trailing: Text(
+                        _roleNamesPreview(),
+                        style: TextStyle(fontSize: 11, color: palette.textHint),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '说话人群组',
+                      'roleIds',
+                      '输入角色 ID，逗号隔开',
+                      _roleIdsCtrl,
+                      (v) => _setField('roleIds', _splitIds(v)),
+                      trailing: Text(
+                        _roleNamesPreview(),
+                        style: TextStyle(fontSize: 11, color: palette.textHint),
+                      ),
                     ),
-                  ),
                   _labelField(
                     '自定义名字',
                     'roleName',
@@ -3541,45 +3804,117 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     _roleNameCtrl,
                     (v) => _setField('roleName', v),
                   ),
-                  _labelField(
-                    '高亮人物',
-                    'highlights',
-                    '逗号隔开',
-                    _highlightsCtrl,
-                    (v) => _setField('highlights', _splitIds(v)),
-                  ),
+                  if (_noCode)
+                    _labelled(
+                      '高亮人物',
+                      'highlights',
+                      NoCodeRefField(
+                        value: _highlightsCtrl.text,
+                        pickLabel: '选人物…',
+                        onPick: () => _pickRoles('highlights'),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '高亮人物',
+                      'highlights',
+                      '逗号隔开',
+                      _highlightsCtrl,
+                      (v) => _setField('highlights', _splitIds(v)),
+                    ),
                 ]),
                 _section('场景与表现', [
-                  _labelField(
-                    '切换背景',
-                    'bg',
-                    '0=继承上文 -1=清空人物 -2=仅转场',
-                    _bgCtrl,
-                    (v) => _setField('bg', _numOr(v, 0)),
-                    trailing: _bgHint(),
-                  ),
-                  _labelField(
-                    '背景音乐',
-                    'audio',
-                    'AudioCfg ID',
-                    _audioCtrl,
-                    (v) => _setField('audio', _numOr(v, 0)),
-                    trailing: _audioHint(),
-                  ),
-                  _labelField(
-                    '人物控制指令',
-                    'roles',
-                    '行: 动作,角色; 列: 动作ID,角色ID…',
-                    _rolesCtrl,
-                    (v) => _setField('roles', _decode2d(v)),
-                  ),
-                  _labelField(
-                    '屏幕画面特效',
-                    'screenEffect',
-                    '特效 ID，逗号隔开',
-                    _screenEffectCtrl,
-                    (v) => _setField('screenEffect', _splitIds(v)),
-                  ),
+                  if (_noCode)
+                    _labelled(
+                      '切换背景',
+                      'bg',
+                      NoCodeRefField(
+                        value: _bgCtrl.text,
+                        pickLabel: '选背景…',
+                        onPick: () => _pickDict('bg', widget.bgOptions, '选择背景'),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                      trailing: _bgHint(),
+                    )
+                  else
+                    _labelField(
+                      '切换背景',
+                      'bg',
+                      '0=继承上文 -1=清空人物 -2=仅转场',
+                      _bgCtrl,
+                      (v) => _setField('bg', _numOr(v, 0)),
+                      trailing: _bgHint(),
+                    ),
+                  if (_noCode)
+                    _labelled(
+                      '背景音乐',
+                      'audio',
+                      NoCodeRefField(
+                        value: _audioCtrl.text,
+                        pickLabel: '选音频…',
+                        onPick: () => _pickDict('audio', widget.audioOptions, '选择音频'),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                      trailing: _audioHint(),
+                    )
+                  else
+                    _labelField(
+                      '背景音乐',
+                      'audio',
+                      'AudioCfg ID',
+                      _audioCtrl,
+                      (v) => _setField('audio', _numOr(v, 0)),
+                      trailing: _audioHint(),
+                    ),
+                  if (_noCode)
+                    _labelled(
+                      '人物控制指令',
+                      'roles',
+                      NoCodeEffectField(
+                        value: rolesTo2d(widget.talk['roles']),
+                        type: '2D Array',
+                        cfg: 'TalkCfg',
+                        fieldKey: 'roles',
+                        mode: 'action',
+                        gameDicts: widget.translator.state.gameDicts,
+                        onChanged: (v) => setState(
+                            () => _setField('roles', rolesFrom2d(v))),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '人物控制指令',
+                      'roles',
+                      '行: 动作,角色; 列: 动作ID,角色ID…',
+                      _rolesCtrl,
+                      (v) => _setField('roles', _decode2d(v)),
+                    ),
+                  if (_noCode)
+                    _labelled(
+                      '屏幕画面特效',
+                      'screenEffect',
+                      NoCodeEffectField(
+                        value: widget.talk['screenEffect'],
+                        type: '1D Array',
+                        cfg: 'TalkCfg',
+                        fieldKey: 'screenEffect',
+                        mode: 'screen',
+                        gameDicts: widget.translator.state.gameDicts,
+                        onChanged: (v) => setState(
+                            () => _setField('screenEffect', v)),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '屏幕画面特效',
+                      'screenEffect',
+                      '特效 ID，逗号隔开',
+                      _screenEffectCtrl,
+                      (v) => _setField('screenEffect', _splitIds(v)),
+                    ),
                 ]),
                 _section('台词内容', [
                   Text(
@@ -3623,27 +3958,70 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   ),
                 ]),
                 _section('流程与分支', [
-                  _labelField(
-                    '前提判定 check',
-                    'check',
-                    '行: 条件类型,属性ID,值; 分号分隔多条件',
-                    _checkCtrl,
-                    (v) => _setField('check', _decode2d(v)),
-                  ),
-                  _labelField(
-                    '下一句对话ID',
-                    'nextTalk',
-                    '空 = 对话结束',
-                    _nextTalkCtrl,
-                    (v) => _setField('nextTalk', _splitIds(v)),
-                  ),
-                  _labelField(
-                    '失败跳转ID',
-                    'nextTalk2',
-                    'check 判定失败时跳转',
-                    _nextTalk2Ctrl,
-                    (v) => _setField('nextTalk2', _splitIds(v)),
-                  ),
+                  if (_noCode)
+                    _labelled(
+                      '前提判定 check',
+                      'check',
+                      NoCodeEffectField(
+                        value: widget.talk['check'],
+                        type: '2D Array',
+                        cfg: 'TalkCfg',
+                        fieldKey: 'check',
+                        mode: 'condition',
+                        gameDicts: widget.translator.state.gameDicts,
+                        onChanged: (v) =>
+                            setState(() => _setField('check', v)),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '前提判定 check',
+                      'check',
+                      '行: 条件类型,属性ID,值; 分号分隔多条件',
+                      _checkCtrl,
+                      (v) => _setField('check', _decode2d(v)),
+                    ),
+                  if (_noCode)
+                    _labelled(
+                      '下一句对话ID',
+                      'nextTalk',
+                      NoCodeRefField(
+                        value: _nextTalkCtrl.text,
+                        pickLabel: '选跳转…',
+                        emptyText: '（空 = 对话结束）',
+                        onPick: () => _pickTalkIds('nextTalk'),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '下一句对话ID',
+                      'nextTalk',
+                      '空 = 对话结束',
+                      _nextTalkCtrl,
+                      (v) => _setField('nextTalk', _splitIds(v)),
+                    ),
+                  if (_noCode)
+                    _labelled(
+                      '失败跳转ID',
+                      'nextTalk2',
+                      NoCodeRefField(
+                        value: _nextTalk2Ctrl.text,
+                        pickLabel: '选跳转…',
+                        emptyText: '（空 = 不跳转）',
+                        onPick: () => _pickTalkIds('nextTalk2'),
+                        onDisableNoCode: () => exitNoCodeMode(context),
+                      ),
+                    )
+                  else
+                    _labelField(
+                      '失败跳转ID',
+                      'nextTalk2',
+                      'check 判定失败时跳转',
+                      _nextTalk2Ctrl,
+                      (v) => _setField('nextTalk2', _splitIds(v)),
+                    ),
                 ]),
                 _section('玩家选项', [
                   // 去重：模组数据可能重复 option id，重复会生成相同的
@@ -3654,6 +4032,8 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                         key: ValueKey<dynamic>(cln(optId)),
                         optId: cln(optId),
                         opt: widget.stageOpts[cln(optId)],
+                        noCodeMode: widget.noCodeMode,
+                        talkOptions: widget.talkOptions,
                         onChanged: widget.onChanged,
                         onRemove: () => widget.onRemoveOption(cln(optId)),
                       ),
@@ -3913,6 +4293,12 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
 
   /// 属性表行：左侧固定宽属性名，右侧值输入框。
   Widget _attrRow(String key) {
+    final help = fieldHelpText(
+      'TalkCfg',
+      key,
+      _schemaType(key) ?? 'String',
+      rule: fieldRuleFor('TalkCfg', key),
+    );
     return Container(
       color: palette.bgDeep,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -3946,23 +4332,73 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '「${_fieldLabel(key)}」字段值，按类型输入',
+                  help,
                   style: TextStyle(fontSize: 11, color: palette.textMuted),
                 ),
                 const SizedBox(height: 2),
-                fluent.TextBox(
-                  controller: TextEditingController(
-                    text: ValueCodec.encode(widget.talk[key]),
+                if (_noCode)
+                  _attrNoCode(key)
+                else
+                  fluent.TextBox(
+                    controller: TextEditingController(
+                      text: ValueCodec.encode(widget.talk[key]),
+                    ),
+                    maxLines: 2,
+                    style: TextStyle(fontSize: 12.5, color: palette.textHigh),
+                    onChanged: (v) => _setField(key, _decodeByType(key, v)),
                   ),
-                  maxLines: 2,
-                  style: TextStyle(fontSize: 12.5, color: palette.textHigh),
-                  onChanged: (v) => _setField(key, _decodeByType(key, v)),
-                ),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  /// 属性表行的无代码形态：码字段 → 内联积木；引用字段 → 只读 + 选择；
+  /// 普通文本/数值字段保持原文本框（它们不是代码）。
+  Widget _attrNoCode(String key) {
+    final type = _schemaType(key);
+    final rule = type == null ? null : fieldRuleFor('TalkCfg', key);
+    final shape = type == null
+        ? NoCodeShape.untouched
+        : noCodeShapeFor('TalkCfg', key, type, rule);
+    if (shape == NoCodeShape.untouched) {
+      return fluent.TextBox(
+        controller: TextEditingController(
+          text: ValueCodec.encode(widget.talk[key]),
+        ),
+        maxLines: 2,
+        style: TextStyle(fontSize: 12.5, color: palette.textHigh),
+        onChanged: (v) => _setField(key, _decodeByType(key, v)),
+      );
+    }
+    if (shape == NoCodeShape.blocks) {
+      return NoCodeEffectField(
+        value: widget.talk[key],
+        type: type!,
+        cfg: 'TalkCfg',
+        fieldKey: key,
+        mode: effectSuggestMode('TalkCfg', key),
+        gameDicts: widget.translator.state.gameDicts,
+        onChanged: (v) => setState(() => _setField(key, v)),
+        onDisableNoCode: () => exitNoCodeMode(context),
+      );
+    }
+    final kind = entityKindForRule(rule);
+    return NoCodeRefField(
+      value: ValueCodec.encode(widget.talk[key]),
+      pickLabel: kind == null ? '选择…' : '选${kind.label}…',
+      onDisableNoCode: () => exitNoCodeMode(context),
+      onPick: kind == null
+          ? null
+          : () async {
+              final ids =
+                  await showEntityPicker(context, kind: kind, multi: false);
+              if (ids == null || ids.isEmpty) return;
+              setState(
+                  () => _setField(key, num.tryParse(ids.first) ?? ids.first));
+            },
     );
   }
 
@@ -3977,8 +4413,11 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
   }
 
   String? _schemaType(String key) {
-    final schema = _schemaCache[key];
-    return schema;
+    // 优先读真源 gameSchema（与剧情图/Inspector 同源），硬编码表仅作兜底：
+    // 避免 schema 扩表后未列出的引用/码字段回退成裸文本框。
+    final t = widget.translator.state.gameSchema['TalkCfg'];
+    if (t is Map && t[key] != null) return t[key].toString();
+    return _schemaCache[key];
   }
 
   static const _schemaCache = <String, String>{
@@ -4014,11 +4453,15 @@ class _OptionRow extends StatefulWidget {
     required this.opt,
     required this.onChanged,
     required this.onRemove,
+    this.noCodeMode = false,
+    this.talkOptions = const [],
   });
   final String optId;
   final dynamic opt;
   final VoidCallback onChanged;
   final VoidCallback onRemove;
+  final bool noCodeMode;
+  final List<(String, String)> talkOptions;
 
   @override
   State<_OptionRow> createState() => _OptionRowState();
@@ -4134,21 +4577,74 @@ class _OptionRowState extends State<_OptionRow> {
             style: TextStyle(fontSize: 11, color: palette.textMuted),
           ),
           const SizedBox(height: 4),
-          fluent.TextBox(
-            controller: _targetCtrl,
-            placeholder: '跳转至对话 ID（talkId）',
-            style: TextStyle(fontSize: 12.5, color: palette.textHigh),
-            onChanged: (v) {
-              if (opt is Map) {
-                opt['talkId'] = ValueCodec.decode(v, '1D Array');
-                widget.onChanged();
-              }
-            },
-          ),
+          if (widget.noCodeMode)
+            NoCodeRefField(
+              value: _targetCtrl.text,
+              pickLabel: '选跳转…',
+              onPick: () async {
+                final ids = await showIdBrowseDialog(
+                  context,
+                  title: '选择跳转目标（多选）',
+                  options: widget.talkOptions,
+                  multi: true,
+                  initialSelected:
+                      ensureList(opt is Map ? opt['talkId'] : null)
+                          .map(cln)
+                          .toList(),
+                );
+                if (ids == null) return;
+                if (opt is Map) {
+                  opt['talkId'] = ids;
+                  widget.onChanged();
+                  setState(() {});
+                }
+              },
+              onDisableNoCode: () => exitNoCodeMode(context),
+            )
+          else
+            fluent.TextBox(
+              controller: _targetCtrl,
+              placeholder: '跳转至对话 ID（talkId）',
+              style: TextStyle(fontSize: 12.5, color: palette.textHigh),
+              onChanged: (v) {
+                if (opt is Map) {
+                  opt['talkId'] = ValueCodec.decode(v, '1D Array');
+                  widget.onChanged();
+                }
+              },
+            ),
         ],
       ),
     );
   }
+}
+
+/// 人物指令行（`TalkCfg.roles`）在导演视图里是「每行一条 '动作,角色,...' 字符串」
+/// 的列表，而 schema 声明是 2D Array。无代码积木编辑器按 2D 行解析，这里做
+/// 双向适配：读时容忍二维列表与一维字符串列表两种历史形态，写时统一回
+/// 「每行一个逗号串」的列表（与既有文本框的写回口径一致）。
+List<List<String>> rolesTo2d(dynamic v) {
+  if (v is! List) return const [];
+  final out = <List<String>>[];
+  for (final e in ensureList(v)) {
+    final s = e.startsWith('[') && e.endsWith(']')
+        ? e.substring(1, e.length - 1)
+        : e;
+    out.add(s
+        .split(',')
+        .map((x) => x.trim())
+        .where((x) => x.isNotEmpty)
+        .toList());
+  }
+  return out;
+}
+
+List<String> rolesFrom2d(dynamic v) {
+  if (v is! List) return const [];
+  return [
+    for (final row in v)
+      if (row is List) row.map((e) => e.toString()).join(',') else row.toString(),
+  ];
 }
 
 class _StageRoleInfo {

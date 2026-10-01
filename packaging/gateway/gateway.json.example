@@ -11,6 +11,12 @@
     "idle_minutes": 30
   },
   "state_dir": "/srv/editor-data/.gateway",
+  "registration": {
+    "enabled": false,
+    "invite_code": "",
+    "max_accounts": 0,
+    "min_password_length": 8
+  },
   "accounts": [
     {
       "name": "alice",

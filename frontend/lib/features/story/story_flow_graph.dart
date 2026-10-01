@@ -22,7 +22,10 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/app_theme.dart';
 import '../../core/history_client.dart';
 import '../editor/field_meta.dart';
+import '../editor/field_utils.dart';
 import '../editor/suggestion_text_field.dart';
+import '../nocode/entity_picker.dart';
+import '../nocode/nocode_effect_field.dart';
 import 'story_flow_models.dart';
 import 'story_flow_snap.dart';
 import 'tombstone_node_widget.dart';
@@ -156,6 +159,8 @@ class StoryFlowGraph extends StatefulWidget {
     this.nodeFocus = _noNodeFocus,
     this.suggestFor = _noSuggest,
     this.onRequestInspector = _noInspector,
+    this.noCodeMode = false,
+    this.gameDicts = const {},
     required this.onSelectionChanged,
     required this.onMoveNode,
     required this.onAddEdge,
@@ -217,6 +222,13 @@ class StoryFlowGraph extends StatefulWidget {
 
   /// 请求打开该节点的完整参数 Inspector。
   final VoidCallback? Function(String nodeId) onRequestInspector;
+
+  /// 无代码模式（后端共享开关）：开启后内联区不再铺任何可输入的代码/ID 框 ——
+  /// 码字段铺内联积木编辑器，引用字段只显示现值 + 去 Inspector 选择的入口。
+  final bool noCodeMode;
+
+  /// 游戏字典（实体浏览面板的候选名来源；与原版 game_dicts 同一份）。
+  final Map<String, dynamic> gameDicts;
 
   final void Function(FlowSelection next) onSelectionChanged;
   final void Function(String id, Offset pos) onMoveNode;
@@ -1208,6 +1220,9 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       // 卡片缓存，否则被删/被恢复的节点还按旧集合渲染；无变化的刷新
       // version 不动，整批卡片原样复用。
       widget.tombstones?.version,
+      // 无代码模式切换会整体改变内联区的控件形态（文本框 ↔ 积木/只读），
+      // 不进签名的话切开关后缓存卡片仍是旧形态。
+      widget.noCodeMode,
     );
     for (final id in widget.expandedNodes) {
       for (final m in widget.inlineMetas(id)) {
@@ -1282,6 +1297,8 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       nodeFocus: widget.nodeFocus,
       suggestFor: widget.suggestFor,
       onRequestInspector: widget.onRequestInspector,
+      noCodeMode: widget.noCodeMode,
+      gameDicts: widget.gameDicts,
       outputPorts: _outputPorts(n),
       fieldController: widget.fieldController,
       onFieldChanged: widget.onFieldChanged,
@@ -1404,6 +1421,8 @@ class _FlowNodeCard extends StatelessWidget {
     required this.nodeFocus,
     required this.suggestFor,
     required this.onRequestInspector,
+    required this.noCodeMode,
+    required this.gameDicts,
     required this.outputPorts,
     required this.fieldController,
     required this.onFieldChanged,
@@ -1429,6 +1448,10 @@ class _FlowNodeCard extends StatelessWidget {
   final FocusNode? Function(String nodeId, String field) nodeFocus;
   final SuggestionSource? Function(String nodeId, FieldMeta meta) suggestFor;
   final VoidCallback? Function(String nodeId) onRequestInspector;
+
+  /// 无代码模式与其候选名来源（见 [StoryFlowGraph.noCodeMode]）。
+  final bool noCodeMode;
+  final Map<String, dynamic> gameDicts;
 
   final List<_OutPort> outputPorts;
   final TextEditingController? Function(String nodeId, String field)
@@ -1888,6 +1911,9 @@ class _FlowNodeCard extends StatelessWidget {
         dirty: fieldDirty(node.id, meta.key),
         maxLines: _maxLinesFor(meta),
         onChanged: onFieldChanged,
+        noCodeMode: noCodeMode,
+        gameDicts: gameDicts,
+        onOpenInspector: onRequestInspector(node.id),
       ),
     );
   }
@@ -1926,6 +1952,9 @@ class _FieldInput extends StatefulWidget {
     required this.dirty,
     required this.maxLines,
     required this.onChanged,
+    this.noCodeMode = false,
+    this.gameDicts = const {},
+    this.onOpenInspector,
   });
 
   final String nodeId;
@@ -1943,6 +1972,13 @@ class _FieldInput extends StatefulWidget {
   final bool dirty;
   final int maxLines;
   final void Function(String nodeId, String field, String text) onChanged;
+
+  /// 无代码模式：内联区不铺任何可输入的代码/ID 框（见 [StoryFlowGraph.noCodeMode]）。
+  final bool noCodeMode;
+  final Map<String, dynamic> gameDicts;
+
+  /// 「去 Inspector 选择」入口（内联卡片放不下的选择面板在 Inspector 里）。
+  final VoidCallback? onOpenInspector;
 
   @override
   State<_FieldInput> createState() => _FieldInputState();
@@ -2102,12 +2138,33 @@ class _FieldInputState extends State<_FieldInput> {
   @override
   Widget build(BuildContext context) {
     final meta = widget.meta;
+    // 无代码模式分流（与 schema 编辑器同一张表）：码字段铺内联积木编辑器，
+    // 引用/枚举字段只显示现值 + 去 Inspector 选择的入口，两者都不给文本输入。
+    final shape = noCodeShapeFor(meta.cfg, meta.key, meta.type, meta.rule);
+    final noCodeBlocks = widget.noCodeMode && shape == NoCodeShape.blocks;
+    final noCodeReadOnly = widget.noCodeMode &&
+        shape != NoCodeShape.untouched &&
+        shape != NoCodeShape.blocks;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _labelRow(meta),
         SizedBox(height: AppSpace.xxs),
-        if (_wantsSuggest)
+        if (noCodeBlocks)
+          NoCodeEffectField(
+            value: ValueCodec.decode(widget.controller.text, meta.type),
+            type: meta.type,
+            cfg: meta.cfg,
+            fieldKey: meta.key,
+            mode: meta.suggestMode,
+            gameDicts: widget.gameDicts,
+            dense: true,
+            onChanged: (v) => widget.onChanged(
+                widget.nodeId, meta.key, ValueCodec.encode(v)),
+          )
+        else if (noCodeReadOnly)
+          _noCodeSummary(meta)
+        else if (_wantsSuggest)
           SuggestionTextField(
             controller: widget.controller,
             focusNode: _focus,
@@ -2152,6 +2209,42 @@ class _FieldInputState extends State<_FieldInput> {
               style: TextStyle(fontSize: 9, color: palette.flowMissing),
             ),
           ),
+      ],
+    );
+  }
+
+  /// 无代码模式下的引用字段摘要：只读现值 + 「选择…」入口。
+  ///
+  /// 内联卡片只有 200px 宽，放不下实体浏览面板与多值 chips；这里刻意不给
+  /// 任何输入控件（那正是无代码模式要消灭的东西），选择动作交给 Inspector。
+  Widget _noCodeSummary(FieldMeta meta) {
+    final text = widget.controller.text.trim();
+    final kind = entityKindForRule(meta.rule);
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            text.isEmpty ? '（未设置）' : text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 10,
+              color: text.isEmpty ? palette.textHint : palette.textBody,
+            ),
+          ),
+        ),
+        SizedBox(width: AppSpace.xxs),
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onOpenInspector,
+            child: Text(
+              kind == null ? '去选择…' : '选${kind.label}…',
+              style: TextStyle(fontSize: 9.5, color: accentColor),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -2275,7 +2368,12 @@ class _FlowEdgesPainter extends CustomPainter {
     this.marquee,
     this.wire,
     this.guides = const <FlowGuide>[],
-  });
+  })  : _light = palette.isLight,
+        _accent = accentColor;
+
+  /// 全局调色板快照（亮暗/主题色）：变化时重绘选中描边/连线。
+  final bool _light;
+  final Color _accent;
 
   final FlowGraph graph;
 
@@ -2536,6 +2634,8 @@ class _FlowEdgesPainter extends CustomPainter {
   bool shouldRepaint(covariant _FlowEdgesPainter old) =>
       // graph 由宿主缓存，身份变化即内容变化；positions 是同一个 Map 实例
       // 被原地改，只能靠 positionsVersion（旧代码里比较 positions 引用是空转）。
+      old._light != _light ||
+      old._accent != _accent ||
       old.graph != graph ||
       old.positionsVersion != positionsVersion ||
       !setEquals(old.expandedNodes, expandedNodes) ||

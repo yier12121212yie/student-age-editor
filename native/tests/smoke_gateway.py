@@ -9,6 +9,8 @@ Windows 侧复跑方式（本脚本本体在 Linux 里跑）：
 覆盖（全部走真 socket，独立 temp 环境，绝不碰真实数据）：
   A) --hash-password 输出格式（salt:hash，32+64 位小写 hex）；
   B) 登录流：坏密码 401 / 好密码 200+token / whoami / logout 后旧 token 401；
+  B2) 自助注册：公开策略端点 / 邀请码校验 / 弱密码 / 成功注册自动登录 /
+      重名 409 / 新账号独立工作区；
   C) 反代懒启动：带 Bearer 的 GET /api/state 透传到该账号的 backend 实例
      （workspace_root == 账号目录）；无 token 401；封禁端点 403；
   D) 静态托管：非 /api 的 GET / -> web_root/index.html；
@@ -101,14 +103,18 @@ def main():
     ws_a = os.path.join(data_root, "alice")
 
     # A) --hash-password: inline and stdin forms, format + determinism.
+    # 现行输出首行为 `salt:hash`，其后附 gateway.json 字段块；只取首行。
+    def first_line(b):
+        return b.decode().strip().splitlines()[0] if b.strip() else ""
+
     h = argv_flag(gateway, ["--hash-password", "s3cret"])
     check("hash-password exit0", h.returncode == 0, h.stderr.decode())
-    line = h.stdout.decode().strip()
+    line = first_line(h.stdout)
     m = re.fullmatch(r"([0-9a-f]{32}):([0-9a-f]{64})", line)
     check("hash-password format", bool(m), line)
     h2 = subprocess.run([gateway, "--hash-password"], input=b"s3cret\n",
                         capture_output=True, timeout=30)
-    m2 = re.fullmatch(r"([0-9a-f]{32}):([0-9a-f]{64})", h2.stdout.decode().strip())
+    m2 = re.fullmatch(r"([0-9a-f]{32}):([0-9a-f]{64})", first_line(h2.stdout))
     check("hash-password stdin form", bool(m2), h2.stdout.decode())
     check("hash-password salt random", m and m2 and m.group(1) != m2.group(1))
 
@@ -122,8 +128,11 @@ def main():
         "session_ttl_hours": 24,
         "instance": {"max": 4, "idle_minutes": 30},
         "state_dir": None,
+        "registration": {"enabled": True, "invite_code": "SMOKE",
+                          "max_accounts": 0, "min_password_length": 8},
         "accounts": [
             {"name": "alice", "salt": salt, "password_sha256": pwdhash,
+             "kdf_version": 2, "kdf_iterations": 100000,
              "data_dir": None, "disabled": False},
         ],
         "ai_relay": {"enabled": False, "provider": "openai_compatible",
@@ -173,6 +182,35 @@ def main():
         check("login token 64hex", re.fullmatch(r"[0-9a-f]{64}", tok) is not None)
         st, body = req("GET", base + "/api/auth/whoami", token=tok)
         check("whoami 200", st == 200 and json.loads(body).get("name") == "alice", str(st))
+
+        # B2) self-registration (invite-gated).
+        st, body = req("GET", base + "/api/auth/registration")
+        pol = json.loads(body) if st == 200 else {}
+        check("registration policy public", st == 200 and pol.get("enabled") is True and
+              pol.get("invite_required") is True and pol.get("min_password_length") == 8,
+              "%d %s" % (st, body[:160]))
+        st, body = req("POST", base + "/api/auth/register",
+                       body={"name": "bob", "password": "s3cret123", "invite_code": "NOPE"})
+        check("register bad invite 403", st == 403 and
+              json.loads(body).get("code") == "invalid_invite", "%d %s" % (st, body[:120]))
+        st, body = req("POST", base + "/api/auth/register",
+                       body={"name": "bob", "password": "short", "invite_code": "SMOKE"})
+        check("register weak password 400", st == 400 and
+              json.loads(body).get("code") == "weak_password", "%d %s" % (st, body[:120]))
+        st, body = req("POST", base + "/api/auth/register",
+                       body={"name": "bob", "password": "s3cret123", "invite_code": "SMOKE"})
+        check("register ok 200", st == 200, "%d %s" % (st, body[:120]))
+        btok = json.loads(body).get("token", "") if st == 200 else ""
+        check("register auto-login token", re.fullmatch(r"[0-9a-f]{64}", btok) is not None)
+        st, body = req("POST", base + "/api/auth/register",
+                       body={"name": "bob", "password": "s3cret123", "invite_code": "SMOKE"})
+        check("register duplicate 409", st == 409 and
+              json.loads(body).get("code") == "name_taken", "%d %s" % (st, body[:120]))
+        st, body = req("POST", base + "/api/auth/login",
+                       body={"name": "bob", "password": "s3cret123"})
+        check("register new account can login", st == 200, "%d %s" % (st, body[:120]))
+        ws_b = os.path.join(data_root, "bob")
+        check("register created workspace", os.path.isdir(ws_b), ws_b)
 
         # C) reverse proxy: lazy boot + account workspace + auth/ban gates.
         st, body = req("GET", base + "/api/state", token=tok)

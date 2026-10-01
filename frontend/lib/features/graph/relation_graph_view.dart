@@ -748,7 +748,12 @@ class _EgoEdgesPainter extends CustomPainter {
     required this.placed,
     required this.levelsById,
     required this.size,
-  });
+  })  : _light = palette.isLight,
+        _accent = accentColor;
+
+  /// 全局调色板快照（亮暗/主题色）：变化时重绘，避免旧配色残留。
+  final bool _light;
+  final Color _accent;
 
   final GraphViewport viewport;
   final List<RelationPlacement> placed;
@@ -786,6 +791,8 @@ class _EgoEdgesPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _EgoEdgesPainter old) =>
+      old._light != _light ||
+      old._accent != _accent ||
       old.viewport != viewport ||
       old.placed.length != placed.length ||
       !identical(old.placed, placed);

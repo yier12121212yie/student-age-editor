@@ -292,7 +292,12 @@ class _MinimapPainter extends CustomPainter {
     required this.fit,
     required this.viewport,
     required this.canvasSize,
-  });
+  })  : _light = palette.isLight,
+        _accent = accentColor;
+
+  /// 全局调色板快照（亮暗/主题色）：变化时重绘底/边框/视口框。
+  final bool _light;
+  final Color _accent;
 
   final FlowGraph graph;
   final Map<String, Offset> positions;
@@ -387,7 +392,10 @@ class _MinimapPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _MinimapPainter old) => flowMinimapNeedsRepaint(
+  bool shouldRepaint(covariant _MinimapPainter old) =>
+      old._light != _light ||
+      old._accent != _accent ||
+      flowMinimapNeedsRepaint(
     oldGraph: old.graph,
     graph: graph,
     oldPositionsVersion: old.positionsVersion,

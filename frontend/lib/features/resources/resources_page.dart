@@ -240,8 +240,8 @@ class _ResourcesPageState extends State<ResourcesPage> {
         if (_tab == 'explorer' || _tab == 'live2d') ...[
           Expanded(
             child: _tab == 'explorer'
-                ? const AssetExplorerPanel()
-                : const Live2DPreviewPanel(),
+                ? AssetExplorerPanel()
+                : Live2DPreviewPanel(),
           ),
         ] else ...[
         // 来源横幅：AA 状态变化只重建这一条（阶段 4c）

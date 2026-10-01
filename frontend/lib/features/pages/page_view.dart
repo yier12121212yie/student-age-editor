@@ -128,7 +128,7 @@ class _PageViewState extends State<EditorPageView> {
           ),
         ),
         Divider(height: 1, color: palette.border),
-        if (widget.page.id == 'official') const ManifestStatusCard(),
+        if (widget.page.id == 'official') ManifestStatusCard(),
         Expanded(
           child: widget.classic
               ? ClassicPageLayouts(

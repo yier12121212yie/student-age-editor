@@ -36,7 +36,8 @@ class StudentAgeEditorApp extends StatefulWidget {
   State<StudentAgeEditorApp> createState() => _StudentAgeEditorAppState();
 }
 
-class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
+class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
+    with WidgetsBindingObserver {
   final AppState state = AppState();
   final PluginState pluginState = PluginState();
   final AuthState _auth = AuthState();
@@ -68,16 +69,26 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
     _startApp();
     _initUiMode();
     unawaited(AppTheme.init());
-    // 跟随系统模式下，系统亮度变化时同步当前调色板
-    WidgetsBinding.instance.platformDispatcher.onPlatformBrightnessChanged = () {
-      if (AppTheme.mode.value == AppThemeMode.system) {
-        AppTheme.apply(AppThemeMode.system, save: false);
-      }
-    };
+    // 跟随系统模式下，系统亮度变化时同步当前调色板。
+    //
+    // 必须走 WidgetsBindingObserver：直接给 platformDispatcher 的
+    // onPlatformBrightnessChanged 赋值会顶掉框架自己注册的
+    // handlePlatformBrightnessChanged，MediaQuery/WidgetsApp 再也收不到亮度
+    // 变化（系统换主题后内建控件与自绘控件各停一半）。addObserver 不抢回调，
+    // 且 AppTheme 会在调色板变化时通知根部重建。
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    if (AppTheme.mode.value == AppThemeMode.system) {
+      AppTheme.apply(AppThemeMode.system, save: false);
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (AppState.current == state) AppState.current = null;
     if (AuthState.current == _auth) AuthState.current = null;
     ApiClient.instance.onUnauthorized = null;
@@ -343,6 +354,9 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
       visualDensity: VisualDensity.standard,
       fontFamily: 'Microsoft YaHei',
       scaffoldBackgroundColor: palette.bg,
+      // Fluent 的 Card 默认走 Mica 半透明资源色，在深色底上几乎全透；用调色板
+      // 卡片色兜底，具体见 app_theme.opaqueMaterialSurfaces（Material 侧同源）。
+      cardColor: palette.card,
     );
   }
 
@@ -362,6 +376,13 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp> {
             AppThemeMode.light => ThemeMode.light,
             AppThemeMode.dark => ThemeMode.dark,
           },
+          // Material 兜底主题：FluentApp 注入的 Material 层表面色是 Mica 半透明
+          // 资源色，凡未显式指定底板的 Material 弹层都会整窗透明。这里把弹层统一
+          // 覆盖成不透明调色板色（包在 Navigator 之上，弹窗/菜单也在覆盖范围内）。
+          builder: (context, child) => Theme(
+            data: opaqueMaterialSurfaces(Theme.of(context), palette),
+            child: child ?? const SizedBox.shrink(),
+          ),
           home: Material(
             // 壳基于 Fluent UI，但部分控件（InkWell/PopupMenuButton 等）来自 Material，
             // 全局提供透明 Material 祖先满足其渲染校验

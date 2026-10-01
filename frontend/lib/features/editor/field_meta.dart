@@ -5,6 +5,7 @@
 library;
 
 import '../../core/models.dart';
+import 'field_help_data.dart';
 import 'field_utils.dart';
 
 /// [dictName] 指向 /api/dicts 返回的 game_dicts 字典名；[fixed] 为固定选项（id → 名称）；
@@ -103,6 +104,30 @@ const kRuleByCfgField = <String, FieldRule>{
   'IntentCfg:next': FieldRule(idRefCfg: 'IntentCfg'),
   'IntentCfg:reward': FieldRule(dictName: 'items', idRefCfg: 'ItemCfg'),
   // 生日派对：连线题目左右列无需引用规则（自由文本）
+  // 角色 id 列表（1D，非指令行）：原先没有规则，被 isEffectLikeField 的
+  // 'roles' 猜中而误走效果补全框；补规则后回到「多值 + 角色候选」，
+  // 无代码模式下接入实体浏览面板。
+  'ClothTypeCfg:roles': FieldRule(dictName: 'roles'),
+  'HairTypeCfg:roles': FieldRule(dictName: 'roles'),
+  'KZoneCommentCfg:roles': FieldRule(dictName: 'roles'),
+  'KZoneMessageBoardCfg:roles': FieldRule(dictName: 'roles'),
+  // 跨表引用补齐（来源：后端权威引用表 native/server/services/semantic_core.cpp
+  // 的 kRules —— 跳转/关联 ID 手写最易错，无代码模式下列为只读 + 浏览选择；
+  // 关闭无代码模式时也让这些字段拿到「ID · 预览」候选）。
+  'ActionCfg:evtId': FieldRule(idRefCfg: 'EvtCfg'),
+  'ActionCfg:next': FieldRule(idRefCfg: 'ActionCfg'),
+  'ItemCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'GiftEvtCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'InteractCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'LoveGreetingCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'LoveDrawCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'NpcActivityCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'TalkInputMinigameCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
+  'TripSpotCfg:evtId': FieldRule(idRefCfg: 'EvtCfg'),
+  'ExpoEvtCfg:evtId': FieldRule(idRefCfg: 'EvtCfg'),
+  'AnimeConCfg:evtId': FieldRule(idRefCfg: 'EvtCfg'),
+  'MovieCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
+  'NegotiationCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
 };
 
 /// 全局字段 key → 下拉框规则（兜底）。
@@ -249,6 +274,7 @@ class FieldMeta {
     required this.type,
     required this.label,
     required this.section,
+    this.cfg = '',
     this.required = false,
     this.effectLike = false,
     this.suggestMode,
@@ -257,6 +283,10 @@ class FieldMeta {
     this.editable = true,
     this.rule,
   });
+
+  /// 字段所属配置表。用于无代码模式的渲染分流（[noCodeShapeFor]）；
+  /// 手搓 meta 的调用方（测试）可留空，空串只影响 cfg 限定的少数判定。
+  final String cfg;
 
   final String key;
 
@@ -292,40 +322,112 @@ class FieldMeta {
   bool get inCommon => section == 'common';
 }
 
-/// 该字段是否「效果/条件/指令」类：合并原先散在 schema_editor_view 与
-/// EffectHintField 里的两份相似但不相同的猜测规则。
-bool isEffectLikeField(String cfg, String key, String type) {
+/// 显式认定为「效果/条件/指令码」的字段（cfg:key）：优先于规则否决与家族匹配。
+///
+/// 与后端权威表对齐（`native/server/services/semantic_graph.cpp:751-761` 的
+/// TableSpec —— 哪些表的哪些字段是真码数组），再加 GUI 既有的指令行字段。
+/// 列在这里的字段即使命中下拉规则也仍按码处理（如 TalkCfg:roles 是人物指令行）。
+const kCodeFieldByCfg = <String>{
+  // EvtCfg 事件：条件 / 效果
+  'EvtCfg:condition', 'EvtCfg:effect',
+  // TalkCfg 对白：判定 / 效果 / 失败效果 / 人物指令行 / 屏幕效果
+  'TalkCfg:check', 'TalkCfg:effect', 'TalkCfg:effect2',
+  'TalkCfg:roles', 'TalkCfg:screenEffect',
+  // OptionCfg 选项：判定 / 前提 / 效果 / 失败效果 / 状态要求 / 压力要求
+  'OptionCfg:check', 'OptionCfg:precondition', 'OptionCfg:effect',
+  'OptionCfg:effect2', 'OptionCfg:stateCond', 'OptionCfg:pressure',
+  // InteractCfg 互动：条件 / 效果
+  'InteractCfg:cond', 'InteractCfg:effect',
+  // 邀约：出现条件 / 互动条件
+  'FriendRequestCfg:appearCond', 'FriendRequestCfg:interactCond',
+  // 恋爱事件条件
+  'LoveGreetingCfg:cond', 'LoveBreakfastCfg:cond', 'LoveRibbonCfg:cond',
+  // 小游戏动作效果
+  'MinigameActionCfg:effect',
+  // 成长码
+  'PersonGrowCfg:grow',
+};
+
+/// 显式排除：key 命中码家族、但语义不是码的数组字段。
+///
+/// 这些字段有的是成对数值、有的是角色 id 列表——若走效果补全框，用户会看到
+/// 一片红色语法提示且关不掉。`AnimationCostCfg:costs` 是纯数值对；
+/// 四条 `roles` 已在上方 kRuleByCfgField 补了角色规则，走多值候选。
+const kNonCodeArrayFields = <String>{
+  'AnimationCostCfg:costs',
+  'ClothTypeCfg:roles',
+  'HairTypeCfg:roles',
+  'KZoneCommentCfg:roles',
+  'KZoneMessageBoardCfg:roles',
+};
+
+/// 码字段的 key 家族（小写包含匹配）。扩展自原先的单点枚举：
+/// `appearCond`/`unlockCond`/`gaozhongCond`/`conds` 这类以 "cond" 结尾的
+/// 字段原先整体漏网，现在统一命中条件语境。
+const _kCodeKeyFamilies = <String>[
+  'effect',
+  'cond',
+  'check',
+  'precondition',
+  'cost',
+  'pressure',
+  'grow',
+  'unlock',
+  'demand',
+  'impossible',
+  'interactable',
+];
+
+bool _isCodeKeyFamily(String key) {
   final k = key.toLowerCase();
-  final known =
-      k == 'roles' ||
-      k == 'screeneffect' ||
-      k == 'condition' ||
-      k == 'cond' ||
-      k == 'precondition' ||
-      k == 'statecond' ||
-      k == 'check' ||
-      k == 'cost' ||
-      k == 'effect2' ||
-      k == 'hideeffect' ||
-      k == 'usingeffect' ||
-      k == 'pressure' ||
-      k == 'grow' ||
-      k.contains('effect');
-  if (!known) return false;
-  return type == '2D Array' || type == '1D Array';
+  if (k == 'roles' || k == 'screeneffect') return true;
+  for (final f in _kCodeKeyFamilies) {
+    if (k.contains(f)) return true;
+  }
+  return false;
+}
+
+/// 该字段是否「效果/条件/指令」类。
+///
+/// 判定序（单一真源，schema 编辑器 / 剧情图内联 / Inspector 共用）：
+///   1. 类型门：只有 1D/2D Array 可能是码；
+///   2. [kNonCodeArrayFields] 显式否决；
+///   3. [kCodeFieldByCfg] 显式允许（压过第 4 步的规则否决）；
+///   4. 有下拉/引用规则 = ID/枚举值，不是码；
+///   5. key 命中 [_kCodeKeyFamilies] 家族。
+bool isEffectLikeField(String cfg, String key, String type) {
+  if (type != '1D Array' && type != '2D Array') return false;
+  final id = '$cfg:$key';
+  if (kNonCodeArrayFields.contains(id)) return false;
+  if (kCodeFieldByCfg.contains(id)) return true;
+  if (fieldRuleFor(cfg, key) != null) return false;
+  return _isCodeKeyFamily(key);
 }
 
 /// 补全模式：与 /api/effect_suggest 的 mode 参数一致。
-String? effectSuggestMode(String key) {
+///
+/// 返回 null = 该 key 不属任何码家族（调用方按需回退 'effect'）。
+/// [cfg] 目前只用于 cfg 限定的 roles（其他表里的 roles 是 id 列表，已被
+/// [kNonCodeArrayFields] 挡在码判定之外）。
+String? effectSuggestMode(String cfg, String key) {
   final k = key.toLowerCase();
-  if (k == 'roles') return 'action';
   if (k == 'screeneffect') return 'screen';
   if (k == 'cost') return 'cost';
-  if (k == 'condition' || k == 'cond' || k == 'precondition' || k == 'check') {
+  if (k == 'roles') return 'action';
+  if (k.contains('cond') ||
+      k == 'check' ||
+      k.contains('precondition') ||
+      k.contains('unlock') ||
+      k.contains('demand') ||
+      k.contains('impossible')) {
     return 'condition';
   }
-  if (k == 'pressure' || k == 'grow') return 'effect';
-  if (k.contains('effect')) return 'effect';
+  if (k.contains('effect') ||
+      k.contains('pressure') ||
+      k.contains('grow') ||
+      k.contains('interactable')) {
+    return 'effect';
+  }
   return null;
 }
 
@@ -431,6 +533,50 @@ FieldVisual? fieldVisualFor(
   }
 }
 
+/// 无代码模式开启时该字段的渲染形态（三面共用的唯一分流表）。
+enum NoCodeShape {
+  /// 普通文本/数值字段：无代码模式不改变渲染（对白正文、名称、描述、数值
+  /// 不是"代码"，禁掉它们编辑器就没法用了）。
+  untouched,
+
+  /// 专用视觉控件（音频试听 / 多值 chips / 跳转浏览…）：控件照旧，
+  /// 但其伴随文本框不再渲染。
+  visual,
+
+  /// 引用/枚举字段（dict / fixed / idRef）：只留下拉或实体浏览面板。
+  reference,
+
+  /// 效果/条件/指令类：内联积木编辑器，**没有任何文本输入**。
+  blocks,
+}
+
+/// 按优先级表派生渲染形态：
+///   1. 有专用视觉控件 → [NoCodeShape.visual]
+///   2. 有下拉/引用规则 → [NoCodeShape.reference]
+///   3. 效果/条件/指令类，或本身就是 1D/2D 数组 → [NoCodeShape.blocks]
+///   4. 其余 → [NoCodeShape.untouched]
+///
+/// 第 3 步不依赖 key 名猜中：判定表只决定积木编辑器的 mode
+/// （effect/condition/cost/action/screen），不再决定"要不要出现"。
+NoCodeShape noCodeShapeFor(
+  String cfg,
+  String key,
+  String type,
+  FieldRule? rule,
+) {
+  final visual = fieldVisualFor(cfg, key, type, rule);
+  // 步进框/滑杆是"填数值"，不是"输代码"：无代码模式不改变它们。
+  if (visual != null &&
+      visual != FieldVisual.numberBox &&
+      visual != FieldVisual.numberSlider) {
+    return NoCodeShape.visual;
+  }
+  if (rule != null) return NoCodeShape.reference;
+  if (isEffectLikeField(cfg, key, type)) return NoCodeShape.blocks;
+  if (type == '1D Array' || type == '2D Array') return NoCodeShape.blocks;
+  return NoCodeShape.untouched;
+}
+
 /// 1D 文本层 token 拆分：与既有 `_namePreview`/多选合并共用一套分隔符约定
 /// （逗号/分号/顿号/换行），保证 chips 展示与写回文本完全等价。
 List<String> fieldTextTokens(String text) => text
@@ -476,11 +622,12 @@ List<FieldMeta> flowFieldMetas(AppState state, String cfg) {
       FieldMeta(
         key: key,
         type: type,
+        cfg: cfg,
         label: flowFieldLabel(state, cfg, key),
         section: common.contains(key) ? 'common' : 'advanced',
         required: required.contains(key),
         effectLike: effectLike,
-        suggestMode: effectLike ? effectSuggestMode(key) : null,
+        suggestMode: effectLike ? effectSuggestMode(cfg, key) : null,
         multivalued: type == '1D Array' || type == '2D Array',
         replaceWholeOnAccept: key == 'screenEffect',
         editable: key != 'id',
@@ -596,6 +743,17 @@ const kGameFriendlyHints = <String, Map<String, String>>{
     'floorName': '楼层名称',
     'type': '区域类型\n（室内/室外/半开放）',
   },
+
+  // AnimationCfg - 番剧（追番系统）
+  // 语义经 GameSources/Assembly-CSharp/AnimeData.cs 校验：
+  //   time 与当年年份比较（game 年份 >= time 才可能搜到）→ 上映年份；
+  //   weight 参与搜索随机抽取 → 发现权重；
+  //   level == 3 判定为「神作」，可看 3 次，其余 2 次。
+  'AnimationCfg': {
+    'level': '品质等级\n（3 为神作，可看 3 次；其余看 2 次）',
+    'time': '上映年份\n（游戏年份到达此年份后才可能被搜到）',
+    'weight': '发现权重\n（搜索时按权重随机抽中，越大越容易被搜到）',
+  },
 };
 
 /// 取游戏友好型字段描述。
@@ -613,4 +771,223 @@ String? getGameFriendlyHint(String cfgName, String fieldKey) {
     if (entry.key.toLowerCase() == lower) return entry.value;
   }
   return null;
+}
+
+/// 跨表通用的字段键说明（忽略大小写）。
+///
+/// 与 [kRuleByField] 的定位一致：cfg 专属说明（[kGameFriendlyHints]、
+/// [kFieldDescriptions]）缺位时按 key 兜底，覆盖那些「换个表意思也一样」的
+/// 字段——名称、图标、权重、人物/物品/地点引用……语义随表漂移较大的 key
+/// （effect/cond/cost 这类走到码判定或类型兜底）不在此列。
+const kFieldHelpByKey = <String, String>{
+  // 通用标识与文本
+  'id': '记录编号（主键）：新建时自动分配，改动前先确认没有别的记录引用它',
+  'name': '游戏内显示的名称',
+  'name2': '副名称 / 别名',
+  'title': '标题文字',
+  'desc': '说明文字，展示给玩家看',
+  'dsc': '说明文字，展示给玩家看',
+  'description': '说明文字，展示给玩家看',
+  'desc1': '说明文字（第一段）',
+  'desc2': '说明文字（第二段）',
+  'content': '正文内容，展示给玩家看',
+  'content2': '正文内容（第二种情况）',
+  'text': '文本内容，展示给玩家看',
+  'txt': '文本内容，展示给玩家看',
+  'btn': '按钮上的文字',
+  'tips': '提示文字',
+  'note': '备注：只给自己看，不影响游戏',
+  'answer': '正确答案',
+  'grade': '评级 / 等级',
+  'rank': '排名 / 档位',
+  // 资源
+  'icon': '图标 / 立绘资源名（相对游戏资源目录）',
+  'icon2': '副图标资源名',
+  'icon_xx': '小尺寸图标资源名',
+  'img': '图片资源名',
+  'imgs': '图片资源名列表，用逗号分隔',
+  'url': '资源文件名 / 路径',
+  'urls': '资源文件名列表，用逗号分隔',
+  'bg': '背景图编号（引用 BgCfg）',
+  'bgUrl': '背景图片资源名',
+  'bgUrl2': '背景图片资源名（第二套）',
+  'texture': '贴图资源名',
+  'thumb': '配图资源名',
+  'audio': '音频编号（引用 AudioCfg）',
+  'bgm': '背景音乐编号（引用 AudioCfg，可试听）',
+  'sound': '音效编号（引用 AudioCfg）',
+  'music': '音乐编号（引用 AudioCfg）',
+  'clickAudio': '点击音效编号（引用 AudioCfg）',
+  'enterSound': '进入音效编号（引用 AudioCfg）',
+  // 枚举与数值
+  'type': '类型：按对应玩法的编号填写；有候选项时从下拉里选',
+  'type2': '第二类型 / 子类型',
+  'level': '等级：数字越大通常越高档',
+  'lv': '等级',
+  'weight': '权重 / 概率：数字越大越容易被抽中',
+  'weights': '权重列表，依次对应各个档位',
+  'rate': '概率 / 比例',
+  'rateType': '概率类型',
+  'probability': '出现概率（0.0~1.0）',
+  'value': '数值',
+  'values': '数值列表，用逗号分隔',
+  'min': '最小值',
+  'max': '最大值',
+  'target': '目标值 / 目标编号',
+  'exp': '经验值',
+  'score': '分数',
+  'scores': '分数列表，用逗号分隔',
+  'add': '增量',
+  'freq': '频率',
+  'speed': '速度',
+  'width': '宽度',
+  'height': '高度',
+  'offset': '偏移量',
+  'scale': '缩放比例',
+  'time': '时间 / 时长',
+  'cnt': '次数 / 数量',
+  'count': '数量',
+  'num': '序号 / 数量',
+  'round': '回合数：0 常表示不限 / 永久',
+  'duration': '持续的回合数',
+  'group': '分组：同组通常互斥或同类聚合',
+  'order': '排序序号：数字越小越靠前',
+  'tag': '分类标签',
+  'tags': '分类标签列表，用逗号分隔',
+  'state': '状态',
+  'hide': '是否隐藏：0 显示，非 0 隐藏',
+  'disable': '是否禁用',
+  'isShow': '是否显示',
+  'redpoint': '是否显示红点提示',
+  'color': '颜色值',
+  'color1': '颜色值',
+  'color2': '颜色值',
+  'bgColor': '背景颜色',
+  'colors': '颜色值列表，用逗号分隔',
+  'gender': '性别要求',
+  'sex': '性别',
+  'birthday': '生日',
+  'school': '学校 / 学院',
+  'class': '班级',
+  'lesson': '课程编号',
+  'scoreRate': '评分倍率',
+  // 跨表引用
+  'role': '人物编号（引用角色表）',
+  'roleId': '人物编号（引用角色表）',
+  'roles': '人物编号列表，用逗号分隔',
+  'roleName': '自定义的说话人名字（留空用默认名）',
+  'npc': '指定人物编号',
+  'npcId': '指定人物编号',
+  'npcIds': '人物编号列表，用逗号分隔',
+  'item': '物品编号（引用 ItemCfg）',
+  'itemId': '物品编号（引用 ItemCfg）',
+  'items': '物品编号列表，用逗号分隔',
+  'itemTag': '物品分类标签，可填多个',
+  'prize': '奖励物品编号',
+  'reward': '奖励物品编号 / 奖励效果',
+  'map': '地点编号（引用 MapCfg）',
+  'mapId': '地点编号（引用 MapCfg）',
+  'talk': '关联的对白编号（引用 TalkCfg）',
+  'talkId': '关联的对白编号（引用 TalkCfg）',
+  'talks': '关联的对白编号列表，用逗号分隔',
+  'evt': '关联的事件编号（引用 EvtCfg）',
+  'evtId': '关联的事件编号（引用 EvtCfg）',
+  'next': '下一项编号：留空或 0 表示结束',
+  'nextTalk': '下一句对白编号（引用 TalkCfg）',
+  'nextTalk2': '失败 / 分支后的对白编号（引用 TalkCfg）',
+  'option': '选项 / 分支列表',
+  'options': '选项 / 分支编号列表',
+  'attr': '属性编号（引用属性表）',
+  'attrId': '属性编号（引用属性表）',
+  'attrs': '属性编号列表，用逗号分隔',
+  'job': '职业编号（引用 JobCfg）',
+  'skill': '技能编号（引用技能表）',
+  'skills': '技能编号列表，用逗号分隔',
+  'buff': '状态编号（引用状态表）',
+  'buff1': '状态编号',
+  'buff2': '状态编号',
+  'card': '卡牌编号',
+  'funcId': '功能编号（引用 FuncCfg）',
+  'audioId': '音频编号（引用 AudioCfg）',
+  'hp': '血量',
+  'mp': '精力',
+  'power': '威力 / 力量',
+};
+
+/// 跨表键说明：精确 → 忽略大小写。
+String? _crossKeyHelp(String key) {
+  final direct = kFieldHelpByKey[key];
+  if (direct != null) return direct;
+  final lower = key.toLowerCase();
+  for (final entry in kFieldHelpByKey.entries) {
+    if (entry.key.toLowerCase() == lower) return entry.value;
+  }
+  return null;
+}
+
+/// 数字排版：整数不带小数点，小数保留原样。
+String _fmtNum(double v) =>
+    v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+
+/// 字段帮助文本（当前由 schema 编辑器渲染；其他面板可按需复用）。
+///
+/// 判定序（自具体到通用）：
+///   1. 人工精修描述 [kGameFriendlyHints]；
+///   2. 参考资料里的权威字段说明 [kFieldDescriptions]；
+///   3. ID 引用规则 → 点名目标配置表；
+///   4. 效果 / 条件 / 指令类 → 写清指令格式；
+///   5. 数值区间提示 [kFieldNumericHints]；
+///   6. 跨表通用键说明 [kFieldHelpByKey]；
+///   7. 按类型兜底（数值 / 文本 / 一维 / 二维数组）。
+///
+/// 任何分支都不会再吐出「「X」字段的值：类型为 [Y]，按编码格式输入」这种
+/// 复述标签、对玩家毫无帮助的占位文案。
+String fieldHelpText(
+  String cfgName,
+  String key,
+  String type, {
+  FieldRule? rule,
+}) {
+  final friendly = getGameFriendlyHint(cfgName, key);
+  if (friendly != null && friendly.isNotEmpty) return friendly;
+
+  final described = kFieldDescriptions[cfgName]?[key];
+  if (described != null && described.isNotEmpty) return described;
+
+  final idRef = rule?.idRefCfg;
+  if (idRef != null) {
+    final label = kFieldCfgLabels[idRef];
+    return label == null
+        ? '引用「$idRef」表的记录编号：可从候选列表选择'
+        : '引用「$label」：从候选列表选择对应记录的编号';
+  }
+
+  if (isEffectLikeField(cfgName, key, type)) {
+    return '指令格式：每条指令一行，参数用逗号分隔，如 `指令ID,参数1,参数2`；'
+        '可点「补全 / 查阅」按提示填写';
+  }
+
+  final hint = kFieldNumericHints['$cfgName:$key'];
+  if (type == 'Number' && hint != null) {
+    return '建议范围 ${_fmtNum(hint.$1)} ~ ${_fmtNum(hint.$2)}'
+        '${hint.$3 != 1 ? '，步进 ${_fmtNum(hint.$3)}' : ''}';
+  }
+
+  final byKey = _crossKeyHelp(key);
+  if (byKey != null) return byKey;
+
+  switch (type) {
+    case 'Number':
+      return '填写数字（整数或小数按游戏口径）';
+    case 'String':
+      return rule?.dictName != null ? '从下拉候选里选择；也可直接填对应编号' : '填写文本';
+    case '1D Array':
+      return rule?.dictName != null || rule?.idRefCfg != null
+          ? '多个编号用逗号分隔，如 `1,2,3`；可从候选里逐个添加'
+          : '多个值用逗号分隔，如 `1,2,3`';
+    case '2D Array':
+      return '每行一条指令，行内参数用逗号分隔，如 `指令ID,参数1,参数2`';
+    default:
+      return '按游戏内的格式填写';
+  }
 }

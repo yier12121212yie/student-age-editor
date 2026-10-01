@@ -95,7 +95,7 @@ class StatusBar extends StatelessWidget {
               ),
               const SizedBox(width: 14),
               // 托管模式（M2.4）：用户名 + 登出；本机/桌面恒收起为零尺寸
-              const AuthUserChip(),
+              AuthUserChip(),
               _AnimatedText(text: 'AA: '),
               const SizedBox(width: 14),
               if (uiMode != null && onUiModeChanged != null)

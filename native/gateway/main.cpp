@@ -151,7 +151,8 @@ int main(int argc, char** argv) {
     }
     for (const auto& w : cfg.warnings) std::fprintf(stderr, "warning: %s\n", w.c_str());
 
-    // Create the data root + every account workspace + state dir.
+    // Create the data root + state dir first: registered accounts load from
+    // <state_dir>/accounts.json and their workspaces are created below.
     if (!sa_core::paths::create_dirs(cfg.user_data_root)) {
         std::fprintf(stderr, "error: cannot create user_data_root: %s\n",
                      cfg.user_data_root.c_str());
@@ -161,21 +162,31 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: cannot create state_dir: %s\n", cfg.state_dir.c_str());
         return 1;
     }
-    for (const auto& acct : cfg.accounts) {
+
+    // --- assemble the gateway runtime --------------------------------------
+    gw::Gateway g;
+    g.cfg = cfg;
+    // 并入自助注册账号；管理员在 gateway.json 声明的同名账号优先。
+    g.accounts = std::make_unique<gw::RegisteredAccounts>(g.cfg.accounts_file,
+                                                          g.cfg.user_data_root);
+    g.accounts->merge_into(&g.cfg);
+    if (g.accounts->count() > 0) {
+        std::fprintf(stdout, "loaded %zu self-registered account(s) from %s\n",
+                     g.accounts->count(), g.cfg.accounts_file.c_str());
+    }
+    g.sessions = std::make_unique<gw::Sessions>(g.cfg.session_ttl_hours * 3600LL * 1000LL);
+    g.usage = std::make_unique<gw::UsageStore>(
+        sa_core::paths::join(g.cfg.state_dir, "usage.json"), g.cfg.ai.daily_limit);
+    g.relay = gw::resolve_relay(g.cfg);
+
+    // Create every account workspace (gateway.json + registered).
+    for (const auto& acct : g.cfg.accounts) {
         if (!sa_core::paths::create_dirs(acct.dir)) {
             std::fprintf(stderr, "error: cannot create account workspace: %s\n",
                          acct.dir.c_str());
             return 1;
         }
     }
-
-    // --- assemble the gateway runtime --------------------------------------
-    gw::Gateway g;
-    g.cfg = cfg;
-    g.sessions = std::make_unique<gw::Sessions>(cfg.session_ttl_hours * 3600LL * 1000LL);
-    g.usage = std::make_unique<gw::UsageStore>(
-        sa_core::paths::join(cfg.state_dir, "usage.json"), cfg.ai.daily_limit);
-    g.relay = gw::resolve_relay(cfg);
 
     const std::string backend_exe = gw::InstancePool::resolve_backend_exe();
     if (backend_exe.empty()) {
@@ -184,15 +195,16 @@ int main(int argc, char** argv) {
                      "EDITOR_GATEWAY_BACKEND_EXE unset; proxy requests will 502\n");
     }
     gw::InstancePool::Options po;
-    po.state_dir = cfg.state_dir;
+    po.state_dir = g.cfg.state_dir;
     po.backend_exe = backend_exe;
-    po.max_instances = cfg.instance_max;
-    po.idle_minutes = cfg.idle_minutes;
+    po.max_instances = g.cfg.instance_max;
+    po.idle_minutes = g.cfg.idle_minutes;
     // SSRF 护栏透传（安全批次 A）：cloud_public_only 默认 true，管理员可
     // 在 gateway.json 显式关闭（纯内网自托管场景）。
-    po.cloud_public_only = cfg.cloud_public_only;
-    po.account_dir = [&cfg](const std::string& name) -> std::string {
-        const gw::Account* acc = cfg.find_account(name);
+    po.cloud_public_only = g.cfg.cloud_public_only;
+    // 读 g.cfg（而非启动时的局部副本）：自助注册会在运行时追加账号。
+    po.account_dir = [&g](const std::string& name) -> std::string {
+        const gw::Account* acc = g.cfg.find_account(name);
         return acc ? acc->dir : "";
     };
     g.pool = std::make_unique<gw::InstancePool>(std::move(po));
@@ -232,7 +244,7 @@ int main(int argc, char** argv) {
     httpd.start();
     std::fprintf(stdout, "backend_gateway listening on %s:%d (accounts=%zu, web_root=%s, "
                          "relay=%s)\n",
-                 host.c_str(), httpd.port(), cfg.accounts.size(),
+                 host.c_str(), httpd.port(), g.cfg.accounts.size(),
                  host_static ? cfg.web_root.c_str() : "<none>",
                  g.relay.usable ? "on" : "off");
     std::fflush(stdout);

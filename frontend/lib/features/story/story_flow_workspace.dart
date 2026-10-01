@@ -1921,7 +1921,23 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   // ---------- 事件增删 ----------
+  /// 无代码模式：自动分配一个 7 位事件 ID（1xxxxxx 家族），用户不必手抄编号。
+  /// 返回 null = 家族内已用尽（1_000_000..1_999_999 全占）。
+  String? _allocEventId() {
+    final evt = _tablesData['EvtCfg'];
+    final ids = evt == null
+        ? const <String>[]
+        : evt.keys.map((k) => k.toString());
+    return allocEventId(ids);
+  }
+
   void _promptCreateEvent() {
+    final noCode = widget.state.noCodeMode;
+    final autoId = noCode ? _allocEventId() : null;
+    if (noCode && autoId == null) {
+      _toast('事件 ID 已用尽（无代码模式自动编号）', fluent.InfoBarSeverity.warning);
+      return;
+    }
     final idCtl = _makeCtl('_evtId', '');
     final titleCtl = _makeCtl('_evtTitle', '');
     // 专用键不带「evtId|」前缀，_resetPanelCtls 够不到；每次打开前清空，
@@ -1936,13 +1952,33 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: idCtl,
-                  decoration: const InputDecoration(
-                    labelText: '事件 ID（7 位数字，首位 1）',
+                // 无代码模式：不给 ID 输入框，改为自动编号的只读预览。
+                if (noCode)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: palette.card,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: palette.border),
+                    ),
+                    child: Text(
+                      '事件 ID 将自动分配：$autoId\n（无代码模式无需手填编号）',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: palette.textSecondary,
+                        height: 1.5,
+                      ),
+                    ),
+                  )
+                else
+                  TextField(
+                    controller: idCtl,
+                    decoration: const InputDecoration(
+                      labelText: '事件 ID（7 位数字，首位 1）',
+                    ),
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   ),
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                ),
                 const SizedBox(height: 8),
                 TextField(
                   controller: titleCtl,
@@ -1965,7 +2001,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         .then((r) async {
           if (r != 'ok' || !mounted) return;
           if (_transitioning) return;
-          final id = idCtl.text.trim();
+          final id = noCode ? (autoId ?? '') : idCtl.text.trim();
           if (!RegExp(r'^1\d{6}$').hasMatch(id)) {
             _toast('事件 ID 必须是 7 位数字且首位为 1', fluent.InfoBarSeverity.warning);
             return;
@@ -3021,6 +3057,10 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             inlineMetas: _inlineMetas,
             nodeFocus: _nodeFocusFor,
             suggestFor: _suggestForNode,
+            // 无代码模式：内联区不再铺可输入的代码/ID 框（与 Inspector、
+            // schema 编辑器同一张分流表）；开关变化经 _contentSig 作废卡片缓存。
+            noCodeMode: widget.state.noCodeMode,
+            gameDicts: widget.state.gameDicts,
             onRequestInspector: (nodeId) => () => _openInspector(nodeId),
             onSelectionChanged: (s) => setState(() {
               _selection = s;

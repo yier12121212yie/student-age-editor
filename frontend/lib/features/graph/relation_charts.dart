@@ -48,10 +48,16 @@ class RelationLadderChart extends StatelessWidget {
 }
 
 class _LadderPainter extends CustomPainter {
-  _LadderPainter({required this.levels, required this.highlight});
+  _LadderPainter({required this.levels, required this.highlight})
+      : _light = palette.isLight,
+        _accent = accentColor;
 
   final List<RelationLevel> levels;
   final Set<String> highlight;
+
+  /// 绘制时读取的全局调色板快照：亮暗/主题色切换后必须重绘（否则旧色残留）。
+  final bool _light;
+  final Color _accent;
 
   static const double _pad = 6;
   static const double _labelH = 26; // 底部文本区高度
@@ -131,6 +137,8 @@ class _LadderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LadderPainter old) =>
+      old._light != _light ||
+      old._accent != _accent ||
       !identical(old.levels, levels) ||
       !setEquals(old.highlight, highlight);
 }
@@ -160,10 +168,14 @@ class RelationKindBarsChart extends StatelessWidget {
 }
 
 class _BarsPainter extends CustomPainter {
-  _BarsPainter({required this.entries, required this.rowHeight});
+  _BarsPainter({required this.entries, required this.rowHeight})
+      : _light = palette.isLight,
+        _accent = accentColor;
 
   final List<(String, int)> entries;
   final double rowHeight;
+  final bool _light;
+  final Color _accent;
 
   static const double _labelW = 64;
 
@@ -214,6 +226,8 @@ class _BarsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BarsPainter old) =>
+      old._light != _light ||
+      old._accent != _accent ||
       old.rowHeight != rowHeight ||
       old.entries.length != entries.length ||
       !_listEq(old.entries, entries);

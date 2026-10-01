@@ -675,6 +675,11 @@ class TimelineViewState extends State<TimelineView> {
 
 /// holiday 色带的斜纹：45° 一组细线，画进色带自身的盒子里。
 class _StripePainter extends CustomPainter {
+  _StripePainter() : _light = palette.isLight;
+
+  /// 斜纹取自 palette.textHint：亮暗切换后必须重绘（旧代码恒 false 会留旧色）。
+  final bool _light;
+
   @override
   void paint(Canvas canvas, Size size) {
     final p = Paint()
@@ -687,5 +692,5 @@ class _StripePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _StripePainter old) => false;
+  bool shouldRepaint(covariant _StripePainter old) => old._light != _light;
 }

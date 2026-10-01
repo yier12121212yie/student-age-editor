@@ -8,6 +8,8 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
+import '../editor/id_ref_picker.dart' show showIdBrowseDialog;
+import 'story_logic.dart';
 
 /// 弹窗内容安全尺寸：宽度不超屏，高度留出标题/操作按钮的空间。
 BoxConstraints _dialogBodyConstraints(
@@ -28,7 +30,7 @@ Future<void> showStoryImportDialog(BuildContext context, AppState state) {
     context: context,
     builder: (ctx) => fluent.ContentDialog(
       title: const Text('📥 导入剧情剧本（文本 → TalkCfg）'),
-      content: const _StoryImportBody(),
+      content: _StoryImportBody(noCodeMode: state.noCodeMode),
       actions: [
         fluent.Button(
           onPressed: () => Navigator.of(context).pop(),
@@ -40,7 +42,11 @@ Future<void> showStoryImportDialog(BuildContext context, AppState state) {
 }
 
 class _StoryImportBody extends StatefulWidget {
-  const _StoryImportBody();
+  const _StoryImportBody({this.noCodeMode = false});
+
+  /// 无代码模式：起始事件 ID 不收手输——自动编号 + 可浏览已有事件选择。
+  final bool noCodeMode;
+
   @override
   State<_StoryImportBody> createState() => _StoryImportBodyState();
 }
@@ -48,9 +54,57 @@ class _StoryImportBody extends StatefulWidget {
 class _StoryImportBodyState extends State<_StoryImportBody> {
   final TextEditingController _startId = TextEditingController(text: '10001');
   final TextEditingController _script = TextEditingController();
+  List<(String, String)> _evtOptions = const [];
+  bool _autoStart = false;
   String? _info;
   String? _error;
   bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.noCodeMode) _loadAutoStart();
+  }
+
+  /// 无代码模式：拉 EvtCfg 派生一个空闲的事件 ID，并缓存事件列表供选择。
+  Future<void> _loadAutoStart() async {
+    try {
+      final r = await ApiClient.instance.get('/api/cfg/EvtCfg');
+      final data = (r is Map ? r['data'] : null) as Map? ?? const {};
+      final next = allocEventId(data.keys.map((k) => k.toString()));
+      final options = <(String, String)>[
+        for (final e in data.entries)
+          (
+            e.key.toString(),
+            e.value is Map ? (e.value['title']?.toString() ?? '') : ''
+          ),
+      ];
+      if (!mounted) return;
+      setState(() {
+        _startId.text = next ?? '';
+        _autoStart = true;
+        _evtOptions = options;
+      });
+    } catch (_) {
+      // 后端不可达：保持默认值，仍不暴露手输框（选择入口会重试）。
+    }
+  }
+
+  /// 选择已有事件作为导入落点（无代码模式）。
+  Future<void> _pickStartEvent() async {
+    if (_evtOptions.isEmpty) await _loadAutoStart();
+    if (!mounted) return;
+    final picked = await showIdBrowseDialog(
+      context,
+      title: '选择导入到的目标事件',
+      options: _evtOptions,
+      multi: false,
+      initialSelected:
+          _startId.text.trim().isEmpty ? const [] : [_startId.text.trim()],
+    );
+    if (picked == null || picked.isEmpty) return;
+    setState(() => _startId.text = picked.first);
+  }
 
   @override
   void dispose() {
@@ -103,13 +157,50 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              '事件 ID（纯数字，对话 ID 自动从 <事件ID>001 开始）',
-              style: TextStyle(fontSize: 12, color: palette.textSecondary),
-            ),
-            const SizedBox(height: 6),
-            fluent.TextBox(controller: _startId),
-            const SizedBox(height: 12),
+            if (widget.noCodeMode) ...[
+              Text(
+                '导入落点事件（无代码模式：自动编号，也可选择已有事件）',
+                style: TextStyle(fontSize: 12, color: palette.textSecondary),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: palette.card,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: palette.border),
+                      ),
+                      child: Text(
+                        _autoStart
+                            ? (_startId.text.trim().isEmpty
+                                ? '（事件编号已用尽，请选择已有事件）'
+                                : '起始事件 ID：${_startId.text.trim()}（自动分配）')
+                            : '正在计算起始事件 ID…',
+                        style: TextStyle(fontSize: 12, color: palette.textBody),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  fluent.Button(
+                    onPressed: _busy ? null : _pickStartEvent,
+                    child: const Text('选择已有事件…'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ] else ...[
+              Text(
+                '事件 ID（纯数字，对话 ID 自动从 <事件ID>001 开始）',
+                style: TextStyle(fontSize: 12, color: palette.textSecondary),
+              ),
+              const SizedBox(height: 6),
+              fluent.TextBox(controller: _startId),
+              const SizedBox(height: 12),
+            ],
             Text(
               '剧本文本（格式：角色名：台词，支持（表情）[动作] 等标注）',
               style: TextStyle(fontSize: 12, color: palette.textSecondary),
@@ -173,7 +264,7 @@ Future<void> showStoryExportDialog(BuildContext context, AppState state) {
     context: context,
     builder: (ctx) => fluent.ContentDialog(
       title: const Text('📤 导出剧情文案脚本'),
-      content: const _StoryExportBody(),
+      content: _StoryExportBody(),
       actions: [
         fluent.Button(
           onPressed: () => Navigator.of(context).pop(),

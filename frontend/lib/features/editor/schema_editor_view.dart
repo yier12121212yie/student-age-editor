@@ -10,6 +10,9 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../settings/settings_page.dart';
 import '../files/file_viewer.dart' show ImagePreview;
+import '../nocode/entity_picker.dart';
+import '../nocode/no_code_exit.dart';
+import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart';
 import 'effect_hint_field.dart';
@@ -1596,15 +1599,11 @@ class _FieldFormState extends State<_FieldForm> {
 
   /// 获取友好的帮助文本。
   ///
-  /// 注意传的是**字段键**（key）而不是 [label]：label 是 KeyTranslator 翻出来的
-  /// 中文显示名（如 name → "名称"），拿它去查英文键表永远不会命中。
-  String _getHelpText(String cfgName, String key, String label, String type) {
-    final friendlyHint = getGameFriendlyHint(cfgName, key);
-    if (friendlyHint != null) {
-      return friendlyHint;
-    }
-
-    return '「$label」字段的值：类型为 [$type]，按编码格式输入';
+  /// 注意传的是**字段键**（key）而不是显示名：显示名是 KeyTranslator 翻出来的
+  /// 中文（如 name → "名称"），拿它去查英文键表永远不会命中。具体判定序见
+  /// [fieldHelpText]。
+  String _getHelpText(String cfgName, String key, String type) {
+    return fieldHelpText(cfgName, key, type, rule: fieldRuleFor(cfgName, key));
   }
 
 
@@ -1697,7 +1696,7 @@ class _FieldFormState extends State<_FieldForm> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _getHelpText(widget.cfgName, key, label, type),
+                  _getHelpText(widget.cfgName, key, type),
                   style: TextStyle(
                     fontSize: 11,
                     color: palette.textMuted,
@@ -1796,6 +1795,8 @@ class _FieldFormState extends State<_FieldForm> {
         );
       }
       final key = fieldKeys[index - 2];
+      final type = widget.fieldType(key) ?? 'String';
+      final help = _getHelpText(widget.cfgName, key, type);
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
@@ -1827,6 +1828,22 @@ class _FieldFormState extends State<_FieldForm> {
                       color: palette.textFaint,
                     ),
                   ),
+                  if (help.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Tooltip(
+                      message: help,
+                      child: Text(
+                        help,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          height: 1.3,
+                          color: palette.textMuted,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1837,7 +1854,7 @@ class _FieldFormState extends State<_FieldForm> {
                 cfgName: widget.cfgName,
                 fieldKey: key,
                 value: record[key],
-                type: widget.fieldType(key) ?? 'String',
+                type: type,
                 rule: fieldRuleFor(widget.cfgName, key),
                 gameDicts: gameDicts,
                 idCandidates: widget.loadIdCandidates,
@@ -2126,8 +2143,8 @@ class _FieldInputState extends State<_FieldInput> {
 
   /// 弹出「ID · 预览」候选列表（可多选），确定后追加为逗号分隔多值。
   Future<void> _pickIdsFromList() async {
-    // 无代码模式下的人物表引用：换成带立绘的浏览面板。
-    if (widget.noCodeMode && _isRoleField) return _pickRoles();
+    // 无代码模式下有专用面板的种类（人物/道具/背景…）：换成实体浏览面板。
+    if (widget.noCodeMode && _entityKind != null) return _pickEntity();
     final cfg = widget.rule?.idRefCfg;
     if (cfg == null) return;
     final opts = _options();
@@ -2155,26 +2172,28 @@ class _FieldInputState extends State<_FieldInput> {
     setState(() {});
   }
 
-  /// 人物引用字段：字典 roles（speaker 等）或 PersonCfg 表引用（roleIds 等）。
-  bool get _isRoleField {
-    final rule = widget.rule;
-    return rule != null && (rule.dictName == 'roles' || rule.idRefCfg == 'PersonCfg');
-  }
+  /// 本字段的实体种类（无代码模式浏览面板入口）；null = 没有专用面板，
+  /// 沿用既有的 ID 浏览对话框。
+  EntityKind? get _entityKind => entityKindForRule(widget.rule);
 
-  /// 无代码模式「选人物」：浏览面板（立绘网格）选 id 写回。
+  /// 无代码模式「选 X」：实体浏览面板（人物是立绘网格、背景带缩略图）选 id 写回。
   /// Number/String 单选替换；数组类多选并入现值（已含项置灰防重复）。
-  Future<void> _pickRoles() async {
+  Future<void> _pickEntity() async {
+    final kind = _entityKind;
+    if (kind == null) return;
     final single = widget.type == 'Number' || widget.type == 'String';
     final existing = _ctrl.text
         .split(RegExp(r'[;，、,\n]'))
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
-    final ids = await showRolePickerDialog(
+    final ids = await showEntityPicker(
       context,
+      kind: kind,
       multi: !single,
-      title: '选择人物',
+      title: '选择${kind.label}',
       exclude: single ? const {} : existing.toSet(),
+      gameDicts: widget.gameDicts,
     );
     if (!mounted || ids == null || ids.isEmpty) return;
     if (single) {
@@ -2198,6 +2217,57 @@ class _FieldInputState extends State<_FieldInput> {
     setState(() {});
   }
 
+  /// 音频候选池：game_dicts['audios']（后端由 AudioCfg 合并而成）。
+  /// 无代码模式给「key 命中音频命名但字段没有 dictName 规则」的字段（vocals /
+  /// music / entersound…）留一条只选不敲的通道。
+  List<(String, String)> _audioPool() {
+    final dict = widget.gameDicts['audios'];
+    if (dict is! Map) return const [];
+    final out = <(String, String)>[];
+    for (final e in dict.entries) {
+      final v = e.value;
+      var label = v.toString();
+      if (v is List && v.isNotEmpty) label = v.first.toString();
+      out.add((e.key.toString(), label));
+    }
+    out.sort((a, b) {
+      final an = int.tryParse(a.$1);
+      final bn = int.tryParse(b.$1);
+      if (an != null && bn != null) return an.compareTo(bn);
+      return a.$1.compareTo(b.$1);
+    });
+    return out;
+  }
+
+  /// 无代码模式选音频：从音频池里挑（可先试听），Number 直接写 id；
+  /// 数组（vocals 这类 [声ID, 音量] 扁平对）只替换首个 token，音量原样保留。
+  Future<void> _pickAudioId() async {
+    final pool = _audioPool();
+    if (pool.isEmpty) return;
+    final picked = await showIdBrowseDialog(
+      context,
+      title: '选择音频',
+      options: pool,
+      multi: false,
+      initialSelected: _firstToken().isEmpty ? const [] : [_firstToken()],
+      audition: true,
+    );
+    if (!mounted || picked == null || picked.isEmpty) return;
+    final id = picked.first;
+    if (widget.type == 'Number') {
+      widget.onChanged(num.tryParse(id) ?? id);
+      _ctrl.text = id;
+      setState(() {});
+      return;
+    }
+    final tokens = fieldTextTokens(_ctrl.text);
+    if (tokens.isEmpty) {
+      tokens.add(id);
+    } else {
+      tokens[0] = id;
+    }
+    _applyTokens(tokens);
+  }
   /// 当前值的首个 token（缩略图与选图追加的基准）。
   String _firstToken() {
     final tokens = _ctrl.text
@@ -2429,12 +2499,31 @@ class _FieldInputState extends State<_FieldInput> {
     final k = rawKey.toLowerCase();
     // 「效果/条件/指令」类判定统一用 field_meta，与剧情图共用同一份规则表
     final effectLike = isEffectLikeField(widget.cfgName, rawKey, widget.type);
+    // 无代码模式的渲染分流（schema 编辑器 / 剧情图内联 / Inspector 唯一真源）
+    final noCodeShape =
+        noCodeShapeFor(widget.cfgName, rawKey, widget.type, widget.rule);
     // roles（TalkCfg.roles 指令行）/ screenEffect（1D 扁平代码）同样走效果提示；
     // 其余 1D Array 沿用原编辑区的裸文本框，本次去重不顺手改已有渲染。
     final isActionOrScreen = k == 'roles' || k == 'screeneffect';
     final useEffectHint = !hasDictOptions &&
         ((effectLike && (widget.type == '2D Array' || isActionOrScreen)) ||
             (k.isEmpty && widget.type == '2D Array'));
+
+    // 无代码模式 + 码字段：内联积木编辑，**没有任何文本输入**。
+    // 规则类字段（shape=reference/visual）不在此列，由下方下拉/浏览分支处理。
+    if (widget.noCodeMode && noCodeShape == NoCodeShape.blocks) {
+      final fieldKey = rawKey.isEmpty ? 'effect' : rawKey;
+      return NoCodeEffectField(
+        value: widget.value,
+        type: widget.type,
+        cfg: widget.cfgName,
+        fieldKey: fieldKey,
+        mode: effectSuggestMode(widget.cfgName, fieldKey),
+        gameDicts: widget.gameDicts,
+        onChanged: widget.onChanged,
+        onDisableNoCode: _leaveNoCodeMode,
+      );
+    }
 
     if (useEffectHint) {
       final fieldKey = widget.fieldKey ?? 'effect';
@@ -2445,7 +2534,7 @@ class _FieldInputState extends State<_FieldInput> {
         fieldKey: fieldKey,
         // 模式也交给 field_meta 推断（roles→action、screenEffect→screen…），
         // 与 EffectHintField 内部的兜底推断同解
-        mode: effectSuggestMode(fieldKey),
+        mode: effectSuggestMode(widget.cfgName, fieldKey),
         noCodeMode: widget.noCodeMode,
         gameDicts: widget.gameDicts,
         onChanged: widget.onChanged,
@@ -2472,6 +2561,10 @@ class _FieldInputState extends State<_FieldInput> {
       // P0-2：存在性判断走 [_optIndex]（_options() 同步维护的 id→名称
       // 索引），替代对全候选的 any/where 线性扫——大字典每次 build 两趟 O(n)。
       final hasCurrent = currentId.isNotEmpty && _optIndex.containsKey(currentId);
+      // 无代码模式：引用/枚举字段只留下拉与动作按钮——旁边的自由文本框会让用户
+      // 仍然能直接敲 ID（那正是"输入代码的地方"）。Number 步进框同理去掉：
+      // 对引用字段来说那个数字就是 id。
+      final hideTextInput = widget.noCodeMode && widget.rule != null;
       return Row(
         children: [
           // 窄屏加固（H）：下拉用 Flexible 包裹——宽屏仍 ≤220，窄屏先收缩让位
@@ -2485,7 +2578,9 @@ class _FieldInputState extends State<_FieldInput> {
               placeholder: Text(
                 currentName != null && currentName.isNotEmpty
                     ? '$currentId · $currentName'
-                    : (currentId.isNotEmpty ? currentId : '选择或输入 ID'),
+                    : (currentId.isNotEmpty
+                        ? currentId
+                        : (hideTextInput ? '选择 ID' : '选择或输入 ID')),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -2518,46 +2613,48 @@ class _FieldInputState extends State<_FieldInput> {
             ),
           ),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // M1：Number 字段升级为步进框（手输精确值能力保留）。
-                if (widget.type == 'Number')
-                  NumberStepField(
-                    value: _numberValue,
-                    hint: kFieldNumericHints['${widget.cfgName}:$rawKey'],
-                    onChanged: (n) {
-                      widget.onChanged(n);
-                      _ctrl.text = n.toString();
-                      setState(() {});
-                    },
-                  )
-                else
-                  fluent.TextBox(
-                    controller: _ctrl,
-                    onChanged: (_) {
-                      widget.onChanged(
-                        ValueCodec.decode(_ctrl.text, widget.type),
-                      );
-                      setState(() {});
-                    },
-                  ),
-                if (_namePreview(_ctrl.text) case final preview?)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Text(
-                      preview,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: palette.textMuted,
+          if (!hideTextInput) ...[
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // M1：Number 字段升级为步进框（手输精确值能力保留）。
+                  if (widget.type == 'Number')
+                    NumberStepField(
+                      value: _numberValue,
+                      hint: kFieldNumericHints['${widget.cfgName}:$rawKey'],
+                      onChanged: (n) {
+                        widget.onChanged(n);
+                        _ctrl.text = n.toString();
+                        setState(() {});
+                      },
+                    )
+                  else
+                    fluent.TextBox(
+                      controller: _ctrl,
+                      onChanged: (_) {
+                        widget.onChanged(
+                          ValueCodec.decode(_ctrl.text, widget.type),
+                        );
+                        setState(() {});
+                      },
+                    ),
+                  if (_namePreview(_ctrl.text) case final preview?)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(
+                        preview,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: palette.textMuted,
+                        ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
+          ],
           // 窄屏加固（H）：尾部动作改为可换行的 Wrap——宽屏单行排布与原先
           // 视觉一致，窄屏自动折行，杜绝固定按钮组把行撑溢出。
           Flexible(
@@ -2591,13 +2688,15 @@ class _FieldInputState extends State<_FieldInput> {
                     ),
                   ),
                 ],
-                // 无代码模式：人物引用（speaker/Number dict roles 等）走立绘浏览面板
-                if (widget.noCodeMode && _isRoleField)
+                // 无代码模式：引用字段（人物/道具/背景/地图/属性/职业/关系/回合/
+                // 事件类型）走实体浏览面板——人物是立绘网格、背景带缩略图。
+                if (widget.noCodeMode && _entityKind != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
                     child: fluent.Button(
-                      onPressed: _pickRoles,
-                      child: const Text('选人物', style: TextStyle(fontSize: 11)),
+                      onPressed: _pickEntity,
+                      child: Text('选${_entityKind!.label}',
+                          style: const TextStyle(fontSize: 11)),
                     ),
                   ),
                 // M1：音频引用行内试听（当前 ID 的字节可播即可点）+ M3 本地导入
@@ -2649,6 +2748,29 @@ class _FieldInputState extends State<_FieldInput> {
         (widget.rule?.idRefCfg != null ||
             _visual == FieldVisual.multiIdChips ||
             _visual == FieldVisual.jumpTarget);
+    // 无代码模式：码/引用字段的裸文本框整体不渲染——只留 chips、缩略图、
+    // 试听与浏览按钮；否则用户仍能直接敲 ID 或代码。
+    final noCodeHideText =
+        widget.noCodeMode && noCodeShape != NoCodeShape.untouched;
+    // 藏掉文本框后必须至少留一条「只选不敲」的通道；通道优先级与三面共用：
+    // 实体面板 > 音频池 > 字典/ID 浏览对话框（含 Number 单选）。
+    final audioPool = _audioPool();
+    VoidCallback? noCodePick;
+    var noCodePickLabel = '浏览选择…';
+    if (widget.noCodeMode && noCodeShape != NoCodeShape.untouched) {
+      if (_entityKind != null) {
+        noCodePick = _pickEntity;
+        noCodePickLabel = '选${_entityKind!.label}';
+      } else if (_visual == FieldVisual.audioPick && audioPool.isNotEmpty) {
+        noCodePick = _pickAudioId;
+        noCodePickLabel = '选音频';
+      } else if (opts.isNotEmpty) {
+        noCodePick = _browseIds;
+      }
+    }
+    // 一条通道都没有（无候选池、无浏览/试听/选图入口）= 死路，给逃生口。
+    final noCodeDeadEnd =
+        noCodeHideText && !canPickIds && noCodePick == null && texPrefix == null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2662,44 +2784,45 @@ class _FieldInputState extends State<_FieldInput> {
               ),
               const SizedBox(width: 8),
             ],
-            Expanded(
-              child: useNumber
-                  ? NumberStepField(
-                      value: _numberValue,
-                      hint: kFieldNumericHints['${widget.cfgName}:$rawKey'],
-                      onChanged: (n) {
-                        widget.onChanged(n);
-                        _ctrl.text = n.toString();
-                        setState(() {});
-                      },
-                    )
-                  : useSuggest
-                      ? SuggestionTextField(
-                          controller: _ctrl,
-                          focusNode: _focusNode,
-                          source: _suggestSource,
-                          multivalued: isArray,
-                          maxLines: multiline ? 3 : 1,
-                          onChanged: (_) {
-                            try {
-                              widget.onChanged(
-                                  ValueCodec.decode(_ctrl.text, widget.type));
-                            } catch (_) {}
-                            setState(() {});
-                          },
-                        )
-                      : fluent.TextBox(
-                          controller: _ctrl,
-                          maxLines: multiline ? 3 : 1,
-                          onChanged: (_) {
-                            try {
-                              widget.onChanged(
-                                  ValueCodec.decode(_ctrl.text, widget.type));
-                            } catch (_) {}
-                            setState(() {});
-                          },
-                        ),
-            ),
+            if (!noCodeHideText)
+              Expanded(
+                child: useNumber
+                    ? NumberStepField(
+                        value: _numberValue,
+                        hint: kFieldNumericHints['${widget.cfgName}:$rawKey'],
+                        onChanged: (n) {
+                          widget.onChanged(n);
+                          _ctrl.text = n.toString();
+                          setState(() {});
+                        },
+                      )
+                    : useSuggest
+                        ? SuggestionTextField(
+                            controller: _ctrl,
+                            focusNode: _focusNode,
+                            source: _suggestSource,
+                            multivalued: isArray,
+                            maxLines: multiline ? 3 : 1,
+                            onChanged: (_) {
+                              try {
+                                widget.onChanged(
+                                    ValueCodec.decode(_ctrl.text, widget.type));
+                              } catch (_) {}
+                              setState(() {});
+                            },
+                          )
+                        : fluent.TextBox(
+                            controller: _ctrl,
+                            maxLines: multiline ? 3 : 1,
+                            onChanged: (_) {
+                              try {
+                                widget.onChanged(
+                                    ValueCodec.decode(_ctrl.text, widget.type));
+                              } catch (_) {}
+                              setState(() {});
+                            },
+                          ),
+              ),
             // 窄屏加固（H）：尾部动作改为可换行的 Wrap——宽屏单行与原先一致，
             // 窄屏自动折行，杜绝固定按钮组把行撑溢出。
             Flexible(
@@ -2715,8 +2838,8 @@ class _FieldInputState extends State<_FieldInput> {
                         // M1：跳转目标/数组多选升级为「有序浏览」（顺序即语义）；
                         // 人物引用在无代码模式仍走立绘面板。
                         onPressed: () {
-                          if (widget.noCodeMode && _isRoleField) {
-                            _pickRoles();
+                          if (widget.noCodeMode && _entityKind != null) {
+                            _pickEntity();
                           } else if (_visual == FieldVisual.jumpTarget ||
                               _visual == FieldVisual.multiIdChips) {
                             _browseIds();
@@ -2725,8 +2848,8 @@ class _FieldInputState extends State<_FieldInput> {
                           }
                         },
                         child: Text(
-                          widget.noCodeMode && _isRoleField
-                              ? '选人物'
+                          widget.noCodeMode && _entityKind != null
+                              ? '选${_entityKind!.label}'
                               : _visual == FieldVisual.jumpTarget
                                   ? '浏览跳转目标'
                                   : _visual == FieldVisual.multiIdChips
@@ -2750,13 +2873,15 @@ class _FieldInputState extends State<_FieldInput> {
                       ),
                     ),
                   ],
-                  if (widget.noCodeMode && _isRoleField && !canPickIds)
+                  // 无代码模式且数组通道不可用（Number 单选 / 音频 / 无 idRefCfg 的
+                  // 数组）：补一个与 chips 同源的选择入口，藏了文本框也选得到值。
+                  if (!canPickIds && noCodePick != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
                       child: fluent.Button(
-                        onPressed: _pickRoles,
-                        child:
-                            const Text('选人物', style: TextStyle(fontSize: 11)),
+                        onPressed: noCodePick,
+                        child: Text(noCodePickLabel,
+                            style: const TextStyle(fontSize: 11)),
                       ),
                     ),
                   if (texPrefix != null)
@@ -2791,6 +2916,7 @@ class _FieldInputState extends State<_FieldInput> {
             },
           ),
         ],
+        if (noCodeDeadEnd) _noCodeDeadEndRow(),
         if (preview != null)
           Padding(
             padding: const EdgeInsets.only(top: 3),
@@ -2802,6 +2928,32 @@ class _FieldInputState extends State<_FieldInput> {
       ],
     );
   }
+
+  /// 无代码模式的死路提示：字段没有候选池、也没有浏览/试听/选图入口，
+  /// 文本框又被藏起来——给出唯一可行的逃生口（关闭共享开关）。
+  Widget _noCodeDeadEndRow() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '该字段没有可选候选；如需手写请关闭无代码模式。',
+              style: TextStyle(fontSize: 10.5, color: palette.textHint),
+            ),
+          ),
+          fluent.Button(
+            onPressed: _leaveNoCodeMode,
+            child: const Text('关闭无代码模式', style: TextStyle(fontSize: 10.5)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 逃生口：关闭共享的无代码开关（写穿后端 editor_env.json），
+  /// 让当前字段回到可手写的形态。写穿失败时提示并回滚本地态。
+  Future<void> _leaveNoCodeMode() => exitNoCodeMode(context);
 }
 
 /// 「从列表选择」ID 候选弹窗：关键字筛选 + 多选，确定返回所选 ID（按候选顺序）。

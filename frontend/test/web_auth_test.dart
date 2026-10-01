@@ -24,10 +24,34 @@ void main() {
     bool whoamiUnauthorized = true,
     String? validToken,
     bool loginOk = true,
+    bool registrationEnabled = false,
+    bool inviteRequired = false,
+    bool registerOk = true,
+    String? registerErrorCode,
   }) {
     ApiClient.instance.client = MockClient((req) async {
       recorded.add(req);
       final path = req.url.path;
+      if (path == '/api/auth/registration') {
+        return _json({
+          'enabled': registrationEnabled,
+          'invite_required': inviteRequired,
+          'min_password_length': 8,
+        }, 200);
+      }
+      if (path == '/api/auth/register') {
+        if (!registerOk || registerErrorCode != null) {
+          return _json(
+              {'error': 'register failed', 'code': registerErrorCode ?? 'server_error'},
+              409);
+        }
+        final body = jsonDecode(req.body) as Map<String, dynamic>;
+        return _json({
+          'token': validToken ?? 'tok-new',
+          'name': body['name'],
+          'expires_in': 86400,
+        }, 200);
+      }
       if (path == '/api/auth/whoami') {
         final authed =
             validToken != null && req.headers['Authorization'] == 'Bearer $validToken';
@@ -190,6 +214,95 @@ void main() {
       expect(auth.error, '请输入用户名');
       expect(await auth.login('alice', ''), isFalse);
       expect(auth.error, '请输入密码');
+    });
+  });
+
+  group('注册', () {
+    test('策略开启：probe 后 registrationEnabled 为真', () async {
+      mockGateway(
+          whoamiUnauthorized: true,
+          validToken: 'tok-abc',
+          registrationEnabled: true,
+          inviteRequired: true);
+      final auth = AuthState(isWebOverride: true);
+      await auth.probe();
+      expect(auth.mode, AuthMode.hosted);
+      expect(auth.registrationEnabled, isTrue);
+      expect(auth.inviteRequired, isTrue);
+    });
+
+    test('策略默认关闭：registrationEnabled 为假', () async {
+      mockGateway(whoamiUnauthorized: true, validToken: 'tok-abc');
+      final auth = AuthState(isWebOverride: true);
+      await auth.probe();
+      expect(auth.registrationEnabled, isFalse);
+    });
+
+    test('注册成功：签发会话、注入 token、自动登录', () async {
+      mockGateway(
+          whoamiUnauthorized: true,
+          validToken: 'tok-abc',
+          registrationEnabled: true);
+      final auth = AuthState(isWebOverride: true);
+      ApiClient.instance.onUnauthorized = auth.logout;
+      await auth.probe();
+      expect(auth.requiresLogin, isTrue);
+
+      final ok = await auth.register('bob', 'hunter2x');
+      expect(ok, isTrue);
+      expect(auth.authenticated, isTrue);
+      expect(auth.requiresLogin, isFalse);
+      expect(auth.name, 'bob');
+      expect(auth.error, isNull);
+      expect(ApiClient.instance.accessToken, 'tok-abc');
+
+      // 请求体契约：{name, password, invite_code}
+      final req = recorded.firstWhere((r) => r.url.path == '/api/auth/register');
+      final body = jsonDecode(req.body) as Map<String, dynamic>;
+      expect(body['name'], 'bob');
+      expect(body['password'], 'hunter2x');
+      expect(body['invite_code'], '');
+
+      // 后续业务请求带 Bearer
+      final resp = await ApiClient.instance.get('/api/state');
+      expect(resp, {'ok': true});
+      expect(recorded.last.headers['Authorization'], 'Bearer tok-abc');
+    });
+
+    test('注册失败：按 code 映射文案，无 token', () async {
+      mockGateway(
+          whoamiUnauthorized: true,
+          validToken: 'tok-abc',
+          registrationEnabled: true,
+          registerOk: false,
+          registerErrorCode: 'name_taken');
+      final auth = AuthState(isWebOverride: true);
+      await auth.probe();
+
+      final ok = await auth.register('alice', 'hunter2x');
+      expect(ok, isFalse);
+      expect(auth.error, '用户名已被占用');
+      expect(auth.authenticated, isFalse);
+      expect(ApiClient.instance.accessToken, isNull);
+    });
+
+    test('本地校验：空用户名 / 短密码 / 缺邀请码均不发请求', () async {
+      mockGateway(
+          whoamiUnauthorized: true,
+          validToken: 'tok-abc',
+          registrationEnabled: true,
+          inviteRequired: true);
+      final auth = AuthState(isWebOverride: true);
+      await auth.probe();
+      final before = recorded.length;
+
+      expect(await auth.register('  ', 'hunter2x', inviteCode: 'x'), isFalse);
+      expect(auth.error, '请输入用户名');
+      expect(await auth.register('bob', 'short', inviteCode: 'x'), isFalse);
+      expect(auth.error, '密码至少 8 位');
+      expect(await auth.register('bob', 'hunter2x'), isFalse);
+      expect(auth.error, '请输入邀请码');
+      expect(recorded.length, before); // 三次均本地拦截
     });
   });
 

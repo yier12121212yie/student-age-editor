@@ -35,9 +35,13 @@ import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../editor/field_meta.dart';
+import '../editor/field_utils.dart';
+import '../editor/id_ref_picker.dart';
 import '../editor/suggestion_text_field.dart';
 import '../files/file_viewer.dart' show ImagePreview;
-import '../nocode/effect_block_editor.dart';
+import '../nocode/entity_picker.dart';
+import '../nocode/no_code_exit.dart';
+import '../nocode/nocode_effect_field.dart';
 import '../resources/image_asset_picker.dart';
 import 'story_flow_field_codec.dart';
 import 'story_logic.dart';
@@ -421,10 +425,33 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       );
     }
     final style = TextStyle(fontSize: 11.5, color: palette.textBody);
+    // 无代码模式分流（与 schema 编辑器、内联卡片同一张表）：码字段铺内联积木
+    // 编辑器，引用/枚举字段只给选择入口——两者都不出现可编辑文本控件。
+    final shape = noCodeShapeFor(meta.cfg, meta.key, meta.type, meta.rule);
+    final noCodeBlocks = widget.noCodeMode && shape == NoCodeShape.blocks;
+    final noCodePickOnly = widget.noCodeMode &&
+        (shape == NoCodeShape.visual || shape == NoCodeShape.reference);
     Widget editor;
-    // 效果/条件类与有下拉规则的字段一律走补全框：裸 TextBox 会让全角逗号绕过
-    // 校验直接进存档。
-    if (meta.effectLike || meta.rule != null) {
+    if (noCodeBlocks) {
+      editor = NoCodeEffectField(
+        value: ValueCodec.decode(ctl.text, meta.type),
+        type: meta.type,
+        cfg: meta.cfg,
+        fieldKey: meta.key,
+        mode: meta.suggestMode,
+        gameDicts: widget.gameDicts,
+        onChanged: (v) {
+          final text = ValueCodec.encode(v);
+          ctl.text = text;
+          widget.onFieldChanged(widget.nodeId, meta.key, text);
+        },
+        onDisableNoCode: () => exitNoCodeMode(context),
+      );
+    } else if (noCodePickOnly) {
+      editor = _noCodePickRow(meta, ctl);
+    } else if (meta.effectLike || meta.rule != null) {
+      // 效果/条件类与有下拉规则的字段一律走补全框：裸 TextBox 会让全角逗号绕过
+      // 校验直接进存档。（关闭无代码模式时的形态，开启态已被上面两个分支接管。）
       final node = _focusFor(meta);
       _order.add(node);
       editor = SuggestionTextField(
@@ -455,9 +482,11 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
         onTab: () => _advance(node),
       );
     }
-    final bgExtras = _bgExtrasFor(meta, ctl);
-    final blockExtras = _blockEditorExtra(meta, ctl);
-    final extras = <Widget>[?bgExtras, ?blockExtras];
+    // 无代码模式下「选背景图」的缩略图并进了只读行（见 [_noCodePickRow]），
+    // 避免同一行出现两个选择入口；关闭态保持原有缩略图 + 选背景图。
+    final bgExtras =
+        widget.noCodeMode ? null : _bgExtrasFor(meta, ctl);
+    final extras = <Widget>[?bgExtras];
     return extras.isEmpty
         ? editor
         : Column(
@@ -466,52 +495,139 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
           );
   }
 
-  /// 无代码模式：效果类字段追加一行「积木编辑」入口。
+  /// 无代码模式的引用/枚举字段：只读现值 + 「选 X…」入口。
   ///
-  /// 面板依旧不落库：结果文本经 [FlowInspectorPanel.onFieldChanged] 交宿主
+  /// 面板依旧不落库：选中结果经 [FlowInspectorPanel.onFieldChanged] 交宿主
   /// 解析、标脏、记撤销步；控制器与内联卡片同实例，写回即双向同步。
-  Widget? _blockEditorExtra(FieldMeta meta, TextEditingController ctl) {
-    if (!widget.noCodeMode || !meta.editable || !meta.effectLike) return null;
-    final mode = meta.suggestMode ?? effectSuggestMode(meta.key) ?? 'effect';
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Row(
-        children: [
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: () => _openBlockEditor(meta, ctl, mode),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: palette.panel,
-                  borderRadius: BorderRadius.circular(AppRadius.s),
-                  border: Border.all(color: palette.border),
+  /// 既没有专用实体面板也没有候选源时给出死路提示与逃生口——绝不放文本输入。
+  Widget _noCodePickRow(FieldMeta meta, TextEditingController ctl) {
+    final text = ctl.text.trim();
+    final kind = entityKindForRule(meta.rule);
+    final hasSource = widget.suggestFor(widget.cfgName, meta) != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            // 背景字段保住缩略图：选之前先能看见（渲染路径不发请求，
+            // 映射未就绪时是占位框）。
+            if (kind == EntityKind.bgs) ...[
+              BgIdThumb(id: text, width: 52, height: 39),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(
+                text.isEmpty ? '（未设置）' : text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: text.isEmpty ? palette.textHint : palette.textBody,
                 ),
-                child: Text('积木编辑',
-                    style:
-                        TextStyle(fontSize: 10.5, color: palette.textBody)),
               ),
             ),
+            const SizedBox(width: 6),
+            _miniAction(
+              label: kind == null ? '选择…' : '选${kind.label}…',
+              onTap: (kind == null && !hasSource)
+                  ? null
+                  : () => _pickByRule(meta, ctl, kind),
+            ),
+          ],
+        ),
+        if (kind == null && !hasSource)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '该字段没有可选候选；如需手写请关闭无代码模式。',
+                    style: TextStyle(fontSize: 10, color: palette.textHint),
+                  ),
+                ),
+                _miniAction(
+                  label: '关闭无代码模式',
+                  onTap: () => exitNoCodeMode(context),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
-  Future<void> _openBlockEditor(
-      FieldMeta meta, TextEditingController ctl, String mode) async {
-    final out = await showEffectBlockEditor(
-      context,
-      text: ctl.text,
-      mode: mode,
-      gameDicts: widget.gameDicts,
-      singleRow: meta.replaceWholeOnAccept,
+  /// 选择写回：优先专用实体面板（人物/道具/背景…），否则用宿主注入的候选源
+  /// 拉一次全量候选走「ID · 名称」浏览对话框。
+  Future<void> _pickByRule(
+      FieldMeta meta, TextEditingController ctl, EntityKind? kind) async {
+    final single = meta.type == 'Number' ||
+        meta.type == 'String' ||
+        meta.rule?.singleArray == true;
+    final existing = ctl.text
+        .split(RegExp(r'[;，、,\n]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    List<String>? picked;
+    if (kind != null) {
+      picked = await showEntityPicker(
+        context,
+        kind: kind,
+        multi: !single,
+        title: '选择${kind.label}',
+        exclude: single ? const {} : existing.toSet(),
+        gameDicts: widget.gameDicts,
+      );
+    } else {
+      final source = widget.suggestFor(widget.cfgName, meta);
+      if (source == null) return;
+      final items = await source(
+        const SuggestionQuery(token: '', cursor: 0, text: ''),
+      );
+      if (!mounted) return;
+      final opts = [for (final s in items) (s.code, s.desc)];
+      if (opts.isEmpty) return;
+      picked = await showIdBrowseDialog(
+        context,
+        title: '选择${meta.label}',
+        options: opts,
+        multi: !single,
+        initialSelected: single
+            ? (existing.isEmpty ? const <String>[] : [existing.first])
+            : existing,
+      );
+    }
+    if (!mounted || picked == null || picked.isEmpty) return;
+    final next = single ? picked.first : ({...existing, ...picked}.join(', '));
+    ctl.text = next;
+    widget.onFieldChanged(widget.nodeId, meta.key, next);
+    _scheduleEcho();
+  }
+
+  /// 小动作按钮（选 X / 关闭无代码模式）：[onTap] 为 null 时置灰不可点。
+  Widget _miniAction({required String label, VoidCallback? onTap}) {
+    return MouseRegion(
+      cursor: onTap == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: palette.panel,
+            borderRadius: BorderRadius.circular(AppRadius.s),
+            border: Border.all(color: palette.border),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                fontSize: 10.5,
+                color: onTap == null ? palette.textHint : palette.textBody,
+              )),
+        ),
+      ),
     );
-    if (!mounted || out == null || out == ctl.text) return;
-    ctl.text = out;
-    widget.onFieldChanged(widget.nodeId, meta.key, out);
   }
 
   /// TalkCfg.bg 字段扩展行：当前背景缩略图（单击预览）+「选背景图」入口。
@@ -633,6 +749,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
     final dirty = widget.fieldDirty(widget.nodeId, meta.key);
     final requiredEmpty = meta.required && !_hasValue(meta);
     final echo = _echoLineFor(meta);
+    final help = fieldHelpText(meta.cfg, meta.key, meta.type, rule: meta.rule);
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpace.s),
       child: Column(
@@ -644,16 +761,19 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
             child: Row(
               children: [
                 Flexible(
-                  child: Text(
-                    meta.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: AppType.badge + 3,
-                      fontWeight: FontWeight.w600,
-                      color: invalid
-                          ? palette.statusDanger
-                          : palette.textSecondary,
+                  child: Tooltip(
+                    message: help,
+                    child: Text(
+                      meta.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: AppType.badge + 3,
+                        fontWeight: FontWeight.w600,
+                        color: invalid
+                            ? palette.statusDanger
+                            : palette.textSecondary,
+                      ),
                     ),
                   ),
                 ),

@@ -81,6 +81,7 @@ AI 与桌面同源：读本机 `.editor_ai` 配置文件。平台模式走本机
 | `instance.max` | number | 否 | 同时存活的后端实例上限 |
 | `instance.idle_minutes` | number | 否 | 实例闲置多少分钟后回收 |
 | `state_dir` | string | 否 | 网关运行时状态目录 |
+| `registration` | object | 否 | 自助注册配置，见 §2.3；缺省**关闭** |
 | `accounts` | array | 是 | 账号列表，见下表 |
 | `ai_relay` | object | 否 | 管理员平台 AI 中转配置，见 §3.1 |
 
@@ -115,7 +116,41 @@ curl -X POST https://你的域名/api/auth/login \
 后续所有请求带 `Authorization: Bearer <token>`；网关返回 401 时前端自动回
 登录页。
 
-### 2.3 部署步骤（Ubuntu 24.04）
+### 2.3 自助注册（可选，默认关闭）
+
+默认**关闭**：账号只能由管理员用 `--hash-password` 预置。若要让用户自行注册，
+在 `gateway.json` 增加 `registration` 段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `enabled` | bool | 是否开放注册（默认 `false`） |
+| `invite_code` | string | 邀请码；非空则注册必须提供，空 = 开放注册 |
+| `max_accounts` | number | 账号总数上限（含 `accounts[]` 预置账号）；`0` = 不限 |
+| `min_password_length` | number | 注册密码最短字符数（默认 8） |
+
+```json
+"registration": { "enabled": true, "invite_code": "你的邀请码", "max_accounts": 50 }
+```
+
+开启后登录页出现「注册」入口，用户填用户名 / 密码 /（可选）邀请码即可注册并
+**自动登录**。约束：
+
+- **账号落盘独立**：注册账号写入 `<state_dir>/accounts.json`（原子写），
+  `gateway.json` 保持管理员只读；网关启动时并入运行时账号表，重启后仍在。
+- **同名优先**：与 `gateway.json` `accounts[]` 同名时管理员声明优先（文件的同名
+  条目被忽略），管理员可随时回收任意用户名。
+- **口令哈希**：注册账号一律 PBKDF2-HMAC-SHA256（v2，10 万轮）。
+- **工作区隔离**：与预置账号一致，工作区 = `user_data_root/<账号名>`，由网关
+  进程池懒启动独立 `backend`。
+- **限速**：注册尝试复用登录滑动窗口限速（60 秒 10 次失败即锁 5 分钟），
+  挡邀请码爆破与 PBKDF2 算力耗尽。
+
+公开端点 `GET /api/auth/registration` 返回 `{enabled, invite_required,
+min_password_length}` 供前端决定是否显示注册入口；`POST /api/auth/register`
+提交 `{name, password, invite_code?}`，成功返回与登录相同的
+`{token, name, expires_in}`。
+
+### 2.4 部署步骤（Ubuntu 24.04）
 
 1. **装 Caddy**（官方 apt 源或系统包管理器均可），用于 TLS 终结与反向代理。
 2. **下载 server-linux 包**，解压到 `/opt/editor`，其中含 `backend_gateway`
@@ -163,7 +198,7 @@ curl -X POST https://你的域名/api/auth/login \
 
    返回 JSON 策略即链路通畅（登录后访问第一个代理端点时，网关会懒启动该账号的 `backend` 实例）。
 
-### 2.4 数据与运维
+### 2.5 数据与运维
 
 - **备份**：`user_data_root` 整目录打包即可恢复全部账号：
 

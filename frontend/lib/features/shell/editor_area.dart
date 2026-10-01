@@ -84,7 +84,7 @@ class _EditorAreaState extends State<EditorArea> {
                 final doc = widget.controller.current;
                 Widget content;
                 if (doc == null) {
-                  content = const _WelcomeView(key: ValueKey('welcome'));
+                  content = _WelcomeView(key: ValueKey('welcome'));
                 } else if (doc.kind == 'cfg') {
                   content = SchemaEditorView(
                     key: ValueKey(doc),
@@ -111,7 +111,7 @@ class _EditorAreaState extends State<EditorArea> {
                       onOpenSearch: widget.onOpenSearch,
                     );
                   } else {
-                    content = const _WelcomeView(key: ValueKey('welcome'));
+                    content = _WelcomeView(key: ValueKey('welcome'));
                   }
                 } else if (doc.kind == 'preview') {
                   final view = EventPreviewView(

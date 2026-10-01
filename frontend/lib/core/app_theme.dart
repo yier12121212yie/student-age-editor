@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart' show ThemeData;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -758,6 +759,44 @@ class AppShadow {
   }
 }
 
+/// 把 FluentApp 生成的 Material 主题里「半透明表面」覆盖为不透明调色板色。
+///
+/// FluentApp 的 Material 层默认把 `cardColor` / `canvasColor` /
+/// `ColorScheme.surface` 设为 Fluent 的 Mica 资源色（暗色下是 `0x0dffffff`，
+/// 只有 5% 白）。于是所有没显式指定底板的 Material 弹层——`AlertDialog`、
+/// `DropdownButton` 下拉菜单、`showModalBottomSheet`、`PopupMenuButton` 缺省
+/// 色——都会「整窗透明」，把下层内容透出来。这里一次性覆盖成不透明底板。
+///
+/// [base] 传 FluentApp 注入的 Material 主题；[p] 省略时取当前生效调色板。
+ThemeData opaqueMaterialSurfaces([ThemeData? base, AppPalette? p]) {
+  final pal = p ?? palette;
+  final surface = pal.card;
+  final data =
+      base ??
+      ThemeData(brightness: pal.isLight ? Brightness.light : Brightness.dark);
+  return data.copyWith(
+    canvasColor: surface,
+    cardColor: surface,
+    scaffoldBackgroundColor: pal.bg,
+    colorScheme: data.colorScheme.copyWith(
+      surface: surface,
+      surfaceTint: const Color(0x00000000),
+    ),
+    dialogTheme: data.dialogTheme.copyWith(
+      backgroundColor: surface,
+      surfaceTintColor: const Color(0x00000000),
+    ),
+    popupMenuTheme: data.popupMenuTheme.copyWith(
+      color: surface,
+      surfaceTintColor: const Color(0x00000000),
+    ),
+    bottomSheetTheme: data.bottomSheetTheme.copyWith(
+      backgroundColor: surface,
+      surfaceTintColor: const Color(0x00000000),
+    ),
+  );
+}
+
 /// 主题控制器：读写持久化的外观模式与用户主题色，同步当前调色板，
 /// 并通知监听者重建。
 class AppTheme {
@@ -770,8 +809,19 @@ class AppTheme {
   /// 用户主题色（强调色种子）变化通知。
   static final ValueNotifier<Color> accent = ValueNotifier(kDefaultAccent);
 
-  // 合并监听：外观模式与主题色任一变化都触发根部重建。
-  static final Listenable _changes = Listenable.merge([mode, accent]);
+  /// 当前生效调色板变化通知。
+  ///
+  /// 只监听 [mode] 不够：「跟随系统」下 OS 亮度变化时模式值不变，若只刷新
+  /// 全局 [palette] 而不发通知，根部 ListenableBuilder 不会重建，界面会一直
+  /// 停在旧外表（亮底白字/暗底黑字）。这里以调色板实例本身作为通知值——
+  /// 亮/暗两张表是不同 const，withAccent 也会按主题色产生新实例，因此
+  /// 亮度或主题色任一变化都能被感知。
+  static final ValueNotifier<AppPalette> _paletteNotifier =
+      ValueNotifier(AppPalette.dark);
+
+  // 合并监听：外观模式、主题色与生效调色板任一变化都触发根部重建。
+  static final Listenable _changes =
+      Listenable.merge([mode, accent, _paletteNotifier]);
 
   /// 根部统一监听入口（亮度 + 主题色）。
   static Listenable get changes => _changes;
@@ -800,9 +850,14 @@ class AppTheme {
     final brightness = m == AppThemeMode.system
         ? WidgetsBinding.instance.platformDispatcher.platformBrightness
         : (m == AppThemeMode.light ? Brightness.light : Brightness.dark);
-    _currentPalette = syncGlobalPalette(
+    final next =
         (brightness == Brightness.light ? AppPalette.light : AppPalette.dark)
-            .withAccent(accent.value));
+            .withAccent(accent.value);
+    _currentPalette = syncGlobalPalette(next);
+    // 通知根部重建：模式/亮度/主题色任一变化都会让调色板实例发生变化。
+    if (!identical(_paletteNotifier.value, next)) {
+      _paletteNotifier.value = next;
+    }
     _syncNativeTitleBar(brightness == Brightness.dark);
   }
 

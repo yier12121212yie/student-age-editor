@@ -66,5 +66,14 @@ thinking-slider/
 
 # AI 会话历史（运行时数据，agent/history_store.py 落盘）
 .editor_ai_history/
+
+# 本地部署包与构建临时产物（含已编译二进制与大体积 tar/缓存，不入库）
+.deploy/
+frontend/_tc.dill
+_flutter_version.txt
+frontend/_analyze_lib.txt
+
+# 本机 MCP SSH 隧道脚本（本地环境辅助，不入库）
+Start-McpSSHTunnel.ps1
 # website/ 有真实内容（静态官网首页），纳入版本控制——此前误标为“空目录
 # 占位”被整体忽略，内容存在丢失风险。

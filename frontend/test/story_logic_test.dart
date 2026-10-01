@@ -328,4 +328,37 @@ void main() {
       expect(storyIsInPrefixes(prefixes, id), isFalse);
     });
   });
+
+  group('allocEventId（无代码模式自动编号）', () {
+    test('空家族从 min 起', () {
+      expect(allocEventId(const []), '1000000');
+    });
+
+    test('取最大已用 + 1，忽略家族外 ID', () {
+      expect(
+        allocEventId(const ['999', '1000005', 'abc', 'l']),
+        '1000006',
+      );
+    });
+
+    test('取家族内最大已用 + 1', () {
+      expect(
+        allocEventId(const ['1000004', '1000006', '1000005', '1000007']),
+        '1000008',
+      );
+    });
+
+    test('家族全占返回 null', () {
+      expect(allocEventId(const [], min: 1000000, max: 1000001), '1000000');
+      expect(
+        allocEventId(const ['1000000', '1000001'], min: 1000000, max: 1000001),
+        isNull,
+      );
+    });
+
+    test('导演视图 8000~8999 家族复用同一函数', () {
+      expect(allocEventId(const ['8000', '8002'], min: 8000, max: 8999),
+          '8003');
+    });
+  });
 }

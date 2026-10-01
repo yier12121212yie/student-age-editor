@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
+import 'field_meta.dart';
 import 'field_utils.dart';
 import '../../core/app_theme.dart';
 import '../../core/responsive.dart';
@@ -114,15 +115,9 @@ class _EffectHintFieldState extends State<EffectHintField> {
     // 调用方显式指定优先
     final m = widget.mode;
     if (m != null && m.isNotEmpty) return m;
-    final k = widget.fieldKey;
-    if (k == 'roles') return 'action'; // TalkCfg.roles：2D 指令行 [Npc,cmd,args...]
-    if (k == 'screenEffect') return 'screen'; // TalkCfg.screenEffect：1D 扁平代码
-    if (k == 'cost') return 'cost';
-    if (k == 'condition' || k == 'cond' || k == 'precondition' || k == 'check') return 'condition';
-    // 所有 effect 变体
-    if (k.toLowerCase().contains('effect')) return 'effect';
-    // 其他 2D Array 默认按 effect 处理，保证至少有提示
-    return 'effect';
+    // 兜底与 field_meta 的单一真源同解（roles→action、screenEffect→screen…）；
+    // 其他 2D Array 默认按 effect 处理，保证至少有提示。
+    return effectSuggestMode('', widget.fieldKey) ?? 'effect';
   }
 
   @override

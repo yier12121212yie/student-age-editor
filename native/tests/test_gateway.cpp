@@ -33,6 +33,7 @@
 #include "sa_core/sha256.h"
 #include "sa_core/util.h"
 
+#include "gateway/gw_accounts.h"
 #include "gateway/gw_config.h"
 #include "gateway/gw_pool.h"
 #include "gateway/gw_proxy.h"
@@ -180,6 +181,41 @@ TEST_CASE("gateway config: validation failures", "[gateway]") {
     fail(zero_max, "instance.max");
 }
 
+TEST_CASE("gateway config: registration defaults + parse", "[gateway]") {
+    sa::json j;
+    j["user_data_root"] = "/srv/data";
+    sa::json acc = sa::json::array();
+    acc.push_back({{"name", "a"}, {"salt", std::string(32, '0')},
+                   {"password_sha256", std::string(64, '0')}});
+    j["accounts"] = acc;
+
+    gw::Config cfg;
+    std::string err;
+    REQUIRE(gw::parse_config(j, &cfg, &err));
+    CHECK_FALSE(cfg.registration.enabled);          // 安全默认：关闭
+    CHECK(cfg.registration.invite_code.empty());
+    CHECK(cfg.registration.max_accounts == 0);
+    CHECK(cfg.registration.min_password_length == 8);
+    CHECK(cfg.accounts_file == "/srv/data/.gateway/accounts.json");
+
+    j["registration"] = {{"enabled", true},
+                         {"invite_code", "CODE"},
+                         {"max_accounts", 5},
+                         {"min_password_length", 12}};
+    gw::Config cfg2;
+    REQUIRE(gw::parse_config(j, &cfg2, &err));
+    CHECK(cfg2.registration.enabled);
+    CHECK(cfg2.registration.invite_code == "CODE");
+    CHECK(cfg2.registration.max_accounts == 5);
+    CHECK(cfg2.registration.min_password_length == 12);
+
+    sa::json bad = j;
+    bad["registration"]["min_password_length"] = 0;
+    gw::Config cfg3;
+    CHECK_FALSE(gw::parse_config(bad, &cfg3, &err));
+    CHECK(err.find("min_password_length") != std::string::npos);
+}
+
 TEST_CASE("gateway config: web_root missing is a warning not an error", "[gateway]") {
     sa::json j;
     j["user_data_root"] = "/srv/data";
@@ -221,6 +257,77 @@ TEST_CASE("gateway secure_equals: length + content", "[gateway]") {
     CHECK_FALSE(gw::secure_equals("abc", "abd"));
     CHECK_FALSE(gw::secure_equals("abc", "abcd"));
     CHECK(gw::secure_equals("", ""));
+}
+
+TEST_CASE("gateway valid_account_name", "[gateway]") {
+    CHECK(gw::valid_account_name("alice"));
+    CHECK(gw::valid_account_name("A_b-9"));
+    CHECK_FALSE(gw::valid_account_name(""));
+    CHECK_FALSE(gw::valid_account_name("bad name"));
+    CHECK_FALSE(gw::valid_account_name("a/b"));
+    CHECK_FALSE(gw::valid_account_name(".."));
+    CHECK_FALSE(gw::valid_account_name(std::string("\xE7\x94\xA8\xE6\x88\xB7")));  // UTF-8 中文
+}
+
+// ---------------------------------------------------------------------------
+// Registered accounts store (temp dir).
+
+TEST_CASE("gateway registered accounts: add/merge/verify", "[gateway]") {
+    auto dir = tmp_root("acct");
+    std::string file = (dir / "accounts.json").string();
+    const std::string data_root = (dir / "data").string();
+    gw::RegisteredAccounts store(file, data_root);
+    CHECK(store.count() == 0);
+
+    gw::Account a;
+    std::string err;
+    REQUIRE(store.add("bob", "hunter2", &a, &err));
+    CHECK(a.name == "bob");
+    CHECK(gw::is_hex_lower(a.salt, 32));
+    CHECK(a.kdf_version == gw::kKdfVersion2);
+    CHECK(store.count() == 1);
+    // 新口令可直接校验（v2）
+    CHECK(gw::secure_equals(
+        gw::password_hash_v2(a.salt, "hunter2", a.kdf_iterations), a.password_sha256));
+
+    // 重名 / 非法名拒绝
+    gw::Account dup;
+    CHECK_FALSE(store.add("bob", "x", &dup, &err));
+    CHECK_FALSE(store.add("bad name", "x", &dup, &err));
+
+    // 另一个 store 能从文件重新加载（重启后账号仍在）
+    gw::RegisteredAccounts reloaded(file, data_root);
+    REQUIRE(reloaded.count() == 1);
+    gw::Config cfg;
+    cfg.user_data_root = data_root;
+    reloaded.merge_into(&cfg);
+    REQUIRE(cfg.accounts.size() == 1);
+    CHECK(cfg.accounts[0].name == "bob");
+    CHECK(cfg.accounts[0].dir == sa_core::paths::join(data_root, "bob"));
+
+    // 管理员在 gateway.json 声明的同名账号优先，文件条目被忽略
+    gw::Account alice_in_file;
+    std::string e2;
+    REQUIRE(store.add("alice", "pw2", &alice_in_file, &e2));
+    gw::Config cfg2;
+    cfg2.user_data_root = data_root;
+    gw::Account declared;
+    declared.name = "alice";
+    declared.dir = "/declared/alice";
+    cfg2.accounts.push_back(declared);
+    store.merge_into(&cfg2);
+    std::size_t alice_n = 0;
+    for (const auto& e : cfg2.accounts) {
+        if (e.name == "alice") {
+            ++alice_n;
+            CHECK(e.dir == "/declared/alice");
+        }
+    }
+    CHECK(alice_n == 1);               // 声明保留、文件同名忽略
+    CHECK(cfg2.accounts.size() == 2);  // 声明 alice + 文件 bob
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +401,8 @@ TEST_CASE("gateway ban table", "[gateway]") {
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/plugins/list"));
     // Gateway-owned endpoints never reach the proxy, so the proxy never bans:
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/auth/login"));
+    CHECK_FALSE(gw::endpoint_banned("POST", "/api/auth/register"));
+    CHECK_FALSE(gw::endpoint_banned("GET", "/api/auth/registration"));
     CHECK_FALSE(gw::endpoint_banned("GET", "/api/ai/policy"));
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/ai/relay/chat"));
 }
@@ -440,6 +549,113 @@ TEST_CASE("gateway routes: disabled account -> 403", "[gateway]") {
     RouteHarness h(std::move(cfg));
     auto r = h.call("POST", "/api/auth/login", sa::json{{"name", "alice"}, {"password", "pw"}});
     CHECK(r.status == 403);
+}
+
+TEST_CASE("gateway routes: self-registration gating", "[gateway]") {
+    // 默认关闭：注册与策略端点都反映关闭。
+    {
+        RouteHarness h(base_config("pw"));
+        auto pol = h.call("GET", "/api/auth/registration");
+        REQUIRE(pol.status == 200);
+        CHECK(pol.json_payload["enabled"] == false);
+        CHECK(pol.json_payload["invite_required"] == false);
+        auto r = h.call("POST", "/api/auth/register",
+                        sa::json{{"name", "bob"}, {"password", "secret1"}});
+        CHECK(r.status == 403);
+        CHECK(r.json_payload["code"] == "registration_disabled");
+    }
+    // 邀请码模式。
+    auto root = tmp_root("reginvite");
+    gw::Config cfg = base_config("pw");
+    cfg.user_data_root = (root / "data").string();
+    cfg.accounts[0].dir = (root / "data" / "alice").string();
+    cfg.accounts_file = (root / "state" / "accounts.json").string();
+    cfg.registration.enabled = true;
+    cfg.registration.invite_code = "LETMEIN";
+    cfg.registration.min_password_length = 6;
+    RouteHarness h(std::move(cfg));
+    h.g.accounts = std::make_unique<gw::RegisteredAccounts>(
+        h.g.cfg.accounts_file, h.g.cfg.user_data_root);
+
+    auto pol = h.call("GET", "/api/auth/registration");
+    CHECK(pol.json_payload["enabled"] == true);
+    CHECK(pol.json_payload["invite_required"] == true);
+    CHECK(pol.json_payload["min_password_length"] == 6);
+
+    // 邀请码错误 -> 403。
+    auto wrong = h.call("POST", "/api/auth/register",
+                        sa::json{{"name", "bob"},
+                                 {"password", "secret1"},
+                                 {"invite_code", "nope"}});
+    CHECK(wrong.status == 403);
+    CHECK(wrong.json_payload["code"] == "invalid_invite");
+
+    // 短密码 -> 400（邀请码正确也拦）。
+    auto weak = h.call("POST", "/api/auth/register",
+                       sa::json{{"name", "bob"},
+                                {"password", "x"},
+                                {"invite_code", "LETMEIN"}});
+    CHECK(weak.status == 400);
+    CHECK(weak.json_payload["code"] == "weak_password");
+
+    // 非法用户名 -> 400。
+    auto bad = h.call("POST", "/api/auth/register",
+                      sa::json{{"name", "bad name"},
+                               {"password", "secret1"},
+                               {"invite_code", "LETMEIN"}});
+    CHECK(bad.status == 400);
+    CHECK(bad.json_payload["code"] == "invalid_name");
+
+    // 成功注册 -> 200 + token，自动登录，且后续可用同口令登录。
+    auto ok = h.call("POST", "/api/auth/register",
+                     sa::json{{"name", "bob"},
+                              {"password", "secret1"},
+                              {"invite_code", "LETMEIN"}});
+    REQUIRE(ok.status == 200);
+    CHECK(ok.json_payload["name"] == "bob");
+    std::string tok = ok.json_payload["token"].get<std::string>();
+    CHECK(h.call("GET", "/api/auth/whoami", nullptr, "Bearer " + tok).status == 200);
+    CHECK(h.call("POST", "/api/auth/login",
+                 sa::json{{"name", "bob"}, {"password", "secret1"}})
+              .status == 200);
+
+    // 重名（含 gateway.json 预置账号）-> 409。
+    CHECK(h.call("POST", "/api/auth/register",
+                 sa::json{{"name", "bob"},
+                          {"password", "secret1"},
+                          {"invite_code", "LETMEIN"}})
+              .status == 409);
+    auto decl = h.call("POST", "/api/auth/register",
+                       sa::json{{"name", "alice"},
+                                {"password", "secret1"},
+                                {"invite_code", "LETMEIN"}});
+    CHECK(decl.status == 409);
+    CHECK(decl.json_payload["code"] == "name_taken");
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+TEST_CASE("gateway routes: registration account limit", "[gateway]") {
+    auto root = tmp_root("reglimit");
+    gw::Config cfg = base_config("pw");  // 已有一个账号 alice
+    cfg.user_data_root = (root / "data").string();
+    cfg.accounts[0].dir = (root / "data" / "alice").string();
+    cfg.accounts_file = (root / "state" / "accounts.json").string();
+    cfg.registration.enabled = true;
+    cfg.registration.max_accounts = 1;  // 1 个预置账号即达上限
+    cfg.registration.min_password_length = 6;
+    RouteHarness h(std::move(cfg));
+    h.g.accounts = std::make_unique<gw::RegisteredAccounts>(
+        h.g.cfg.accounts_file, h.g.cfg.user_data_root);
+
+    auto r = h.call("POST", "/api/auth/register",
+                    sa::json{{"name", "bob"}, {"password", "secret1"}});
+    CHECK(r.status == 403);
+    CHECK(r.json_payload["code"] == "account_limit");
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
 }
 
 TEST_CASE("gateway routes: proxy gate (auth, ban, oversized body)", "[gateway]") {
