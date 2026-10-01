@@ -37,6 +37,7 @@
 #include "server/jobs.h"
 #include "server/run.h"
 #include "server/services/cloud_sync.h"
+#include "server/services/file_transfer.h"
 #include "server/services/plugin_service.h"
 #include "server/services/static_routes.h"
 #include "server/state.h"
@@ -284,6 +285,8 @@ int run_server(const ServerConfig& cfg) {
     // 性能 P1：后台长任务池（4 worker）。在 httpd.start() 之前起，stop 与
     // httpd 对称。
     sa::jobs::start(4);
+    // 模块 A：预热对象生命周期回收调度线程（60s 扫描，尽力而为）。
+    sa::file_transfer::start_background();
     sa::Httpd httpd(&router);
     sa::CorsConfig cors;
     cors.trusted_origins = cfg.trusted_origins;
@@ -343,6 +346,7 @@ int run_server(const ServerConfig& cfg) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     httpd.stop();
+    sa::file_transfer::stop_background();
     sa::jobs::stop();
     std::fprintf(stdout, "API server stopped\n");
     std::fflush(stdout);

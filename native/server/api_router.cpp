@@ -14,6 +14,7 @@
 #include "server/services/cloud_routes.h"
 #include "server/services/content_routes.h"
 #include "server/services/deleted_routes.h"
+#include "server/services/file_transfer.h"
 #include "server/services/mod_files_routes.h"
 #include "server/services/mods_routes.h"
 #include "server/services/p3b_domain_tools_routes.h"
@@ -80,6 +81,8 @@ Router build_router() {
     // P5 wave-3: cloud 18 路由 + realtime；register 尾部对齐 api.py:3149 触发
     // rt_auto_start（3s 延迟线程，等同 Python build_router 期行为）。
     register_cloud_routes(r);
+    // 自托管大文件流转（模块 A）：/api/v1/files/*。自有路径段，无遮蔽风险。
+    file_transfer::register_file_transfer_routes(r);
     return r;
 }
 
