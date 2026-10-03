@@ -88,6 +88,8 @@ class DecodedPack {
     // Rebuild the index for `pack_dir` (no-op when unchanged). Scans tex/ +
     // aud/, resolves txt keys from a v3-decoded aa_index.json or Cfgs/zh-cn.
     void refresh(const std::string& pack_dir);
+    // 多 base：合并多个包目录，同一 key 以靠前的目录优先。
+    void refresh(const std::vector<std::string>& pack_dirs);
     bool active() const;
 
     long long tex_count() const;
@@ -108,7 +110,7 @@ class DecodedPack {
     // while refresh() may run on another thread (active-pack switch), so every
     // access to the members below goes through data_mu_.
     mutable std::mutex data_mu_;
-    std::string dir_;
+    std::vector<std::string> dirs_;
     std::map<std::string, std::string> tex_, aud_;
     std::vector<std::string> txt_;
     mutable std::map<std::string, std::optional<std::array<int, 2>>> texsizes_;
@@ -116,8 +118,29 @@ class DecodedPack {
 
 // Process-wide, lazily refreshed accessors.
 std::shared_ptr<AaIndex> ensure_aa_index();       // first aa_index_candidate_paths() hit
-std::shared_ptr<DecodedPack> ensure_pack_store(); // from active_pack_dir()
-std::string active_pack_dir();                    // "" when no pack configured
+std::shared_ptr<DecodedPack> ensure_pack_store(); // from active_pack_dirs()
+std::string active_pack_dir();                    // 主 base（首个启用包）；无则 ""
+// 多 base：当前启用 pack 的解析目录（有序）。EDITOR_DECODED_PACK_DIR /
+// editor_env.decoded_pack_dir 存在时作为唯一覆盖（开发/测试 seam）。
+std::vector<std::string> active_pack_dirs();
+
+// 人物图片资源扩展的额外来源（自托管服务器端「2 种安装方式」，桌面可选组件
+// 亦经此消费）：
+//   EDITOR_PORTRAIT_DIR      —— 本地已解包的立绘目录（tex/<文件>.webp|png|jpg）
+//   EDITOR_PORTRAIT_BASE_URL —— 对象存储公开基址（拼 <base>/tex/<name>.<ext>）
+// 「本地」按 DecodedPack 语义扫描并直接返回文件字节；「对象存储」只回一个
+// 公开 URL（客户端自行 GET，避免服务端代替浏览器搬运整张图）。
+// 未配置或未命中返回 nullopt，调用方再回退游戏索引 / 404。
+std::optional<std::pair<std::string, std::string>> read_portrait_local_tex(
+    const std::string& key);
+
+// 对象存储立绘的公开 URL：<base>/tex/<safe_name>.webp。未配置 base_url 返回
+// nullopt。上传布局约定见 packaging/gateway/PORTRAITS.md。
+std::optional<std::string> portrait_url_for(const std::string& key);
+
+// 是否配置了人物图片资源扩展来源（本地目录或对象存储 URL）——/api/aa/preview
+// 在既无游戏索引也无活动包时，据此放行而非直接 400 not ready。
+bool portrait_source_configured();
 
 // Probed aa_index.json locations, first loadable wins: EDITOR_AA_INDEX_FILE →
 // <root>/_cache/aa_index → <root>/_cache/resource_packs/*/aa_index.json

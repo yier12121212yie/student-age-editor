@@ -198,6 +198,10 @@ class Httpd {
     // 传 32 MiB。必须在 start() 前调用。
     void set_max_body_bytes(long long n);
 
+    // Req::raw_body（§4 服务代理逐字节重放 + 网关转发）的保留上限。默认 8 MiB；
+    // 网关需转发大体积上传时按 max_body_bytes 抬高。必须在 start() 前调用。
+    void set_raw_body_keep_max(long long n);
+
     void start();   // spawn accept loop thread; returns once listening
     void stop();    // stop accepting; existing connections drain/are killed at exit
 

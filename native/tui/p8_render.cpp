@@ -60,6 +60,45 @@ Slice Window(int count, int sel, int maxlines) {
 
 Color SelBlue() { return Color::RGB(0x09, 0x47, 0x71); }  // VS Code list selection
 
+// Display width of a UTF-8 string (CJK/fullwidth glyphs count as 2 columns) —
+// what the terminal actually shows, needed to pad fixed-width table cells.
+int DisplayWidth(const std::string& s) {
+    int w = 0;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t step = 1;
+        int cp = c;
+        if ((c & 0xE0) == 0xC0 && i + 1 < s.size()) {
+            step = 2;
+            cp = ((c & 0x1F) << 6) | (s[i + 1] & 0x3F);
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < s.size()) {
+            step = 3;
+            cp = ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F);
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < s.size()) {
+            step = 4;
+            cp = ((c & 0x07) << 18) | ((s[i + 1] & 0x3F) << 12) | ((s[i + 2] & 0x3F) << 6) |
+                 (s[i + 3] & 0x3F);
+        }
+        bool wide = (cp >= 0x1100 && (cp <= 0x115F || cp == 0x2329 || cp == 0x232A ||
+                                      (cp >= 0x2E80 && cp <= 0xA4CF && cp != 0x303F) ||
+                                      (cp >= 0xAC00 && cp <= 0xD7A3) ||
+                                      (cp >= 0xF900 && cp <= 0xFAFF) ||
+                                      (cp >= 0xFE30 && cp <= 0xFE6F) ||
+                                      (cp >= 0xFF00 && cp <= 0xFF60) ||
+                                      (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+                                      (cp >= 0x20000 && cp <= 0x3FFFD)));
+        w += wide ? 2 : 1;
+        i += step;
+    }
+    return w;
+}
+
+// Right-pad a string with spaces until it occupies `w` display columns.
+std::string PadTo(const std::string& s, int w) {
+    int have = DisplayWidth(s);
+    return s + std::string(static_cast<size_t>(std::max(0, w - have)), ' ');
+}
+
 // One selectable list row: cursor marker + label. The selected row gets the VS
 // Code list-selection blue; zebra striping (`bg`) alternates behind it.
 Element Row(const std::string& label, bool selected, bool active, int width, bool zebra) {
@@ -73,9 +112,13 @@ Element Row(const std::string& label, bool selected, bool active, int width, boo
 }
 
 Element FooterBar(const AppState& s) {
-    return th::HintLine(
-        "a AI 助手   c 云同步   p 插件   b Bug 扫描   Ctrl-K 搜索   Ctrl-M 权限   Ctrl-N 无代码   "
-        "? 帮助   q 退出");
+    (void)s;
+    // The Alpha's global bottom bar, in its original order, with the keys the
+    // native version added folded in at the end (two lines at 80 columns).
+    return vbox({th::HintLine("N 新建Mod  y 复制  d 删除  e 编辑  f 格式化  s 保存  v 校验  "
+                              "/ 过滤  ^k 全局搜索  c 云同步  a AI 助手  t 配音 TTS"),
+                 th::HintLine("u 检查更新  ^p palette  p 插件  b Bug 扫描  ^M 权限  "
+                              "^N 无代码  ? 帮助  q 退出")});
 }
 
 // ---------------------------------------------------------------------------
@@ -85,33 +128,58 @@ Element FooterBar(const AppState& s) {
 Element TablesPane(const AppState& s, int width, int lh) {
     bool active = s.focus == Focus::Tables && !s.editing && !s.editing_field;
     auto items = s.TreeItems();
-    Elements out{th::PanelTitleBar("📦", "Mods / Cfgs", active)};
+    // The Alpha retitled the left pane to the selected mod (📦 <name>).
+    Elements out{th::PanelTitleBar("📦",
+                                   s.selected_mod.empty() ? std::string("Mods / Cfgs")
+                                                          : s.selected_mod,
+                                   active)};
     if (s.filtering && s.focus == Focus::Tables)
         out.push_back(text("  过滤: " + s.table_filter + "▏") | color(Color::White));
     else if (!s.table_filter.empty())
         out.push_back(text("  过滤: " + s.table_filter) | color(th::TextDim()));
-    Slice w = Window(static_cast<int>(items.size()), s.tree_sel, lh - 3);
+    Slice w = Window(static_cast<int>(items.size()), s.tree_sel, lh - 5);
     for (int i = w.start; i < w.end; ++i) {
         const TreeItem& it = items[i];
         const ModEntry& mod = s.mods[it.mod_index];
         if (it.table_index < 0) {
-            bool expanded = s.expanded_mod == it.mod_index &&
-                            mod.name == s.selected_mod && !s.VisibleTables().empty();
-            std::string label = std::string(expanded ? "📂 " : "📁 ") + mod.name;
-            if (mod.name == s.selected_mod) label += "  ●";
+            bool expanded = s.expanded_mods.count(mod.name) > 0;
+            // Alpha label: 📦 name  <dim title ≤16>  <cyan (n)> / (空)
+            std::string title = mod.title;
+            if (title.size() > 16) title = Cut(title, 15) + "…";
+            std::string label = std::string(" ") + (expanded ? "▼" : "▶") + " 📦 " + mod.name;
+            if (!title.empty() && title != mod.name) label += "  " + title;
+            if (mod.cfg_count > 0)
+                label += " (" + std::to_string(mod.cfg_count) + ")";
+            else
+                label += " (空)";
+            if (mod.name == s.selected_mod) label += " ●";
             out.push_back(Row(label, i == s.tree_sel, active, width, false));
         } else {
-            bool is_open = s.tables[it.table_index] == s.table.name;
-            std::string label = "    " + std::string(is_open ? "● " : "◦ ") +
-                                s.tables[it.table_index];
+            // cfg leaf: 📄 <cyan name> <dim record count>
+            auto mt = s.mod_tables.find(mod.name);
+            std::string cfg_name =
+                mt != s.mod_tables.end() && it.table_index < static_cast<int>(mt->second.size())
+                    ? mt->second[it.table_index]
+                    : std::string();
+            std::string count;
+            auto counts = s.cfg_counts.find(mod.name);
+            if (counts != s.cfg_counts.end()) {
+                auto c = counts->second.find(cfg_name);
+                if (c != counts->second.end()) count = " " + std::to_string(c->second);
+            }
+            bool is_open = mod.name == s.selected_mod && cfg_name == s.table.name;
+            std::string label = std::string("    ") + (is_open ? "●" : "◦") + " 📄 " +
+                                cfg_name + count;
             out.push_back(Row(label, i == s.tree_sel, active, width, false));
         }
     }
     if (items.empty()) out.push_back(text("  （无模组，r 刷新）") | color(th::TextDim()));
     out.push_back(filler());
-    out.push_back(th::HintLine("↑↓ 选择 Enter 打开"));
+    out.push_back(th::HintLine("↑↓ 选择  Enter 打开"));
     out.push_back(th::HintLine("→ 展开  N 新建Mod"));
-    return vbox(std::move(out)) | bgcolor(th::BgLeft());
+    // The Alpha's .panel: a solid border around the pane; focus lights it up.
+    return vbox(std::move(out)) | bgcolor(th::BgLeft()) |
+           borderStyled(BorderStyle::LIGHT, th::PanelBorder(active));
 }
 
 Element RowsPane(const AppState& s, int width, int lh) {
@@ -127,24 +195,58 @@ Element RowsPane(const AppState& s, int width, int lh) {
                        std::to_string(dirty) +
                        (s.filter.empty() ? "" : "  过滤: " + s.filter)) |
                    color(th::TextDim()));
-    Slice w = Window(static_cast<int>(vis.size()), s.row_sel, lh - 2);
-    int row_width = std::max(8, width - 2);
+    if (s.table.name.empty()) {
+        out.push_back(filler());
+        out.push_back(th::HintLine("n 新建  y 复制  d 删除"));
+        out.push_back(th::HintLine("Enter 编辑  Ctrl-S 保存"));
+        return vbox(std::move(out)) | bgcolor(th::BgMiddle()) |
+               borderStyled(BorderStyle::LIGHT, th::PanelBorder(active));
+    }
+    // The Alpha's DataTable: ID + schema columns (+ 预览), a bold header row
+    // on the accent blue and a fixed per-column width.
+    const std::vector<std::string>& cols =
+        s.table.columns.empty() ? std::vector<std::string>{"ID", "预览"} : s.table.columns;
+    int ncols = static_cast<int>(cols.size());
+    // Column widths: the middle pane minus the marker column, split evenly but
+    // capped (Alpha capped cells at ~28 glyphs; the header never wraps).
+    int avail = std::max(8, width - 3);
+    int col_w = std::max(6, std::min(28, avail / ncols - 1));
+    Elements header;
+    for (int c = 0; c < ncols; ++c) {
+        if (c) header.push_back(text(" "));
+        header.push_back(text(PadTo(Cut(cols[c], static_cast<size_t>(col_w)), col_w)) | bold);
+    }
+    out.push_back(hbox(std::move(header)) | bgcolor(th::AccentBlue()) | color(Color::White));
+    Slice w = Window(static_cast<int>(vis.size()), s.row_sel, lh - 3);
     for (int wi = w.start; wi < w.end; ++wi) {
         int ri = vis[wi];
         const std::string& key = s.table.rows[ri].key;
         bool edited = s.table.edits.count(key) > 0;
         bool removed = std::find(s.table.removes.begin(), s.table.removes.end(), key) !=
                        s.table.removes.end();
-        std::string val;
-        if (removed)
-            val = "（已标记删除）";
-        else if (edited)
-            val = s.table.edits.at(key);
-        else
-            val = s.table.rows[ri].preview;
+        Json record = Json::parse(removed ? "{}" : (edited ? s.table.edits.at(key)
+                                                           : s.table.rows[ri].raw),
+                                  nullptr, false);
+        if (record.is_discarded() || !record.is_object()) record = Json::object();
         std::string marker = removed ? "-" : (edited ? "*" : " ");
-        std::string line = marker + key + " = " + val;
-        out.push_back(Row(line, wi == s.row_sel, active, row_width, /*zebra=*/wi % 2 == 1));
+        Elements cells{text(std::string(" ") + marker)};
+        for (int c = 0; c < ncols; ++c) {
+            if (c) cells.push_back(text(" "));
+            std::string cell;
+            if (cols[c] == "ID")
+                cell = removed ? key : key;
+            else
+                cell = removed ? std::string("（已删除）")
+                               : TableCellText(record, cols[c], static_cast<size_t>(col_w));
+            cells.push_back(text(PadTo(Cut(cell, static_cast<size_t>(col_w)), col_w)));
+        }
+        Element line = hbox(std::move(cells));
+        if (wi == s.row_sel) {
+            line |= bgcolor(SelBlue()) | color(Color::White);
+        } else if (wi % 2 == 1) {
+            line |= bgcolor(th::BgLeft());
+        }
+        out.push_back(std::move(line));
     }
     if (vis.empty() && !s.table.name.empty())
         out.push_back(text("  （无匹配行）") | color(th::TextDim()));
@@ -154,9 +256,10 @@ Element RowsPane(const AppState& s, int width, int lh) {
                             text(s.edit_buffer + "▏") | inverted}));
     }
     out.push_back(filler());
-    out.push_back(th::HintLine("n 新建  y 复制  d 删除"));
-    out.push_back(th::HintLine("Enter 编辑  Ctrl-S 保存"));
-    return vbox(std::move(out)) | bgcolor(th::BgMiddle());
+    out.push_back(th::HintLine("n 新建  y 复制  d 删除  f 格式化  / 过滤  v 校验"));
+    out.push_back(th::HintLine("Enter 编辑  s/Ctrl-S 保存"));
+    return vbox(std::move(out)) | bgcolor(th::BgMiddle()) |
+           borderStyled(BorderStyle::LIGHT, th::PanelBorder(active));
 }
 
 // Current row's JSON text: pending edit wins, removed rows have no detail.
@@ -172,26 +275,42 @@ std::string DetailRaw(const AppState& s) {
 }
 
 // The 📝 title bar mirrors the record's save state the way the Alpha right
-// pane did: red while dirty, the standard blue once synced.
+// pane did: red while dirty, the standard blue once synced. Title text is the
+// Alpha's "表[记录ID]  表单/JSON".
 Element DetailTitle(const AppState& s, bool active) {
     bool dirty = !s.table.edits.empty() || !s.table.removes.empty() || !s.table.adds.empty();
-    Element bar =
-        hbox({text(" 📝 Detail / JSON" + std::string(dirty ? "  ●" : "")), filler()}) |
-        bold;
+    std::string key;
+    if (!s.table.name.empty()) {
+        auto vis = s.VisibleRows();
+        if (!vis.empty()) {
+            int idx = std::clamp(s.row_sel, 0, static_cast<int>(vis.size()) - 1);
+            key = s.table.rows[vis[idx]].key;
+        }
+    }
+    std::string title = " 📝 " + (s.table.name.empty() ? std::string("Detail / JSON")
+                                                       : s.table.name +
+                                                             (key.empty() ? "" : "[" + key + "]") +
+                                                             "  " +
+                                                             (s.detail_mode == DetailMode::Form
+                                                                  ? "表单"
+                                                                  : "JSON"));
+    if (dirty) title += "  ●";
+    Element bar = hbox({text(title), filler()}) | bold;
     if (dirty) return bar | bgcolor(Color::RGB(0x5a, 0x1d, 0x1d)) | color(th::DirtyRed());
     return bar | bgcolor(active ? th::AccentBlue() : Color::RGB(0x3a, 0x3d, 0x41)) |
            color(Color::White);
 }
 
-// The Alpha right pane's button row: 保存 in primary blue, the rest gray.
+// The Alpha right pane's button row: 保存（s） in primary blue, the rest gray
+// (保存 / 校验 / 格式化 / 复制).
 Element ButtonRow(const AppState& s) {
     (void)s;
     auto btn = [](const std::string& label, Color bg) {
         return text(" " + label + " ") | bgcolor(bg) | color(Color::White) | bold;
     };
     Color gray = Color::RGB(0x3c, 0x3c, 0x3c);
-    return hbox({btn("s 保存", th::ButtonBlue()), text(" "), btn("v 校验", gray),
-                 text(" "), btn("y 复制", gray), text(" "), btn("d 删除", gray)});
+    return hbox({btn("保存（s）", th::ButtonBlue()), text(" "), btn("校验", gray),
+                 text(" "), btn("格式化", gray), text(" "), btn("复制", gray)});
 }
 
 Element DetailPane(const AppState& s, int width, int lh) {
@@ -204,11 +323,10 @@ Element DetailPane(const AppState& s, int width, int lh) {
                           color(line.rfind('#', 0) == 0 ? th::SectionOrange() : th::TextMain()));
         out.push_back(filler());
         out.push_back(ButtonRow(s));
-        return vbox(std::move(out)) | bgcolor(th::BgRight());
+        return vbox(std::move(out)) | bgcolor(th::BgRight()) |
+               borderStyled(BorderStyle::LIGHT, th::PanelBorder(active));
     }
-    out.push_back(text("  " + std::string(s.detail_mode == DetailMode::Json ? "[JSON]"
-                                                                            : "[表单]") +
-                       "  m 切换  Enter 编辑字段") |
+    out.push_back(text("  m 切换 JSON/表单  Enter 编辑字段  e 聚焦编辑") |
                    color(th::TextDim()));
     std::string raw = DetailRaw(s);
     if (raw.empty()) {
@@ -228,20 +346,45 @@ Element DetailPane(const AppState& s, int width, int lh) {
             pos = nl + 1;
         }
     } else {
-        auto fields = FormFields(raw);
-        Slice w = Window(static_cast<int>(fields.size()), s.field_sel, lh);
-        for (int i = w.start; i < w.end; ++i) {
-            Element line = hbox({text("  " + Cut(fields[i].first, 16) + " ") |
-                                     color(active && i == s.field_sel ? Color::White
-                                                                       : th::TextDim()),
-                                 text(Cut(fields[i].second, static_cast<size_t>(
-                                                              std::max(4, width - 20)))) |
-                                     color(th::TextMain()),
-                                 filler()});
-            if (active && i == s.field_sel) line |= bgcolor(th::FocusPurple());
-            out.push_back(line);
+        // Form view (Alpha default): grouped sections with Chinese labels,
+        // field hints and the encoded value. `field_sel` addresses any row;
+        // the cursor only rests on Field rows.
+        auto rows = FormLayout(s.table.name, raw, s.schema, s.key_maps);
+        if (rows.empty()) {
+            out.push_back(text("  （该记录不是 JSON object）") | color(th::TextDim()));
+        } else {
+            Slice w = Window(static_cast<int>(rows.size()), s.field_sel, lh - 2);
+            for (int i = w.start; i < w.end; ++i) {
+                const FormRow& r = rows[i];
+                if (r.kind == FormRow::Kind::Section) {
+                    out.push_back(text(" ▸ " + r.section) | bold | color(th::SectionOrange()));
+                    continue;
+                }
+                bool selected = active && i == s.field_sel;
+                Element field_row =
+                    hbox({text("  " + Cut(r.label, 16)) | bold |
+                              color(selected ? Color::White : th::TextMain()),
+                          text("  " + r.key) | color(Color::RGB(0x5e, 0x5e, 0x66)),
+                          filler()});
+                if (selected) field_row |= bgcolor(Color::RGB(0x26, 0x4f, 0x78));
+                out.push_back(std::move(field_row));
+                if (!r.hint.empty())
+                    out.push_back(text("    " + Cut(r.hint, static_cast<size_t>(
+                                                              std::max(4, width - 8)))) |
+                                  color(Color::RGB(0x8b, 0x8b, 0x93)));
+                // The value (or the live edit buffer) in an input-like box.
+                const std::string& shown = (selected && s.editing_field) ? s.field_buffer
+                                                                        : r.value;
+                std::string box = Cut(shown, static_cast<size_t>(std::max(4, width - 8)));
+                if (selected && s.editing_field) box += "▏";
+                Element value_line =
+                    hbox({text(" ┃ "), text(box) | color(th::TextMain()), filler()}) |
+                    bgcolor(Color::RGB(0x2a, 0x2a, 0x2e));
+                if (selected && s.editing_field)
+                    value_line |= borderStyled(BorderStyle::HEAVY, th::FocusPurple());
+                out.push_back(std::move(value_line));
+            }
         }
-        if (fields.empty()) out.push_back(text("  （该记录不是 JSON object）") | color(th::TextDim()));
     }
     if (s.editing_field) {
         out.push_back(separator());
@@ -288,7 +431,8 @@ Element DetailPane(const AppState& s, int width, int lh) {
     }
     out.push_back(filler());
     out.push_back(ButtonRow(s));
-    return vbox(std::move(out)) | bgcolor(th::BgRight());
+    return vbox(std::move(out)) | bgcolor(th::BgRight()) |
+           borderStyled(BorderStyle::LIGHT, th::PanelBorder(active));
 }
 
 Element BrowseBody(const AppState& s, int width, int lh) {
@@ -503,6 +647,87 @@ Element ConfirmBody(const AppState& s, int width) {
            size(HEIGHT, GREATER_THAN, 4);
 }
 
+// ^P palette: a fuzzy-filterable command list (label + key hint).
+Element PaletteBody(const AppState& s, int width, int lh) {
+    std::vector<int> shown;
+    for (int i = 0; i < static_cast<int>(s.palette.items.size()); ++i) {
+        const PaletteItem& it = s.palette.items[i];
+        if (s.palette.input.empty() || it.label.find(s.palette.input) != std::string::npos ||
+            it.id.find(s.palette.input) != std::string::npos)
+            shown.push_back(i);
+    }
+    Elements out{hbox({text(" 命令> ") | bold, text(s.palette.input + "▏") | inverted})};
+    Slice w = Window(static_cast<int>(shown.size()), s.palette.sel, std::max(1, lh - 2));
+    for (int i = w.start; i < w.end; ++i) {
+        const PaletteItem& it = s.palette.items[shown[i]];
+        std::string label = "  " + it.label;
+        Element line = hbox({text(Cut(label, static_cast<size_t>(std::max(8, width - 12)))),
+                             filler()});
+        if (!it.hint.empty()) line = hbox({std::move(line), text(it.hint + " ") | dim});
+        if (i == s.palette.sel) line |= bgcolor(SelBlue()) | color(Color::White);
+        out.push_back(std::move(line));
+    }
+    if (shown.empty()) out.push_back(text("  （无匹配命令）") | color(th::TextDim()));
+    return vbox(std::move(out));
+}
+
+// 🔊 TTS page: the shared settings' tts* fields + test/synthesize actions.
+Element TtsBody(const AppState& s, int width, int lh) {
+    Elements out;
+    static const char* kLabels[] = {"提供商", "API Key", "Base URL", "模型", "音色", "文本"};
+    std::string values[] = {s.tts.provider, s.tts.api_key, s.tts.base_url,
+                            s.tts.model,    s.tts.voice,   s.tts.text};
+    int lines = 0;
+    for (int i = 0; i < 6 && lines < lh - 2; ++i, ++lines) {
+        bool sel = s.tts.field_sel == i;
+        Element value = text(Cut(values[i] + (sel && s.tts.editing_field ? "▏" : ""),
+                                 static_cast<size_t>(std::max(4, width - 14)))) |
+                        color(th::TextMain());
+        if (sel && s.tts.editing_field) value |= inverted;
+        out.push_back(hbox({text(std::string(" ") + kLabels[i] + " ") |
+                                (sel ? color(th::FocusPurple()) | bold : color(th::TextDim())),
+                            std::move(value),
+                            filler()}));
+    }
+    out.push_back(separator());
+    out.push_back(text("  t 测试连接 · s 合成并保存到模组（confirm 权限先审批）") |
+                  color(th::TextDim()));
+    if (s.tts.busy) out.push_back(text("  处理中…") | dim);
+    if (!s.tts.result.empty())
+        out.push_back(text("  " + Cut(s.tts.result, static_cast<size_t>(std::max(4, width - 4)))) |
+                      color(th::SyncGreen()));
+    if (!s.tts.error.empty())
+        out.push_back(text("  错误: " + Cut(s.tts.error, static_cast<size_t>(std::max(4, width - 8)))) |
+                      color(th::ErrorColor()));
+    return vbox(std::move(out));
+}
+
+// 🚀 OOBE wizard body (3 steps).
+Element OobeBody(const AppState& s, int width) {
+    Elements out;
+    if (s.oobe.step == 0) {
+        out.push_back(text("  欢迎使用 学生时代 · 模组编辑器！") | bold);
+        out.push_back(text("  ① 设置工作区（当前: " +
+                           Cut(s.workspace.empty() ? "(未设置)" : s.workspace,
+                               static_cast<size_t>(std::max(4, width - 24))) + "）") |
+                      color(th::SectionOrange()));
+        out.push_back(hbox({text("  新工作区路径> ") | bold,
+                            text(s.oobe.workspace_input + "▏") | inverted}));
+        out.push_back(text("  Enter 确认（留空跳过） · Esc 跳过") | color(th::TextDim()));
+    } else if (s.oobe.step == 1) {
+        out.push_back(text("  ② 新建模组（可选）") | color(th::SectionOrange()) | bold);
+        out.push_back(hbox({text("  模组标题> ") | bold,
+                            text(s.oobe.mod_title + "▏") | inverted}));
+        out.push_back(text("  Enter 创建（留空跳过） · Esc 跳过") | color(th::TextDim()));
+    } else {
+        out.push_back(text("  ✓ 设置完成！") | color(th::SyncGreen()) | bold);
+        out.push_back(text("  AI 助手(a) / 云同步(c) / 配音 TTS(t) 可随时在主界面配置。") |
+                      color(th::TextDim()));
+        out.push_back(text("  按任意键进入编辑器。") | color(th::TextDim()));
+    }
+    return vbox(std::move(out));
+}
+
 Element SearchBody(const AppState& s, int width, int lh) {
     Elements out{hbox({text(" 搜索> ") | bold, text(s.search.input + "▏") | inverted})};
     int result_lines = std::max(1, lh - 3);
@@ -606,6 +831,9 @@ ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
     if (s.confirm.active) {
         body = Modal(s, ConfirmBody(s, width), "⚠ " + s.confirm.title,
                      "y 允许 · n 拒绝", width, list_height);
+    } else if (s.palette.active) {
+        body = Modal(s, PaletteBody(s, width, list_height), "⌘ 命令面板",
+                     "输入过滤 · ↑↓ 选择 · Enter 执行 · Esc 关闭", width, list_height);
     } else if (s.search.active) {
         body = Modal(s, SearchBody(s, width, list_height), "🔍 全局搜索对白",
                      "Enter 搜索 · Esc 关闭", width, list_height);
@@ -640,12 +868,21 @@ ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
                 body = Modal(s, UpdateBody(s, width, list_height), "⬆️ 检查更新",
                              "r / Enter 检查更新  Esc 关闭", width, list_height);
                 break;
+            case Page::Tts:
+                body = Modal(s, TtsBody(s, width, list_height), "🔊 配音 (TTS)",
+                             "↑↓/Enter 编辑字段  t 测试  s 合成保存  Esc 关闭", width,
+                             list_height);
+                break;
+            case Page::Oobe:
+                body = Modal(s, OobeBody(s, width), "🚀 欢迎使用 学生时代 · 模组编辑器 — OOBE 向导",
+                             "Enter 确认 · Esc 跳过", width, list_height);
+                break;
             case Page::Main:
                 body = BrowseBody(s, width, list_height);
                 break;
         }
     }
-    return vbox({th::HeaderBar(), std::move(body) | flex, FooterBar(s),
+    return vbox({th::HeaderBar(s), std::move(body) | flex, FooterBar(s),
                  th::StatusBar(s, width)});
 }
 

@@ -20,6 +20,7 @@ class NoCodeRefField extends StatelessWidget {
     required this.pickLabel,
     this.onPick,
     this.preview,
+    this.nameOf,
     this.emptyText = '（未设置）',
     this.onDisableNoCode,
     this.maxLines = 1,
@@ -31,6 +32,12 @@ class NoCodeRefField extends StatelessWidget {
 
   /// 选择按钮文案，如「选人物…」。
   final String pickLabel;
+
+  /// ID → 名称解析器；非空时每个 token 显示成「ID · 名称」。
+  ///
+  /// 无代码模式只读现值，若不回显名称，用户看到的就只是裸 ID（如背景 `109`）。
+  /// 返回 null / 空串 / 与 ID 相同时回退裸 ID，绝不显示"未找到"噪音。
+  final String? Function(String id)? nameOf;
 
   /// 选择动作：由宿主执行挑选 + 写回；null = 该字段没有候选通道。
   final Future<void> Function()? onPick;
@@ -48,9 +55,26 @@ class NoCodeRefField extends StatelessWidget {
   /// 紧凑形态（表格单元格内）：按钮缩成一个「选…」，不铺死路提示。
   final bool compact;
 
+  /// 把现值 token 逐条翻成「ID · 名称」；无可解析名称时原样保留。
+  String _displayText(String text) {
+    final resolve = nameOf;
+    if (resolve == null || text.isEmpty) return text;
+    final tokens = text
+        .split(RegExp(r'[;，、,\n]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (tokens.isEmpty) return text;
+    return tokens.map((t) {
+      final name = resolve(t);
+      return (name == null || name.isEmpty || name == t) ? t : '$t · $name';
+    }).join('、');
+  }
+
   @override
   Widget build(BuildContext context) {
     final text = value.trim();
+    final display = _displayText(text);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -60,7 +84,7 @@ class NoCodeRefField extends StatelessWidget {
             if (preview != null) ...[preview!, const SizedBox(width: 6)],
             Expanded(
               child: Text(
-                text.isEmpty ? emptyText : text,
+                text.isEmpty ? emptyText : display,
                 maxLines: maxLines,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(

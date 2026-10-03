@@ -52,6 +52,49 @@ std::string NextRowKey(const std::vector<TableRow>& rows);
 // the form pane then just shows the JSON view.
 std::vector<std::pair<std::string, std::string>> FormFields(const std::string& raw);
 
+// ---- Alpha-v0.3 form view (grouped sections + Chinese labels + hints) ------
+
+// One row of the form pane: a section header or one editable field. The text
+// fields carry the *encoded* (human-friendly) value, not raw JSON.
+struct FormRow {
+    enum class Kind { Section, Field };
+    Kind kind = Kind::Field;
+    // Section rows:
+    std::string section;
+    // Field rows:
+    std::string key;
+    std::string label;   // TALK_LABELS / key_maps / fallback = key
+    std::string value;   // encoded display text ("" for empty)
+    std::string hint;    // FIELD_HINTS entry ("" none)
+    std::string type;    // schema field type (String/Number/1D Array/2D Array)
+    std::string dict;    // game_dicts pool for suggestions ("" none)
+};
+
+// The form pane layout for one record of `cfg`: TalkCfg gets the Alpha's
+// TALK_SECTIONS grouping (remaining keys under "高级属性 N 项"), every other
+// table lists id-first then sorted keys. `schema` is the game_schema object
+// (cfg -> field -> type), `key_maps` the dicts key_maps (cfg -> field -> 中文).
+std::vector<FormRow> FormLayout(const std::string& cfg, const std::string& raw,
+                                const Json& schema, const Json& key_maps);
+
+// Encode a JSON value to the friendly text the form input shows (Alpha _encode):
+// 1D arrays join with ", ", 2D arrays join rows with "; ".
+std::string EncodeFieldValue(const Json& value, const std::string& ftype);
+
+// Decode the typed text back to a JSON value (Alpha _decode): numbers coerce,
+// 1D arrays split on , ， ; and newlines, 2D arrays on ; and newlines.
+Json DecodeFieldValue(const std::string& text, const std::string& ftype);
+
+// The Alpha _choose_columns: "ID" + up to 3 schema-ordered fields that appear
+// in the sample rows (preferred names first), falling back to a 预览 column.
+// `schema_cfg` is game_schema[cfg] (ordered); `sample_rows` are raw JSON texts.
+std::vector<std::string> ChooseColumns(const std::string& cfg, const Json& schema_cfg,
+                                       const std::vector<std::string>& sample_rows);
+
+// One table cell for the chosen columns: arrays/objects dump as compact JSON,
+// scalars stringify; both cut to `max_chars` code points with an ellipsis.
+std::string TableCellText(const Json& record, const std::string& col, size_t max_chars = 28);
+
 // Set one top-level field of the record `raw` to `value_text` (parsed as JSON,
 // falling back to a plain string when invalid — same coercion as the cell
 // editor). `raw` must be a JSON object. Returns false without touching *out.
@@ -105,5 +148,9 @@ std::string MergeCodeIntoBuffer(const std::string& buf, const std::string& code)
 // Slot pool name (ATTR/ROLE/ITEM/...) -> /api/dicts game_dicts key. Empty when
 // the pool has no lookup source (the slot then takes a typed value).
 std::string SlotPoolDictKey(const std::string& pool);
+
+// Form field -> game_dicts pool (roles/bgs/audios/maps/items/jobs/attrs) for
+// the suggest dropdown; "" when the field has no dictionary source.
+std::string FieldDictPool(const std::string& cfg, const std::string& field);
 
 }  // namespace p8

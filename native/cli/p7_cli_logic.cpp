@@ -141,7 +141,7 @@ struct AppParts {
     std::string provider_cfg_txt, ai_txt, cloud_provider_txt;
     bool no_mark_done = false;
 
-    CLI::App *mods_list = nullptr, *mods_create = nullptr, *mods_add = nullptr,
+    CLI::App *mods = nullptr, *mods_list = nullptr, *mods_create = nullptr, *mods_add = nullptr,
              *mods_select = nullptr, *mods_remove = nullptr, *cfg_list = nullptr,
              *cfg_get = nullptr, *cfg_set = nullptr, *cfg_patch = nullptr,
              *cfg_history = nullptr, *validate = nullptr, *bugfix_scan = nullptr,
@@ -180,22 +180,24 @@ void wire_app(AppParts& P) {
     app.add_option("--timeout", g.timeout, "HTTP 超时秒数")->capture_default_str();
 
     // ---- mods ----
-    CLI::App* mods = app.add_subcommand("mods", "模组管理");
-    mods->require_subcommand(1);
-    P.mods_list = mods->add_subcommand("list", "列出模组与当前选中");
-    P.mods_create = mods->add_subcommand("create", "新建空模组（add 的别名）");
+    P.mods = app.add_subcommand("mods", "模组管理");
+    // A bare `/mods` (no subcommand) defaults to `list` — the Alpha REPL's
+    // habit; require_subcommand(0,1) lets the parse through.
+    P.mods->require_subcommand(0, 1);
+    P.mods_list = P.mods->add_subcommand("list", "列出模组与当前选中");
+    P.mods_create = P.mods->add_subcommand("create", "新建空模组（add 的别名）");
     P.mods_create->add_option("title", c.title, "模组标题/目录名")->required();
     P.mods_create->add_option("--desc", c.desc, "描述");
-    P.mods_add = mods->add_subcommand("add", "新建 / 导入模组");
+    P.mods_add = P.mods->add_subcommand("add", "新建 / 导入模组");
     P.mods_add->add_option("title", c.title, "新建模组标题");
     P.mods_add->add_option("--desc", c.desc, "描述");
     P.mods_add->add_option("--path", c.path, "把已有模组目录复制进工作区并选中");
     P.mods_add->add_option("--zip", c.zip, "把模组 zip 解包进工作区并选中");
     P.mods_add->add_option("--name", c.mod_name, "导入后的模组名（默认取目录名/zip 文件名）");
-    P.mods_select = mods->add_subcommand("select", "选中模组");
+    P.mods_select = P.mods->add_subcommand("select", "选中模组");
     P.mods_select->add_option("name", c.mod_name, "模组名")->required();
     P.mods_select->add_option("--root", c.root, "显式模组目录（须在工作区内）");
-    P.mods_remove = mods->add_subcommand("remove", "删除模组");
+    P.mods_remove = P.mods->add_subcommand("remove", "删除模组");
     P.mods_remove->add_option("name", c.mod_name, "模组名")->required();
 
     // ---- cfg ----
@@ -380,7 +382,7 @@ void wire_app(AppParts& P) {
     // (Python parity): every non-root app falls unrecognized options through
     // to its parent. get_subcommands() only lists *parsed* apps pre-parse, so
     // the list is built explicitly here.
-    for (CLI::App* s : {mods, cfg, bugfix, story, oobe, env, plugin, cloud, update, ai, settings,
+    for (CLI::App* s : {P.mods, cfg, bugfix, story, oobe, env, plugin, cloud, update, ai, settings,
                         P.mods_list, P.mods_create, P.mods_add, P.mods_select, P.mods_remove,
                         P.cfg_list, P.cfg_get, P.cfg_set, P.cfg_patch, P.cfg_history,
                         P.validate, P.bugfix_scan, P.bugfix_fix,
@@ -471,6 +473,7 @@ ParseResult parse_command_line(const std::vector<std::string>& args, GlobalFlags
     }
     else if (hit(P.mods_select)) c.kind = Kind::ModsSelect;
     else if (hit(P.mods_remove)) c.kind = Kind::ModsRemove;
+    else if (hit(P.mods)) c.kind = Kind::ModsList;  // bare `mods` defaults to list
     else if (hit(P.cfg_list)) c.kind = Kind::CfgList;
     else if (hit(P.cfg_get)) {
         c.kind = Kind::CfgGet;
@@ -782,9 +785,13 @@ bool make_plan(Command& c, std::vector<HttpRequestSpec>& out, std::string& err_m
         if (c.force) body["force"] = true;
     };
     switch (c.kind) {
-        case Kind::ModsList:
-            out.push_back({"GET", "/api/mods", {}, json()});
+        case Kind::ModsList: {
+            // with_counts also carries the workspace, which titles the table.
+            HttpRequestSpec spec{"GET", "/api/mods", {}, json()};
+            spec.query.emplace_back("with_counts", "1");
+            out.push_back(std::move(spec));
             return true;
+        }
         case Kind::Search: {
             HttpRequestSpec spec{"GET", "/api/search/talk", {}, json()};
             spec.query.emplace_back("q", c.text);
@@ -1275,6 +1282,164 @@ void append_records(std::ostringstream& os, const Command& c, const json& data) 
 
 }  // namespace
 
+namespace {
+
+// UTF-8 display width for the rich-style table (CJK wide = 2 columns), the
+// same rule p7_repl's banner uses.
+size_t TableWidth(const std::string& s) {
+    size_t cols = 0;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char b = static_cast<unsigned char>(s[i]);
+        unsigned int cp = b;
+        size_t n = 1;
+        if (b >= 0xF0) {
+            cp = b & 0x07u;
+            n = 4;
+        } else if (b >= 0xE0) {
+            cp = b & 0x0Fu;
+            n = 3;
+        } else if (b >= 0xC0) {
+            cp = b & 0x1Fu;
+            n = 2;
+        }
+        for (size_t k = 1; k < n && i + k < s.size(); ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
+        i += n;
+        const bool wide = (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
+                          (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+                          (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
+                          (cp >= 0xFFE0 && cp <= 0xFFE6) || (cp >= 0x20000 && cp <= 0x3FFFD);
+        cols += wide ? 2 : 1;
+    }
+    return cols;
+}
+
+std::string TablePad(const std::string& s, size_t w) {
+    size_t tw = TableWidth(s);
+    return s + (w > tw ? std::string(w - tw, ' ') : std::string());
+}
+
+// Fold a cell onto display-width chunks (rich's overflow="fold" for Root).
+std::vector<std::string> TableFold(const std::string& s, size_t w) {
+    std::vector<std::string> out;
+    if (w == 0) return {s};
+    std::string cur;
+    size_t cur_w = 0;
+    for (size_t i = 0; i < s.size();) {
+        size_t n = 1;
+        const unsigned char b = static_cast<unsigned char>(s[i]);
+        if (b >= 0xF0) n = 4;
+        else if (b >= 0xE0) n = 3;
+        else if (b >= 0xC0) n = 2;
+        std::string ch = s.substr(i, std::min(n, s.size() - i));
+        size_t cw = TableWidth(ch);
+        if (cur_w + cw > w && cur_w > 0) {
+            out.push_back(cur);
+            cur.clear();
+            cur_w = 0;
+        }
+        cur += ch;
+        cur_w += cw;
+        i += ch.size();
+    }
+    out.push_back(cur);
+    return out;
+}
+
+// The Alpha-v0.3 `rich Table` for /mods list: heavy top/head rules, light
+// body rules, bold-green Name, cyan Title, dim Cfgs/Root, yellow 当前 dot.
+std::string RichModsTable(const std::string& title, const std::string& selected,
+                          const json& mods) {
+    struct Cell {
+        std::string raw;
+        int style;  // 0 plain, 1 bold green, 2 cyan, 3 dim, 4 yellow
+    };
+    const char* kHeader[] = {"Name", "Title", "Cfgs", "Root", "当前"};
+    std::vector<std::vector<std::string>> raw(5);  // per column, row texts
+    size_t n = mods.is_array() ? mods.size() : 0;
+    for (size_t i = 0; i < n; ++i) {
+        const json& m = mods[i];
+        raw[0].push_back(m.value("name", ""));
+        std::string mt = m.value("manifest_title", "");
+        raw[1].push_back(mt.empty() ? "-" : mt);
+        std::string cs;
+        if (m.contains("cfg_files") && m["cfg_files"].is_array()) {
+            std::vector<std::string> cfgs;
+            for (const auto& f : m["cfg_files"])
+                cfgs.push_back(f.is_string() ? f.get<std::string>() : f.dump());
+            for (size_t k = 0; k < cfgs.size() && k < 6; ++k) cs += (k ? ", " : "") + cfgs[k];
+            if (cfgs.size() > 6) cs += " +" + std::to_string(cfgs.size() - 6);
+        }
+        raw[2].push_back(cs.empty() ? "-" : cs);
+        raw[3].push_back(m.value("root", ""));
+        raw[4].push_back(m.value("name", "") == selected ? "●" : "");
+    }
+    // Column widths: header vs the widest cell, Root folds at a sane cap.
+    size_t col_w[5];
+    for (int c = 0; c < 5; ++c) {
+        col_w[c] = TableWidth(kHeader[c]);
+        for (const auto& cell : raw[c]) col_w[c] = std::max(col_w[c], TableWidth(cell));
+    }
+    col_w[3] = std::min(col_w[3], size_t{46});
+
+    // Fold every cell to its column width; rows become as many lines as the
+    // tallest folded cell in that row.
+    std::vector<std::vector<std::vector<std::string>>> lines(n);
+    for (size_t i = 0; i < n; ++i)
+        for (int c = 0; c < 5; ++c) lines[i].push_back(TableFold(raw[c][i], col_w[c]));
+
+    // fill 必须是 UTF-8 字符串重复（'─' 窄字符字面量在 MSVC 截断成 0x80，
+    // 见 5dd88ec 教训）；rich HEAVY_HEAD：顶/表头分隔用重线 ━，底线用轻线 ─。
+    auto rule = [&](const char* l, const char* m, const char* r, const char* fill) {
+        std::string s = l;
+        for (int c = 0; c < 5; ++c) {
+            if (c) s += m;
+            for (size_t k = 0; k < col_w[c] + 2; ++k) s += fill;
+        }
+        return s + r;
+    };
+    auto header_row = [&](const char* l, const char* m, const char* r) {
+        std::string out = l;
+        for (int c = 0; c < 5; ++c) {
+            if (c) out += m;
+            out += " " + Style::Bold(TablePad(kHeader[c], col_w[c])) + " ";
+        }
+        return out + r;
+    };
+
+    std::ostringstream os;
+    // The title prints centered above the box (rich Table behavior).
+    size_t box = TableWidth(rule("┏", "┳", "┓", "━"));
+    size_t tw = TableWidth(title);
+    size_t lead = box > tw ? (box - tw) / 2 : 0;
+    os << Style::Bold(std::string(lead, ' ') + title) << "\n";
+    os << Style::Dim(rule("┏", "┳", "┓", "━")) << "\n";
+    os << Style::Dim(header_row("┃", "┃", "┃")) << "\n";
+    os << Style::Dim(rule("┡", "╇", "┩", "━")) << "\n";
+    for (size_t i = 0; i < n; ++i) {
+        size_t h = 1;
+        for (int c = 0; c < 5; ++c) h = std::max(h, lines[i][c].size());
+        for (size_t ln = 0; ln < h; ++ln) {
+            std::string out = "│";
+            for (int c = 0; c < 5; ++c) {
+                std::string cell = ln < lines[i][c].size() ? lines[i][c][ln] : std::string();
+                std::string padded = TablePad(cell, col_w[c]);
+                // ANSI wrappers go on AFTER padding so widths stay exact.
+                if (c == 0) padded = Style::BoldGreen(padded);
+                else if (c == 1) padded = Style::Cyan(padded);
+                else if (c == 2 || c == 3) padded = Style::Dim(padded);
+                else if (c == 4) padded = Style::Yellow(padded);
+                out += " " + padded + " │";
+            }
+            os << out << "\n";
+        }
+    }
+    os << Style::Dim(rule("└", "┴", "┘", "─")) << "\n";
+    return os.str();
+}
+
+}  // namespace
+
 std::string format_text(const Command& c, const json& body) {
     std::ostringstream os;
     auto str_at = [&](const char* k) -> std::string {
@@ -1285,22 +1450,19 @@ std::string format_text(const Command& c, const json& body) {
     switch (c.kind) {
         case Kind::ModsList: {
             std::string selected = str_at("selected");
-            os << Style::Dim("selected: ")
-               << (selected.empty() ? Style::Dim("(none)") : Style::BoldGreen(selected)) << "\n";
-            if (body.contains("mods") && body["mods"].is_array()) {
-                os << Style::Bold("mods: " + std::to_string(body["mods"].size())) << "\n";
-                for (const auto& m : body["mods"]) {
-                    std::string name = m.value("name", "");
-                    os << (name == selected ? Style::Green("*") : " ") << "   "
-                       << Style::BoldGreen(name);
-                    std::string mt = m.value("manifest_title", "");
-                    if (!mt.empty()) os << "  " << Style::Cyan("«" + mt + "»");
-                    if (m.contains("cfg_files") && m["cfg_files"].is_array())
-                        os << "  " << Style::Dim("cfgs=" +
-                                                 std::to_string(m["cfg_files"].size()));
-                    os << "  " << Style::Dim(m.value("root", "")) << "\n";
-                }
-            }
+            std::string ws = str_at("workspace");
+            std::string title = "Mods @ " + (ws.empty() ? "-" : ws) + "  (" +
+                                std::to_string(body.contains("mods") && body["mods"].is_array()
+                                                   ? body["mods"].size()
+                                                   : 0) +
+                                " found)";
+            os << RichModsTable(title, selected, body.contains("mods") && body["mods"].is_array()
+                                                    ? body["mods"]
+                                                    : json::array());
+            if (!body.contains("mods") || !body["mods"].is_array() || body["mods"].empty())
+                os << Style::Dim("no mods found. Create one with:  backend_cli mods create "
+                                 "<Title>")
+                   << "\n";
             break;
         }
         case Kind::ModsCreate:

@@ -703,9 +703,9 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
 
   /// 单击条目 → 大图预览弹窗（免双击）。
   Future<void> _previewAsset(String key) async {
-    final bytes = await TexBytesCache.load(key);
+    final src = await TexBytesCache.loadSmartSource(key);
     if (!mounted) return;
-    if (bytes == null) {
+    if (src == null || src.isEmpty) {
       fluent.displayInfoBar(
         context,
         builder: (_, close) => const fluent.InfoBar(
@@ -724,7 +724,13 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
         content: SizedBox(
           width: math.min(860, screen.width - 80),
           height: math.min(620, screen.height - 120),
-          child: ImagePreview(bytes: bytes, name: key),
+          child: src.bytes != null
+              ? ImagePreview(bytes: src.bytes!, name: key)
+              : InteractiveViewer(
+                  maxScale: 6,
+                  child: Center(
+                      child: TexSourceImage(source: src, fit: BoxFit.contain)),
+                ),
         ),
         actions: [
           fluent.Button(

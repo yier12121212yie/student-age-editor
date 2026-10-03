@@ -111,7 +111,7 @@ void main() {
     }
   });
 
-  test('码字段总数快照：181（扩表或加家族时同步改这里）', () {
+  test('码字段总数快照：182（扩表或加家族时同步改这里）', () {
     var code = 0;
     for (final e in schema.entries) {
       final table = e.value as Map<String, dynamic>;
@@ -119,7 +119,7 @@ void main() {
         if (isEffectLikeField(e.key, f.key, f.value.toString())) code++;
       }
     }
-    expect(code, 181);
+    expect(code, 182);
   });
 
   test('effectSuggestMode 分流：cond/unlock/demand/impossible 走条件目录', () {
@@ -168,5 +168,18 @@ void main() {
         NoCodeShape.blocks);
     expect(noCodeShapeFor('TalkCfg', 'highlights', '1D Array', null),
         NoCodeShape.blocks);
+  });
+
+  test('noCodeShapeFor：效果格式字段不被误判为引用（IntentCfg:reward）', () {
+    // reward 帮助文档是「效果」格式（第三方 schema 亦标 Effect），不得因为
+    // 被物品引用规则命中而丢掉积木编辑器。
+    final type = typeOf('IntentCfg', 'reward');
+    expect(type, isNotNull, reason: 'IntentCfg:reward 不在 schema 里了（快照需同步）');
+    expect(fieldRuleFor('IntentCfg', 'reward'), isNull);
+    expect(isEffectLikeField('IntentCfg', 'reward', type!), isTrue);
+    expect(
+      noCodeShapeFor('IntentCfg', 'reward', type, null),
+      NoCodeShape.blocks,
+    );
   });
 }

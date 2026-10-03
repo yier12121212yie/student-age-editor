@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
-import '../../core/models.dart';
 import '../../core/no_code_mode.dart';
 import '../../core/platform_env.dart';
 import '../ai/mcp/mcp_types.dart';
@@ -1298,7 +1297,7 @@ class _ResourcePackSection extends StatefulWidget {
 
 class _ResourcePackSectionState extends State<_ResourcePackSection> {
   List<dynamic> _packs = [];
-  String _active = "";
+  Set<String> _enabled = {};
   bool _loading = true;
   @override
   void initState() {
@@ -1309,11 +1308,13 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final r = await ApiClient.instance.get('/api/resource_packs');
+      final r = await ApiClient.instance.get('/api/extensions');
       if (!mounted) return;
       setState(() {
-        _packs = (r['packs'] as List?) ?? [];
-        _active = r['active'] as String? ?? "";
+        _packs = (r['extensions'] as List?) ?? [];
+        _enabled = ((r['enabled'] as List?) ?? const [])
+            .whereType<String>()
+            .toSet();
       });
     } catch (e) {
       if (mounted)
@@ -1338,8 +1339,8 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
       final bytes = await file.readAsBytes();
       final b64 = base64Encode(bytes);
       await ApiClient.instance.post(
-        '/api/resource_packs/install',
-        body: {'zip_base64': b64, 'filename': file.name},
+        '/api/extensions/install',
+        body: {'data': b64, 'filename': file.name},
       );
       await _load();
       if (mounted)
@@ -1363,11 +1364,17 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
     }
   }
 
-  Future<void> _activate(String id) async {
+  Future<void> _toggle(String id, bool on) async {
+    final next = {..._enabled};
+    if (on) {
+      next.add(id);
+    } else {
+      next.remove(id);
+    }
     try {
       await ApiClient.instance.post(
-        '/api/resource_packs/active',
-        body: {'id': id},
+        '/api/extensions/active',
+        body: {'ids': next.toList()},
       );
       await _load();
     } catch (e) {
@@ -1403,7 +1410,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
     );
     if (ok != true) return;
     try {
-      await ApiClient.instance.delete('/api/resource_packs/$id');
+      await ApiClient.instance.delete('/api/extensions/${Uri.encodeComponent(id)}');
       await _load();
     } catch (e) {
       if (mounted)
@@ -1428,7 +1435,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             // 窄侧栏（<300px）时标题可收缩省略，避免与右侧按钮挤爆
             Flexible(
               child: Text(
-                '资源扩展 (Zip)',
+                '扩展 (Zip)',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -1471,7 +1478,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
           ..._packs.map((p) {
             final id = p['id'] is String ? p['id'] as String : '';
             if (id.isEmpty) return const SizedBox.shrink(); // 畸形条目不再让 build 抛错
-            final isActive = id == _active;
+            final isActive = _enabled.contains(id);
             return Container(
               margin: const EdgeInsets.symmetric(vertical: 4),
               padding: const EdgeInsets.all(8),
@@ -1504,7 +1511,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
                           ),
                         ),
                         Text(
-                          '$id  ${p['version'] ?? ''}  ${p['files'] ?? 0} 文件',
+                          '$id  ${(p['version'] ?? '').toString()}',
                           style: TextStyle(
                             fontSize: 10,
                             color: palette.textHint,
@@ -1521,19 +1528,10 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
                       ],
                     ),
                   ),
-                  if (!isActive)
-                    fluent.Button(
-                      onPressed: () => _activate(id),
-                      child: const Text('启用'),
-                    ),
-                  if (isActive)
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 8),
-                      child: Text(
-                        '已启用',
-                        style: TextStyle(fontSize: 11, color: accentColor),
-                      ),
-                    ),
+                  fluent.ToggleSwitch(
+                    checked: isActive,
+                    onChanged: (v) => _toggle(id, v),
+                  ),
                   const SizedBox(width: 4),
                   fluent.Button(
                     onPressed: () => _remove(id),

@@ -57,7 +57,7 @@ AI 与桌面同源：读本机 `.editor_ai` 配置文件。平台模式走本机
 
 ```
 浏览器 ──HTTPS──▶ Caddy（TLS） ──▶ backend_gateway --config gateway.json
-                                      │  登录 /api/auth/login → Bearer token
+                                      │  登录 /api/auth/login → Bearer + refresh token
                                       └─ 进程池：每账号一个懒启动 backend
                                          工作区 = user_data_root/<账号名>
 ```
@@ -65,9 +65,15 @@ AI 与桌面同源：读本机 `.editor_ai` 配置文件。平台模式走本机
 > **实例防护**：每个 `backend` 实例只绑定 `127.0.0.1`，由网关独家访问；网关为
 > 每个实例生成一次性 API 令牌（`--auth-token` 注入实例进程，实例侧落盘
 > `.backend_token`，权限 0600），转发请求时自动携带 `X-Backend-Token` 头，
-> 并默认给实例加 `--cloud-public-only`（云同步出站仅允许公网地址）。实例
-> 请求体上限由网关设为 32 MiB；直连运行 `backend` 时默认 256 MiB，可用
-> `--max-body` 调整。管理员无需手工配置以上任何一项。
+> 并默认给实例加 `--cloud-public-only`（云同步出站仅允许公网地址）。网关与
+> 每个实例的请求体上限统一取 `gateway.json` 的 `max_body_bytes`（默认 256 MiB）；
+> 上传类接口的可解码字节上限自动派生为它的 3/4（base64 膨胀 4/3）。直连运行
+> `backend` 时默认 256 MiB，可用 `--max-body` 调整。管理员无需手工配置以上任何一项。
+
+> **大文件上传**：`max_body_bytes` 决定模组/插件/资源包 zip 的实际上限，请与
+> 容器内存（`docker-compose.yml` 的 `mem_limit`）配套调大——一次上传在网关与
+> 实例中各有约 2~3 份整包副本，建议内存 ≥ `max_body_bytes × 8`。台式直连时
+> 可用环境变量 `EDITOR_MAX_UPLOAD_BYTES` 单独覆盖实例侧的解码上限。
 
 ### 2.1 gateway.json 字段
 
@@ -77,7 +83,9 @@ AI 与桌面同源：读本机 `.editor_ai` 配置文件。平台模式走本机
 | `web_root` | string | 否 | 网页前端目录（`web-app.zip` 解压产物），由**网关**直接伺服（不经 backend 实例） |
 | `listen_port` | number | 否 | 网关监听端口，默认 8770（Caddy 反代指向它）；`--port` 可覆盖 |
 | `trusted_origins` | array | 否 | 允许跨源访问的浏览器 Origin 列表（公网部署填 `https://你的域名`） |
-| `session_ttl_hours` | number | 否 | 登录令牌有效期（小时） |
+| `session_ttl_hours` | number | 否 | 登录 access token 有效期（小时） |
+| `refresh_ttl_days` | number | 否 | 「记住我」长期 refresh token 有效期（天），默认 30；落盘于 `<state_dir>/refresh_tokens.json`，网关重启后仍可免登 |
+| `max_body_bytes` | number | 否 | 请求体/上传上限（字节），默认 256 MiB；同时作用于网关转发与各实例 `--max-body`（下限 1 MiB） |
 | `instance.max` | number | 否 | 同时存活的后端实例上限 |
 | `instance.idle_minutes` | number | 否 | 实例闲置多少分钟后回收 |
 | `state_dir` | string | 否 | 网关运行时状态目录 |
@@ -109,12 +117,37 @@ backend_gateway --hash-password
 ```bash
 curl -X POST https://你的域名/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"name":"alice","password":"..."}'
-# → {"token": "..."}
+  -d '{"name":"alice","password":"...","remember":true}'
+# → {"token":"<access>","name":"alice","expires_in":86400,
+#    "refresh_token":"<long-lived>","refresh_expires_in":2592000}
 ```
 
-后续所有请求带 `Authorization: Bearer <token>`；网关返回 401 时前端自动回
-登录页。
+后续所有请求带 `Authorization: Bearer <access>`。access token 过期（`expires_in`
+秒）后，前端用 `refresh_token` 调 `POST /api/auth/refresh` 静默换新并自动重试；
+刷新也失败才回登录页。
+
+**长期鉴权（记住我）**：登录/注册请求带 `"remember": true` 时，refresh token
+按 `refresh_ttl_days`（默认 30 天）签发并**落盘**到
+`<state_dir>/refresh_tokens.json`——网关重启后仍免登；前端把它存本地存储，
+关闭浏览器再回来自动换新。未勾选时 refresh token 与会话同寿且仅内存，关闭
+标签页即需重登。每次刷新都会**旋转**（旧 refresh 立即失效，磁盘只存哈希）。
+
+```bash
+# 用 refresh 换新（旋转：响应里的 refresh_token 才是下次要用的那个）
+curl -X POST https://你的域名/api/auth/refresh \
+  -H 'Content-Type: application/json' \
+  -d '{"refresh_token":"<上一步的 refresh>"}'
+# → {"token":"<new access>","name":"alice","expires_in":86400,
+#    "refresh_token":"<new refresh>","refresh_expires_in":2592000}
+
+# 登出：吊销 access（Bearer）与 refresh（body）；access 已过期时仅凭
+# refresh 也能登出
+curl -X POST https://你的域名/api/auth/logout \
+  -H 'Authorization: Bearer <access>' -H 'Content-Type: application/json' \
+  -d '{"refresh_token":"<refresh>"}'
+```
+
+> 令牌落盘只写 SHA-256 哈希；明文 refresh token 仅在签发/旋转响应中出现一次。
 
 ### 2.3 自助注册（可选，默认关闭）
 
@@ -147,8 +180,9 @@ curl -X POST https://你的域名/api/auth/login \
 
 公开端点 `GET /api/auth/registration` 返回 `{enabled, invite_required,
 min_password_length}` 供前端决定是否显示注册入口；`POST /api/auth/register`
-提交 `{name, password, invite_code?}`，成功返回与登录相同的
-`{token, name, expires_in}`。
+提交 `{name, password, invite_code?, remember?}`，成功返回与登录相同的
+`{token, name, expires_in, refresh_token, refresh_expires_in}`（`remember`
+决定 refresh token 是否长期落盘，见 §2.2）。
 
 ### 2.4 部署步骤（Ubuntu 24.04）
 
@@ -272,6 +306,11 @@ AI/TTS settings 的服务端写入端点，见 §4）。
 | 大表编辑（~10 万行） | 已知限制 | 解析在浏览器进行，比桌面原生慢 |
 | AI 回复打字机流式 | 已知限制 | v1 整包返回，无流式 |
 
+> **窗口自适应**：浏览器窗口宽度小于 1100 逻辑像素时，桌面壳自动把 AI 侧栏
+> 由并排停靠切换为**悬浮抽屉**（不占用布局宽度，点遮罩或右下角悬浮按钮开合），
+> 避免「活动栏 + 侧边栏 + AI 面板」叠加把编辑区压窄 / 溢出；窗口放宽即恢复
+> 并排停靠。两种形态共用同一 AI 会话与设置（见 `design/ai_sidebar.md`）。
+
 ## 5. 构建网页产物与 server 包
 
 - **网页前端产物**（独立发行，可在任意平台构建）：
@@ -291,8 +330,9 @@ AI/TTS settings 的服务端写入端点，见 §4）。
 
 ## 6. 常见问题
 
-- **打开页面一直 401？** 令牌过期或未登录；重新走 `POST /api/auth/login` 拿
-  新 token。
+- **打开页面一直 401？** 若已勾选「记住我」，前端会用 refresh token 自动换新；
+  仍 401 说明长期凭据也过期/被吊销（如网关换了 `state_dir`），重新登录即可。
+  服务端排查时先走 `POST /api/auth/login` 拿新 token。
 - **局域网设备打不开本机版？** 确认除 `--host 0.0.0.0` 外，该设备的
   `http://<本机IP>:端口` 已用 `--trusted-origin` 声明为可信来源。
 - **自带 key 填了报 CORS 错误？** 你的服务商不允许浏览器直连（如 OpenAI 官方

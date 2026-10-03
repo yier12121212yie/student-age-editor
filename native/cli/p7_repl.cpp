@@ -31,6 +31,7 @@
 #include <windows.h>
 #include <io.h>
 #else
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -114,40 +115,101 @@ const char* kPassThrough[] = {"mods",  "cfg", "validate", "bugfix", "story", "oo
                               "env",   "ai",  "plugin",   "plugins", "cloud", "search",
                               "update"};
 
-// A cyan-bordered welcome panel, the Alpha REPL's banner.
+// Terminal columns of the console (rich's Panel spans the full width). Falls
+// back to 100 when the size cannot be queried (pipes / CI).
+size_t TerminalCols() {
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
+        return static_cast<size_t>(info.srWindow.Right - info.srWindow.Left + 1);
+#else
+    winsize ws{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return static_cast<size_t>(ws.ws_col);
+#endif
+    return 100;
+}
+
+// A cyan-bordered welcome panel, the Alpha REPL's banner (rich Panel with the
+// title on the top edge, the subtitle on the bottom edge and a dim label grid
+// inside: Workspace / Mods / Schema / 当前 Mod — the 当前 Mod bold green).
 void PrintBanner(const std::string& workspace, size_t mods_count,
                  const std::vector<std::string>& mod_names, size_t cfg_count,
                  const std::string& current_mod, const std::string& no_code_text) {
     const std::string title = "学生时代 · Editor CLI — 类 Claude Code";
-    const std::string sub = "输入 /help 查看命令 · Tab 补全菜单 · @提及 · !shell · Ctrl+D 退出";
-    // Column-accurate width: the banner text mixes CJK (2 columns, 3 bytes)
-    // with ASCII, so byte length would overcount and overshoot the rules.
-    size_t w = std::max(DisplayWidth(title), DisplayWidth(sub)) + 2;
-    std::string line = Rule(w + 2);
+    const std::string sub = "输入 /help 查看命令 · Tab 补全 · @提及 · !shell · Ctrl+D 退出";
     auto put = [&](const std::string& s) { std::fputs(s.c_str(), stdout); };
-    if (Style::Enabled()) {
-        put(Style::Cyan("╭" + line + "╮") + "\n");
-        put(Style::Cyan("│") + " " + Style::BoldCyan(title) + "\n");
-        put(Style::Cyan("│") + " " + Style::Dim(sub) + "\n");
-        put(Style::Cyan("╰" + line + "╯") + "\n");
-    } else {
-        put(title + "\n" + sub + "\n");
+
+    // The Alpha's grid values: `N  (a, b, … +k)` for Mods, `N cfgs` for Schema.
+    std::string mods_value = std::to_string(mods_count);
+    if (!mod_names.empty()) {
+        std::string preview;
+        for (size_t i = 0; i < mod_names.size() && i < 5; ++i)
+            preview += (i ? ", " : "") + mod_names[i];
+        if (mod_names.size() > 5) preview += " +" + std::to_string(mod_names.size() - 5);
+        mods_value += "  (" + preview + ")";
     }
-    std::string mods_preview;
-    for (size_t i = 0; i < mod_names.size() && i < 5; ++i)
-        mods_preview += (i ? ", " : "") + mod_names[i];
-    if (mod_names.size() > 5) mods_preview += ", …";
-    std::ostringstream grid;
-    grid << "Workspace: " << (workspace.empty() ? "-" : workspace) << "\n"
-         << "Mods: " << mods_count << (mods_preview.empty() ? "" : " (" + mods_preview + ")")
-         << "\n"
-         << "Cfgs: " << cfg_count << "  当前模组: "
-         << (current_mod.empty() ? "-" : current_mod) << "\n"
-         << "无代码模式: " << no_code_text << "（/settings no-code on|off 切换）\n";
-    put(grid.str());
-    put(Rule(60) + "\n");
-    put(Style::Dim("提示: 直接输入 /mods list 或 @EvtCfg 试试；Tab 弹出候选菜单，空行 Tab 看高频命令。") +
+    struct Row {
+        std::string label, value;
+        bool green;
+    };
+    const Row rows[] = {
+        {"Workspace", workspace.empty() ? "-" : workspace, false},
+        {"Mods", mods_value, false},
+        {"Schema", std::to_string(cfg_count) + " cfgs", false},
+        {"当前 Mod", current_mod.empty() ? "(未选择)" : current_mod, true},
+    };
+
+    if (!Style::Enabled()) {
+        put(title + "\n");
+        for (const auto& r : rows) put("  " + r.label + ": " + r.value + "\n");
+        put(sub + "\n");
+        put("无代码模式: " + no_code_text + "\n");
+        return;
+    }
+
+    const size_t cols = std::max<size_t>(TerminalCols(), 60);
+    if (cols < 48) {  // too narrow for a panel: degrade to the plain banner
+        put(Style::BoldCyan(title) + "\n");
+        for (const auto& r : rows) put("  " + r.label + ": " + r.value + "\n");
+        return;
+    }
+
+    // Grid column: the widest label + the (0,2) gap rich's Table.grid used.
+    size_t label_w = 0;
+    for (const auto& r : rows) label_w = std::max(label_w, DisplayWidth(r.label));
+    label_w += 2;
+    size_t inner = cols - 4;  // the two border columns + 1-space padding each side
+
+    auto content_line = [&](const Row& r) {
+        std::string pad(label_w - DisplayWidth(r.label), ' ');
+        std::string raw = r.label + pad + r.value;
+        std::string styled = Style::Dim(r.label) + pad +
+                             (r.green ? Style::BoldGreen(r.value) : r.value);
+        std::string fill(inner > DisplayWidth(raw) ? inner - DisplayWidth(raw) : 0, ' ');
+        put(Style::Cyan("│") + " " + styled + fill + Style::Cyan(" │") + "\n");
+    };
+
+    // Top/bottom border with the title (subtitle) centered into the rule.
+    auto border = [&](const char* left, const char* right, const std::string& mid) {
+        size_t tw = DisplayWidth(mid) + 2;  // the spaces hugging the text
+        if (tw + 2 > cols - 2) {            // degenerate: a plain rule
+            put(Style::Cyan(std::string(left) + Rule(cols - 2) + right) + "\n");
+            return;
+        }
+        size_t total = cols - 2 - tw;
+        size_t lft = total / 2, rgt = total - lft;
+        put(Style::Cyan(std::string(left) + Rule(lft) + " ") + mid +
+            Style::Cyan(" " + Rule(rgt) + right) + "\n");
+    };
+    border("╭", "╮", Style::BoldCyan(title));
+    for (const auto& r : rows) content_line(r);
+    border("╰", "╯", Style::Dim(sub));
+
+    put(Style::Dim("提示: 直接输入 /mods list 或 @EvtCfg 试试；Tab 弹出候选菜单，空行重复上一条。") +
         "\n");
+    put(Style::Dim("无代码模式: " + no_code_text + "（/settings no-code on|off 切换）") + "\n");
+    put(Style::Dim(Rule(60)) + "\n");
 }
 
 void PrintHelp() {
@@ -205,6 +267,82 @@ void Redraw(const std::string& prompt, const std::string& buffer) {
     std::fflush(stdout);
 }
 
+// ---- live completion dropdown (v0.3 EditorCompleter: input-time two-column
+// menu below the line; typing filters, ↑↓ selects, Tab accepts, Esc closes) --
+
+constexpr size_t kMenuRows = 12;
+
+// Left-pad a UTF-8 string with spaces to `w` display columns.
+std::string PadToWidth(const std::string& s, size_t w) {
+    size_t tw = DisplayWidth(s);
+    return s + (w > tw ? std::string(w - tw, ' ') : std::string());
+}
+
+struct LiveMenu {
+    bool open = false;
+    int sel = 0;
+    std::vector<ReplCompletion> cands;
+};
+
+// Cut a UTF-8 string to fit `max_cols` display columns (never mid-sequence).
+std::string CutToWidth(const std::string& s, size_t max_cols) {
+    size_t cols = 0, i = 0;
+    while (i < s.size() && cols < max_cols) {
+        unsigned char b = static_cast<unsigned char>(s[i]);
+        size_t step = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+        if (i + step > s.size()) step = s.size() - i;
+        cols += DisplayWidth(s.substr(i, step));
+        i += step;
+    }
+    return s.substr(0, i);
+}
+
+// The candidate's inserted token (last whitespace-separated word of `text`):
+// column one of the menu; `hint` is the description column.
+std::string CandidateToken(const ReplCompletion& c) {
+    size_t sp = c.text.find_last_of(" \t");
+    return sp == std::string::npos ? c.text : c.text.substr(sp + 1);
+}
+
+// One menu row: `» token   description` padded into two columns.
+std::string MenuRow(const std::vector<ReplCompletion>& cands, size_t w1, size_t i, int sel,
+                    bool numbered) {
+    const ReplCompletion& c = cands[i];
+    const bool on = static_cast<int>(i) == sel;
+    std::string token = CutToWidth(CandidateToken(c), w1);
+    std::string desc = c.hint.empty() ? std::string() : CutToWidth(c.hint, 60);
+    std::string out = numbered ? "  " + std::to_string(i + 1) + ") " : "  ";
+    out += on ? "» " : "  ";
+    out += PadToWidth(token, w1);
+    if (!desc.empty()) out += "  " + (on ? desc : Style::Dim(desc));
+    return on ? Style::BoldCyan(out) : out;
+}
+
+// Draw the dropdown under the input line. Returns the printed line count below
+// the input (candidates + hint row); the cursor rests on the hint row.
+size_t DrawLiveMenu(const std::vector<ReplCompletion>& cands, int sel) {
+    const size_t n = std::min(cands.size(), kMenuRows);
+    size_t w1 = 0;
+    for (size_t i = 0; i < n; ++i)
+        w1 = std::max(w1, DisplayWidth(CandidateToken(cands[i])));
+    w1 = std::min(w1, size_t{40});
+    std::string out = "\n";
+    for (size_t i = 0; i < n; ++i) out += MenuRow(cands, w1, i, sel, false) + "\n";
+    out += "\x1b[K" + Style::Dim("  ↑↓ 选择 · Tab 接受 · Esc 关闭（继续输入过滤）");
+    std::fputs(out.c_str(), stdout);
+    std::fflush(stdout);
+    return n + 1;
+}
+
+// Move the cursor back to the input line; the caller's Redraw (with \x1b[J)
+// wipes the leftover menu pixels.
+void EraseLiveMenu(size_t rows) {
+    if (rows == 0) return;
+    std::fputs(("\x1b[" + std::to_string(rows) + "A\r").c_str(), stdout);
+    std::fflush(stdout);
+}
+
+
 #ifdef _WIN32
 std::string WideToUtf8(wchar_t c) {
     std::string out(4, '\0');
@@ -213,39 +351,85 @@ std::string WideToUtf8(wchar_t c) {
     return out;
 }
 
-// Console line editor: history + Tab completion + Ctrl-C/Ctrl-D. Returns the
+// Console line editor: history + live completion + Ctrl-C/Ctrl-D. Returns the
 // finished line, or "" for quit (Ctrl-D on empty) / "/__cancel" for Ctrl-C.
-// `complete(prompt, buffer)` returns the new buffer ("" = keep as is) and owns
-// the candidate-menu rendering.
+// `collect(buffer)` produces the candidate list for the live dropdown (opened
+// automatically once the line starts with `/` or `@`, or on Tab); Tab accepts
+// the highlighted row, ↑↓ navigate the menu while it is open, Esc closes it.
 std::string ReadLineWin(const std::string& prompt, LineState& st,
                         const std::vector<std::string>& history,
                         const std::function<std::string(const std::string&,
-                                                       const std::string&)>& complete) {
-    Redraw(prompt, st.buffer);
+                                                       const std::string&)>& complete,
+                        const std::function<std::vector<ReplCompletion>(
+                            const std::string&)>& collect) {
+    LiveMenu live;
+    size_t live_rows = 0;
+    // Full repaint: pull the cursor back to the input line (erasing any menu),
+    // redraw prompt + buffer, then re-print the dropdown when open.
+    auto repaint = [&]() {
+        if (live_rows) {
+            EraseLiveMenu(live_rows);
+            live_rows = 0;
+        }
+        Redraw(prompt, st.buffer);
+        if (live.open && !live.cands.empty())
+            live_rows = DrawLiveMenu(live.cands, live.sel);
+    };
+    auto refresh_live = [&](bool manual) {
+        const bool auto_slot = !st.buffer.empty() && (st.buffer[0] == '/' || st.buffer[0] == '@');
+        if (!manual && !auto_slot) {
+            live.open = false;
+            live.cands.clear();
+            return;
+        }
+        live.cands = collect(st.buffer);
+        live.sel = 0;
+        live.open = !live.cands.empty();
+    };
+    repaint();
     for (;;) {
         int c = _getwch();
         if (c == 0 || c == 0xE0) {  // arrow/function prefix
             int k = _getwch();
-            if (k == 'H' && !history.empty()) {  // up
-                if (st.history_pos > 0) --st.history_pos;
-                st.buffer = history[st.history_pos];
+            if (k == 'H') {  // up
+                if (live.open) {
+                    if (live.sel > 0) {
+                        --live.sel;
+                        repaint();
+                    }
+                } else if (!history.empty()) {
+                    if (st.history_pos > 0) --st.history_pos;
+                    st.buffer = history[st.history_pos];
+                    refresh_live(false);
+                    repaint();
+                }
             } else if (k == 'P') {  // down
-                if (st.history_pos + 1 < history.size()) {
+                if (live.open) {
+                    if (live.sel + 1 < static_cast<int>(live.cands.size())) {
+                        ++live.sel;
+                        repaint();
+                    }
+                } else if (st.history_pos + 1 < history.size()) {
                     ++st.history_pos;
                     st.buffer = history[st.history_pos];
-                } else {
+                    refresh_live(false);
+                    repaint();
+                } else if (!history.empty()) {
                     st.history_pos = history.size();
                     st.buffer.clear();
+                    refresh_live(false);
+                    repaint();
                 }
             }
-            Redraw(prompt, st.buffer);
             continue;
         }
         if (c == L'\r' || c == L'\n') {
+            if (live_rows) EraseLiveMenu(live_rows);
             std::fputs("\n", stdout);
             return st.buffer;
         }
         if (c == 0x03) {  // Ctrl-C
+            if (live_rows) EraseLiveMenu(live_rows);
             st.buffer.clear();
             std::fputs("^C\n", stdout);
             return "/__cancel";
@@ -258,9 +442,17 @@ std::string ReadLineWin(const std::string& prompt, LineState& st,
             continue;
         }
         if (c == L'\t') {
-            std::string got = complete(prompt, st.buffer);
-            if (!got.empty()) st.buffer = got;
-            Redraw(prompt, st.buffer);
+            if (live.open) {
+                st.buffer = live.cands[live.sel].text;  // accept the highlighted row
+            }
+            refresh_live(true);  // (re)open: Tab always shows the menu
+            repaint();
+            continue;
+        }
+        if (c == 0x1B) {  // Esc: close the dropdown, keep editing
+            live.open = false;
+            live.cands.clear();
+            repaint();
             continue;
         }
         if (c == L'\b' || c == 0x7F) {
@@ -269,12 +461,14 @@ std::string ReadLineWin(const std::string& prompt, LineState& st,
                    (static_cast<unsigned char>(st.buffer.back()) & 0xC0) == 0x80)
                 st.buffer.pop_back();
             if (!st.buffer.empty()) st.buffer.pop_back();
-            Redraw(prompt, st.buffer);
+            refresh_live(false);
+            repaint();
             continue;
         }
         if (c >= 0x20) {
             st.buffer += WideToUtf8(static_cast<wchar_t>(c));
-            Redraw(prompt, st.buffer);
+            refresh_live(false);
+            repaint();
         }
     }
 }
@@ -283,7 +477,9 @@ std::string ReadLineWin(const std::string& prompt, LineState& st,
 std::string ReadLinePosix(const std::string& prompt, LineState& st,
                           const std::vector<std::string>& history,
                           const std::function<std::string(const std::string&,
-                                                         const std::string&)>& complete) {
+                                                         const std::string&)>& complete,
+                          const std::function<std::vector<ReplCompletion>(
+                              const std::string&)>& collect) {
     termios raw{}, orig{};
     bool raw_ok = ::tcgetattr(0, &orig) == 0;
     if (raw_ok) {
@@ -293,41 +489,88 @@ std::string ReadLinePosix(const std::string& prompt, LineState& st,
         raw.c_cc[VTIME] = 0;
         ::tcsetattr(0, TCSANOW, &raw);
     }
-    Redraw(prompt, st.buffer);
+    LiveMenu live;
+    size_t live_rows = 0;
+    auto repaint = [&]() {
+        if (live_rows) {
+            EraseLiveMenu(live_rows);
+            live_rows = 0;
+        }
+        Redraw(prompt, st.buffer);
+        if (live.open && !live.cands.empty())
+            live_rows = DrawLiveMenu(live.cands, live.sel);
+    };
+    auto refresh_live = [&](bool manual) {
+        const bool auto_slot = !st.buffer.empty() && (st.buffer[0] == '/' || st.buffer[0] == '@');
+        if (!manual && !auto_slot) {
+            live.open = false;
+            live.cands.clear();
+            return;
+        }
+        live.cands = collect(st.buffer);
+        live.sel = 0;
+        live.open = !live.cands.empty();
+    };
+    repaint();
     std::string out;
     for (;;) {
         char c = 0;
         if (::read(0, &c, 1) != 1) {  // EOF
+            if (live_rows) EraseLiveMenu(live_rows);
             out = st.buffer.empty() ? "" : st.buffer;
             std::fputs("\n", stdout);
             break;
         }
-        if (c == '\x1b') {  // escape sequence: arrows
+        if (c == '\x1b') {  // escape sequence: arrows, or a lone Esc
             char seq[2] = {0, 0};
             if (::read(0, &seq[0], 1) == 1 && seq[0] == '[' &&
                 ::read(0, &seq[1], 1) == 1) {
-                if (seq[1] == 'A' && !history.empty()) {  // up
-                    if (st.history_pos > 0) --st.history_pos;
-                    st.buffer = history[st.history_pos];
+                if (seq[1] == 'A') {  // up
+                    if (live.open) {
+                        if (live.sel > 0) {
+                            --live.sel;
+                            repaint();
+                        }
+                    } else if (!history.empty()) {
+                        if (st.history_pos > 0) --st.history_pos;
+                        st.buffer = history[st.history_pos];
+                        refresh_live(false);
+                        repaint();
+                    }
                 } else if (seq[1] == 'B') {  // down
-                    if (st.history_pos + 1 < history.size()) {
+                    if (live.open) {
+                        if (live.sel + 1 < static_cast<int>(live.cands.size())) {
+                            ++live.sel;
+                            repaint();
+                        }
+                    } else if (st.history_pos + 1 < history.size()) {
                         ++st.history_pos;
                         st.buffer = history[st.history_pos];
-                    } else {
+                        refresh_live(false);
+                        repaint();
+                    } else if (!history.empty()) {
                         st.history_pos = history.size();
                         st.buffer.clear();
+                        refresh_live(false);
+                        repaint();
                     }
                 }
+                continue;
             }
-            Redraw(prompt, st.buffer);
+            // Lone Esc: close the dropdown, keep editing.
+            live.open = false;
+            live.cands.clear();
+            repaint();
             continue;
         }
         if (c == '\r' || c == '\n') {
+            if (live_rows) EraseLiveMenu(live_rows);
             std::fputs("\n", stdout);
             out = st.buffer;
             break;
         }
         if (c == 0x03) {  // Ctrl-C
+            if (live_rows) EraseLiveMenu(live_rows);
             st.buffer.clear();
             std::fputs("^C\n", stdout);
             out = "/__cancel";
@@ -342,9 +585,9 @@ std::string ReadLinePosix(const std::string& prompt, LineState& st,
             continue;
         }
         if (c == '\t') {
-            std::string got = complete(prompt, st.buffer);
-            if (!got.empty()) st.buffer = got;
-            Redraw(prompt, st.buffer);
+            if (live.open) st.buffer = live.cands[live.sel].text;
+            refresh_live(true);  // (re)open: Tab always shows the menu
+            repaint();
             continue;
         }
         if (c == '\x7f' || c == '\b') {
@@ -352,11 +595,13 @@ std::string ReadLinePosix(const std::string& prompt, LineState& st,
                    (static_cast<unsigned char>(st.buffer.back()) & 0xC0) == 0x80)
                 st.buffer.pop_back();
             if (!st.buffer.empty()) st.buffer.pop_back();
-            Redraw(prompt, st.buffer);
+            refresh_live(false);
+            repaint();
             continue;
         }
         st.buffer += c;  // UTF-8 bytes accumulate naturally
-        Redraw(prompt, st.buffer);
+        refresh_live(false);
+        repaint();
     }
     if (raw_ok) ::tcsetattr(0, TCSANOW, &orig);
     return out;
@@ -418,7 +663,6 @@ MenuKey ReadMenuKey(int& ch) {
 }
 #endif
 
-constexpr size_t kMenuRows = 12;
 
 // 候选行：hint（中文 desc / 人物名）为主显示，插入值作次要信息。
 std::string CandidateLabel(const ReplCompletion& c) {
@@ -436,20 +680,28 @@ std::string CandidateCode(const ReplCompletion& c) {
 // 重绘菜单：first=false 时先上移 n 行原地覆盖（光标停在提示行）。
 void RenderMenu(const std::vector<ReplCompletion>& cands, int sel, bool first) {
     const size_t n = std::min(cands.size(), kMenuRows);
+    size_t w1 = 0;
+    for (size_t i = 0; i < n; ++i)
+        w1 = std::max(w1, DisplayWidth(CandidateLabel(cands[i])));
+    w1 = std::min(w1, size_t{40});
     std::string out;
     if (!first) out += "\x1b[" + std::to_string(n) + "A";
     for (size_t i = 0; i < n; ++i) {
         const bool on = static_cast<int>(i) == sel;
         const std::string row = "  " + std::to_string(i + 1) + ") ";
-        const std::string label = CandidateLabel(cands[i]);
-        const std::string code = CandidateCode(cands[i]);
+        // Two columns: the candidate (bold cyan when selected) + its dim
+        // description — the v0.3 EditorCompleter's rendering.
+        const std::string label = PadToWidth(CutToWidth(CandidateLabel(cands[i]), w1), w1);
+        const std::string desc =
+            cands[i].hint == CandidateToken(cands[i]) ? std::string()
+                                                      : CutToWidth(cands[i].hint, 60);
         out += "\x1b[K";
         if (on) {
             out += Style::BoldCyan(row + label);
-            if (!code.empty()) out += "  " + Style::Cyan(code);
+            if (!desc.empty()) out += "  " + desc;
         } else {
             out += Style::Dim(row) + label;
-            if (!code.empty()) out += "  " + Style::Dim(code);
+            if (!desc.empty()) out += "  " + Style::Dim(desc);
         }
         out += "\n";
     }
@@ -766,8 +1018,10 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
     std::vector<std::string> last_tokens;
     const bool interactive = StdinIsTty() && host.run_tokens;
 
-    // Tab：ReplComplete 分流 → 唯一候选直接补全，歧义时交互菜单 / 管道罗列。
-    auto complete = [&](const std::string&, const std::string& buffer) -> std::string {
+    // 候选收集（live 下拉与 Tab 菜单共用）：分流 → 组池 → ReplComplete。
+    // plan/ctx 通过出参交还给调用方，供接受候选时的 usage 上报使用。
+    auto collect_candidates = [&](const std::string& buffer, CompletionPlan* plan_out,
+                                  CompletionCtx* ctx_out) -> std::vector<ReplCompletion> {
         const CompletionPlan plan = plan_completion(buffer);
         std::vector<std::string> toks = split_repl_tokens(buffer);
         std::string cmd, sub;
@@ -795,8 +1049,16 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
             auto it = effect_pool.find(effect_mode);
             if (it != effect_pool.end()) ctx.effects = it->second;
         }
+        if (plan_out) *plan_out = plan;
+        if (ctx_out) *ctx_out = ctx;
+        return ReplComplete(buffer, ctx);
+    };
 
-        const std::vector<ReplCompletion> cands = ReplComplete(buffer, ctx);
+    // Tab：ReplComplete 分流 → 唯一候选直接补全，歧义时交互菜单 / 管道罗列。
+    auto complete = [&](const std::string&, const std::string& buffer) -> std::string {
+        CompletionPlan plan;
+        CompletionCtx ctx;
+        const std::vector<ReplCompletion> cands = collect_candidates(buffer, &plan, &ctx);
         if (cands.empty()) return "";
         int sel = 0;
         if (cands.size() > 1) {
@@ -808,6 +1070,7 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
             if (sel < 0) return "";
         }
         // 接受即上报（effect 记 raw_code 模板，人物记 id，表记表名）。
+        const std::string effect_mode = plan.effect_mode.empty() ? "effect" : plan.effect_mode;
         if (plan.slot == CompletionSlot::Effect) {
             const std::string code = AcceptedValue(ctx.effects, cands[sel].text);
             auto it = effect_raw.find(effect_mode + "\n" + code);
@@ -837,10 +1100,13 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
         if (interactive) {
             st.buffer.clear();
             st.history_pos = history.size();
+        const auto collect_only = [&](const std::string& b) {
+            return collect_candidates(b, nullptr, nullptr);
+        };
 #ifdef _WIN32
-            line = ReadLineWin(prompt, st, history, complete);
+            line = ReadLineWin(prompt, st, history, complete, collect_only);
 #else
-            line = ReadLinePosix(prompt, st, history, complete);
+            line = ReadLinePosix(prompt, st, history, complete, collect_only);
 #endif
         } else {
             std::fputs(prompt.c_str(), stdout);

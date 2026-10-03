@@ -19,7 +19,7 @@ WebP/OGG/WAV/M4A/JSON，打成 zip 内置进 APK assets。Android 运行时由 P
 
 用法:
   py -m resource_scan decoded-pack -- [--out dist/bundled_preview.zip]
-          [--tier preview|full] [--max-side 1600] [--quality 80]
+          [--tier preview|full|portraits] [--max-side 1600] [--quality 80]
           [--limit N] [--no-audios] [--no-zip]
           [--index aa_index.json] [--aa-dir <游戏 aa 根>] [--cache-dir <目录>]
 
@@ -62,6 +62,8 @@ _DEFAULT_CACHE_DIR = os.path.join(ROOT, "dist", "aa_index_cache")
 
 # preview 档只导出「背景/立绘」：bundle 文件名含 bg 或 role
 _PREVIEW_BUNDLE_TOKENS = ("bg", "role")
+# portraits 档只导出「人物立绘」：bundle 文件名含 role（供「人物图片资源扩展」）
+_PORTRAIT_BUNDLE_TOKENS = ("role",)
 
 
 def _safe_name(key):
@@ -162,18 +164,21 @@ def _locate_bundle(aa_dir, bundle_name):
 # ------------------------------------------------------------- 选择 tex ----
 
 def select_tex_keys(idx, tier, limit):
-    """按 tier 选择 tex 键：preview 只看 bundle basename 含 bg/role 的键；full 全部。"""
+    """按 tier 选择 tex 键：preview 只看 bundle basename 含 bg/role 的键；
+    portraits 只看含 role 的键（人物立绘）；full 全部。"""
     keys = sorted(idx.tex_keys())
     if tier == "full":
         out = keys
     else:
+        tokens = _PORTRAIT_BUNDLE_TOKENS if tier == "portraits" \
+            else _PREVIEW_BUNDLE_TOKENS
         out = []
         for k in keys:
             item = idx._tex.get(k)
             if not item or len(item) < 1:
                 continue
             base = os.path.basename(item[0]).lower()
-            if any(tok in base for tok in _PREVIEW_BUNDLE_TOKENS):
+            if any(tok in base for tok in tokens):
                 out.append(k)
     if limit and limit > 0:
         out = out[:limit]
@@ -387,11 +392,14 @@ def build_staging(idx, args):
             exported_tex.append(_norm_key(key))
             tex_bytes += os.path.getsize(path)
 
+    portraits_only = args.tier == "portraits"
     aud_keys = sorted(idx.aud_keys())
-    if getattr(args, "no_audios", False):
+    if getattr(args, "no_audios", False) or portraits_only:
         # FSB 音频经 fmod_toolkit 转出的是未压缩 WAV（全量约 2.1GB），
-        # 内置 APK 时应跳过，后续需要再单独出音频包
-        print("== 音频 已跳过（--no-audios）==")
+        # 内置 APK 时应跳过；人物图片包只含立绘纹理，同样跳过音频。
+        reason = "--no-audios" if getattr(args, "no_audios", False) \
+            else "portraits 只含立绘"
+        print("== 音频 已跳过（%s）==" % reason)
         aud_keys = []
     elif args.limit and args.limit > 0:
         aud_keys = aud_keys[:args.limit]  # 冒烟模式：音频同样限量，保持快速
@@ -404,12 +412,19 @@ def build_staging(idx, args):
             exported_aud.append(_norm_key(key))
             aud_bytes += os.path.getsize(path)
 
-    print("== 配置表 待导出 %d 键 ==" % len(idx.txt_keys()))
     base_data = {}
-    exported_txt = export_cfgs(idx, cfgs_dir, base_data)
-    cfg_bytes = sum(
-        os.path.getsize(os.path.join(cfgs_dir, f))
-        for f in os.listdir(cfgs_dir) if f.endswith(".json"))
+    exported_txt = []
+    cfg_bytes = 0
+    if portraits_only:
+        # 人物图片包不含配置表：立绘 key 由工作区 PersonCfg 提供，包只负责
+        # 提供纹理字节，保持体积最小、不覆盖 active 包的 base_data。
+        print("== 配置表 已跳过（人物图片包只含立绘纹理）==")
+    else:
+        print("== 配置表 待导出 %d 键 ==" % len(idx.txt_keys()))
+        exported_txt = export_cfgs(idx, cfgs_dir, base_data)
+        cfg_bytes = sum(
+            os.path.getsize(os.path.join(cfgs_dir, f))
+            for f in os.listdir(cfgs_dir) if f.endswith(".json"))
 
     aa_v3 = {"v": 3, "decoded": True,
              "tex": sorted(exported_tex),
@@ -427,15 +442,27 @@ def build_staging(idx, args):
              "keys_total": {"tex": len(idx.tex_keys()),
                             "aud": len(idx.aud_keys()),
                             "txt": len(idx.txt_keys())}}
-    manifest = {
-        "name": "StudentAge Bundled Resources",
-        "version": time.strftime("%Y.%m.%d"),
-        "description": "内置解码资源包（预解码 WebP/OGG/JSON，APK 内置）",
-        "game_version": "",
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "tier": args.tier,
-        "stats": stats,
-    }
+    if portraits_only:
+        manifest = {
+            "name": "StudentAge Portrait Pack",
+            "version": time.strftime("%Y.%m.%d"),
+            "description": "人物图片资源扩展包（角色立绘，预解码 WebP）",
+            "kind": "portraits",
+            "game_version": "",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "tier": args.tier,
+            "stats": stats,
+        }
+    else:
+        manifest = {
+            "name": "StudentAge Bundled Resources",
+            "version": time.strftime("%Y.%m.%d"),
+            "description": "内置解码资源包（预解码 WebP/OGG/JSON，APK 内置）",
+            "game_version": "",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "tier": args.tier,
+            "stats": stats,
+        }
     with open(os.path.join(staging, "manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -461,8 +488,10 @@ def build_parser():
         description="导出内置解码资源包（Windows 有游戏时执行）")
     ap.add_argument("--out", default=os.path.join(ROOT, "dist", "bundled_preview.zip"),
                     help="输出 zip 路径（默认 dist/bundled_preview.zip）")
-    ap.add_argument("--tier", choices=("preview", "full"), default="preview",
-                    help="preview 只导出背景/立绘纹理；full 导出全部纹理")
+    ap.add_argument("--tier", choices=("preview", "full", "portraits"),
+                    default="preview",
+                    help="preview 只导出背景/立绘纹理；portraits 只导出人物立绘；"
+                         "full 导出全部纹理")
     ap.add_argument("--max-side", type=int, default=1600,
                     help="纹理最大边（超过则 LANCZOS 缩小）")
     ap.add_argument("--quality", type=int, default=80,

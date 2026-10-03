@@ -37,9 +37,13 @@ Color SectionOrange();  // #ff8c00 form section headers
 // ---- shared chrome --------------------------------------------------------
 
 // The blue full-width panel title bar: `emoji + title` in white bold on
-// AccentBlue, padded to the pane width. `focused` panes keep the saturated
-// blue; unfocused ones dim it toward gray so the eye follows the keyboard.
+// AccentBlue, padded to the pane width. The Alpha keeps the strip saturated
+// blue on every panel; keyboard focus shows on the panel border instead.
 ftxui::Element PanelTitleBar(const std::string& emoji, const std::string& title, bool focused);
+
+// The .panel border color: $primary at 30% blurred, full $primary when the
+// pane holds the keyboard. Apply with borderStyled(BorderStyle::NORMAL, ...).
+Color PanelBorder(bool focused);
 
 // A dim gray hint line (` ↑↓ 选择  Enter 打开 …`) like the panes' bottom bars.
 ftxui::Element HintLine(const std::string& text);
@@ -50,13 +54,15 @@ ftxui::Element HintLine(const std::string& text);
 ftxui::Element ModalFrame(ftxui::Element content, const std::string& title,
                           const std::string& hint, int width, int max_height);
 
-// The bottom status bar: blue background like the Alpha right-pane status.
-// `status` is the transient message; an error-ish message flips the bar to
-// ErrorColor the way the Alpha's error variant did.
+// The bottom status bar, Alpha style: a single line whose background carries
+// the message level (blue = info, green = success, amber = warning, red =
+// error). `status` is the transient message.
 ftxui::Element StatusBar(const AppState& s, int width);
 
-// Blue full-width app header: `学生时代 · 模组编辑器 — TUI — 终端版 · …`.
-ftxui::Element HeaderBar();
+// Blue full-width app header, Alpha style: the centered app title plus the
+// selected mod's "@ root" sub-title (Textual Header + sub_title) and the
+// permission/no-code flags on the right edge.
+ftxui::Element HeaderBar(const AppState& s);
 
 // The startup welcome block shown in the detail pane until a table is open.
 std::vector<std::string> WelcomeLines();

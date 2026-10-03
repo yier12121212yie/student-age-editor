@@ -826,14 +826,20 @@ TEST_CASE("p1 routes: /api/roles catalog (dict + PersonCfg merge)", "[p1][routes
     REQUIRE(narr != nullptr);
     CHECK(narr->at("name") == "旁白");
     CHECK(narr->at("portrait") == "");
+    CHECK(narr->at("portrait1") == "");
+    CHECK(narr->at("portrait2") == "");
     const json* xm = find("101");
     REQUIRE(xm != nullptr);
     CHECK(xm->at("name") == "小美");
     CHECK(xm->at("gender") == 0);
     CHECK(xm->at("portrait") == "Role/xiaomei.png");
+    CHECK(xm->at("portrait1") == "Role/xiaomei.png");  // url 首项 = 小学立绘
+    CHECK(xm->at("portrait2") == "");
     const json* self = find("999");
     REQUIRE(self != nullptr);
     CHECK(self->at("portrait") == "Role2/z.png");  // url2 优先
+    CHECK(self->at("portrait1") == "");
+    CHECK(self->at("portrait2") == "Role2/z.png");  // url2 首项 = 中学立绘
     // 数值 id 升序在前：第一个是 -1（旁白）。
     CHECK(roles[0].at("id") == "-1");
     // q 过滤：名字包含 / id 全等。
@@ -842,4 +848,29 @@ TEST_CASE("p1 routes: /api/roles catalog (dict + PersonCfg merge)", "[p1][routes
     CHECK(f.json_payload.at("roles")[0].at("id") == "101");
     auto fid = fx.call("GET", "/api/roles", {{"q", "-1"}});
     CHECK(fid.json_payload.at("roles")[0].at("name") == "旁白");
+}
+
+// 工作区没有 PersonCfg 时（网页/托管环境的常态），/api/roles 必须回落到随包
+// 官方人物表，否则 portrait* 全空、人物资源库显示不出立绘。
+TEST_CASE("p1 routes: /api/roles falls back to bundled PersonCfg",
+          "[p1][routes][nocode]") {
+    P1Fixture fx;  // 不写任何 PersonCfg 到工作区
+    auto r = fx.call("GET", "/api/roles");
+    REQUIRE(r.status == 200);
+    const json& roles = r.json_payload.at("roles");
+    const json* r101 = nullptr;
+    for (const auto& x : roles)
+        if (x.at("id") == "101") { r101 = &x; break; }
+    REQUIRE(r101 != nullptr);
+    // 官方 PersonCfg 的 101 = 罗晓纯，url/url2 均在。
+    CHECK(r101->at("name") == "罗晓纯");
+    CHECK(r101->at("portrait1") == "role_xiaochun");
+    CHECK(r101->at("portrait2") == "role_xiaochun2");
+    CHECK(r101->at("portrait") == "role_xiaochun2");  // url2 优先
+    // 至少有一批角色拿到立绘键（回落生效的强断言）。
+    int with_portrait = 0;
+    for (const auto& x : roles) {
+        if (!x.at("portrait").get<std::string>().empty()) ++with_portrait;
+    }
+    CHECK(with_portrait >= 100);
 }

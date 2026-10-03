@@ -702,8 +702,8 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       );
       return;
     }
-    final bytes = await TexBytesCache.loadSmart(key);
-    if (!mounted || bytes == null) return;
+    final src = await TexBytesCache.loadSmartSource(key);
+    if (!mounted || src == null || src.isEmpty) return;
     final screen = MediaQuery.sizeOf(context);
     await fluent.showDialog<void>(
       context: context,
@@ -713,7 +713,13 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
         content: SizedBox(
           width: math.min(860, screen.width - 80),
           height: math.min(620, screen.height - 120),
-          child: ImagePreview(bytes: bytes, name: key),
+          child: src.bytes != null
+              ? ImagePreview(bytes: src.bytes!, name: key)
+              : InteractiveViewer(
+                  maxScale: 6,
+                  child: Center(
+                      child: TexSourceImage(source: src, fit: BoxFit.contain)),
+                ),
         ),
         actions: [
           fluent.Button(

@@ -40,8 +40,14 @@ std::string packs_root();
 std::string system_packs_root();
 std::string meta_path();
 
-json list_packs();                        // {"active": str, "packs": [...]}
-json set_active(const std::string& id);   // throws std::invalid_argument(ValueError)
+json list_packs();                        // {"active": str, "active_ids": [...], "packs": [...]}
+json set_active(const std::string& id);   // legacy single: active_ids = [id]（"" -> []）
+json set_active_ids(const std::vector<std::string>& ids);  // 多 base：按序启用
+
+// 多 base：当前启用的 pack id（有序，去重，仅含现存/内置包）。
+std::vector<std::string> active_pack_ids();
+// 多 base：当前启用 pack 的解析目录（按 active_pack_ids 顺序）。
+std::vector<std::string> active_pack_dirs();
 json install_pack_bytes(std::string_view zip_bytes, const std::string& filename);
 json install_pack_from_path(const std::string& path, const std::string& filename);
 json uninstall_pack(const std::string& pack_id);

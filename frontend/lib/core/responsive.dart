@@ -5,6 +5,11 @@ import 'package:flutter/widgets.dart';
 class Breakpoints {
   static const double mobile = 720;
   static const double tablet = 1024;
+
+  /// 紧凑桌面：低于此宽度时桌面壳仍可用，但会收起/浮层化占宽的侧栏组件
+  /// （如 AI 停靠区改为悬浮抽屉），避免「左活动栏 + 侧边栏 + AI 面板」三者
+  /// 叠加把编辑区压成负宽 / 溢出——窄 Web 浏览器窗口下最常见。
+  static const double compact = 1100;
 }
 
 /// 宽度 < 720 视为移动端（手机竖屏 / 折叠屏内屏窄态）。
@@ -15,6 +20,10 @@ bool isMobileWidth(BuildContext context) =>
 bool isMobile(BuildContext context) => isMobileWidth(context);
 
 bool isDesktop(BuildContext context) => !isMobile(context);
+
+/// 宽度 < 1100 视为紧凑布局（桌面壳内 AI 侧栏浮层化）。
+bool isCompactWidth(BuildContext context) =>
+    MediaQuery.sizeOf(context).width < Breakpoints.compact;
 
 /// 直接判定宽度数值，方便在非 BuildContext 处或测试中使用。
 bool isMobileForWidth(double width) => width < Breakpoints.mobile;

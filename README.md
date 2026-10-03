@@ -8,7 +8,11 @@ HTTP API 契约与旧 Python 版保持兼容，并随功能持续扩展（GUI / 
 除 GUI 外提供 CLI / TUI，发行产物为三个**相互独立**的可执行文件：`backend`
 （HTTP 服务）、`backend_cli`（CLI）、`backend_tui`（TUI）；Windows 下带 `.exe`
 后缀。CLI/TUI 不再是 `backend tui` / `backend cli` 子命令（旧 Python 版的
-`run_cli.py` / `run_tui.py` 与 `editor_cmd.exe` 已随 Python 后端退役）。详见
+`run_cli.py` / `run_tui.py` 与 `editor_cmd.exe` 已随 Python 后端退役）。两者的
+终端界面按 Alpha-v0.3 形态复刻：TUI 是三栏编辑器（左「模组 / Cfgs」树、中列头
+记录表、右分组表单，顶栏标题 + 两行按键底栏 + 琥珀状态行，含 `^P` 命令面板、
+`t` 配音 TTS 页与首启 OOBE 向导）；CLI 是 cyan 框线横幅 + rich 风格框线表格 +
+输入即弹的两列候选菜单。详见
 [`CLI_TUI_GUIDE.md`](CLI_TUI_GUIDE.md)。AI 助手与云同步的配置文件
 （`.editor_ai.json` / `.editor_cloud.json`）位置不变；TUI 另支持
 `--agent-config` / 环境变量注入 AI 配置。
@@ -23,8 +27,10 @@ HTTP API 契约与旧 Python 版保持兼容，并随功能持续扩展（GUI / 
   槽位按提示手改）；人物字段走带立绘缩略图的浏览面板（GUI 网格，TUI·CLI 列表）。
   码字段在经典 schema 编辑器、剧情图内联卡片 / Inspector、导演视图里统一铺**内联
   积木编辑**（零文本输入）；引用/跳转字段（人物、道具、背景、跳转目标…）只读展示
-  现值 + 「选择」入口，移动端剧情详情页同样只选不敲，尽量不给任何手抄代码/ID 的
-  输入框。剧情图「新建事件」与「导入剧本」在开启时改为**自动编号**（或选择已有事件），
+  现值 + 「选择」入口，移动端剧情详情页同样只选不敲。**17 个编辑页面（pages_catalog
+  的全量表）全部覆盖**：引用/枚举字段由第三方权威 schema 的 `range.table`
+  （`tools/gen_field_rules.py` → `field_ref_data.dart`）自动补齐，开启后任何页面都
+  不再有手抄代码/ID 的输入框。剧情图「新建事件」与「导入剧本」在开启时改为**自动编号**（或选择已有事件），
   不再要求手拟 7 位事件 ID。入口：GUI 设置页、TUI `Ctrl-N`、CLI `settings no-code on|off|show` 与 REPL
   `/settings`；开关持久化在后端 `editor_env.json`，三端读同一份。补全排序同步升级
   （高频/最近使用加权）。

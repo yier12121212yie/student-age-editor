@@ -279,6 +279,27 @@ void main() {
       expect(t.takeException(), isNull);
     });
 
+    testWidgets('nameOf：现值回显「ID · 名称」，查不到回退裸 ID', (t) async {
+      await t.pumpWidget(fluent.FluentApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: SizedBox(
+            width: 420,
+            child: NoCodeRefField(
+              value: '109, 200',
+              pickLabel: '选背景…',
+              nameOf: (id) => id == '109' ? '雨天教室' : null,
+              onPick: () async {},
+              onDisableNoCode: () {},
+            ),
+          ),
+        ),
+      ));
+      await t.pump();
+      expect(find.text('109 · 雨天教室、200'), findsOneWidget);
+      expect(t.takeException(), isNull);
+    });
+
     testWidgets('无候选通道：只读提示 + 逃生口，仍无文本输入框', (t) async {
       await t.pumpWidget(fluent.FluentApp(
         debugShowCheckedModeBanner: false,

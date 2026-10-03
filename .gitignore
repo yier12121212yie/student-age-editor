@@ -53,12 +53,19 @@ build-native/
 .head-baseline/
 _bughunt/
 
+# 旧发行快照（某次 Alpha-v0.3 发行目录的本地留存，不入库）
+student-age-editor-Alpha-*/
+
 # Flutter Windows 构建临时目录
 frontend/windows/flutter/ephemeral/
 
 # 本地参考资料（保存的 API 文档网页 / 第三方源码 / 竞品资料等，统一不入库；
 # 《学生时代》Mod文档 已被跟踪，不受忽略规则影响）
 参考资料/
+
+# 第三方 C++ SDK 源码（腾讯云 COS，仅供本地参考——native/FILE_TRANSFER.md 明确
+# 自托管文件流转不引入该 SDK，走 sa_core::http；不入库）
+cos-cpp-sdk-*/
 
 # 第三方 DSH 客户端插件（thinking-slider，来自 Motuo24/dsh-thinking-slider），
 # 与本编辑器发行版无关，仅本机安装使用，不入库。

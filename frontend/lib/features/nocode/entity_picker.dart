@@ -94,6 +94,7 @@ EntityKind? entityKindForRule(FieldRule? rule) {
     case 'MapCfg':
       return EntityKind.maps;
     case 'AttrCfg':
+    case 'PersonAttrCfg':
       return EntityKind.attrs;
     case 'JobCfg':
       return EntityKind.jobs;
@@ -121,17 +122,29 @@ class RoleEntry {
     required this.name,
     this.gender,
     this.portrait = '',
+    this.portrait1 = '',
+    this.portrait2 = '',
   });
   final String id;
   final String name;
   final int? gender;
+
+  /// 兼容字段：url2 优先、否则 url 的立绘 key（旧消费方沿用）。
   final String portrait;
+
+  /// 小学立绘 key（PersonCfg.url 首项）。
+  final String portrait1;
+
+  /// 中学立绘 key（PersonCfg.url2 首项）。
+  final String portrait2;
 
   factory RoleEntry.fromJson(Map j) => RoleEntry(
         id: j['id']?.toString() ?? '',
         name: j['name']?.toString() ?? '',
         gender: (j['gender'] as num?)?.toInt(),
         portrait: j['portrait']?.toString() ?? '',
+        portrait1: j['portrait1']?.toString() ?? '',
+        portrait2: j['portrait2']?.toString() ?? '',
       );
 }
 

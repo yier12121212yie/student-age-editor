@@ -18,6 +18,7 @@ import 'package:student_age_editor/features/pages/page_view.dart';
 import 'package:student_age_editor/features/pages/pages_catalog.dart';
 import 'package:student_age_editor/features/preview/event_preview_view.dart';
 import 'package:student_age_editor/features/resources/pack_manager_page.dart';
+import 'package:student_age_editor/features/resources/resources_page.dart';
 import 'package:student_age_editor/features/settings/settings_page.dart';
 import 'package:student_age_editor/features/shell/classic_shell.dart';
 import 'package:student_age_editor/features/shell/mobile_shell.dart';
@@ -384,6 +385,52 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
-    expect(find.textContaining('未安装任何资源包'), findsOneWidget);
+    expect(find.textContaining('暂无扩展'), findsOneWidget);
+  });
+
+  // 窄屏手机（320 逻辑像素，如 iPhone SE 一代）：设置页「启动时自动检查」
+  // 复选框长标签曾横向溢出（Fluent Checkbox 标签不受 Row 约束），回归守门。
+  testWidgets('SettingsPage 在手机窄屏 320x640 下无像素溢出', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    final shell = ShellState();
+    await tester.pumpWidget(
+      fluent.FluentApp(
+        home: Scaffold(
+          body: SettingsPage(
+            settings: shell.aiSettings,
+            onChanged: (_) {},
+            uiMode: UiMode.creation,
+            onUiModeChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull,
+        reason: '设置页在 320 宽手机下不应横向溢出');
+  });
+
+  // 资源页顶部 5 个页签在 320 宽手机上总宽略超（~4px）曾横向溢出；
+  // 改为横向可滚动后回归守门。
+  testWidgets('ResourcesPage 页签在手机窄屏 320x640 下无像素溢出', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    await tester.pumpWidget(
+      fluent.FluentApp(
+        home: Scaffold(body: ResourcesPage(state: AppState())),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull,
+        reason: '资源页页签在 320 宽手机下不应横向溢出');
+    // 页签仍全部可达（已改为横向滚动）。
+    expect(find.text('Live2D'), findsOneWidget);
   });
 }

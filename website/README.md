@@ -11,7 +11,8 @@ website/
     ├── css/style.css   全部样式（主题令牌 → 基础 → 组件 → 各区块 → 响应式）
     ├── js/main.js      行为：主题切换 / 移动端导航 / 按平台切换 Hero 下载按钮 /
     │                   滚动渐显 / 数字滚动 / 复制按钮 / 从 GitHub Releases 拉取更新日志
-    └── img/logo.svg    统一 Logo（导航、Hero、页脚共用；favicon 是 index.html 内联的 data URI）
+    └── img/logo.svg    品牌图标（导航、Hero、页脚共用，同时用作 favicon）；
+                        内容为 design/app_icon.svg 的副本，改图标请改 design/ 再同步过来
 ```
 
 ## 页面信息架构（v2）

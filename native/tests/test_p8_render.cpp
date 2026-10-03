@@ -24,12 +24,13 @@ AppState MainFixture() {
     s.mods = {ModEntry{"DemoMod", "m/DemoMod"}, ModEntry{"Other", "m/Other"}};
     s.selected_mod = "DemoMod";
     s.mod_sel = 0;
-    s.expanded_mod = 0;
+    s.expanded_mods.insert("DemoMod");
+    s.mod_tables["DemoMod"] = {"TalkCfg", "ItemCfg"};
     s.tree_sel = 1;
     s.tables = {"TalkCfg", "ItemCfg"};
     s.table.name = "TalkCfg";
     s.table.exists = true;
-    s.table.rows = {TableRow{"1", "你好", "\"你好\""},
+    s.table.rows = {TableRow{"1", "你好", R"({"id":1,"content":"你好"})"},
                     TableRow{"2", "旧值", R"({"id":2,"content":"旧值"})"}};
     s.table.edits["2"] = R"({"id":2,"content":"新值"})";
     s.row_sel = 1;
@@ -52,34 +53,32 @@ TEST_CASE("Snapshot: home carries the Alpha header, panes and tree", "[p8]") {
     std::string out = RenderPageToString(MainFixture(), 100, 20);
     // Blue chrome: the Alpha header + the three pane title bars.
     REQUIRE(Contains(out, "学生时代 · 模组编辑器 — TUI"));
-    REQUIRE(Contains(out, "📦 Mods / Cfgs"));
     REQUIRE(Contains(out, "📋 Records — TalkCfg"));
-    REQUIRE(Contains(out, "📝 Detail / JSON"));
-    // The left pane is the two-level tree: expanded mod + cfg children.
-    REQUIRE(Contains(out, "📂 DemoMod"));
-    REQUIRE(Contains(out, "● TalkCfg"));
-    REQUIRE(Contains(out, "◦ ItemCfg"));
-    REQUIRE(Contains(out, "📁 Other"));
-    // Status bar carries workspace + permission info.
-    REQUIRE(Contains(out, "Workspace: DemoMod"));
-    REQUIRE(Contains(out, "权限: confirm"));
+    REQUIRE(Contains(out, "📝 TalkCfg[2]"));  // 表[记录ID] 表单/JSON
+    // The left pane is the two-level tree: ▶/▼ arrows, 📦 mods, 📄 cfg leaves.
+    REQUIRE(Contains(out, "📦 DemoMod"));
+    REQUIRE(Contains(out, "▼ 📦 DemoMod"));
+    REQUIRE(Contains(out, "● 📄 TalkCfg"));
+    REQUIRE(Contains(out, "◦ 📄 ItemCfg"));
+    REQUIRE(Contains(out, "▶ 📦 Other"));
+    // Header carries the mod @ workspace + permission flags (Alpha style).
+    REQUIRE(Contains(out, "权限 confirm"));
     REQUIRE(Contains(out, "已连接"));
 }
 
 TEST_CASE("Snapshot: browse renders rows, edit markers and the dirty badge", "[p8]") {
-    std::string out = RenderPageToString(MainFixture(), 100, 20);
+    std::string out = RenderPageToString(MainFixture(), 120, 20);
     REQUIRE(Contains(out, "你好"));
     REQUIRE(Contains(out, "新值"));
     REQUIRE(Contains(out, "*2"));  // dirty marker on the edited key
-    REQUIRE(Contains(out, "\"content\": \"新值\""));
     REQUIRE(Contains(out, "未保存: 1"));
     // Dirty right pane gets the red badge; the detail title stays recognisable.
     REQUIRE(Contains(out, "●"));
-    // The right pane buttons row (保存 / 校验 / 复制 / 删除).
-    REQUIRE(Contains(out, "s 保存"));
-    REQUIRE(Contains(out, "v 校验"));
-    REQUIRE(Contains(out, "y 复制"));
-    REQUIRE(Contains(out, "d 删除"));
+    // The right pane buttons row (保存（s）/ 校验 / 格式化 / 复制).
+    REQUIRE(Contains(out, "保存（s）"));
+    REQUIRE(Contains(out, "校验"));
+    REQUIRE(Contains(out, "格式化"));
+    REQUIRE(Contains(out, "复制"));
     // Footer global keys.
     REQUIRE(Contains(out, "Ctrl-S 保存"));
 }
@@ -90,7 +89,7 @@ TEST_CASE("Snapshot: fresh session shows the welcome guide, not a table", "[p8]"
     REQUIRE(Contains(out, "① 左栏 Enter 选择模组并展开"));
     REQUIRE(Contains(out, "（未打开）"));
     REQUIRE(Contains(out, "📦 Mods / Cfgs"));
-    REQUIRE(Contains(out, "📁 DemoMod"));
+    REQUIRE(Contains(out, "▶ 📦 DemoMod"));
 }
 
 TEST_CASE("Snapshot: form pane renders fields when toggled", "[p8]") {
@@ -99,7 +98,7 @@ TEST_CASE("Snapshot: form pane renders fields when toggled", "[p8]") {
     s.detail_mode = DetailMode::Form;
     s.field_sel = 1;
     std::string out = RenderPageToString(s, 100, 20);
-    REQUIRE(Contains(out, "[表单]"));
+    REQUIRE(Contains(out, "表单"));
     REQUIRE(Contains(out, "content"));
     // The pending edit of row 2 supplies the field values.
     REQUIRE(Contains(out, "2"));
@@ -290,9 +289,9 @@ TEST_CASE("Snapshot: update modal surfaces a failed check", "[p8]") {
 
 TEST_CASE("Snapshot: the status bar carries the permission mode", "[p8]") {
     AppState s = FreshFixture();
-    REQUIRE(Contains(RenderPageToString(s, 100, 14), "权限: confirm"));
+    REQUIRE(Contains(RenderPageToString(s, 100, 14), "权限 confirm"));
     s.permission_mode = "full";
-    REQUIRE(Contains(RenderPageToString(s, 100, 14), "权限: full"));
+    REQUIRE(Contains(RenderPageToString(s, 100, 14), "权限 full"));
 }
 
 TEST_CASE("Snapshot: confirm modal replaces the body, then yields to the page", "[p8]") {
@@ -378,8 +377,8 @@ AppState FieldEditing() {
 TEST_CASE("Snapshot: the status bar carries the no-code chip", "[p8]") {
     AppState on = MainFixture();
     on.no_code_mode = true;
-    REQUIRE(Contains(RenderPageToString(on, 100, 20), "权限: confirm · 无代码"));
-    // Off: the chip is gone (the footer's "Ctrl-N 无代码" never has the dot).
+    REQUIRE(Contains(RenderPageToString(on, 100, 20), "权限 confirm · 无代码"));
+    // Off: the chip is gone (the footer's "^N 无代码" never has the dot).
     AppState off = MainFixture();
     REQUIRE_FALSE(Contains(RenderPageToString(off, 100, 20), "· 无代码"));
 }
@@ -394,7 +393,11 @@ TEST_CASE("Snapshot: help lists the no-code toggle and its in-field keys", "[p8]
 
 TEST_CASE("Snapshot: the footer advertises the Ctrl-N no-code toggle", "[p8]") {
     std::string out = RenderPageToString(FreshFixture(), 100, 14);
-    REQUIRE(Contains(out, "Ctrl-N 无代码"));
+    REQUIRE(Contains(out, "^N 无代码"));
+    // The Alpha bar order, plus the native keys folded into line two.
+    REQUIRE(Contains(out, "N 新建Mod"));
+    REQUIRE(Contains(out, "^p palette"));
+    REQUIRE(Contains(out, "^M 权限"));
 }
 
 TEST_CASE("Snapshot: field editor shows the candidate list with its key hints", "[p8]") {
@@ -430,4 +433,33 @@ TEST_CASE("Snapshot: slot fill-in renders the entry sub-list", "[p8]") {
     REQUIRE(Contains(out, "属性 (ATTR)"));   // prompt + raw name
     REQUIRE(Contains(out, "» 7 · 魅力"));    // cursor on the second entry
     REQUIRE(Contains(out, "1 · 智力"));      // first entry still listed
+}
+
+TEST_CASE("Snapshot: TTS modal renders the shared settings fields", "[p8]") {
+    AppState s;
+    s.page = Page::Tts;
+    s.selected_mod = "DemoMod";
+    s.tts.loaded = true;
+    s.tts.provider = "minimax";
+    s.tts.voice = "female-shaonv";
+    s.tts.text = "你好，同学";
+    std::string out = RenderPageToString(s, 100, 22);
+    REQUIRE(Contains(out, "🔊 配音 (TTS)"));
+    REQUIRE(Contains(out, "提供商"));
+    REQUIRE(Contains(out, "API Key"));
+    REQUIRE(Contains(out, "音色"));
+    REQUIRE(Contains(out, "minimax"));
+    REQUIRE(Contains(out, "t 测试连接 · s 合成并保存到模组"));  // action hint
+}
+
+TEST_CASE("Snapshot: OOBE wizard renders step 0 and its skip hint", "[p8]") {
+    AppState s;
+    s.page = Page::Oobe;
+    s.oobe.active = true;
+    s.oobe.step = 0;
+    std::string out = RenderPageToString(s, 100, 22);
+    REQUIRE(Contains(out, "OOBE 向导"));
+    REQUIRE(Contains(out, "① 设置工作区"));
+    REQUIRE(Contains(out, "新工作区路径>"));
+    REQUIRE(Contains(out, "Enter 确认（留空跳过） · Esc 跳过"));
 }

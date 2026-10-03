@@ -502,25 +502,29 @@ class _WelcomeViewState extends State<_WelcomeView>
                 offset: Offset(0, _float.value),
                 child: child,
               ),
-              child: Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: palette.panel,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: palette.surface),
-                  boxShadow: [
-                    BoxShadow(
-                      color: accentColor.withValues(alpha: 0.12),
-                      blurRadius: 24,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  FluentIcons.box_24_regular,
-                  size: 36,
-                  color: accentColor,
+              // 边界包住带 blurRadius:24 阴影的方块：浮动只做纯合成位移，
+              // 阴影光栅跨帧复用（否则这个永久动画每帧重画一次阴影）。
+              child: RepaintBoundary(
+                child: Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: palette.panel,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: palette.surface),
+                    boxShadow: [
+                      BoxShadow(
+                        color: accentColor.withValues(alpha: 0.12),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    FluentIcons.box_24_regular,
+                    size: 36,
+                    color: accentColor,
+                  ),
                 ),
               ),
             ),

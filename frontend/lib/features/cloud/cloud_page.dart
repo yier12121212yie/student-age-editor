@@ -19,7 +19,7 @@ class CloudPage extends StatefulWidget {
 
 class _CloudPageState extends State<CloudPage> {
   List<dynamic> _providers = [];
-  List<String> _drivers = ['local','webdav','openlist','alist','baidu_netdisk','123','google_drive','onedrive'];
+  List<String> _drivers = ['local','webdav','openlist','baidu_netdisk','123','google_drive','onedrive','aliyun_oss','tencent_cos','aws_s3','cloudflare_r2'];
   String? _selectedProvider;
   bool _loading = false;
   String? _selectedMod;
@@ -47,6 +47,25 @@ class _CloudPageState extends State<CloudPage> {
   Timer? _rtRestartTimer; // 阶段 3：停表后的退避重启
   int _rtBackoffSec = 15;
   bool _rtLoading = false;
+
+  /// 页面是否可见。故事流壳用 Offstage 保活页面，隐藏页面的 TickerMode 被停
+  /// （见 story_flow_shell 的 _contentStack）：此时轮询整个跳过，不再对着
+  /// 后端空转；重新可见时 realtime 状态立即补拉一次。
+  bool _ticking = true;
+
+  /// 在 build 里同步可见性（依赖注册必须发生在 build 期），隐藏→可见时
+  /// 用 post-frame 补一次拉取。
+  void _syncVisibility() {
+    final now = TickerMode.valuesOf(context).enabled;
+    if (now == _ticking) return;
+    final becameVisible = now && !_ticking;
+    _ticking = now;
+    if (becameVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _ticking) _loadRealtimeStatus();
+      });
+    }
+  }
 
   /// The mod the cloud page should act on: the editor's current mod when it is
   /// in the list, else the first one (bug #14: it used to always pick the
@@ -126,13 +145,16 @@ class _CloudPageState extends State<CloudPage> {
     _rtPollTimer?.cancel();
     _rtRestartTimer?.cancel();
     var tick = 0, failures = 0;
-    _rtPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+    _rtPollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      // 页面隐藏（保活但不可见）时整个跳过：不请求、不计失败，重新可见后
+      // _syncVisibility 会立即补拉一次。
+      if (!_ticking) return;
       tick++;
-      // 未启用实时同步时降频（每 5 跳即 10s 刷一次状态），避免空转轮询；
-      // 连续失败达到上限则停表，防止后端不可达时每 2s 打一次。
+      // 未启用实时同步时降频（每 3 跳即 15s 刷一次状态），避免空转轮询；
+      // 连续失败达到上限则停表，防止后端不可达时每 5s 打一次。
       final rt = _rtStatusN.value;
       final enabled = rt?['enabled'] == true || rt?['running'] == true;
-      if (!enabled && tick % 5 != 0) return;
+      if (!enabled && tick % 3 != 0) return;
       try {
         final r = await ApiClient.instance.get('/api/cloud/realtime/status');
         failures = 0;
@@ -429,7 +451,7 @@ class _CloudPageState extends State<CloudPage> {
 
 
   String _driverLabel(String t){
-    const map = {'baidu_netdisk':'百度网盘','baidu':'百度网盘','aliyundrive':'阿里云盘（已下线）','aliyun':'阿里云盘（已下线）','quark':'夸克网盘（已下线）','123':'123云盘','123pan':'123云盘','189':'天翼云盘（已下线）','tianyi':'天翼云盘（已下线）','google_drive': 'Google Drive','gdrive':'Google Drive','onedrive':'OneDrive','local':'本地目录','webdav':'WebDAV','openlist':'OpenList','alist':'Alist'};
+    const map = {'baidu_netdisk':'百度网盘','baidu':'百度网盘','aliyundrive':'阿里云盘（已下线）','aliyun':'阿里云盘（已下线）','quark':'夸克网盘（已下线）','123':'123云盘','123pan':'123云盘','189':'天翼云盘（已下线）','tianyi':'天翼云盘（已下线）','google_drive': 'Google Drive','gdrive':'Google Drive','onedrive':'OneDrive','local':'本地目录','webdav':'WebDAV','openlist':'OpenList','alist':'Alist','aliyun_oss':'阿里云 OSS','tencent_cos':'腾讯云 COS','aws_s3':'AWS S3','cloudflare_r2':'Cloudflare R2'};
     return map[t] ?? t;
   }
   IconData _driverIcon(String t){
@@ -439,6 +461,7 @@ class _CloudPageState extends State<CloudPage> {
     if (t.contains('onedrive')) return FluentIcons.cloud_24_regular;
     if (t=='webdav') return FluentIcons.link_24_regular;
     if (t=='local') return FluentIcons.folder_24_regular;
+    if (t=='aliyun_oss' || t=='tencent_cos' || t=='aws_s3' || t=='cloudflare_r2') return FluentIcons.server_24_regular;
     return FluentIcons.server_24_regular;
   }
 
@@ -451,6 +474,10 @@ class _CloudPageState extends State<CloudPage> {
       '123': '123云盘：填账号密码直连，或走 OpenList。',
       'google_drive': 'Google Drive：需 OAuth refresh_token，或走 OpenList。注意：OpenList 地址填你的 OpenList 实例 (如 http://127.0.0.1:5244)，不要填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口，会报 403/1010）',
       'onedrive': 'OneDrive：需 refresh_token + Client ID（Azure 应用），或走 OpenList。默认 Client ID f0e3cad9... 仅示例，请填你自己的 Azure 应用 ID，否则报 700016',
+      'aliyun_oss': '阿里云 OSS（S3 兼容）：填 Bucket、AccessKey ID/Secret、区域（如 cn-hangzhou）。跨域/VPC 可自填 Endpoint。',
+      'tencent_cos': '腾讯云 COS（S3 兼容）：填 Bucket、SecretId/SecretKey、区域（如 ap-guangzhou）。跨域加速可自填 Endpoint。',
+      'aws_s3': 'AWS S3：填 Bucket、Access Key、Secret Key、区域（如 us-east-1）。可选填 Endpoint（如 S3 兼容服务/加速域名）。',
+      'cloudflare_r2': 'Cloudflare R2（S3 兼容）：填 Bucket、Access Key、Secret Key，且必须填 Endpoint（https://<account_id>.r2.cloudflarestorage.com）或 account_id。',
     };
     return helps[t] ?? '';
   }
@@ -472,6 +499,12 @@ class _CloudPageState extends State<CloudPage> {
     final openUrlCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['openlist_url'] ?? '') : '');
     final openTokenCtrl = TextEditingController(text: isEdit ? '' : '');
     final rootLocalCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['root'] ?? '') : '');
+    // S3 兼容（OSS/COS/S3/R2）
+    final bucketCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['bucket'] ?? '') : '');
+    final accessKeyCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['access_key'] ?? '') : '');
+    final secretKeyCtrl = TextEditingController(text: isEdit ? '' : ''); // masked, leave blank to keep
+    final s3EndpointCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['endpoint'] ?? '') : '');
+    final s3RegionCtrl = TextEditingController(text: isEdit ? (editTarget['config']?['region'] ?? '') : '');
     String type = isEdit ? (editTarget['type'] as String? ?? 'webdav') : 'webdav';
     String? errorText;
     bool testing = false;
@@ -493,6 +526,13 @@ class _CloudPageState extends State<CloudPage> {
           if (type=='123' || type=='123pan') ...[field('用户名/邮箱 *', userCtrl), field('密码 *', passCtrl, obscure:true), field('OpenList 地址(可选)', openUrlCtrl), field('挂载路径', mountCtrl, hint:'/123')],
           if (type=='google_drive' || type=='gdrive') ...[field('refresh_token *', refreshCtrl, hint:'1//... 完整 refresh_token'), field('Client ID (直连时选填，留空则尝试公共刷新)', gClientIdCtrl, hint:'xxx.apps.googleusercontent.com'), field('Client Secret (直连时选填)', gClientSecretCtrl, obscure:true), field('OpenList 地址', openUrlCtrl, hint:'http://127.0.0.1:5244（自建时填）'), field('挂载路径', mountCtrl, hint:'/gdrive (OpenList 中挂载名)'),],
           if (type=='onedrive') ...[field('refresh_token *', refreshCtrl, hint:'M.R3_BAY... 长串'), field('Client ID *', oClientIdCtrl, hint:'如 f0e3cad9-1bf3-4006-9999-1a1a1e1a4ae0 (oplist.org 公共)'), field('Client Secret', oClientSecretCtrl, obscure:true), field('OpenList 地址', openUrlCtrl, hint:'http://127.0.0.1:5244'), field('挂载路径', mountCtrl, hint:'/onedrive'),],
+          if (type=='aliyun_oss' || type=='tencent_cos' || type=='aws_s3' || type=='cloudflare_r2') ...[
+            field('Bucket *', bucketCtrl, hint:'my-bucket'),
+            field(type=='tencent_cos' ? 'SecretId *' : 'Access Key ID *', accessKeyCtrl),
+            field(type=='tencent_cos' ? 'SecretKey *' : 'Access Key Secret *', secretKeyCtrl, obscure:true),
+            field('区域 (Region)', s3RegionCtrl, hint: type=='aliyun_oss' ? 'cn-hangzhou' : (type=='tencent_cos' ? 'ap-guangzhou' : (type=='cloudflare_r2' ? 'auto' : 'us-east-1'))),
+            field('Endpoint (可选)', s3EndpointCtrl, hint: type=='cloudflare_r2' ? 'https://<account_id>.r2.cloudflarestorage.com' : '留空按区域自动推导'),
+          ],
           field('远端根', rootCtrl, hint:'mods'),
           if (errorText!=null) Padding(padding: const EdgeInsets.only(top:6), child: Text(errorText!, style: TextStyle(fontSize:11, color: palette.danger))),
         ])),
@@ -515,6 +555,13 @@ class _CloudPageState extends State<CloudPage> {
                 if(gClientSecretCtrl.text.isNotEmpty) testCfg['client_secret']=gClientSecretCtrl.text.trim();
                 testCfg['openlist_url']=_openUrl; testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
               else if (type=='onedrive'){ if(refreshCtrl.text.isNotEmpty) testCfg['refresh_token']=refreshCtrl.text.trim(); if(oClientIdCtrl.text.trim().isNotEmpty) testCfg['client_id']=oClientIdCtrl.text.trim(); if(oClientSecretCtrl.text.isNotEmpty) testCfg['client_secret']=oClientSecretCtrl.text.trim(); testCfg['openlist_url']=openUrlCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/onedrive':mountCtrl.text.trim(); }
+              else if (type=='aliyun_oss' || type=='tencent_cos' || type=='aws_s3' || type=='cloudflare_r2'){
+                testCfg['bucket']=bucketCtrl.text.trim();
+                testCfg['access_key']=accessKeyCtrl.text.trim();
+                if(secretKeyCtrl.text.isNotEmpty) testCfg['secret_key']=secretKeyCtrl.text;
+                if(s3RegionCtrl.text.trim().isNotEmpty) testCfg['region']=s3RegionCtrl.text.trim();
+                if(s3EndpointCtrl.text.trim().isNotEmpty) testCfg['endpoint']=s3EndpointCtrl.text.trim();
+              }
               await ApiClient.instance.post('/api/cloud/test', body:{'type':type,'config':testCfg});
               setDlg(()=>errorText=null);
               _showInfo('连接成功');
@@ -531,6 +578,12 @@ class _CloudPageState extends State<CloudPage> {
               final openUrlCheck = openUrlCtrl.text.trim();
               if (openUrlCheck.contains('renewapi') || openUrlCheck.contains('googleui')) { setDlg(()=>errorText='OpenList 地址填写错误：请勿填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口）。直连请留空该字段；走 OpenList 请填你的 OpenList 实例如 http://127.0.0.1:5244'); return; }
             }
+            if (type=='aliyun_oss' || type=='tencent_cos' || type=='aws_s3' || type=='cloudflare_r2') {
+              if (bucketCtrl.text.trim().isEmpty) { setDlg(()=>errorText='Bucket 不能为空'); return; }
+              if (accessKeyCtrl.text.trim().isEmpty) { setDlg(()=>errorText='Access Key 不能为空'); return; }
+              if (!isEdit && secretKeyCtrl.text.isEmpty) { setDlg(()=>errorText='Secret Key 不能为空'); return; }
+              if (type=='cloudflare_r2' && s3EndpointCtrl.text.trim().isEmpty) { setDlg(()=>errorText='Cloudflare R2 需要填 Endpoint（https://<account_id>.r2.cloudflarestorage.com）'); return; }
+            }
             Navigator.pop(ctx);
             final cfg=<String,dynamic>{};
             if (type=='local') cfg['root']=rootLocalCtrl.text.trim();
@@ -545,6 +598,12 @@ class _CloudPageState extends State<CloudPage> {
                 if(gClientSecretCtrl.text.isNotEmpty) cfg['client_secret']=gClientSecretCtrl.text.trim();
                 cfg['openlist_url']=_openUrl2; cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
             else if (type=='onedrive'){ if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim(); if(oClientIdCtrl.text.trim().isNotEmpty) cfg['client_id']=oClientIdCtrl.text.trim(); if(oClientSecretCtrl.text.isNotEmpty) cfg['client_secret']=oClientSecretCtrl.text.trim(); cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/onedrive':mountCtrl.text.trim(); }
+            else if (type=='aliyun_oss' || type=='tencent_cos' || type=='aws_s3' || type=='cloudflare_r2'){
+              cfg['bucket']=bucketCtrl.text.trim();
+              cfg['access_key']=accessKeyCtrl.text.trim();
+              if(secretKeyCtrl.text.isNotEmpty) cfg['secret_key']=secretKeyCtrl.text;
+              if(s3RegionCtrl.text.trim().isNotEmpty) cfg['region']=s3RegionCtrl.text.trim();
+              if(s3EndpointCtrl.text.trim().isNotEmpty) cfg['endpoint']=s3EndpointCtrl.text.trim(); }
             try{
               if(isEdit){
                 await ApiClient.instance.put('/api/cloud/providers/${editTarget['id']}', body:{'name': name, 'type':type, 'config':cfg, 'remote_root':rootCtrl.text.trim()});
@@ -599,7 +658,9 @@ class _CloudPageState extends State<CloudPage> {
   void _startPolling(){
     _pollTimer?.cancel();
     var failures = 0;
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) async {
+      // 隐藏时跳过（进度条没人看）：后端同步照跑，回来时下一跳即续上。
+      if (!_ticking) return;
       try{
         final s = await ApiClient.instance.get('/api/cloud/status');
         failures = 0;
@@ -802,6 +863,7 @@ class _CloudPageState extends State<CloudPage> {
 
   @override
   Widget build(BuildContext context){
+    _syncVisibility();
     final mods = widget.state.mods;
     // 本地搜索过滤
     final filteredLocal = _localFiles.where((e){

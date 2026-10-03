@@ -218,6 +218,55 @@ bool is_builtin(const std::string& pack_id) {
     return !cs::is_dir(cs::join(packs_root(), pack_id));
 }
 
+// 多 base：从 meta 读取启用列表。兼容旧的单值 "active"（字符串）与数组形态。
+std::vector<std::string> parse_active_ids(const json& meta) {
+    std::vector<std::string> ids;
+    if (!meta.is_object()) return ids;
+    if (meta.contains("active_ids") && meta.at("active_ids").is_array()) {
+        for (const auto& v : meta.at("active_ids"))
+            if (v.is_string()) ids.push_back(v.get<std::string>());
+        if (!ids.empty()) return ids;
+    }
+    if (meta.contains("active")) {
+        const json& a = meta.at("active");
+        if (a.is_string()) {
+            const std::string s = a.get<std::string>();
+            if (!s.empty()) ids.push_back(s);
+        } else if (a.is_array()) {
+            for (const auto& v : a)
+                if (v.is_string()) ids.push_back(v.get<std::string>());
+        }
+    }
+    return ids;
+}
+
+// 过滤到现存/内置包、去重保序，并同步 meta 的 active(首项)/active_ids。
+std::vector<std::string> normalize_active(json& meta,
+                                          const std::set<std::string>& existing,
+                                          const std::set<std::string>& builtin) {
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const auto& id : parse_active_ids(meta)) {
+        if (id.empty()) continue;
+        if (!existing.count(id) && !builtin.count(id)) continue;
+        if (!seen.insert(id).second) continue;
+        out.push_back(id);
+    }
+    json arr = json::array();
+    for (const auto& id : out) arr.push_back(id);
+    meta["active_ids"] = arr;
+    meta["active"] = out.empty() ? std::string() : out.front();
+    return out;
+}
+
+// 组装 meta 的 active/active_ids 字段（写盘用）。
+void set_active_fields(json& meta, const std::vector<std::string>& ids) {
+    json arr = json::array();
+    for (const auto& id : ids) arr.push_back(id);
+    meta["active_ids"] = arr;
+    meta["active"] = ids.empty() ? std::string() : ids.front();
+}
+
 }  // namespace
 
 std::string pack_id_from_name(const std::string& name) {
@@ -258,10 +307,7 @@ json list_packs() {
             packs.push_back(p);
         }
     }
-    std::string active = meta.contains("active") && json_truthy(meta.at("active"))
-                             ? json_str(meta.at("active"))
-                             : std::string();
-    if (!active.empty() && !existing.count(active) && !builtin_ids.count(active)) active.clear();
+    std::vector<std::string> active = normalize_active(meta, existing, builtin_ids);
     std::set<std::string> ids;
     for (const auto& p : packs) {
         if (p.is_object() && p.contains("id") && p.at("id").is_string())
@@ -280,28 +326,68 @@ json list_packs() {
     // First launch (no packs.json yet) with exactly one discovered pack:
     // default-activate it (installer-embedded official packs).
     if (!cs::is_file(meta_path()) && active.empty() && packs.size() == 1) {
-        active = packs[0].value("id", "");
+        const std::string only = packs[0].value("id", "");
+        active.clear();
+        if (!only.empty()) active.push_back(only);
         json fresh = json::object();
-        fresh["active"] = active;
+        set_active_fields(fresh, active);
         fresh["packs"] = packs;
         save_meta(fresh);
     }
     json out = json::object();
-    out["active"] = active;
+    out["active"] = active.empty() ? std::string() : active.front();
+    json arr = json::array();
+    for (const auto& id : active) arr.push_back(id);
+    out["active_ids"] = arr;
     out["packs"] = std::move(packs);
     return out;
 }
 
 json set_active(const std::string& id) {
+    if (!id.empty() && pack_dir(id).empty()) throw PyValueError("pack not found: " + id);
     json meta = load_meta();
-    if (!id.empty()) {
-        if (pack_dir(id).empty()) throw PyValueError("pack not found: " + id);
-    }
-    meta["active"] = id;
+    set_active_fields(meta, id.empty() ? std::vector<std::string>{}
+                                       : std::vector<std::string>{id});
     save_meta(meta);
     invalidate_preview_cache();
     // base.status = "idle": our BaseDataService seam is a no-op until wave 3.
-    return meta;
+    return list_packs();
+}
+
+json set_active_ids(const std::vector<std::string>& ids) {
+    std::vector<std::string> clean;
+    std::set<std::string> seen;
+    for (const auto& id : ids) {
+        if (id.empty()) continue;
+        if (pack_dir(id).empty()) throw PyValueError("pack not found: " + id);
+        if (seen.insert(id).second) clean.push_back(id);
+    }
+    json meta = load_meta();
+    set_active_fields(meta, clean);
+    save_meta(meta);
+    invalidate_preview_cache();
+    return list_packs();
+}
+
+std::vector<std::string> active_pack_ids() {
+    json meta = load_meta();
+    const std::string wroot = packs_root();
+    const std::string sroot = system_packs_root();
+    const std::vector<std::string> existing_v = list_subdirs(wroot);
+    const std::set<std::string> existing(existing_v.begin(), existing_v.end());
+    const std::vector<std::string> builtin_v =
+        sroot.empty() ? std::vector<std::string>() : list_subdirs(sroot);
+    const std::set<std::string> builtin(builtin_v.begin(), builtin_v.end());
+    return normalize_active(meta, existing, builtin);
+}
+
+std::vector<std::string> active_pack_dirs() {
+    std::vector<std::string> dirs;
+    for (const auto& id : active_pack_ids()) {
+        const std::string d = pack_dir(id);
+        if (!d.empty()) dirs.push_back(d);
+    }
+    return dirs;
 }
 
 namespace {
@@ -380,8 +466,11 @@ json install_zip(const ZipReader& z, const std::string& filename) {
     entry["files"] = count_files_recursive(pack_dir(pack_id));
     filtered.push_back(entry);
     meta["packs"] = filtered;
-    if (!json_truthy(meta.contains("active") ? meta.at("active") : json())) {
-        meta["active"] = pack_id;
+    // 多 base：首个启用包。已启用则保持列表不变，仅在列表为空时补入新包。
+    {
+        std::vector<std::string> act = parse_active_ids(meta);
+        if (act.empty()) act.push_back(pack_id);
+        set_active_fields(meta, act);
     }
     save_meta(meta);
     json result = json::object();
@@ -430,12 +519,17 @@ json uninstall_pack(const std::string& pack_id) {
         }
     }
     meta["packs"] = filtered;
-    if (meta.contains("active") && json_str(meta.at("active")) == pack_id) {
-        if (filtered.empty() || !filtered[0].is_object() || !filtered[0].contains("id")) {
-            meta["active"] = "";
-        } else {
-            meta["active"] = json_str(filtered[0].at("id"));
+    {
+        // 多 base：从启用列表移除被删包；列表变空时退回首个剩余包（与旧行为一致）。
+        std::vector<std::string> act;
+        for (const auto& id : parse_active_ids(meta)) {
+            if (id != pack_id) act.push_back(id);
         }
+        if (act.empty() && !filtered.empty() && filtered[0].is_object() &&
+            filtered[0].contains("id") && filtered[0].at("id").is_string()) {
+            act.push_back(json_str(filtered[0].at("id")));
+        }
+        set_active_fields(meta, act);
     }
     save_meta(meta);
     return meta;

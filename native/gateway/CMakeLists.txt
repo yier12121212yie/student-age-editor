@@ -11,6 +11,7 @@ add_library(sa_gateway STATIC
     gw_accounts.cpp
     gw_config.cpp
     gw_sessions.cpp
+    gw_refresh.cpp
     gw_usage.cpp
     gw_proxy.cpp
     gw_pool.cpp

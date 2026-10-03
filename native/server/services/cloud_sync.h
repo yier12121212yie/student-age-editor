@@ -126,9 +126,10 @@ class Driver {
 
 using DriverFactory = std::shared_ptr<Driver> (*)(json config);
 
-// Registry in Python insertion order (DRIVERS, cloud_sync.py:1712-1724):
-// local, webdav, openlist, alist, baidu_netdisk, baidu, 123, 123pan,
-// google_drive, gdrive, onedrive.
+// 去重后的规范驱动注册表（历史别名 alist/baidu/123pan/gdrive/s3 仅由
+// get_driver 兼容解析，不再登记）：
+// local, webdav, openlist, baidu_netdisk, 123, google_drive, onedrive,
+// aliyun_oss, tencent_cos, aws_s3, cloudflare_r2.
 const std::vector<std::pair<std::string, DriverFactory>>& drivers();
 
 // cloud_sync.py:1726-1736 get_driver. type_val is the raw provider/`body` JSON

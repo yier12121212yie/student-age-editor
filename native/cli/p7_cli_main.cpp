@@ -116,9 +116,14 @@ struct Executed {
 // 安全批次 B：读取后端进程令牌（.backend_token 与 backend 可执行文件同目录，
 // 发行包/构建产物里 CLI 与 backend 同目录，兜底 cwd）。空串 = 未找到（后端
 // 可能是未启用令牌的旧包）。
+// 候选顺序镜像 server/state.cpp 的 editor_root()：EDITOR_DATA_ROOT env 最先
+// （web/冒烟等场景把数据根重定向后，令牌落盘在 env 根），然后 exe 目录、cwd。
 std::string read_backend_token() {
     std::vector<std::string> dirs;
     std::error_code ec;
+    if (const char* env_root = std::getenv("EDITOR_DATA_ROOT");
+        env_root != nullptr && *env_root != '\0')
+        dirs.push_back(env_root);
     dirs.push_back(sa_core::paths::exe_dir());
     dirs.push_back(sa_core::paths::path_to_utf8(std::filesystem::current_path(ec)));
     for (const auto& dir : dirs) {

@@ -7,6 +7,10 @@
 /// 条目条），而非 CustomPaint——条目点击天然走子树 GestureDetector，
 /// 测试也能按 key 断言色带与泳道。视口用独立的 [GraphViewport]（零画布依赖）。
 ///
+/// 平移/缩放只换视口 notifier：顶栏/底栏/详情面板不随拖动帧重建；世界层按
+/// 可见世界矩形裁剪，视口外子项不构建，可见子项按内容签名缓存实例复用
+/// （同 story_flow_graph 的阶段 4 做法，探针见 [debugTimelineChildBuilds]）。
+///
 /// 交互：拖拽平移、滚轮以光标为不动点缩放、点条目 → 右侧详情面板
 /// （name + timeKinds + codes + 完整 spans），面板里「打开该事件」调
 /// [TimelineView.onOpenSource]；点空白收起详情。底部图例 +
@@ -15,6 +19,7 @@ library;
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
@@ -24,6 +29,24 @@ import 'graph_models.dart';
 
 /// 每回合在世界坐标里的基准宽度（像素；缩放由视口叠加）。
 const double kTlRoundW = 46;
+
+/// 基准探针：宿主 build 次数。平移/缩放不应让它增长（旧实现每帧 setState
+/// 会把顶栏/底栏/详情面板一起重建），它是「拖动帧是否整树重建」的准出指标。
+@visibleForTesting
+int debugTimelineHostBuilds = 0;
+
+/// 基准探针：世界层重建次数（每次视口变化 +1，与拖动帧同频）。
+@visibleForTesting
+int debugTimelineWorldBuilds = 0;
+
+/// 基准探针：新建世界层子项 Widget 实例的次数（内容签名变化时才应增长；
+/// 纯平移一帧、可见集合不变时应为 0）。
+@visibleForTesting
+int debugTimelineChildBuilds = 0;
+
+/// 基准探针：因视口裁剪跳过的子项数（视口外条目一次都不构建）。
+@visibleForTesting
+int debugTimelineCulledChildren = 0;
 
 // 世界 y 带布局（自上而下）：年份行 / 季节色带 / 刻度行 / 泳道区。
 const double _kYearH = 20, _kSeasonH = 22, _kTickH = 16;
@@ -50,16 +73,34 @@ class TimelineViewState extends State<TimelineView> {
   String? _mapId;
   bool _specialOpen = false;
 
-  // 视口（世界→屏幕 = pan + scale·world）。
-  GraphViewport _vp = const GraphViewport(1, Offset(12, 8));
+  // 视口（世界→屏幕 = pan + scale·world）。只走 notifier 不走 setState：
+  // setState 会让顶栏/底栏/详情面板跟着拖动帧一起重建（旧实现的负担来源）。
+  final ValueNotifier<GraphViewport> _vp =
+      ValueNotifier(const GraphViewport(1, Offset(12, 8)));
   int? _activePointer;
   Offset _downLocal = Offset.zero;
   Offset _downPan = Offset.zero;
+
+  /// 世界层子项实例缓存（key = 稳定标识）。内容签名不变时按 key 复用同一
+  /// Widget 实例：平移帧里 Element.updateChild 对 identical 子项短路，可见
+  /// 条目一次 build 都不进（同 story_flow_graph 的卡片实例缓存思路）。
+  final Map<String, Widget> _worldChildren = {};
+  int? _worldSig;
+
+  /// 供基准测试读取视口平移量（同 story_flow_graph 的 viewportListenable）。
+  @visibleForTesting
+  ValueListenable<GraphViewport> get viewportListenable => _vp;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _vp.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -98,13 +139,14 @@ class TimelineViewState extends State<TimelineView> {
     if (_activePointer != null || (e.buttons & kPrimaryButton) == 0) return;
     _activePointer = e.pointer;
     _downLocal = e.localPosition;
-    _downPan = _vp.pan;
+    _downPan = _vp.value.pan;
   }
 
   void _onPointerMove(PointerMoveEvent e) {
     if (e.pointer != _activePointer) return;
-    _vp = GraphViewport(_vp.scale, _downPan + (e.localPosition - _downLocal));
-    setState(() {});
+    // GraphViewport 有值相等语义：原地未动时 notifier 不发通知，零重建。
+    _vp.value =
+        GraphViewport(_vp.value.scale, _downPan + (e.localPosition - _downLocal));
   }
 
   void _onPointerUp(PointerUpEvent e) {
@@ -113,12 +155,13 @@ class TimelineViewState extends State<TimelineView> {
 
   void _onPointerSignal(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
+    final vp = _vp.value;
     final factor = e.scrollDelta.dy > 0 ? 0.9 : 1.1;
-    final next = (_vp.scale * factor)
+    final next = (vp.scale * factor)
         .clamp(GraphViewport.minScale, GraphViewport.maxScale)
         .toDouble();
-    if (next == _vp.scale) return;
-    setState(() => _vp = _vp.withZoom(next, e.localPosition));
+    if (next == vp.scale) return;
+    _vp.value = vp.withZoom(next, e.localPosition);
   }
 
   // ---------- 世界几何 ----------
@@ -135,6 +178,7 @@ class TimelineViewState extends State<TimelineView> {
 
   @override
   Widget build(BuildContext context) {
+    if (kDebugMode) debugTimelineHostBuilds++;
     return Container(
       color: palette.bg,
       child: Column(
@@ -308,16 +352,23 @@ class TimelineViewState extends State<TimelineView> {
         child: ClipRect(
           child: LayoutBuilder(builder: (context, box) {
             final size = Size(box.maxWidth, box.maxHeight);
-            final world = SizedBox(
-              width: size.width / _vp.scale,
-              height: size.height / _vp.scale,
-              child: _worldLayer(),
-            );
-            return Transform(
-              transform: Matrix4.translationValues(_vp.pan.dx, _vp.pan.dy, 0)
-                ..multiply(
-                    Matrix4.diagonal3Values(_vp.scale, _vp.scale, 1)),
-              child: world,
+            return ValueListenableBuilder<GraphViewport>(
+              valueListenable: _vp,
+              builder: (context, vp, _) {
+                // 平移/缩放只途经这个 builder：世界层外的控件（顶栏/底栏/
+                // 详情面板/过滤 chips）一帧都不重建。
+                final world = SizedBox(
+                  width: size.width / vp.scale,
+                  height: size.height / vp.scale,
+                  child: _worldLayer(vp, size),
+                );
+                return Transform(
+                  transform: Matrix4.translationValues(vp.pan.dx, vp.pan.dy, 0)
+                    ..multiply(Matrix4.diagonal3Values(vp.scale, vp.scale, 1)),
+                  // 边界收在画布内：世界层重绘不向上传播到宿主页面。
+                  child: RepaintBoundary(child: world),
+                );
+              },
             );
           }),
         ),
@@ -325,7 +376,36 @@ class TimelineViewState extends State<TimelineView> {
     );
   }
 
-  Widget _worldLayer() {
+  /// 按 key 取（或构建）子项实例。同 story_flow 的 `_cardFor`：只有缓存
+  /// 未命中才新建，纯平移帧应为 0 次新建（探针 [debugTimelineChildBuilds]）。
+  Widget _child(String key, Widget Function() build, {bool culled = false}) {
+    if (culled) {
+      if (kDebugMode) debugTimelineCulledChildren++;
+      return const SizedBox.shrink();
+    }
+    final hit = _worldChildren[key];
+    if (hit != null) return hit;
+    if (kDebugMode) debugTimelineChildBuilds++;
+    final w = build();
+    _worldChildren[key] = w;
+    return w;
+  }
+
+  /// 世界层内容签名：数据 / 过滤后的上轴集合（同一批 [TimelineItem] 实例）/
+  /// 选中项 / 刻度档 / 调色板实例（亮暗与主题色变化都会换新实例）。
+  /// 只有这些变化才作废子项实例缓存；视口（平移缩放）刻意不进签名。
+  /// 用 identityHashCode 逐个混入：O(n) 且不分配字符串，拖动帧开销可忽略。
+  int _worldSignature(List<TimelineItem> items, TimelineTickMode tick) {
+    var sig = Object.hash(identityHashCode(_data), identityHashCode(_selected),
+        identityHashCode(palette), tick.index);
+    for (final it in items) {
+      sig = Object.hash(sig, identityHashCode(it));
+    }
+    return sig;
+  }
+
+  Widget _worldLayer(GraphViewport vp, Size viewSize) {
+    if (kDebugMode) debugTimelineWorldBuilds++;
     final rounds = _data.rounds;
     final items = _axisItems;
     final n = rounds.length;
@@ -336,70 +416,98 @@ class TimelineViewState extends State<TimelineView> {
     final layout = assignLanes(items, maxRound: _data.maxRound);
     final laneCount = math.max(1, layout.laneCount);
     final contentH = _kLaneTop + laneCount * (_kLaneH + _kLaneGap) + 10;
-    final tickMode = timelineTickMode(kTlRoundW * _vp.scale);
+    final tickMode = timelineTickMode(kTlRoundW * vp.scale);
+
+    final sig = _worldSignature(items, tickMode);
+    if (sig != _worldSig) {
+      _worldChildren.clear();
+      _worldSig = sig;
+    }
+    // 可见世界矩形（外扩一回合宽，拖动时不会看到色带从边缘「长出来」）。
+    final visible = vp.worldRect(viewSize).inflate(kTlRoundW * 2);
+
+    bool xVisible(double x, double w) =>
+        x + w >= visible.left && x <= visible.right;
 
     final children = <Widget>[
       // 年分隔线（细竖线，画满内容高）。
       for (var i = 0; i < n; i++)
         if (i == 0 || rounds[i - 1].year != rounds[i].year)
-          Positioned(
-            left: i * kTlRoundW,
-            top: 0,
-            width: 1,
-            height: contentH,
-            child: ColoredBox(color: palette.borderHover),
+          _child(
+            'tl-yline-$i',
+            () => Positioned(
+              left: i * kTlRoundW,
+              top: 0,
+              width: 1,
+              height: contentH,
+              child: ColoredBox(color: palette.borderHover),
+            ),
+            culled: !xVisible(i * kTlRoundW, 1),
           ),
       // 季节色带 + holiday 条纹。
       for (var i = 0; i < n; i++)
-        Positioned(
-          key: ValueKey('tl-band-${rounds[i].round}'),
-          left: i * kTlRoundW,
-          top: _kYearH,
-          width: kTlRoundW,
-          height: _kSeasonH,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: seasonColor(rounds[i].season)
-                  .withValues(alpha: rounds[i].holiday ? 0.22 : 0.5),
-              border: Border(
-                left: BorderSide(color: palette.border.withValues(alpha: 0.6)),
+        _child(
+          'tl-band-${rounds[i].round}',
+          () => Positioned(
+            key: ValueKey('tl-band-${rounds[i].round}'),
+            left: i * kTlRoundW,
+            top: _kYearH,
+            width: kTlRoundW,
+            height: _kSeasonH,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: seasonColor(rounds[i].season)
+                    .withValues(alpha: rounds[i].holiday ? 0.22 : 0.5),
+                border: Border(
+                  left: BorderSide(color: palette.border.withValues(alpha: 0.6)),
+                ),
               ),
+              child: rounds[i].holiday
+                  ? CustomPaint(
+                      key: ValueKey('tl-holiday-${rounds[i].round}'),
+                      painter: _StripePainter(),
+                      size: Size.infinite,
+                    )
+                  : const SizedBox.shrink(),
             ),
-            child: rounds[i].holiday
-                ? CustomPaint(
-                    key: ValueKey('tl-holiday-${rounds[i].round}'),
-                    painter: _StripePainter(),
-                    size: Size.infinite,
-                  )
-                : const SizedBox.shrink(),
           ),
+          culled: !xVisible(i * kTlRoundW, kTlRoundW),
         ),
       // 年份标签：只在年段起点出现一次。
       for (var i = 0; i < n; i++)
         if (i == 0 || rounds[i - 1].year != rounds[i].year)
-          Positioned(
-            key: ValueKey('tl-year-${rounds[i].year}'),
-            left: i * kTlRoundW + 4,
-            top: 2,
-            child: Text(
-              '第${rounds[i].year}年',
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: palette.textPrimary),
+          _child(
+            'tl-year-${rounds[i].year}',
+            () => Positioned(
+              key: ValueKey('tl-year-${rounds[i].year}'),
+              left: i * kTlRoundW + 4,
+              top: 2,
+              child: Text(
+                '第${rounds[i].year}年',
+                style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: palette.textPrimary),
+              ),
             ),
+            // 标签宽度不定，左侧多留一格作余量。
+            culled: !xVisible(i * kTlRoundW + 4, kTlRoundW * 2),
           ),
       // 刻度标签：密度自适应（full=每回合 round+名；season=季节起点；year=年份）。
       for (var i = 0; i < n; i++)
         if (_showsTick(tickMode, rounds, i))
-          Positioned(
-            key: ValueKey('tl-tick-${rounds[i].round}'),
-            left: i * kTlRoundW + 2,
-            top: _kYearH + _kSeasonH + 2,
-            child: Text(
-              _tickLabel(tickMode, rounds[i]),
-              style: TextStyle(fontSize: 8.5, color: palette.textHint),
+          _child(
+            'tl-tick-${rounds[i].round}',
+            () => Positioned(
+              key: ValueKey('tl-tick-${rounds[i].round}'),
+              left: i * kTlRoundW + 2,
+              top: _kYearH + _kSeasonH + 2,
+              child: Text(
+                _tickLabel(tickMode, rounds[i]),
+                style: TextStyle(fontSize: 8.5, color: palette.textHint),
+              ),
             ),
+            culled: !xVisible(i * kTlRoundW + 2, kTlRoundW),
           ),
     ];
 
@@ -417,38 +525,43 @@ class TimelineViewState extends State<TimelineView> {
       final y = _kLaneTop + lane * (_kLaneH + _kLaneGap);
       final sel = identical(_selected, it);
       final color = timelineCfgColor(it.cfg);
-      children.add(Positioned(
-        key: ValueKey('tl-item-${it.cfg}-${it.id}'),
-        left: x1 + 1,
-        top: y,
-        width: math.max(6.0, x2 - x1 - 2),
-        height: _kLaneH,
-        child: GestureDetector(
-          onTap: () => setState(() => _selected = it),
-          child: Tooltip(
-            message: it.name.isEmpty ? it.id : it.name,
-            child: Container(
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: sel ? 0.95 : 0.7),
-                borderRadius: BorderRadius.circular(3),
-                border: sel
-                    ? Border.all(color: accentColor, width: 1.4)
-                : Border.all(
-                    color: lightenColor(color).withValues(alpha: 0.5)),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              alignment: Alignment.centerLeft,
-              child: Text(
-                it.name.isEmpty ? '#${it.id}' : it.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 9,
-                    color: sel ? palette.onAccent : palette.textHigh),
+      final w = math.max(6.0, x2 - x1 - 2);
+      children.add(_child(
+        'tl-item-${it.cfg}-${it.id}',
+        () => Positioned(
+          key: ValueKey('tl-item-${it.cfg}-${it.id}'),
+          left: x1 + 1,
+          top: y,
+          width: w,
+          height: _kLaneH,
+          child: GestureDetector(
+            onTap: () => setState(() => _selected = it),
+            child: Tooltip(
+              message: it.name.isEmpty ? it.id : it.name,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: sel ? 0.95 : 0.7),
+                  borderRadius: BorderRadius.circular(3),
+                  border: sel
+                      ? Border.all(color: accentColor, width: 1.4)
+                      : Border.all(
+                          color: lightenColor(color).withValues(alpha: 0.5)),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  it.name.isEmpty ? '#${it.id}' : it.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 9,
+                      color: sel ? palette.onAccent : palette.textHigh),
+                ),
               ),
             ),
           ),
         ),
+        culled: !xVisible(x1 + 1, w),
       ));
     }
 

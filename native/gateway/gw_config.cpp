@@ -245,6 +245,28 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
     }
     out->session_ttl_hours = ttl;
 
+    // 「记住我」refresh token 有效期（天）。默认 30；上限 10 年防误配。
+    long long refresh_days = out->refresh_ttl_days;
+    if (!get_int(j, "refresh_ttl_days", &refresh_days, err)) return false;
+    if (refresh_days < 1 || refresh_days > 3650) {
+        *err = "refresh_ttl_days must be in 1..3650";
+        return false;
+    }
+    out->refresh_ttl_days = refresh_days;
+
+    // 请求体/上传上限（可选）。下限 1 MiB、上限 16 GiB 防误配。
+    long long max_body = out->max_body_bytes;
+    if (!get_int(j, "max_body_bytes", &max_body, err)) return false;
+    if (max_body < 1024ll * 1024) {
+        *err = "max_body_bytes must be >= 1048576 (1 MiB)";
+        return false;
+    }
+    if (max_body > 16ll * 1024 * 1024 * 1024) {
+        *err = "max_body_bytes must be <= 17179869184 (16 GiB)";
+        return false;
+    }
+    out->max_body_bytes = max_body;
+
     if (j.contains("instance")) {
         const auto& inst = j["instance"];
         if (!inst.is_object()) {
@@ -391,6 +413,23 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
     // main() 会把该开关传给 fork 出的每个 backend 实例。
     if (!get_bool(j, "cloud_public_only", &out->cloud_public_only, err)) return false;
 
+    // --- portraits（人物图片资源扩展，默认关闭）-------------------------------
+    // 服务器端两种安装方式：dir = 本地已解包目录；base_url = 对象存储公开基址。
+    // 均为空即关闭；网关把它们作为环境变量传给 fork 的 backend 实例。
+    if (j.contains("portraits")) {
+        const auto& po = j["portraits"];
+        if (!po.is_object()) {
+            *err = "'portraits' must be an object";
+            return false;
+        }
+        if (!get_str(po, "dir", &out->portraits.dir, err)) return false;
+        if (!get_str(po, "base_url", &out->portraits.base_url, err)) return false;
+        while (!out->portraits.base_url.empty() &&
+               out->portraits.base_url.back() == '/') {
+            out->portraits.base_url.pop_back();
+        }
+    }
+
     // --- registration（自助注册，默认关闭）-----------------------------------
     if (j.contains("registration")) {
         const auto& reg = j["registration"];
@@ -417,6 +456,8 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
     }
     // 注册账号落盘位置派生自 state_dir（<state_dir>/accounts.json）。
     out->accounts_file = sa_core::paths::join(out->state_dir, "accounts.json");
+    // 「记住我」refresh token 落盘位置派生自 state_dir。
+    out->refresh_file = sa_core::paths::join(out->state_dir, "refresh_tokens.json");
     return true;
 }
 

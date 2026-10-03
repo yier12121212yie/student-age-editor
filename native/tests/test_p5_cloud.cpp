@@ -125,6 +125,29 @@ std::string rfile(const fs::path& p) {
     return s;
 }
 
+// Minimal %XX decoder for the mock's query-string assertions.
+std::string pct_decode(const std::string& in) {
+    auto hexv = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::string out;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            int h = hexv(in[i + 1]), l = hexv(in[i + 2]);
+            if (h >= 0 && l >= 0) {
+                out += static_cast<char>(h * 16 + l);
+                i += 2;
+                continue;
+            }
+        }
+        out += in[i];
+    }
+    return out;
+}
+
 std::vector<std::string> keys_of(const json& j) {
     std::vector<std::string> out;
     for (auto it = j.begin(); it != j.end(); ++it) out.push_back(it.key());
@@ -336,12 +359,21 @@ TEST_CASE("P5 remote_path_for builds <root>/<mod>/<rel>", "[p5][cloud][units]") 
 TEST_CASE("P5 DRIVERS registry order + get_driver envelopes", "[p5][cloud][units]") {
     std::vector<std::string> names;
     for (const auto& [n, f] : sa::cloud::drivers()) names.push_back(n);
-    CHECK(names == std::vector<std::string>{"local", "webdav", "openlist", "alist",
-                                            "baidu_netdisk", "baidu", "123", "123pan",
-                                            "google_drive", "gdrive", "onedrive"});
+    // 去重后的规范驱动列表（历史别名不再登记，仅 get_driver 兼容解析）。
+    CHECK(names == std::vector<std::string>{"local", "webdav", "openlist",
+                                            "baidu_netdisk", "123", "google_drive",
+                                            "onedrive", "aliyun_oss", "tencent_cos",
+                                            "aws_s3", "cloudflare_r2"});
     auto get = [&](const json& t) { return sa::cloud::get_driver(t, json::object()); };
     CHECK(get(json("LOCAL")) != nullptr);          // lower-cased
-    CHECK(get(json("alist")) != nullptr);          // alias
+    CHECK(get(json("alist")) != nullptr);          // legacy alias still resolves
+    CHECK(get(json("baidu")) != nullptr);          // legacy alias still resolves
+    CHECK(get(json("123pan")) != nullptr);         // legacy alias still resolves
+    CHECK(get(json("gdrive")) != nullptr);         // legacy alias still resolves
+    CHECK(get(json("aws_s3")) != nullptr);
+    CHECK(get(json("aliyun_oss")) != nullptr);
+    CHECK(get(json("tencent_cos")) != nullptr);
+    CHECK(get(json("cloudflare_r2")) != nullptr);
     auto env = [&](const json& t) {
         try {
             get(t);
@@ -1819,9 +1851,9 @@ TEST_CASE("P5 cloud routes: providers list masks secrets + drivers order", "[p5]
     CHECK((*stored)["config"]["credential"] == "cred");
     CHECK((*stored)["config"]["token"] == "abc");
     CHECK(resp.json_payload["drivers"].get<std::vector<std::string>>() ==
-          std::vector<std::string>{"local", "webdav", "openlist", "alist", "baidu_netdisk",
-                                   "baidu", "123", "123pan", "google_drive", "gdrive",
-                                   "onedrive"});
+          std::vector<std::string>{"local", "webdav", "openlist", "baidu_netdisk", "123",
+                                   "google_drive", "onedrive", "aliyun_oss", "tencent_cos",
+                                   "aws_s3", "cloudflare_r2"});
 
     auto dv = sat::call_router(r, "GET", "/api/cloud/drivers");
     REQUIRE(dv.status == 200);
@@ -1988,4 +2020,180 @@ TEST_CASE("P5 cloud routes: test/sync/file/list/local_files mappings", "[p5][clo
     auto g3 = sat::call_router(r, "GET", "/api/cloud/local_files");
     REQUIRE(g3.status == 400);
     CHECK(g3.json_payload["error"] == "mod_name required");
+}
+
+// ---------------------------------------------------------------------------
+// S3-compatible drivers (aliyun_oss / tencent_cos / aws_s3 / cloudflare_r2)
+// against the local mock. The mock ignores the signature but asserts the
+// SigV4 Authorization envelope and exercises the ListObjectsV2 XML mapping
+// (Contents -> files, CommonPrefixes -> directories), get/put/remove/stat.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("P5 S3 drivers: SigV4 envelope + list/get/put/remove/stat vs mock",
+          "[p5][cloud][s3][mock]") {
+    CloudFixture fx("s3");
+    auto files = std::make_shared<std::map<std::string, std::string>>();
+    auto mu = std::make_shared<std::mutex>();
+    (*files)["mods/demo/a.json"] = "hello";
+    (*files)["mods/demo/empty"] = "";
+    (*files)["mods/demo/sub/deep.bin"] = std::string(100, 'x');
+
+    p5mock::Server mock;
+    auto param = [](const std::string& query, const std::string& name) -> std::string {
+        std::string needle = name + "=";
+        size_t p = query.find(needle);
+        if (p == std::string::npos) return "";
+        size_t s = p + needle.size();
+        size_t e = query.find('&', s);
+        return pct_decode(query.substr(s, e == std::string::npos ? std::string::npos : e - s));
+    };
+    mock.on("GET", "", [files, mu, param](const p5mock::Request& req, p5mock::Response& res) {
+        const std::string path = req.path;  // decoded, query stripped
+        size_t slash = path.find('/', 1);
+        const std::string key = slash == std::string::npos ? std::string() : path.substr(slash + 1);
+        std::lock_guard<std::mutex> lk(*mu);
+        if (key.empty()) {  // bucket-level ListObjectsV2
+            const std::string target = req.target;
+            size_t q = target.find('?');
+            const std::string query = q == std::string::npos ? std::string() : target.substr(q + 1);
+            const std::string prefix = param(query, "prefix");
+            const std::string delim = param(query, "delimiter");
+            std::set<std::string> dirs;
+            std::string xml = "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">";
+            for (const auto& [k, v] : *files) {
+                if (!prefix.empty() && k.rfind(prefix, 0) != 0) continue;
+                const std::string rest = k.substr(prefix.size());
+                if (delim == "/") {
+                    size_t s = rest.find('/');
+                    if (s != std::string::npos) {
+                        dirs.insert(prefix + rest.substr(0, s + 1));
+                        continue;
+                    }
+                }
+                xml += "<Contents><Key>" + k + "</Key><Size>" + std::to_string(v.size()) +
+                       "</Size><LastModified>2026-09-01T08:30:00.000Z</LastModified></Contents>";
+            }
+            for (const auto& d : dirs)
+                xml += "<CommonPrefixes><Prefix>" + d + "</Prefix></CommonPrefixes>";
+            xml += "<IsTruncated>false</IsTruncated></ListBucketResult>";
+            res.set_content(xml, "application/xml");
+            return;
+        }
+        auto it = files->find(key);
+        if (it == files->end()) {
+            res.status = 404;
+            return;
+        }
+        res.set_content(it->second, "application/octet-stream");
+    });
+    mock.on("PUT", "", [files, mu](const p5mock::Request& req, p5mock::Response& res) {
+        const std::string key = req.path.substr(req.path.find('/', 1) + 1);
+        std::lock_guard<std::mutex> lk(*mu);
+        (*files)[key] = req.body;
+        res.status = 200;
+    });
+    mock.on("DELETE", "", [files, mu](const p5mock::Request& req, p5mock::Response& res) {
+        const std::string key = req.path.substr(req.path.find('/', 1) + 1);
+        std::lock_guard<std::mutex> lk(*mu);
+        files->erase(key);
+        res.status = 204;
+    });
+    mock.serve();
+    int port = mock.start();
+    REQUIRE(port > 0);
+
+    json cfg;
+    cfg["endpoint"] = mock.base();
+    cfg["bucket"] = "b";
+    cfg["access_key"] = "AKIDEXAMPLE";
+    cfg["secret_key"] = "SECRET";
+    cfg["region"] = "us-east-1";
+    auto drv = sa::cloud::get_driver(json("aws_s3"), cfg);
+
+    drv->test();
+
+    // list(): files + one emulated directory.
+    auto objs = drv->list("mods/demo");
+    std::map<std::string, sa::cloud::Obj> by_path;
+    for (const auto& o : objs) by_path[o.path] = o;
+    REQUIRE(by_path.count("mods/demo/a.json") == 1);
+    CHECK(by_path["mods/demo/a.json"].size == 5);
+    CHECK_FALSE(by_path["mods/demo/a.json"].is_dir);
+    CHECK(by_path["mods/demo/a.json"].mtime == 1788251400LL);
+    REQUIRE(by_path.count("mods/demo/empty") == 1);
+    CHECK(by_path["mods/demo/empty"].size == 0);
+    REQUIRE(by_path.count("mods/demo/sub") == 1);
+    CHECK(by_path["mods/demo/sub"].is_dir);
+    CHECK(by_path["mods/demo/sub"].name == "sub");
+
+    // get()
+    fs::path out = fx.root() / "out.json";
+    drv->get("mods/demo/a.json", P(out));
+    CHECK(rfile(out) == "hello");
+
+    // put()
+    fs::path up = fx.root() / "up.json";
+    wfile(up, "world");
+    drv->put(P(up), "mods/demo/new.json");
+    {
+        std::lock_guard<std::mutex> lk(*mu);
+        CHECK((*files)["mods/demo/new.json"] == "world");
+    }
+
+    // stat(): object, emulated dir, missing.
+    auto so = drv->stat("mods/demo/a.json");
+    REQUIRE(so.has_value());
+    CHECK(so->size == 5);
+    CHECK_FALSE(so->is_dir);
+    auto sd = drv->stat("mods/demo/sub");
+    REQUIRE(sd.has_value());
+    CHECK(sd->is_dir);
+    CHECK_FALSE(drv->stat("mods/demo/nope").has_value());
+
+    // remove(): existing (204) and missing (404 tolerated).
+    drv->remove("mods/demo/a.json");
+    {
+        std::lock_guard<std::mutex> lk(*mu);
+        CHECK(files->count("mods/demo/a.json") == 0);
+    }
+    drv->remove("mods/demo/nope");
+
+    // Every request carried a well-formed SigV4 Authorization envelope.
+    bool auth_ok = false;
+    for (const auto& c : mock.calls()) {
+        auto it = c.headers.find("authorization");
+        if (it != c.headers.end() &&
+            it->second.rfind("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/", 0) == 0 &&
+            it->second.find("/us-east-1/s3/aws4_request") != std::string::npos &&
+            it->second.find("SignedHeaders=") != std::string::npos &&
+            it->second.find("Signature=") != std::string::npos)
+            auth_ok = true;
+    }
+    CHECK(auth_ok);
+
+    // Provider flavours resolve; missing required config raises.
+    CHECK(sa::cloud::get_driver(json("aliyun_oss"), cfg) != nullptr);
+    CHECK(sa::cloud::get_driver(json("tencent_cos"), cfg) != nullptr);
+    CHECK(sa::cloud::get_driver(json("cloudflare_r2"), cfg) != nullptr);
+    auto config_env = [](const char* type, const json& c) {
+        try {
+            sa::cloud::get_driver(json(type), c)->test();
+            return std::string("");
+        } catch (const sa::cloud::PyError& e) {
+            return std::string(e.what());
+        }
+    };
+    CHECK(config_env("aws_s3", json::object()) == "ValueError: aws_s3 bucket required");
+    json badep;
+    badep["endpoint"] = "notaurl";
+    badep["bucket"] = "b";
+    CHECK(config_env("aws_s3", badep) == "ValueError: aws_s3 invalid endpoint: notaurl");
+    json nocred;
+    nocred["endpoint"] = mock.base();
+    nocred["bucket"] = "b";
+    CHECK(config_env("aliyun_oss", nocred) == "ValueError: aliyun_oss access_key required");
+    json r2none;
+    r2none["bucket"] = "b";
+    CHECK(config_env("cloudflare_r2", r2none) ==
+          "ValueError: cloudflare_r2 需要 endpoint 或 account_id");
 }

@@ -220,18 +220,23 @@ class _ResourcesPageState extends State<ResourcesPage> {
         Divider(height: 1, color: palette.border),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              _tabBtn('tex', '贴图'),
-              const SizedBox(width: 4),
-              _tabBtn('aud', '音频'),
-              const SizedBox(width: 4),
-              _tabBtn('txt', '文本'),
-              const SizedBox(width: 4),
-              _tabBtn('explorer', '资源库'),
-              const SizedBox(width: 4),
-              _tabBtn('live2d', 'Live2D'),
-            ],
+          // 5 个页签在 320 宽手机上总宽会略微超出（~4px）导致黄色溢出条：
+          // 横向可滚动后窄屏可左右滑动查看，宽屏行为不变。
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _tabBtn('tex', '贴图'),
+                const SizedBox(width: 4),
+                _tabBtn('aud', '音频'),
+                const SizedBox(width: 4),
+                _tabBtn('txt', '文本'),
+                const SizedBox(width: 4),
+                _tabBtn('explorer', '资源库'),
+                const SizedBox(width: 4),
+                _tabBtn('live2d', 'Live2D'),
+              ],
+            ),
           ),
         ),
         Divider(height: 1, color: palette.border),

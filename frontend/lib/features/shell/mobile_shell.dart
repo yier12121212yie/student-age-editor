@@ -59,6 +59,10 @@ class _MobileShellState extends State<MobileShell> {
   /// 已访问过的底部 tab：IndexedStack 保活用（见 _buildBody）。
   final Set<int> _visited = {0};
 
+  /// 访问过的 tab 历史栈（去重，最近的在上）：系统返回键逐级回退，
+  /// 而不是在任何 tab 上都直接退出应用。
+  final List<int> _tabHistory = [];
+
   @override
   void initState() {
     super.initState();
@@ -78,17 +82,28 @@ class _MobileShellState extends State<MobileShell> {
     if (seq == _openSeq) return;
     _openSeq = seq;
     if (_tab != 3) {
-      setState(() {
-        _tab = 3;
-        _visited.add(3);
-      });
+      _switchTab(3);
     }
   }
 
   void _switchTab(int i) {
+    if (i == _tab) return;
     setState(() {
+      // 记录来源 tab（去重，保留最近一次），系统返回键据此回退。
+      _tabHistory.remove(i);
+      _tabHistory.add(_tab);
+      if (_tabHistory.length > 8) _tabHistory.removeAt(0);
       _tab = i;
       _visited.add(i);
+    });
+  }
+
+  /// 系统返回键：回退到上一个访问过的 tab；没有历史则回到首页 tab（0）。
+  void _goBackTab() {
+    setState(() {
+      final prev = _tabHistory.isNotEmpty ? _tabHistory.removeLast() : 0;
+      _tab = prev;
+      _visited.add(prev);
     });
   }
 
@@ -111,26 +126,41 @@ class _MobileShellState extends State<MobileShell> {
             backgroundColor: palette.bg,
           ),
         ),
-        child: Scaffold(
-          key: _scaffoldKey,
-          backgroundColor: palette.bgDeep2,
-          appBar: _MobileAppBar(
-            state: state,
-            onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-            onSearch: () => _showSheet(BaseSearchPage(state: state)),
-            onAi: () => _showAiSheet(),
-          ),
-          drawer: _MobileDrawer(
-            state: state,
-            currentTab: _tab,
-            onSelectTab: _switchTab,
-          ),
-          body: SafeArea(child: _buildBody()),
-          bottomNavigationBar: SafeArea(
-            child: _MobileBottomBar(
-              current: _tab,
-              editorBadge: shell.controller.docs.isNotEmpty,
-              onTap: _switchTab,
+        child: PopScope(
+          // 非首页 tab 时拦截系统返回：先逐级回退 tab，只有回到首页（模组）
+          // 再按返回才退出应用——这是 Android 用户对底部导航的默认预期。
+          canPop: _tab == 0,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            // 抽屉打开时优先关闭抽屉（部分机型返回键不会先走 LocalHistoryEntry）。
+            final scaffold = _scaffoldKey.currentState;
+            if (scaffold != null && scaffold.isDrawerOpen) {
+              scaffold.closeDrawer();
+              return;
+            }
+            _goBackTab();
+          },
+          child: Scaffold(
+            key: _scaffoldKey,
+            backgroundColor: palette.bgDeep2,
+            appBar: _MobileAppBar(
+              state: state,
+              onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+              onSearch: () => _showSheet(BaseSearchPage(state: state)),
+              onAi: () => _showAiSheet(),
+            ),
+            drawer: _MobileDrawer(
+              state: state,
+              currentTab: _tab,
+              onSelectTab: _switchTab,
+            ),
+            body: SafeArea(child: _buildBody()),
+            bottomNavigationBar: SafeArea(
+              child: _MobileBottomBar(
+                current: _tab,
+                editorBadge: shell.controller.docs.isNotEmpty,
+                onTap: _switchTab,
+              ),
             ),
           ),
         ),
@@ -158,9 +188,14 @@ class _MobileShellState extends State<MobileShell> {
           index: order.indexOf(_tab),
           // KeyedSubtree：order 列表会因新访问的 tab 插入元素，
           // 按位置匹配会让相邻 tab 复用错对象的 State，显式加 key 隔离。
+          // TickerMode：IndexedStack 只绘制当前 tab，隐藏 tab 的动画却仍
+          // 在跑（保活视图里的点点/呼吸类 repeat 动画会一直出帧）。
           children: [
             for (final i in order)
-              KeyedSubtree(key: ValueKey('mtab$i'), child: _buildTab(i)),
+              KeyedSubtree(
+                key: ValueKey('mtab$i'),
+                child: TickerMode(enabled: i == _tab, child: _buildTab(i)),
+              ),
           ],
         );
       },

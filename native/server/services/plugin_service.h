@@ -47,6 +47,24 @@ bool safe_pid(const std::string& pid);
 // excluded, broken manifests dropped.
 std::vector<Found> scan_plugins();
 
+// --- 扩展合并：插件启用态 -------------------------------------------------
+// 资源包与插件合并为「扩展」后，插件不再是「常开」：启用列表持久化在
+// <plugins_root>/plugins.json -> {"enabled":[ids]}。文件缺失 => 全部启用
+// （默认启用，兼容既有「常开」语义与既有测试）；文件存在 => 只有列出的
+// 插件启用。启用态只影响 UI 贡献聚合与 /api/extensions 列表，目录扫描、
+// 服务代理与安装/卸载行为不变。
+std::string plugins_state_path();
+// 显式启用集；nullopt == 未写状态（默认全启用）。
+std::optional<std::vector<std::string>> explicit_enabled_plugins();
+bool is_plugin_enabled(const std::string& pid);
+// 已发现插件 ∩ 启用集（默认全启用时即全部已发现插件），按 pid 排序。
+std::vector<std::string> enabled_plugin_ids();
+std::vector<std::string> enabled_plugin_dirs();
+json set_enabled_plugins(const std::vector<std::string>& ids);
+// 安装 => 默认启用（仅在状态文件已存在时落盘，否则默认启用即覆盖）。
+void remember_installed_plugin(const std::string& pid);
+void forget_plugin(const std::string& pid);
+
 // --- the "service" declaration --------------------------------------------
 
 struct Decl {

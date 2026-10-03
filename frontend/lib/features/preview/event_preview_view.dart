@@ -14,7 +14,8 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../ai/ai_panel.dart';
 import '../editor/editor_controller.dart';
-import '../resources/image_asset_picker.dart' show TexBytesCache;
+import '../resources/image_asset_picker.dart'
+    show TexBytesCache, TexSource, TexSourceImage;
 import '../settings/settings_page.dart';
 import 'preview_audio.dart';
 import 'preview_models.dart';
@@ -45,11 +46,13 @@ class _EventPreviewViewState extends State<EventPreviewView> {
   String? _curBgKey;
   String? _curBgName;
 
-  // 图片缓存：tex key -> PNG bytes
-  final Map<String, Uint8List> _imgCache = {};
+  // 图片缓存：tex key -> PNG bytes（按总字节封顶的 LRU，见 [_BytesLru]）
+  final _BytesLru _imgCache = _BytesLru();
   final Set<String> _imgLoading = {};
   /// tex key -> 加载失败原因（用于替代「加载中」占位）。
   final Map<String, String> _imgErrors = {};
+  /// 人物图片扩展走对象存储时的公开 URL：tex key -> url（客户端自行 GET）。
+  final Map<String, String> _imgUrls = {};
 
   // AI 侧栏（桌面内嵌；移动端改底部滑出层，380px 并排栏会压垮窄屏舞台）
   final GlobalKey<AiPanelState> _aiKey = GlobalKey<AiPanelState>();
@@ -77,7 +80,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
   int _fxShakeToken = 0;
   double _fxShakeSec = 0.6;
   // CG：cgRef → 字节的会话缓存 + CGCfg id→url 表 + 取字节世代号（防跨句回填竞态）。
-  final Map<String, Uint8List?> _cgCache = {};
+  final _BytesLru _cgCache = _BytesLru();
   Map<String, String>? _cgUrlTable;
   Uint8List? _cgBytes;
   int _cgGen = 0;
@@ -96,7 +99,10 @@ class _EventPreviewViewState extends State<EventPreviewView> {
       setState(() => _fsEntry = null);
       return;
     }
-    final entry = OverlayEntry(builder: (_) => _buildFullscreenLayer());
+    // opaque: 全屏层是不透明黑底铺满（见 _buildFullscreenLayer），声明不透明
+    // 后 Flutter 会跳过被完全遮住的标签页舞台的绘制与布局——否则每次 setState
+    // 都会把两套舞台各画一遍（内联那份用户根本看不见）。
+    final entry = OverlayEntry(builder: (_) => _buildFullscreenLayer(), opaque: true);
     Overlay.of(context).insert(entry);
     setState(() => _fsEntry = entry);
   }
@@ -235,6 +241,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
         _hist.clear();
         _imgCache.clear();
         _imgErrors.clear();
+        _imgUrls.clear();
         // 音频/效果状态随整场重置。
         _fx = const StageVisual();
         _fxFlashToken = _fxShakeToken = 0;
@@ -281,20 +288,29 @@ class _EventPreviewViewState extends State<EventPreviewView> {
 
   Future<Uint8List?> _loadTex(String key) async {
     if (key.isEmpty) return null;
-    final cached = _imgCache[key];
+    final cached = _imgCache.get(key);
     if (cached != null) return cached;
     if (_imgLoading.contains(key)) return null;
     _imgLoading.add(key);
     try {
       final r = await ApiClient.instance
           .post('/api/aa/preview', body: {'kind': 'tex', 'key': key});
+      // 人物图片扩展：服务端只回 COS 公开 URL，客户端自行请求（web 端
+      // 用 HTML <img> 策略渲染，无需对象存储开 CORS）。
+      final url = r['url'];
+      if (url is String && url.isNotEmpty) {
+        _imgUrls[key] = url;
+        _imgErrors.remove(key);
+        if (mounted) setState(() {});
+        return null;
+      }
       final data = r['data'];
       if (data is String) {
         // 1080p 背景的 base64 有数 MB，解码搬去后台 isolate（手机预览掉帧源之一）。
         final bytes = data.length > 256 * 1024
             ? await compute(_base64DecodeIsolate, data)
             : base64Decode(data);
-        _imgCache[key] = bytes;
+        _imgCache.put(key, bytes);
         _imgErrors.remove(key);
         if (mounted) setState(() {});
         return bytes;
@@ -410,7 +426,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
         _cgBytes = null;
       } else {
         final key = cg.toString();
-        final cached = _cgCache[key];
+        final cached = _cgCache.get(key);
         if (cached != null) {
           _cgBytes = cached;
         } else {
@@ -439,7 +455,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
     await _ensureCgUrlTable();
     final url = _cgUrlFor(cgRef);
     final bytes = await TexBytesCache.loadSmart(url);
-    _cgCache[key] = bytes;
+    _cgCache.put(key, bytes);
     if (!mounted || _cgGen != gen) return;
     if (_fx.cgRef?.toString() != key) return;
     setState(() => _cgBytes = bytes);
@@ -758,7 +774,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
     final bgKey = (talk.stage.bg?.key.isNotEmpty ?? false)
         ? talk.stage.bg!.key
         : _curBgKey;
-    final bgBytes = bgKey != null ? _imgCache[bgKey] : null;
+    final bgBytes = bgKey != null ? _imgCache.get(bgKey) : null;
     final options = [
       for (final oid in talk.options)
         if (data.options[oid] != null) (oid, data.options[oid]!),
@@ -793,35 +809,42 @@ class _EventPreviewViewState extends State<EventPreviewView> {
                     fit: StackFit.expand,
                     children: [
                       // 背景 + 立绘：这一层受持续屏效滤镜影响（4002 模糊 / 4010 反色）。
-                      applyStageFilters(
-                        Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            if (bgBytes != null)
-                              // 按画布显示宽度 × DPR 限制解码尺寸（1080p 背景降采样）。
-                              Image.memory(bgBytes,
-                                  fit: BoxFit.cover,
-                                  gaplessPlayback: true,
-                                  cacheWidth:
-                                      _decodeCacheWidth(context, cw, factor: 2))
-                            else
-                              _Placeholder(
-                                label: (bgKey == null || bgKey.isEmpty)
-                                    ? '无背景画面（该对白未指定背景）'
-                                    : (_imgErrors.containsKey(bgKey)
-                                        ? '背景不可用：${_imgErrors[bgKey]}'
-                                        : '背景加载中…'),
-                                color: palette.bgDeep,
-                              ),
-                            for (final c in talk.stage.chars)
-                              _CharSprite(
-                                char: c,
-                                bytes: c.tex.isNotEmpty ? _imgCache[c.tex] : null,
-                              ),
-                          ],
+                      // RepaintBoundary 把「模糊/反色输出」冻结成独立图层：
+                      // 对白框/选项/闪白/黑幕这些同帧变化的兄弟节点重绘时不再
+                      // 带着整画布 sigma=10 模糊重算（预览里最贵的一笔 GPU 开销）。
+                      RepaintBoundary(
+                        child: applyStageFilters(
+                          Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (bgBytes != null)
+                                // 按画布显示宽度 × DPR 限制解码尺寸（1080p 背景降采样）。
+                                Image.memory(bgBytes,
+                                    fit: BoxFit.cover,
+                                    gaplessPlayback: true,
+                                    cacheWidth:
+                                        _decodeCacheWidth(context, cw, factor: 2))
+                              else
+                                _Placeholder(
+                                  label: (bgKey == null || bgKey.isEmpty)
+                                      ? '无背景画面（该对白未指定背景）'
+                                      : (_imgErrors.containsKey(bgKey)
+                                          ? '背景不可用：${_imgErrors[bgKey]}'
+                                          : '背景加载中…'),
+                                  color: palette.bgDeep,
+                                ),
+                              for (final c in talk.stage.chars)
+                                _CharSprite(
+                                  char: c,
+                                  bytes:
+                                      c.tex.isNotEmpty ? _imgCache.get(c.tex) : null,
+                                  url: c.tex.isNotEmpty ? _imgUrls[c.tex] : null,
+                                ),
+                            ],
+                          ),
+                          blur: _fx.blur,
+                          invert: _fx.invert,
                         ),
-                        blur: _fx.blur,
-                        invert: _fx.invert,
                       ),
                       // 选项 / 对白框：不进滤镜层，保持清晰可读。
                       if (options.isNotEmpty)
@@ -860,7 +883,12 @@ class _EventPreviewViewState extends State<EventPreviewView> {
                       StageFlashBurst(token: _fxFlashToken),
                       // 全屏 CG（4015）：黑底控图，点击提前结束。
                       if (_fx.cgRef != null && !_cgDismissed)
-                        StageCgLayer(bytes: _cgBytes, onDismiss: _dismissCg),
+                        StageCgLayer(
+                          bytes: _cgBytes,
+                          onDismiss: _dismissCg,
+                          // BoxFit.contain 装得下整图，无需 overscan（factor=1）。
+                          cacheWidth: _decodeCacheWidth(context, cw),
+                        ),
                       // 画笔覆盖层（最上层，交互优先）。
                       if (_brushMode)
                         _BrushOverlay(
@@ -888,6 +916,41 @@ class _EventPreviewViewState extends State<EventPreviewView> {
 }
 
 // ---------------- 解码尺寸辅助 ----------------
+
+/// 会话级字节 LRU（键 → 原图字节；null = 已取过但失败，占位防反复重试）。
+///
+/// 预览页原先用普通 Map：长会话连续切对白/切事件会把每张 1080p 背景、立绘
+/// 与 CG 字节全部留在内存（几十张就上百 MB），CG 那层还会把全局
+/// [TexBytesCache] 的 LRU 淘汰钩死。按总字节数封顶，超限淘汰最旧
+/// （Map 插入序即 LRU 序，同 TexBytesCache 的做法）。
+class _BytesLru {
+  static const int _maxBytes = 48 * 1024 * 1024;
+
+  final Map<String, Uint8List?> _m = {};
+  int _bytes = 0;
+
+  /// 命中即续命（移到 LRU 尾）；未命中或曾是失败占位返回 null。
+  Uint8List? get(String key) {
+    if (!_m.containsKey(key)) return null;
+    final v = _m.remove(key);
+    _m[key] = v;
+    return v;
+  }
+
+  void put(String key, Uint8List? bytes) {
+    _bytes -= _m.remove(key)?.length ?? 0;
+    _m[key] = bytes;
+    _bytes += bytes?.length ?? 0;
+    while (_bytes > _maxBytes && _m.length > 1) {
+      _bytes -= _m.remove(_m.keys.first)?.length ?? 0;
+    }
+  }
+
+  void clear() {
+    _m.clear();
+    _bytes = 0;
+  }
+}
 
 /// [compute] 入口：后台 isolate 解码 base64 纹理（手机预览切背景/立绘不掉帧）。
 Uint8List _base64DecodeIsolate(String b64) => base64Decode(b64);
@@ -1187,13 +1250,17 @@ class _Placeholder extends StatelessWidget {
 
 /// 立绘精灵：底部对齐 + 按站位横向定位 + 镜像翻转。
 class _CharSprite extends StatelessWidget {
-  const _CharSprite({required this.char, required this.bytes});
+  const _CharSprite({required this.char, required this.bytes, this.url});
   final PreviewChar char;
   final Uint8List? bytes;
+  final String? url;
 
   @override
   Widget build(BuildContext context) {
     if (char.tex.isEmpty) return const SizedBox.shrink();
+    final hasBytes = bytes != null;
+    final hasUrl = url != null && url!.isNotEmpty;
+    if (!hasBytes && !hasUrl) return const SizedBox.shrink();
     return Positioned.fill(
       child: Align(
         alignment: switch (char.pos) {
@@ -1207,13 +1274,12 @@ class _CharSprite extends StatelessWidget {
             _ => 0.42,
           },
           heightFactor: 0.9,
-          child: bytes == null
-              ? const SizedBox.shrink()
-              : Transform.flip(
-                  flipX: char.flip,
-                  // 立绘解码宽度按站位盒实际宽度 × DPR（4d）：
-                  // 只降采样，显示尺寸仍由 FractionallySizedBox 决定。
-                  child: LayoutBuilder(
+          child: Transform.flip(
+            flipX: char.flip,
+            child: hasBytes
+                // 立绘解码宽度按站位盒实际宽度 × DPR（4d）：
+                // 只降采样，显示尺寸仍由 FractionallySizedBox 决定。
+                ? LayoutBuilder(
                     builder: (context, box) => Image.memory(
                       bytes!,
                       fit: BoxFit.contain,
@@ -1221,8 +1287,12 @@ class _CharSprite extends StatelessWidget {
                       gaplessPlayback: true,
                       cacheWidth: _decodeCacheWidth(context, box.maxWidth),
                     ),
+                  )
+                : TexSourceImage(
+                    source: TexSource.url(url!),
+                    fit: BoxFit.contain,
                   ),
-                ),
+          ),
         ),
       ),
     );

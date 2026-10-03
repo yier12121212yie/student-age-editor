@@ -49,10 +49,16 @@ Color FocusPurple() { return Hex(0x6c5ce7); }
 Color SectionOrange() { return Hex(0xff8c00); }
 
 Element PanelTitleBar(const std::string& emoji, const std::string& title, bool focused) {
+    (void)focused;  // the Alpha keeps every title strip #007acc; focus shows
+                    // on the panel border instead.
     Element bar = hbox({text(" " + emoji + " " + title), filler()}) |
-                  bgcolor(focused ? AccentBlue() : Hex(0x3a3d41)) |
-                  color(Color::White) | bold;
+                  bgcolor(AccentBlue()) | color(Color::White) | bold;
     return bar;
+}
+
+Color PanelBorder(bool focused) {
+    // $primary 30% over the #1e1e1e surface ≈ RGB(0x15,0x2b,0x53).
+    return focused ? AccentBlue() : Color::RGB(0x15, 0x2b, 0x53);
 }
 
 Element HintLine(const std::string& hint) {
@@ -87,35 +93,50 @@ bool StatusIsError(const std::string& s) {
         if (s.find(m) != std::string::npos) return true;
     return false;
 }
+
+// Success-ish messages go green (Alpha's -success class).
+bool StatusIsSuccess(const std::string& s) {
+    static const char* markers[] = {"已保存", "已创建", "已卸载", "已安装", "已重载", "已修复",
+                                    "已格式化", "已是最新", "已切换", "通过", "成功", "已连接"};
+    for (const char* m : markers)
+        if (s.find(m) != std::string::npos) return true;
+    return false;
+}
+
+// Warning-ish messages go amber (Alpha's -warning class: unsaved changes etc).
+bool StatusIsWarning(const std::string& s) {
+    static const char* markers[] = {"未保存", "无改动", "未选择", "未发现", "请先", "尚不",
+                                    "（按", "丢弃", "不存在"};
+    for (const char* m : markers)
+        if (s.find(m) != std::string::npos) return true;
+    return false;
+}
 }  // namespace
 
 Element StatusBar(const AppState& s, int width) {
     (void)width;
+    const std::string& msg = s.status.empty() ? std::string(" ") : s.status;
+    Color bg = AccentBlue();
+    if (StatusIsError(msg)) bg = ErrorColor();
+    else if (StatusIsSuccess(msg)) bg = Hex(0x16825d);
+    else if (StatusIsWarning(msg)) bg = WarnColor();
     const bool dirty = !s.table.edits.empty() || !s.table.removes.empty() || !s.table.adds.empty();
-    std::string line1 = " Workspace: " + (s.selected_mod.empty() ? "-" : s.selected_mod) +
-                        " · " + std::to_string(s.mods.size()) + " mods · 表 " +
-                        (s.table.name.empty() ? "-" : s.table.name) +
-                        " · 权限: " + s.permission_mode +
-                        (s.no_code_mode ? " · 无代码" : "") +
-                        (dirty ? " · 未保存 " + std::to_string(s.table.edits.size() +
-                                                               s.table.removes.size() +
-                                                               s.table.adds.size())
-                               : "");
-    Color bg = StatusIsError(s.status) ? ErrorColor() : AccentBlue();
-    Element bar = vbox({
-                       hbox({text(line1) | bold, filler()}),
-                       hbox({text(" " + (s.status.empty() ? " " : s.status)), filler()}),
-                   }) |
-                   bgcolor(bg) | color(Color::White);
+    Element bar = hbox({text(" " + msg), filler(),
+                        dirty ? text(" 有未保存改动 · s 保存 ") | bold : text("")}) |
+                  bgcolor(bg) | color(Color::White) | bold;
     return bar;
 }
 
-Element HeaderBar() {
-    return hbox({
-               text(" 学生时代 · 模组编辑器 — TUI") | bold,
-               text("  终端版 · 直接读写 Cfgs 文件") | color(Hex(0xcfd8dc)),
-               filler(),
-           }) |
+Element HeaderBar(const AppState& s) {
+    std::string title = "学生时代 · 模组编辑器 — TUI";
+    if (!s.selected_mod.empty())
+        title += " — " + s.selected_mod +
+                 (s.workspace.empty() ? "" : " @ " + s.workspace);
+    std::string flags = (s.permission_mode.empty() ? "" : "权限 " + s.permission_mode) +
+                        (s.no_code_mode ? " · 无代码" : "");
+    Elements mid{text(title) | bold};
+    if (!flags.empty()) mid.push_back(text("  " + flags) | color(Hex(0xcfd8dc)));
+    return hbox({text(" ○"), filler(), hbox(std::move(mid)), filler(), text(" ")}) |
            bgcolor(AccentBlue()) | color(Color::White);
 }
 

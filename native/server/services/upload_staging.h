@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -35,11 +36,26 @@
 
 namespace sa::upload {
 
-// Decoded-bytes ceiling for one upload (plan M0.5: 复用 100MB 上限).
-inline constexpr size_t kDecodedCap = 100ull * 1024 * 1024;
+// Decoded-bytes ceiling for one upload. 默认 100MB；可经环境变量
+// EDITOR_MAX_UPLOAD_BYTES（字节）配置——网关按 gateway.json 的 max_body_bytes
+// 给每个 backend 实例注入（见 gw_pool.cpp），以便托管环境放开大模组包上传。
+inline size_t max_upload_bytes() {
+    static const size_t cap = [] {
+        const char* v = std::getenv("EDITOR_MAX_UPLOAD_BYTES");
+        if (v && *v) {
+            try {
+                long long n = std::stoll(v);
+                if (n > 0) return static_cast<size_t>(n);
+            } catch (...) {
+            }
+        }
+        return static_cast<size_t>(100ull * 1024 * 1024);
+    }();
+    return cap;
+}
 
 // wire cap: base64 inflates by 4/3; reject before decoding anything.
-inline constexpr size_t kBase64Cap = (kDecodedCap / 3 + 1) * 4;
+inline size_t max_base64_bytes() { return (max_upload_bytes() / 3 + 1) * 4; }
 
 // Strip path separators so `filename` can never carry directory components.
 inline std::string sanitize_filename(const std::string& name) {
@@ -61,15 +77,19 @@ inline Resp install_from_upload(
     const std::string b64 = body.value("data_base64", std::string());
     if (b64.empty())
         return Resp::Json(400, json{{"error", "data_base64 required"}});
-    if (b64.size() > kBase64Cap)
-        return Resp::Json(413, json{{"error", "zip too large (decoded cap 100MB)"}});
+    if (b64.size() > max_base64_bytes())
+        return Resp::Json(413, json{{"error", "zip too large (decoded cap " +
+                                                  std::to_string(max_upload_bytes() / (1024 * 1024)) +
+                                                  "MB)"}});
 
     auto decoded_opt = p3b::b64_decode_loose(b64);
     if (!decoded_opt || decoded_opt->empty())
         return Resp::Json(400, json{{"error", "data_base64 is not valid base64"}});
     std::string decoded = std::move(*decoded_opt);
-    if (decoded.size() > kDecodedCap)
-        return Resp::Json(413, json{{"error", "zip too large (decoded cap 100MB)"}});
+    if (decoded.size() > max_upload_bytes())
+        return Resp::Json(413, json{{"error", "zip too large (decoded cap " +
+                                                  std::to_string(max_upload_bytes() / (1024 * 1024)) +
+                                                  "MB)"}});
 
     std::string filename = sanitize_filename(body.value("filename", std::string()));
     if (filename.empty()) filename = fallback_filename;

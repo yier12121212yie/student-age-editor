@@ -160,17 +160,33 @@ void TuiApp::Run() {
         std::string nc_err;
         st.no_code_mode = api_.LoadNoCodeMode(&nc_err);
     }
+    // Form metadata: schema field types (columns + encode/decode) and the dicts
+    // key_maps (field 中文 labels). Failures degrade to the generic form.
+    RunIntent(Intent::LoadSchema);
+    RunIntent(Intent::LoadDictLabels);
+    // OOBE first-run wizard (Alpha's OobeScreen; the shared oobe marker).
+    {
+        std::string ob_err;
+        if (!api_.OobeDone(&ob_err)) {
+            st.oobe = OobeState{};
+            st.oobe.active = true;
+            st.page = Page::Oobe;
+        }
+    }
 
     screen.Loop(component);
 }
 
 void TuiApp::LoadMods() {
     std::string err;
-    st.mods = api_.ListMods(&err);
+    ModsListing listing = api_.ListModsWithCounts(&err);
     if (!err.empty()) {
         st.status = err;
         return;
     }
+    st.mods = std::move(listing.mods);
+    st.cfg_counts = std::move(listing.cfg_counts);
+    if (!listing.workspace.empty()) st.workspace = listing.workspace;
     st.mod_sel = st.ClampSel(st.mod_sel, static_cast<int>(st.mods.size()));
     st.tree_sel = st.ClampSel(st.tree_sel, static_cast<int>(st.TreeItems().size()));
 }
@@ -184,11 +200,28 @@ void TuiApp::RunIntent(Intent intent) {
         case Intent::SelectMod: {
             if (api_.SelectMod(st.selected_mod, &err)) {
                 st.tables = api_.ListTables(&err);
+                st.mod_tables[st.selected_mod] = st.tables;
                 st.table = Table{};
                 st.focus = Focus::Tables;  // browse starts on the tree pane
                 st.status = err.empty() ? ("模组 " + st.selected_mod + " 共 " +
                                            std::to_string(st.tables.size()) + " 张表")
                                         : err;
+                // Enter on a cfg of an unselected mod queued the table to open.
+                if (!st.pending_table.empty()) {
+                    std::string next = st.pending_table;
+                    st.pending_table.clear();
+                    bool known = false;
+                    for (const auto& t : st.tables) known |= t == next;
+                    if (known) {
+                        st.table = Table{};
+                        st.table.name = next;
+                        st.focus = Focus::Rows;
+                        st.row_sel = 0;
+                        st.detail_mode = DetailMode::Form;
+                        st.status = "加载 " + st.table.name;
+                        RunIntent(Intent::LoadTable);
+                    }
+                }
             } else {
                 st.status = err;
             }
@@ -215,7 +248,7 @@ void TuiApp::RunIntent(Intent intent) {
                         st.tree_sel = i;
                         st.selected_mod = st.mods[i].name;
                         st.mod_sel = i;
-                        st.expanded_mod = i;
+                        st.expanded_mods.insert(st.mods[i].name);
                         RunIntent(Intent::SelectMod);
                         break;
                     }
@@ -236,6 +269,15 @@ void TuiApp::RunIntent(Intent intent) {
                 st.row_sel = 0;
                 st.status = st.table.exists ? ("载入 " + std::to_string(st.table.rows.size()) + " 行")
                                             : "该表文件尚不存在（保存将新建）";
+                // Choose the display columns once per load (Alpha _choose_columns).
+                std::vector<std::string> sample;
+                sample.reserve(std::min(st.table.rows.size(), size_t{50}));
+                for (size_t i = 0; i < st.table.rows.size() && sample.size() < 50; ++i)
+                    sample.push_back(st.table.rows[i].raw);
+                Json schema_cfg = st.schema.is_object() && st.schema.contains(st.table.name)
+                                      ? st.schema.at(st.table.name)
+                                      : Json::object();
+                st.table.columns = ChooseColumns(st.table.name, schema_cfg, sample);
             } else {
                 st.status = err;
             }
@@ -531,6 +573,141 @@ void TuiApp::RunIntent(Intent intent) {
             st.sug.pending_key.clear();
             break;
         }
+        case Intent::LoadSchema: {
+            st.schema = api_.GetSchema(&err);
+            break;
+        }
+        case Intent::LoadDictLabels: {
+            st.key_maps = api_.GetKeyMaps(&err);
+            if (!err.empty()) err.clear();  // labels degrade to raw keys
+            break;
+        }
+        case Intent::FetchDictEntries: {
+            // st.sug.mode holds the game_dicts pool (roles/bgs/audios/...).
+            const std::string pool = st.sug.mode;
+            std::string e2;
+            st.sug.all.clear();
+            if (pool == "roles") {
+                // /api/roles merges workspace PersonCfg entries — richer.
+                for (const FieldSuggestion& r : api_.RoleSuggest(std::string(), &e2))
+                    st.sug.all.push_back(r);
+            } else {
+                for (auto& [id, name] : api_.DictEntries(pool, &e2))
+                    st.sug.all.push_back(
+                        FieldSuggestion{id, name.empty() ? id : name, id, {}});
+            }
+            st.sug.shown = FilterSuggestions(st.sug.all, std::string());
+            st.sug.sel = 0;
+            st.sug.query.clear();
+            st.sug.active = !st.sug.all.empty();
+            if (!e2.empty()) {
+                st.status = e2;
+            } else if (st.sug.active) {
+                st.status = "候选 " + std::to_string(st.sug.all.size()) +
+                            " 条：Tab/↑↓ 选 · Enter 接受 · 打字过滤 · Esc 手输";
+            }
+            break;
+        }
+        case Intent::TtsLoadSettings: {
+            Json s = api_.TtsSettings(&err);
+            st.tts.loaded = true;
+            st.tts.provider = s.value("ttsProvider", std::string());
+            st.tts.api_key = s.value("ttsApiKey", std::string());
+            st.tts.base_url = s.value("ttsBaseUrl", std::string());
+            st.tts.model = s.value("ttsModel", std::string());
+            st.tts.voice = s.value("ttsVoice", std::string());
+            break;
+        }
+        case Intent::TtsSaveSettings: {
+            Json patch = Json::object();
+            if (!st.tts.provider.empty()) patch["ttsProvider"] = st.tts.provider;
+            patch["ttsApiKey"] = st.tts.api_key;
+            patch["ttsBaseUrl"] = st.tts.base_url;
+            patch["ttsModel"] = st.tts.model;
+            patch["ttsVoice"] = st.tts.voice;
+            if (api_.TtsSaveSettings(patch, &err)) {
+                st.status = "已保存配音设置";
+            } else {
+                st.status = err;
+            }
+            break;
+        }
+        case Intent::TtsTest: {
+            st.tts.busy = true;
+            // PUT the typed fields first so the test uses them.
+            Json patch = Json::object();
+            if (!st.tts.provider.empty()) patch["ttsProvider"] = st.tts.provider;
+            patch["ttsApiKey"] = st.tts.api_key;
+            patch["ttsBaseUrl"] = st.tts.base_url;
+            patch["ttsModel"] = st.tts.model;
+            patch["ttsVoice"] = st.tts.voice;
+            api_.TtsSaveSettings(patch, &err);
+            Json r = api_.TtsTest(&err);
+            st.tts.busy = false;
+            if (!err.empty()) {
+                st.tts.error = err;
+                st.status = err;
+            } else if (r.value("ok", false)) {
+                st.tts.error.clear();
+                st.tts.result = r.value("detail", std::string("连接成功"));
+                st.status = st.tts.result;
+            } else {
+                st.tts.error = r.value("error", std::string("连接失败"));
+                st.status = "测试失败: " + st.tts.error;
+            }
+            break;
+        }
+        case Intent::TtsSynthesize: {
+            st.tts.busy = true;
+            // PUT the typed fields first so the synthesis uses them.
+            Json patch = Json::object();
+            if (!st.tts.provider.empty()) patch["ttsProvider"] = st.tts.provider;
+            patch["ttsApiKey"] = st.tts.api_key;
+            patch["ttsBaseUrl"] = st.tts.base_url;
+            patch["ttsModel"] = st.tts.model;
+            patch["ttsVoice"] = st.tts.voice;
+            api_.TtsSaveSettings(patch, &err);
+            Json synth = api_.TtsSynthesize(st.tts.text, st.tts.voice, &err);
+            if (err.empty() && synth.contains("audio")) {
+                Json saved = api_.TtsSave(synth.value("audio", std::string()),
+                                          synth.value("ext", std::string("wav")),
+                                          st.tts.text.substr(0, 20), /*write_cfg=*/false, &err);
+                if (err.empty()) {
+                    st.tts.result = "已保存 " + saved.value("rel_path",
+                                                            saved.value("key", std::string("(素材)")));
+                    if (saved.contains("warning") && saved.at("warning").is_string())
+                        st.tts.result += "  (" + saved.at("warning").get<std::string>() + ")";
+                    st.status = st.tts.result;
+                }
+            }
+            st.tts.busy = false;
+            if (!err.empty()) {
+                st.tts.error = err;
+                st.status = err;
+            }
+            break;
+        }
+        case Intent::OobeSetWorkspace: {
+            std::string ws = Trim(st.oobe.workspace_input);
+            if (!ws.empty()) {
+                std::string resolved = api_.SetWorkspace(ws, &err);
+                if (!err.empty()) {
+                    st.status = err;
+                    break;  // stay on step 0 so the path can be corrected
+                }
+                if (!resolved.empty()) st.workspace = resolved;
+                st.status = "工作区已设置: " + resolved;
+                LoadMods();
+            }
+            st.oobe.step = 1;
+            break;
+        }
+        case Intent::OobeComplete: {
+            api_.OobeComplete(&err);
+            st.oobe.active = false;
+            if (st.page == Page::Oobe) st.page = Page::Main;
+            break;
+        }
         case Intent::Quit:
         case Intent::None:
             break;
@@ -580,19 +757,23 @@ KeyInput TuiApp::MapEvent(const ftxui::Event& e) const {
 AppState TuiApp::SampleState(Page page) {
     AppState s;
     s.page = page;
-    s.mods = {ModEntry{"DemoMod", "mods/DemoMod"}, ModEntry{"Another", "mods/Another"}};
+    s.mods = {ModEntry{"DemoMod", "mods/DemoMod", "示例模组", 4},
+              ModEntry{"Another", "mods/Another", "", 0}};
     s.selected_mod = "DemoMod";
     s.mod_sel = 0;
-    s.expanded_mod = 0;  // the selected mod renders its cfg children
+    s.expanded_mods.insert("DemoMod");  // the selected mod renders its cfg children
+    s.mod_tables["DemoMod"] = {"TalkCfg", "ItemCfg", "PersonCfg", "EvtCfg"};
     s.tree_sel = 1;      // cursor on the first cfg node
     s.tables = {"TalkCfg", "ItemCfg", "PersonCfg", "EvtCfg"};
     s.table = Table{};
     s.table.name = "TalkCfg";
     s.table.exists = true;
     s.table.mtime_ns = 1700000000000000000LL;
-    s.table.rows = {TableRow{"1", "你好，同学", "\"你好，同学\""},
-                    TableRow{"2", "今天天气不错", "\"今天天气不错\""}};
-    s.table.edits["2"] = "\"今天下雨了\"";
+    s.table.rows = {TableRow{"1", "你好，同学", R"({"id":1,"effect":"4015","content":"你好，同学"})"},
+                    TableRow{"2", "今天天气不错",
+                             R"({"id":2,"effect":"4016","content":"今天天气不错"})"}};
+    s.table.edits["2"] = R"({"id":2,"effect":"4017","content":"今天下雨了"})";
+    s.table.columns = {"ID", "effect", "预览"};
     s.focus = Focus::Rows;
     s.agent_label = "openai_compatible · gpt-4o-mini";
     s.bugs = {BugEntry{"TalkCfg", "5", "roleIds", "REF", "引用了不存在的角色 ID 999"},

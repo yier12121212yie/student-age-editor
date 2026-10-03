@@ -37,6 +37,7 @@
 #include "gateway/gw_config.h"
 #include "gateway/gw_pool.h"
 #include "gateway/gw_proxy.h"
+#include "gateway/gw_refresh.h"
 #include "gateway/gw_sessions.h"
 #include "gateway/gw_usage.h"
 #include "server/httpd.h"
@@ -216,6 +217,38 @@ TEST_CASE("gateway config: registration defaults + parse", "[gateway]") {
     CHECK(err.find("min_password_length") != std::string::npos);
 }
 
+TEST_CASE("gateway config: portraits defaults + parse", "[gateway]") {
+    sa::json base;
+    base["user_data_root"] = "/srv/data";
+    sa::json acc = sa::json::array();
+    acc.push_back({{"name", "a"}, {"salt", std::string(32, '0')},
+                   {"password_sha256", std::string(64, '0')}});
+    base["accounts"] = acc;
+
+    // 默认：关闭（dir/base_url 均空）。
+    gw::Config cfg;
+    std::string err;
+    REQUIRE(gw::parse_config(base, &cfg, &err));
+    CHECK(cfg.portraits.dir.empty());
+    CHECK(cfg.portraits.base_url.empty());
+
+    // 显式配置：base_url 尾部 '/' 归一化去掉。
+    sa::json j = base;
+    j["portraits"] = {{"dir", "/opt/editor/portraits"},
+                      {"base_url", "https://cdn.example.com/p/"}};
+    gw::Config cfg2;
+    REQUIRE(gw::parse_config(j, &cfg2, &err));
+    CHECK(cfg2.portraits.dir == "/opt/editor/portraits");
+    CHECK(cfg2.portraits.base_url == "https://cdn.example.com/p");
+
+    // 非对象 → 报错。
+    sa::json bad = base;
+    bad["portraits"] = "nope";
+    gw::Config cfg3;
+    CHECK_FALSE(gw::parse_config(bad, &cfg3, &err));
+    CHECK(err.find("portraits") != std::string::npos);
+}
+
 TEST_CASE("gateway config: web_root missing is a warning not an error", "[gateway]") {
     sa::json j;
     j["user_data_root"] = "/srv/data";
@@ -228,6 +261,40 @@ TEST_CASE("gateway config: web_root missing is a warning not an error", "[gatewa
     std::string err;
     REQUIRE(gw::parse_config(j, &cfg, &err));
     CHECK_FALSE(cfg.warnings.empty());
+}
+
+TEST_CASE("gateway config: refresh ttl + derived file", "[gateway]") {
+    sa::json base;
+    base["user_data_root"] = "/srv/data";
+    sa::json acc = sa::json::array();
+    acc.push_back({{"name", "a"}, {"salt", std::string(32, '0')},
+                   {"password_sha256", std::string(64, '0')}});
+    base["accounts"] = acc;
+
+    // 默认 30 天，落盘位置派生自 state_dir。
+    gw::Config cfg;
+    std::string err;
+    REQUIRE(gw::parse_config(base, &cfg, &err));
+    CHECK(cfg.refresh_ttl_days == 30);
+    CHECK(cfg.refresh_file == "/srv/data/.gateway/refresh_tokens.json");
+
+    // 显式配置。
+    sa::json j = base;
+    j["refresh_ttl_days"] = 14;
+    j["state_dir"] = "/srv/state";
+    gw::Config cfg2;
+    REQUIRE(gw::parse_config(j, &cfg2, &err));
+    CHECK(cfg2.refresh_ttl_days == 14);
+    CHECK(cfg2.refresh_file == "/srv/state/refresh_tokens.json");
+
+    // 越界拒绝。
+    for (long long bad : {0LL, 3651LL}) {
+        sa::json b = base;
+        b["refresh_ttl_days"] = bad;
+        gw::Config c;
+        CHECK_FALSE(gw::parse_config(b, &c, &err));
+        CHECK(err.find("refresh_ttl_days") != std::string::npos);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +436,86 @@ TEST_CASE("gateway parse_bearer", "[gateway]") {
 }
 
 // ---------------------------------------------------------------------------
+// Refresh tokens (记住我).
+
+TEST_CASE("gateway refresh tokens: issue/check/revoke", "[gateway]") {
+    auto dir = tmp_root("refresh");
+    gw::RefreshTokens r((dir / "rt.json").string());
+    std::string tok = r.issue("alice", 60 * 1000, /*persist=*/true);
+    CHECK(gw::is_hex_lower(tok, 64));
+    CHECK(gw::is_hex_lower(gw::RefreshTokens::hash_token(tok), 64));
+    std::string name;
+    REQUIRE(r.check(tok, &name));
+    CHECK(name == "alice");
+    CHECK(r.size() == 1);
+    CHECK(r.revoke(tok));
+    CHECK_FALSE(r.check(tok, &name));  // gone
+    CHECK_FALSE(r.revoke(tok));        // double revoke
+    CHECK_FALSE(r.check(std::string(64, 'f'), &name));  // unknown
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("gateway refresh tokens: rotate invalidates old", "[gateway]") {
+    auto dir = tmp_root("refresh_rot");
+    gw::RefreshTokens r((dir / "rt.json").string());
+    std::string old = r.issue("alice", 60 * 1000, /*persist=*/true);
+    std::string fresh, name;
+    long long ttl = 0;
+    REQUIRE(r.refresh(old, 30ll * 86400 * 1000, 3600ll * 1000, &fresh, &name, &ttl));
+    CHECK(name == "alice");
+    CHECK(gw::is_hex_lower(fresh, 64));
+    CHECK(fresh != old);
+    CHECK(ttl == 30ll * 86400 * 1000);       // persist 条目沿用长期 TTL
+    CHECK_FALSE(r.check(old, &name));         // 旧令牌一次性失效
+    REQUIRE(r.check(fresh, &name));
+    CHECK(r.size() == 1);
+    // 会话级条目的新 TTL 取 session_ttl。
+    std::string s_old = r.issue("bob", 3600ll * 1000, /*persist=*/false);
+    std::string s_new, s_name;
+    long long s_ttl = 0;
+    REQUIRE(r.refresh(s_old, 30ll * 86400 * 1000, 3600ll * 1000, &s_new, &s_name, &s_ttl));
+    CHECK(s_ttl == 3600ll * 1000);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("gateway refresh tokens: persistence + remember flag", "[gateway]") {
+    auto dir = tmp_root("refresh_persist");
+    std::string file = (dir / "rt.json").string();
+    std::string remembered, session_only;
+    {
+        gw::RefreshTokens r(file);
+        remembered = r.issue("alice", 60 * 1000, /*persist=*/true);
+        session_only = r.issue("alice", 60 * 1000, /*persist=*/false);
+        CHECK(r.size() == 2);
+    }
+    // 新实例从磁盘恢复：仅 persist 条目存活。
+    {
+        gw::RefreshTokens r(file);
+        std::string name;
+        REQUIRE(r.check(remembered, &name));
+        CHECK(name == "alice");
+        CHECK_FALSE(r.check(session_only, &name));  // 会话级不落盘
+        CHECK(r.size() == 1);
+    }
+    // 过期条目在加载时丢弃。
+    {
+        gw::RefreshTokens r(file);
+        r.issue("alice", 1, /*persist=*/true);  // 1ms TTL
+    }
+    std::this_thread::sleep_for(20ms);
+    {
+        gw::RefreshTokens r(file);
+        std::string name;
+        CHECK(r.size() == 1);  // remembered 仍在，1ms 条目已被丢弃
+        CHECK(r.check(remembered, &name));
+    }
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// ---------------------------------------------------------------------------
 // Ban table (method + path exact).
 
 TEST_CASE("gateway ban table", "[gateway]") {
@@ -386,6 +533,9 @@ TEST_CASE("gateway ban table", "[gateway]") {
     CHECK(gw::endpoint_banned("POST", "/api/ai/image/edit"));
     CHECK(gw::endpoint_banned("GET", "/api/ai/settings"));
     CHECK(gw::endpoint_banned("PUT", "/api/ai/settings"));
+    // 扩展合并：统一安装的本机路径端点同样是托管模式下的本机文件读取原语。
+    CHECK(gw::endpoint_banned("POST", "/api/extensions/install_path"));
+    CHECK_FALSE(gw::endpoint_banned("POST", "/api/extensions/install"));
 
     // POST /api/workspace banned; GET /api/workspace/status allowed.
     CHECK(gw::endpoint_banned("POST", "/api/workspace"));
@@ -402,6 +552,7 @@ TEST_CASE("gateway ban table", "[gateway]") {
     // Gateway-owned endpoints never reach the proxy, so the proxy never bans:
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/auth/login"));
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/auth/register"));
+    CHECK_FALSE(gw::endpoint_banned("POST", "/api/auth/refresh"));
     CHECK_FALSE(gw::endpoint_banned("GET", "/api/auth/registration"));
     CHECK_FALSE(gw::endpoint_banned("GET", "/api/ai/policy"));
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/ai/relay/chat"));
@@ -541,6 +692,77 @@ TEST_CASE("gateway routes: login/whoami/logout", "[gateway]") {
     REQUIRE(lo.status == 200);
     CHECK(lo.json_payload.at("ok") == true);
     CHECK(h.call("GET", "/api/auth/whoami", nullptr, "Bearer " + tok).status == 401);
+}
+
+TEST_CASE("gateway routes: refresh token issue/rotate/logout", "[gateway]") {
+    auto dir = tmp_root("route_refresh");
+    RouteHarness h(base_config("pw"));
+    h.g.refresh = std::make_unique<gw::RefreshTokens>((dir / "rt.json").string());
+
+    // remember=true -> 长期 refresh token（默认 30 天）。
+    auto ok = h.call("POST", "/api/auth/login",
+                     sa::json{{"name", "alice"}, {"password", "pw"}, {"remember", true}});
+    REQUIRE(ok.status == 200);
+    std::string atok = ok.json_payload.at("token").get<std::string>();
+    std::string rtok = ok.json_payload.at("refresh_token").get<std::string>();
+    CHECK(gw::is_hex_lower(rtok, 64));
+    CHECK(ok.json_payload.at("expires_in") == 24 * 3600);
+    CHECK(ok.json_payload.at("refresh_expires_in") == 30LL * 86400);
+
+    // remember 缺省 -> 会话级 refresh token（与 access 同寿）。
+    auto sess = h.call("POST", "/api/auth/login",
+                       sa::json{{"name", "alice"}, {"password", "pw"}});
+    REQUIRE(sess.status == 200);
+    CHECK(sess.json_payload.at("refresh_expires_in") == 24 * 3600);
+
+    // refresh 旋转：旧令牌失效、新令牌可用，并签发新 access。
+    auto rf = h.call("POST", "/api/auth/refresh", sa::json{{"refresh_token", rtok}});
+    REQUIRE(rf.status == 200);
+    std::string atok2 = rf.json_payload.at("token").get<std::string>();
+    std::string rtok2 = rf.json_payload.at("refresh_token").get<std::string>();
+    CHECK(rtok2 != rtok);
+    CHECK(rf.json_payload.at("refresh_expires_in") == 30LL * 86400);
+    CHECK(h.call("GET", "/api/auth/whoami", nullptr, "Bearer " + atok2).status == 200);
+    // 旧 refresh 再换 -> 401 invalid_refresh。
+    auto rf_old = h.call("POST", "/api/auth/refresh", sa::json{{"refresh_token", rtok}});
+    CHECK(rf_old.status == 401);
+    CHECK(rf_old.json_payload["code"] == "invalid_refresh");
+    // 无 refresh_token -> 401。
+    CHECK(h.call("POST", "/api/auth/refresh", sa::json::object()).status == 401);
+
+    // logout：Bearer + refresh_token，两者都吊销；随后 refresh 失败。
+    auto lo = h.call("POST", "/api/auth/logout",
+                     sa::json{{"refresh_token", rtok2}}, "Bearer " + atok2);
+    REQUIRE(lo.status == 200);
+    CHECK(h.call("GET", "/api/auth/whoami", nullptr, "Bearer " + atok2).status == 401);
+    CHECK(h.call("POST", "/api/auth/refresh", sa::json{{"refresh_token", rtok2}}).status == 401);
+
+    // access 已过期但 refresh 有效：仍可仅凭 refresh 登出并吊销。
+    auto lr = h.call("POST", "/api/auth/login",
+                     sa::json{{"name", "alice"}, {"password", "pw"}, {"remember", true}});
+    std::string r3 = lr.json_payload.at("refresh_token").get<std::string>();
+    auto lo2 = h.call("POST", "/api/auth/logout", sa::json{{"refresh_token", r3}});  // 无 Bearer
+    CHECK(lo2.status == 200);
+    CHECK(h.call("POST", "/api/auth/refresh", sa::json{{"refresh_token", r3}}).status == 401);
+
+    // 账号被停用后长期 refresh 立即失效（并吊销）。
+    auto lr2 = h.call("POST", "/api/auth/login",
+                      sa::json{{"name", "alice"}, {"password", "pw"}, {"remember", true}});
+    std::string r4 = lr2.json_payload.at("refresh_token").get<std::string>();
+    h.g.cfg.accounts[0].disabled = true;
+    auto dis = h.call("POST", "/api/auth/refresh", sa::json{{"refresh_token", r4}});
+    CHECK(dis.status == 403);
+    CHECK(dis.json_payload["code"] == "account_disabled");
+    CHECK(h.call("POST", "/api/auth/refresh", sa::json{{"refresh_token", r4}}).status == 401);
+
+    // refresh 表未装配时登录不带 refresh_token（兼容/降级）。
+    RouteHarness h2(base_config("pw"));
+    auto bare = h2.call("POST", "/api/auth/login",
+                        sa::json{{"name", "alice"}, {"password", "pw"}});
+    CHECK_FALSE(bare.json_payload.contains("refresh_token"));
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
 }
 
 TEST_CASE("gateway routes: disabled account -> 403", "[gateway]") {

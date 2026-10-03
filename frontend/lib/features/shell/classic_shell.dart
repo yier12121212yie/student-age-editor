@@ -153,9 +153,9 @@ class _ClassicShellState extends State<ClassicShell> {
     );
   }
 
-  // TODO(导出)：后端目前没有模组导出端点（/api/tools/list 只是列表查询，
-  // 不是打包导出）。此前按钮伪装“文件已就绪”误导用户，故暂时隐藏导出入口，
-  // 待后端提供打包导出 API 后恢复。
+  // 模组导入/导出已落在 ModsPage 头部（📥 导入 zip / 📤 导出当前模组 zip；
+  // 后端 /api/mods/import_*、/api/mods/export）。此按钮保留为「加载/切换模组」
+  // 入口。
 
   Future<void> _importMod() async {
     _showToolModal(
@@ -251,65 +251,60 @@ class _ClassicShellState extends State<ClassicShell> {
                       child: Container(
                         color: palette.bgDeep2,
                         padding: const EdgeInsets.all(10),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(
-                              child: AnimatedSwitcher(
-                                duration: AppMotion.normal,
-                                switchInCurve: AppMotion.easeOut,
-                                switchOutCurve: AppMotion.easeOut,
-                                transitionBuilder: (child, anim) {
-                                  final slide = Tween<Offset>(
-                                    begin: const Offset(0.02, 0),
-                                    end: Offset.zero,
-                                  ).animate(anim);
-                                  return FadeTransition(
-                                    opacity: anim,
-                                    child: SlideTransition(
-                                      position: slide,
-                                      child: child,
-                                    ),
-                                  );
-                                },
-                                child: ClassicPageLayouts(
-                                  key: ValueKey(_activePageId),
-                                  state: state,
-                                  page: currentPageDef,
-                                  cfgName: _activeCfgName,
-                                  onPreview: (evtId) {
-                                    shell.controller.open(
-                                      OpenDoc.preview(eventId: evtId),
-                                    );
-                                  },
-                                  onOpenSearch: () {
-                                    _showToolModal(
-                                      '🔍 全局搜索',
-                                      BaseSearchPage(state: state),
-                                    );
-                                  },
-                                ),
-                              ),
+                        // 宽布局并排停靠；紧凑布局（窄 Web 窗口）AI 浮层化，
+                        // 不再与左侧导航一起挤占内容区。
+                        child: AiDockHost(
+                          state: state,
+                          shell: shell,
+                          // 经典壳侧栏悬浮在内容之上：面板需自带不透明底板
+                          panelBackground: palette.panel,
+                          onOpenSettings: () => _showToolModal(
+                            '⚙️ 系统设置',
+                            SettingsPage(
+                              settings: shell.settingsLoaded
+                                  ? shell.aiSettings
+                                  : AiSettings(),
+                              settingsLoaded: shell.settingsLoaded,
+                              onChanged: shell.setAiSettings,
+                              uiMode: uiMode,
+                              onUiModeChanged: widget.onUiModeChanged,
                             ),
-                            AiDock(
+                          ),
+                          content: AnimatedSwitcher(
+                            duration: AppMotion.normal,
+                            switchInCurve: AppMotion.easeOut,
+                            switchOutCurve: AppMotion.easeOut,
+                            transitionBuilder: (child, anim) {
+                              final slide = Tween<Offset>(
+                                begin: const Offset(0.02, 0),
+                                end: Offset.zero,
+                              ).animate(anim);
+                              return FadeTransition(
+                                opacity: anim,
+                                child: SlideTransition(
+                                  position: slide,
+                                  child: child,
+                                ),
+                              );
+                            },
+                            child: ClassicPageLayouts(
+                              key: ValueKey(_activePageId),
                               state: state,
-                              shell: shell,
-                              // 经典壳侧栏悬浮在内容之上：面板需自带不透明底板
-                              panelBackground: palette.panel,
-                              onOpenSettings: () => _showToolModal(
-                                '⚙️ 系统设置',
-                                SettingsPage(
-                                  settings: shell.settingsLoaded
-                                      ? shell.aiSettings
-                                      : AiSettings(),
-                                  settingsLoaded: shell.settingsLoaded,
-                                  onChanged: shell.setAiSettings,
-                                  uiMode: uiMode,
-                                  onUiModeChanged: widget.onUiModeChanged,
-                                ),
-                              ),
+                              page: currentPageDef,
+                              cfgName: _activeCfgName,
+                              onPreview: (evtId) {
+                                shell.controller.open(
+                                  OpenDoc.preview(eventId: evtId),
+                                );
+                              },
+                              onOpenSearch: () {
+                                _showToolModal(
+                                  '🔍 全局搜索',
+                                  BaseSearchPage(state: state),
+                                );
+                              },
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -715,20 +710,25 @@ class _ClassicNav extends StatelessWidget {
     ('官方生态', [('official', '官方兼容工具', FluentIcons.shield_task_24_regular)]),
   ];
 
-  // 滑动指示条所需：计算 activePageId 在分组中的视觉 top
+  // 滑动指示条所需：计算 activePageId 在分组中的视觉 top。
+  //
+  // 几何常量必须与下方真实布局一致：topBase = 顶部 SizedBox 6；每组标题固定
+  // 30 高；每项 44 高（40 容器 + 上下各 2 margin）。指示条 20 高，在 40 高条目
+  // 内居中 → 条目顶 + 2 margin + (40-20)/2 = +12。
   double _indicatorTop(String id) {
     const headerH = 30.0;
     const itemH = 44.0;
     const topBase = 6.0;
+    const barInset = 12.0;
     double top = topBase;
     for (final g in _groups) {
       top += headerH;
       for (final item in g.$2) {
-        if (item.$1 == id) return top + 10; // 20高条在40中居中
+        if (item.$1 == id) return top + barInset;
         top += itemH;
       }
     }
-    return topBase + headerH + 10; // fallback person
+    return topBase + headerH + barInset; // fallback person
   }
 
   @override
@@ -741,25 +741,37 @@ class _ClassicNav extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: ListView(
-                    key: const ValueKey('classic-nav-list'),
-                    padding: EdgeInsets.zero,
+            // 指示条置于滚动内容之内（Stack 的兄弟 Column 决定高度）：随列表
+            // 一起滚动。此前指示条在 ListView 之外、位置按未滚动坐标计算，列表
+            // 一旦滚动紫条就停在原位，与选中项错位（尤其「玩法主题」等长分组）。
+            child: SingleChildScrollView(
+              key: const ValueKey('classic-nav-list'),
+              padding: EdgeInsets.zero,
+              child: Stack(
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       const SizedBox(height: 6),
                       for (var gi = 0; gi < _groups.length; gi++) ...[
                         FadeSlide(
                           delay: AppMotion.stagger(gi, baseMs: 60),
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                            child: Text(
-                              _groups[gi].$1,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: palette.textHint,
-                                fontWeight: FontWeight.w600,
+                          // 固定 30 高：_indicatorTop 的几何假设必须与真实布局一致。
+                          child: SizedBox(
+                            height: 30,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 16),
+                                child: Text(
+                                  _groups[gi].$1,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: palette.textHint,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -777,31 +789,32 @@ class _ClassicNav extends StatelessWidget {
                       ],
                     ],
                   ),
-                ),
-                // Positioned 必须是 Stack 直接子级：IgnorePointer 移入 AnimatedPositioned 内部
-                AnimatedPositioned(
-                  duration: AppMotion.normal,
-                  curve: AppMotion.easeOut,
-                  left: 8,
-                  top: indTop,
-                  child: IgnorePointer(
-                    child: Container(
-                      width: 2.5,
-                      height: 20,
-                      decoration: BoxDecoration(
-                        color: accentColor,
-                        borderRadius: BorderRadius.circular(1),
-                        boxShadow: [
-                          BoxShadow(
-                            color: accentColor.withValues(alpha: 0.45),
-                            blurRadius: 8,
-                          ),
-                        ],
+                  // Positioned 必须是 Stack 直接子级：IgnorePointer 移入
+                  // AnimatedPositioned 内部
+                  AnimatedPositioned(
+                    duration: AppMotion.normal,
+                    curve: AppMotion.easeOut,
+                    left: 8,
+                    top: indTop,
+                    child: IgnorePointer(
+                      child: Container(
+                        width: 2.5,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: accentColor,
+                          borderRadius: BorderRadius.circular(1),
+                          boxShadow: [
+                            BoxShadow(
+                              color: accentColor.withValues(alpha: 0.45),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           Divider(color: palette.border, height: 1),
@@ -835,7 +848,7 @@ class _ClassicNav extends StatelessWidget {
                 duration: AppMotion.normal,
                 curve: AppMotion.easeOut,
                 left: 8,
-                top: aiOpen ? 10 : -20,
+                top: aiOpen ? 12 : -20,
                 child: IgnorePointer(
                   child: AnimatedOpacity(
                     duration: AppMotion.fast,

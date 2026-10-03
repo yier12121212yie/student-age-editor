@@ -68,18 +68,34 @@ def make_temp_env(root):
     return env, ws
 
 
-def http_get(url, timeout=2):
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+def http_get(url, timeout=2, token=""):
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["X-Backend-Token"] = token  # 安全批次 B：/api/* 需要 .backend_token
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read().decode("utf-8", "replace")
 
 
-def http_put(url, payload, timeout=3):
+def http_put(url, payload, timeout=3, token=""):
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="PUT",
-                                 headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-Backend-Token"] = token
+    req = urllib.request.Request(url, data=data, method="PUT", headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read().decode("utf-8", "replace")
+
+
+def read_backend_token(env):
+    """The backend persists its process token at <EDITOR_DATA_ROOT>/.backend_token
+    (安全批次 B); direct HTTP probes must echo it or /api/* answers 403."""
+    path = os.path.join(env.get("EDITOR_DATA_ROOT", ""), ".backend_token")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def run(cmd, env=None):
@@ -100,6 +116,7 @@ def main():
     env, ws = make_temp_env(root)
     proc = None
     port = None
+    token = ""
     try:
         for candidate in PORTS:
             proc = subprocess.Popen(
@@ -130,6 +147,8 @@ def main():
             return finish()
 
         url = "http://127.0.0.1:%d" % port
+        token = read_backend_token(env)
+        check("backend token file present", bool(token), token[:8] + "…")
         rc, out = run([TUI, "--connect", "--url", url], env=env)
         check("tui --connect exit 0", rc == 0, "rc=%d" % rc)
         check("connect reports CONNECT_OK", "CONNECT_OK" in out, out.strip()[:160])
@@ -139,35 +158,41 @@ def main():
         # No-code mode (M2): the shared editor setting round-trips through the
         # live backend — GET reads it, PUT persists it (the exact calls the TUI
         #'s Ctrl-N / the GUI settings page make).
-        st, body = http_get(url + "/api/settings/editor")
+        st, body = http_get(url + "/api/settings/editor", token=token)
         settings0 = json.loads(body).get("settings", {}) if st == 200 else {}
         check("editor settings readable", st == 200 and "noCodeMode" in settings0,
               body[:120])
         check("editor settings default off", settings0.get("noCodeMode") is False, body[:120])
-        st2, body2 = http_put(url + "/api/settings/editor", {"noCodeMode": True})
+        st2, body2 = http_put(url + "/api/settings/editor", {"noCodeMode": True}, token=token)
         check("no-code mode PUT ok", st2 == 200 and json.loads(body2).get("ok") is True,
               body2[:120])
-        st3, body3 = http_get(url + "/api/settings/editor")
+        st3, body3 = http_get(url + "/api/settings/editor", token=token)
         settings3 = json.loads(body3).get("settings", {}) if st3 == 200 else {}
         check("no-code mode persisted true", settings3.get("noCodeMode") is True, body3[:120])
 
         rc2, out2 = run([TUI, "--render-check", "all", "--width", "100", "--height", "22"], env=env)
         check("render-check exit 0", rc2 == 0, "rc=%d" % rc2)
         # Alpha-v0.3 chrome + the three-pane home + the modal surfaces. The
-        # no-code needles are the always-on footer hint + help line: --render-
-        # check is headless (SampleState), it never reads the backend setting.
-        for token in ("学生时代 · 模组编辑器 — TUI", "📦 Mods / Cfgs", "📋 Records",
-                      "📝 Detail / JSON", "Workspace: DemoMod", "DemoMod", "TalkCfg",
-                      "今天下雨了", "🤖 AI 助手", "🧩 插件管理", "☁️ 云同步",
-                      "🐞 Bug 扫描 / 修复", "引用了不存在的角色", "Ctrl-N 无代码"):
-            check("render contains %r" % token, token in out2)
+        # no-code needle is the always-on footer hint: --render-check is
+        # headless (SampleState), it never reads the backend setting.
+        for needle in ("学生时代 · 模组编辑器 — TUI", "📦 DemoMod", "📋 Records",
+                       "📝 TalkCfg", "— DemoMod", "▶ 📦", "📄",
+                       "你好，同学", "*2", "4017",  # 脏行标记 + 编辑值进列
+                       "保存（s）", "^N 无代码",
+                       "🤖 AI 助手", "🧩 插件管理", "☁️ 云同步",
+                       "🐞 Bug 扫描 / 修复", "引用了不存在的角色",
+                       "🔊 配音 (TTS)", "OOBE 向导"):
+            check("render contains %r" % needle, needle in out2)
         return finish()
     finally:
         if proc is not None and proc.poll() is None:
             try:
-                urllib.request.urlopen(
-                    urllib.request.Request("http://127.0.0.1:%d/api/shutdown" % port,
-                                           data=b"{}", method="POST"), timeout=3).read()
+                req = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/shutdown" % port,
+                    data=b"{}", method="POST")
+                if token:
+                    req.add_header("X-Backend-Token", token)
+                urllib.request.urlopen(req, timeout=3).read()
             except Exception:
                 pass
             try:

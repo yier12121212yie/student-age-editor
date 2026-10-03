@@ -6,10 +6,12 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "sa_core/env_store.h"
+#include "sa_core/http_client.h"
 #include "sa_core/paths.h"
 #include "sa_core/steam_paths.h"
 #include "sa_core/strings.h"
@@ -17,7 +19,9 @@
 #include "sa_core/util.h"
 #include "server/state.h"
 #include "flow_assets.h"
+#include "p3b_resource_pack.h"
 #include "p4_util.h"
+#include "plugin_service.h"  // 扩展合并：启用插件目录参与资源解析
 
 namespace sa {
 namespace {
@@ -31,7 +35,7 @@ std::shared_ptr<AaIndex> g_idx;
 bool g_idx_tried = false;
 std::mutex g_pack_mu;
 std::shared_ptr<DecodedPack> g_pack;
-std::string g_pack_last = "\x01";  // sentinel != any real dir
+std::vector<std::string> g_pack_dirs;  // last resolved active dirs
 
 bool ends_ci(const std::string& s, const std::string& suffix) {
     return sa_core::str::lower(s).size() >= suffix.size() &&
@@ -255,32 +259,44 @@ int64_t AaIndex::tex_path_id(std::string key) const {
 
 // ---- DecodedPack ---------------------------------------------------------
 void DecodedPack::refresh(const std::string& pack_dir) {
+    refresh(pack_dir.empty() ? std::vector<std::string>{}
+                             : std::vector<std::string>{pack_dir});
+}
+
+void DecodedPack::refresh(const std::vector<std::string>& pack_dirs) {
     {
         std::lock_guard<std::mutex> lk(data_mu_);
-        if (pack_dir == dir_) return;
+        if (pack_dirs == dirs_) return;
     }
     std::map<std::string, std::string> tex, aud;
     std::vector<std::string> txt;
-    const std::string tex_dir = sa_core::paths::join(pack_dir, "tex");
-    if (!pack_dir.empty() && sa_core::paths::is_dir(tex_dir)) {
-        for (const auto& fn : sa_core::paths::listdir_sorted(tex_dir)) {
-            auto [root, ext] = p4::split_ext(fn);
-            std::string e = sa_core::str::lower(ext);
-            if (e == ".webp" || e == ".png" || e == ".jpg" || e == ".jpeg")
-                tex[sa_core::str::lower(root)] = sa_core::paths::join(tex_dir, fn);
+    std::set<std::string> seen_txt;
+    for (const std::string& pack_dir : pack_dirs) {
+        if (pack_dir.empty()) continue;
+        const std::string tex_dir = sa_core::paths::join(pack_dir, "tex");
+        if (sa_core::paths::is_dir(tex_dir)) {
+            for (const auto& fn : sa_core::paths::listdir_sorted(tex_dir)) {
+                auto [root, ext] = p4::split_ext(fn);
+                std::string e = sa_core::str::lower(ext);
+                if (e == ".webp" || e == ".png" || e == ".jpg" || e == ".jpeg") {
+                    const std::string k = sa_core::str::lower(root);
+                    if (!tex.count(k)) tex[k] = sa_core::paths::join(tex_dir, fn);
+                }
+            }
         }
-    }
-    const std::string aud_dir = sa_core::paths::join(pack_dir, "aud");
-    if (!pack_dir.empty() && sa_core::paths::is_dir(aud_dir)) {
-        for (const auto& fn : sa_core::paths::listdir_sorted(aud_dir)) {
-            auto [root, ext] = p4::split_ext(fn);
-            std::string e = sa_core::str::lower(ext);
-            if (e == ".ogg" || e == ".wav" || e == ".m4a" || e == ".mp3")
-                aud[sa_core::str::lower(root)] = sa_core::paths::join(aud_dir, fn);
+        const std::string aud_dir = sa_core::paths::join(pack_dir, "aud");
+        if (sa_core::paths::is_dir(aud_dir)) {
+            for (const auto& fn : sa_core::paths::listdir_sorted(aud_dir)) {
+                auto [root, ext] = p4::split_ext(fn);
+                std::string e = sa_core::str::lower(ext);
+                if (e == ".ogg" || e == ".wav" || e == ".m4a" || e == ".mp3") {
+                    const std::string k = sa_core::str::lower(root);
+                    if (!aud.count(k)) aud[k] = sa_core::paths::join(aud_dir, fn);
+                }
+            }
         }
-    }
-    // txt keys: prefer the decoded v3 aa_index.json list; else Cfgs/zh-cn scan.
-    if (!pack_dir.empty()) {
+        // txt keys: prefer the decoded v3 aa_index.json list; else Cfgs/zh-cn scan.
+        std::vector<std::string> dir_txt;
         auto raw = sa_core::paths::read_bytes(sa_core::paths::join(pack_dir, "aa_index.json"));
         if (raw) {
             std::string body = *raw;
@@ -288,16 +304,20 @@ void DecodedPack::refresh(const std::string& pack_dir) {
             auto j = json::parse(body, nullptr, false);
             if (!j.is_discarded() && j.is_object() && j.value("v", 0) == 3 &&
                 j.contains("txt") && j.at("txt").is_array()) {
-                for (const auto& k : j.at("txt")) if (k.is_string()) txt.push_back(k.get<std::string>());
+                for (const auto& k : j.at("txt"))
+                    if (k.is_string()) dir_txt.push_back(k.get<std::string>());
             }
         }
-        if (txt.empty()) {
+        if (dir_txt.empty()) {
             const std::string zh = sa_core::paths::join(sa_core::paths::join(pack_dir, "Cfgs"), "zh-cn");
             if (sa_core::paths::is_dir(zh)) {
                 for (const auto& f : sa_core::paths::listdir_sorted(zh))
-                    if (ends_ci(f, ".json")) txt.push_back(p4::split_ext(f).first);
-                std::sort(txt.begin(), txt.end());
+                    if (ends_ci(f, ".json")) dir_txt.push_back(p4::split_ext(f).first);
+                std::sort(dir_txt.begin(), dir_txt.end());
             }
+        }
+        for (auto& k : dir_txt) {
+            if (seen_txt.insert(k).second) txt.push_back(std::move(k));
         }
     }
     std::lock_guard<std::mutex> lk(data_mu_);
@@ -305,12 +325,12 @@ void DecodedPack::refresh(const std::string& pack_dir) {
     aud_ = std::move(aud);
     txt_ = std::move(txt);
     texsizes_.clear();
-    dir_ = pack_dir;
+    dirs_ = pack_dirs;
 }
 
 bool DecodedPack::active() const {
     std::lock_guard<std::mutex> lk(data_mu_);
-    return !dir_.empty();
+    return !dirs_.empty();
 }
 
 long long DecodedPack::tex_count() const {
@@ -377,15 +397,32 @@ std::optional<std::pair<std::string, std::string>> DecodedPack::read_file(
 }
 
 // ---- accessors + pack-dir resolution -------------------------------------
-std::string active_pack_dir() {
-    if (std::string env = sa_core::paths::getenv_utf8("EDITOR_DECODED_PACK_DIR"); !env.empty())
-        return env;
-    json env = sa_core::env_store::read_editor_env(sa::editor_root());
-    if (env.contains("decoded_pack_dir") && env.at("decoded_pack_dir").is_string()) {
-        std::string d = p4::strip(env.at("decoded_pack_dir").get<std::string>());
-        if (!d.empty()) return d;
+// 多 base：启用列表来自 packs.json（p3b）。EDITOR_DECODED_PACK_DIR 与
+// editor_env.decoded_pack_dir 作为唯一覆盖优先（开发/测试 seam）。
+std::vector<std::string> active_pack_dirs() {
+    std::vector<std::string> dirs;
+    if (std::string env = sa_core::paths::getenv_utf8("EDITOR_DECODED_PACK_DIR"); !env.empty()) {
+        dirs.push_back(env);
+        return dirs;
     }
-    return {};
+    json e = sa_core::env_store::read_editor_env(sa::editor_root());
+    if (e.contains("decoded_pack_dir") && e.at("decoded_pack_dir").is_string()) {
+        std::string d = p4::strip(e.at("decoded_pack_dir").get<std::string>());
+        if (!d.empty()) {
+            dirs.push_back(d);
+            return dirs;
+        }
+    }
+    dirs = p3b::resource_pack::active_pack_dirs();
+    // 扩展合并：启用插件目录也参与资源解析（插件可携带 aa/tex/base 资源）。
+    // 资源包在前、插件在后，保持既有资源包优先的键覆盖顺序。
+    for (auto& d : sa::plugin_service::enabled_plugin_dirs()) dirs.push_back(std::move(d));
+    return dirs;
+}
+
+std::string active_pack_dir() {
+    auto dirs = active_pack_dirs();
+    return dirs.empty() ? std::string() : dirs.front();
 }
 
 std::pair<std::string, std::string> pack_active_info() {
@@ -455,12 +492,84 @@ std::shared_ptr<AaIndex> ensure_aa_index() {
 std::shared_ptr<DecodedPack> ensure_pack_store() {
     std::lock_guard<std::mutex> lk(g_pack_mu);
     if (!g_pack) g_pack = std::make_shared<DecodedPack>();
-    std::string d = active_pack_dir();
-    if (d != g_pack_last) {
-        g_pack_last = d;
-        g_pack->refresh(d);
+    std::vector<std::string> dirs = active_pack_dirs();
+    if (dirs != g_pack_dirs) {
+        g_pack_dirs = dirs;
+        g_pack->refresh(dirs);
     }
     return g_pack;
+}
+
+namespace {
+
+// 人物图片资源扩展（服务器端自托管）：本地目录惰性 DecodedPack（与资源包同
+// 一套扫描/取文件语义：tex/<文件>）；目录未配置时 active()==false。
+std::shared_ptr<DecodedPack> portrait_local_store() {
+    static std::mutex mu;
+    static std::shared_ptr<DecodedPack> store;
+    static std::string dir;
+    static bool tried = false;
+    const std::string d = sa_core::paths::getenv_utf8("EDITOR_PORTRAIT_DIR");
+    std::lock_guard<std::mutex> lk(mu);
+    if (!store) store = std::make_shared<DecodedPack>();
+    if (!tried || d != dir) {
+        dir = d;
+        tried = true;
+        store->refresh(d);
+    }
+    return store;
+}
+
+// 对象存储公开基址（去掉尾部 '/'）；未配置返回 ""。
+std::string portrait_base_url() {
+    std::string u = sa_core::paths::getenv_utf8("EDITOR_PORTRAIT_BASE_URL");
+    if (!u.empty()) u = p4::strip(u);
+    while (!u.empty() && u.back() == '/') u.pop_back();
+    return u;
+}
+
+// norm_key 后把非 [a-z0-9._-] 字符替换为 '_'（与 decoded_export._safe_name 对齐），
+// 用于对象存储上「按安全文件名」上传的布局。
+std::string safe_asset_name(const std::string& key) {
+    std::string s = norm_key(key);
+    for (char& c : s) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        const bool ok = (u >= 'a' && u <= 'z') || (u >= '0' && u <= '9') ||
+                        c == '.' || c == '_' || c == '-';
+        if (!ok) c = '_';
+    }
+    return s;
+}
+
+}  // namespace
+
+std::optional<std::pair<std::string, std::string>> read_portrait_local_tex(
+    const std::string& key) {
+    if (key.empty()) return std::nullopt;
+    // 本地安装：已解包的立绘目录（DecodedPack 语义）。
+    if (auto store = portrait_local_store(); store && store->active()) {
+        if (auto r = store->read_file(store->tex_path(key))) return r;
+        // 键含 '/' 等路径字符时，解码包文件名是 safe_asset_name（'/'→'_'）。
+        if (auto r = store->read_file(store->tex_path(safe_asset_name(key))))
+            return r;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> portrait_url_for(const std::string& key) {
+    const std::string base = portrait_base_url();
+    if (base.empty() || key.empty()) return std::nullopt;
+    const std::string name = safe_asset_name(key);
+    if (name.empty()) return std::nullopt;
+    // 上传布局：<base>/tex/<safe_name>.webp（立绘统一转 WebP）。只回 URL，
+    // 不代替浏览器下载——客户端拿到 URL 后自行 GET（见 PORTRAITS.md）。
+    return base + "/tex/" + sa_core::http::quote_component(name) + ".webp";
+}
+
+bool portrait_source_configured() {
+    if (!p4::strip(sa_core::paths::getenv_utf8("EDITOR_PORTRAIT_DIR")).empty())
+        return true;
+    return !portrait_base_url().empty();
 }
 
 void reset_aa_singletons_for_test() {
@@ -469,7 +578,7 @@ void reset_aa_singletons_for_test() {
     g_idx_tried = false;
     std::lock_guard<std::mutex> lk2(g_pack_mu);
     g_pack = nullptr;
-    g_pack_last = "\x01";
+    g_pack_dirs.clear();
 }
 
 std::string tex_mime(std::string_view ext) {

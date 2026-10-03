@@ -144,33 +144,54 @@ std::shared_ptr<const json> load_mod_cfg(const std::string& name) {
 std::shared_ptr<const json> load_pack_cfg(const std::string& name) {
     static std::mutex pmu;
     static std::map<std::string, std::shared_ptr<const json>> pcache;
-    static std::string pcache_dir;
-    const std::string dir = sa::active_pack_dir();  // "" when no pack configured
-    if (dir.empty()) return nullptr;
+    static std::string pcache_key;
+    const std::vector<std::string> dirs = sa::active_pack_dirs();  // 多 base，按序
+    if (dirs.empty()) return nullptr;
+    std::string key;
+    for (const auto& d : dirs) {
+        key += d;
+        key.push_back('\n');
+    }
     {
         std::lock_guard<std::mutex> lk(pmu);
-        if (pcache_dir != dir) { pcache.clear(); pcache_dir = dir; }
+        if (pcache_key != key) {
+            pcache.clear();
+            pcache_key = key;
+        }
         auto it = pcache.find(name);
         if (it != pcache.end()) return it->second;
     }
-    std::shared_ptr<const json> data;
-    for (const char* sub : {"Cfgs/zh-cn/", "Cfgs/"}) {
-        if (auto raw = cs::read_bytes(cs::join(cs::join(dir, sub), name + ".json"))) {
-            auto parsed = json::parse(*raw, nullptr, false);
-            if (!parsed.is_discarded() && parsed.is_object())
-                data = std::make_shared<const json>(std::move(parsed));
-            break;
-        }
-    }
-    if (!data) {
-        if (auto raw = cs::read_bytes(cs::join(dir, "base_data.json"))) {
-            auto parsed = json::parse(*raw, nullptr, false);
-            if (!parsed.is_discarded() && parsed.is_object() && parsed.contains(name) &&
-                parsed.at(name).is_object()) {
-                data = std::make_shared<const json>(parsed.at(name));
+    // 多 base 合并：按目录顺序，前者优先；同名 id 只取首个出现（真正的「多
+    // base」——官方表 + 扩展包补充表可同时生效）。
+    json merged = json::object();
+    bool any = false;
+    for (const auto& dir : dirs) {
+        std::shared_ptr<const json> data;
+        for (const char* sub : {"Cfgs/zh-cn/", "Cfgs/"}) {
+            if (auto raw = cs::read_bytes(cs::join(cs::join(dir, sub), name + ".json"))) {
+                auto parsed = json::parse(*raw, nullptr, false);
+                if (!parsed.is_discarded() && parsed.is_object())
+                    data = std::make_shared<const json>(std::move(parsed));
+                break;
             }
         }
+        if (!data) {
+            if (auto raw = cs::read_bytes(cs::join(dir, "base_data.json"))) {
+                auto parsed = json::parse(*raw, nullptr, false);
+                if (!parsed.is_discarded() && parsed.is_object() && parsed.contains(name) &&
+                    parsed.at(name).is_object()) {
+                    data = std::make_shared<const json>(parsed.at(name));
+                }
+            }
+        }
+        if (!data) continue;
+        any = true;
+        for (auto it = data->begin(); it != data->end(); ++it) {
+            if (!merged.contains(it.key())) merged[it.key()] = it.value();
+        }
     }
+    std::shared_ptr<const json> data =
+        any ? std::make_shared<const json>(std::move(merged)) : nullptr;
     std::lock_guard<std::mutex> lk(pmu);
     pcache[name] = data;
     return data;

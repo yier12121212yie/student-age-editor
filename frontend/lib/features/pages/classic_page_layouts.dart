@@ -8,6 +8,9 @@ import '../../core/responsive.dart';
 import '../base/base_search_page.dart';
 import '../editor/page_card.dart';
 import '../editor/schema_editor_view.dart';
+import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
+import '../resources/image_asset_picker.dart' show TexBytesCache, TexThumb;
+import '../resources/pack_manager_page.dart';
 import '../story/story_director_view.dart';
 import '../story/story_transfer_dialogs.dart';
 import 'pages_catalog.dart';
@@ -112,7 +115,14 @@ class _PersonLayoutState extends State<_PersonLayout> {
   String? _selectedPersonId;
   int _stageIndex = 0;
   int _refreshCounter = 0;
-  static const _stages = ['小学立绘', '初中立绘', '高中立绘', '默认立绘'];
+
+  /// 当前选中人物的立绘数据（来自 /api/roles 的 portrait1/portrait2）。
+  RoleEntry? _role;
+  bool _roleLoading = false;
+  int _roleLoadToken = 0;
+
+  /// PersonCfg 只有两套立绘字段：url = 小学、url2 = 中学（见 dicts.json）。
+  static const _stages = ['小学立绘', '中学立绘'];
 
   final _modeOptions = const [
     ('PersonCfg', '人物属性 (PersonCfg)'),
@@ -122,16 +132,164 @@ class _PersonLayoutState extends State<_PersonLayout> {
     ('TraitsCfg', '特质设定 (TraitsCfg)'),
   ];
 
+  /// 选中人物：拉取其立绘 key（/api/roles 的 portrait1/portrait2）。
+  void _select(String? id) {
+    if (id == _selectedPersonId) return;
+    setState(() {
+      _selectedPersonId = id;
+      _stageIndex = 0;
+    });
+    if (id == null || id.isEmpty) {
+      setState(() {
+        _role = null;
+        _roleLoading = false;
+      });
+      return;
+    }
+    _loadRole(id);
+  }
+
+  Future<void> _loadRole(String id) async {
+    final token = ++_roleLoadToken;
+    setState(() => _roleLoading = true);
+    final roles = await loadRoles(id);
+    if (!mounted || token != _roleLoadToken) return;
+    RoleEntry? hit;
+    for (final r in roles) {
+      if (r.id == id) {
+        hit = r;
+        break;
+      }
+    }
+    setState(() {
+      _role = hit;
+      _roleLoading = false;
+    });
+  }
+
+  /// 当前阶段对应的立绘 key（空串 = 该阶段无立绘）。
+  String get _stagePortraitKey {
+    final r = _role;
+    if (r == null) return '';
+    return _stageIndex == 0 ? r.portrait1 : r.portrait2;
+  }
+
+  /// 打开资源包管理页安装「人物图片资源扩展」；返回后清缓存强制重取，
+  /// 让刚装好的立绘立即可见（TexBytesCache 会把失败结果缓存为 null）。
+  Future<void> _openPackManager() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PackManagerPage(state: widget.state),
+      ),
+    );
+    if (!mounted) return;
+    TexBytesCache.clear();
+    setState(() => _refreshCounter++);
+  }
+
+  /// 人物资源库主区：选中人物的当前阶段立绘；无图给空态与安装入口。
+  Widget _portraitPreview() {
+    if (_selectedPersonId == null) {
+      return _portraitEmpty(
+        icon: FluentIcons.person_24_regular,
+        title: '暂无立绘预览',
+        subtitle: '从下方角色列表选择人物',
+      );
+    }
+    if (_roleLoading) {
+      return const Center(
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    final key = _stagePortraitKey;
+    if (key.isEmpty) {
+      return _portraitEmpty(
+        icon: FluentIcons.image_24_regular,
+        title: '角色 [$_selectedPersonId] 暂无${_stages[_stageIndex]}',
+        subtitle: '可安装「人物图片资源扩展」后查看',
+        action: true,
+      );
+    }
+    final name = _role?.name ?? '';
+    return Column(
+      children: [
+        if (name.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: palette.textHigh,
+                  fontWeight: FontWeight.w600),
+            ),
+          ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: TexThumb(
+              key: ValueKey('portrait_${key}_$_refreshCounter'),
+              keyName: key,
+              width: double.infinity,
+              height: double.infinity,
+              fit: BoxFit.contain,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _portraitEmpty({
+    required IconData icon,
+    required String title,
+    String subtitle = '',
+    bool action = false,
+  }) {
+    // 窄面板下文字会换行撑高：用纵向滚动兜底，避免 RenderFlex 溢出。
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 36, color: palette.iconDisabled),
+          const SizedBox(height: 8),
+          Text(title,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: palette.textHint, fontSize: 12)),
+          if (subtitle.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(subtitle,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: palette.textMuted, fontSize: 11)),
+          ],
+          if (action) ...[
+            const SizedBox(height: 10),
+            _ActionPill(
+              label: '安装人物图片扩展',
+              primary: true,
+              onPressed: _openPackManager,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _createPerson() async {
     await _promptCreateEntry(
       context: context,
       cfgName: 'PersonCfg',
       defaultIdPrefix: '10',
       onCreated: (newId) {
-        setState(() {
-          _selectedPersonId = newId;
-          _refreshCounter++;
-        });
+        _select(newId);
+        setState(() => _refreshCounter++);
       },
     );
   }
@@ -142,10 +300,8 @@ class _PersonLayoutState extends State<_PersonLayout> {
       cfgName: 'PersonCfg',
       selectedId: _selectedPersonId,
       onDeleted: () {
-        setState(() {
-          _selectedPersonId = null;
-          _refreshCounter++;
-        });
+        _select(null);
+        setState(() => _refreshCounter++);
       },
     );
   }
@@ -318,19 +474,7 @@ class _PersonLayoutState extends State<_PersonLayout> {
                             borderRadius: BorderRadius.circular(6),
                             border: Border.all(color: palette.border),
                           ),
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(FluentIcons.image_24_regular, size: 36, color: palette.iconDisabled),
-                                const SizedBox(height: 8),
-                                Text(
-                                  _selectedPersonId != null ? '角色 [$_selectedPersonId] 立绘' : '暂无立绘预览',
-                                  style: TextStyle(color: palette.textHint, fontSize: 12),
-                                ),
-                              ],
-                            ),
-                          ),
+                          child: _portraitPreview(),
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -344,7 +488,7 @@ class _PersonLayoutState extends State<_PersonLayout> {
                           key: ValueKey('PersonCfg_$_refreshCounter'),
                           cfgName: 'PersonCfg',
                           selectedId: _selectedPersonId,
-                          onSelect: (id) => setState(() => _selectedPersonId = id),
+                          onSelect: (id) => _select(id),
                         ),
                       ),
                     ],
@@ -363,11 +507,7 @@ class _PersonLayoutState extends State<_PersonLayout> {
                     classic: true,
                     embedInCard: true,
                     selectedId: _selectedPersonId,
-                    onSelectedIdChanged: (id) {
-                      if (_selectedPersonId != id) {
-                        setState(() => _selectedPersonId = id);
-                      }
-                    },
+                    onSelectedIdChanged: (id) => _select(id),
                     onPreview: widget.onPreview,
                     onOpenSearch: widget.onOpenSearch,
                   ),

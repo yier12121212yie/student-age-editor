@@ -45,6 +45,13 @@ class InstancePool {
         // 托管模式 SSRF 护栏（安全批次 A）：true 时给 fork 的 backend 传
         // --cloud-public-only（云同步出站 URL 强校验公网地址）。
         bool cloud_public_only = false;
+        // 实例请求体上限（字节，--max-body）：按 gateway.json 的 max_body_bytes
+        // 传入。同时据此派生 EDITOR_MAX_UPLOAD_BYTES（解码上限 3/4）注入实例。
+        long long max_body_bytes = 32ll * 1024 * 1024;
+        // 人物图片资源扩展（服务器端「2 种安装方式」）：非空时作为环境变量
+        // 传给 fork 的 backend 实例（EDITOR_PORTRAIT_DIR / _BASE_URL）。
+        std::string portrait_dir;
+        std::string portrait_base_url;
     };
 
     explicit InstancePool(Options opts);

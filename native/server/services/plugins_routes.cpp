@@ -22,8 +22,10 @@
 //     pass there and does not here — strictly stricter, never looser.
 #include "plugins_routes.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,7 @@
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/utf8.h"
+#include "server/api_router.h"  // invalidate_preview_cache
 #include "server/state.h"
 
 namespace sa {
@@ -71,7 +74,7 @@ json or_raw(const json& manifest, const char* key, const json& fallback) {
     return fallback;
 }
 
-json plugin_entry(const std::string& pid, const json& manifest) {
+json plugin_entry(const std::string& pid, const json& manifest, bool enabled = true) {
     json e = json::object();
     e["id"] = pid;
     e["name"] = or_raw(manifest, "name", pid);
@@ -79,10 +82,11 @@ json plugin_entry(const std::string& pid, const json& manifest) {
     e["author"] = or_raw(manifest, "author", std::string());
     e["description"] = or_raw(manifest, "description", std::string());
     e["entry"] = or_raw(manifest, "entry", std::string("plugin.py"));
-    // Declarative plugins are always on and always "loaded" (there is nothing
-    // to load), so there is no error string and no risk-ack time (PLUGIN_SPEC 5).
-    e["enabled"] = true;
-    e["loaded"] = true;
+    // 扩展合并：插件不再是「常开」——启用态来自 <plugins_root>/plugins.json
+    // （缺失 => 默认启用，见 plugin_service）。loaded 与 enabled 同值：声明型
+    // 插件没有可加载代码，停用即不出现在 UI 聚合里。
+    e["enabled"] = enabled;
+    e["loaded"] = enabled;
     // §4: a service plugin's last refresh verdict lands here ("plugin service
     // unavailable" / "invalid service url: ..."). Read paths never touch the
     // network, so a declarative-only row — and any service row before the
@@ -102,8 +106,15 @@ json plugin_entry(const std::string& pid, const json& manifest) {
 }
 
 json plugin_entries() {
+    const auto explicit_ids = ps::explicit_enabled_plugins();  // nullopt == 默认全启用
     json out = json::array();
-    for (const auto& f : scan_plugins()) out.push_back(plugin_entry(f.pid, f.manifest));
+    for (const auto& f : scan_plugins()) {
+        bool on = true;
+        if (explicit_ids) {
+            on = std::find(explicit_ids->begin(), explicit_ids->end(), f.pid) != explicit_ids->end();
+        }
+        out.push_back(plugin_entry(f.pid, f.manifest, on));
+    }
     return out;
 }
 
@@ -144,6 +155,7 @@ json declarative_flow_cards() {
     for (const auto& pid : names) {
         const std::string dir = cs::join(root, pid);
         if (!cs::is_dir(dir)) continue;
+        if (!ps::is_plugin_enabled(pid)) continue;  // 扩展合并：停用插件不贡献卡片
         auto manifest = read_manifest(dir);
         if (!manifest) continue;
         const json* cards = nullptr;
@@ -170,6 +182,7 @@ json declarative_flow_cards() {
 json declarative_panels() {
     json out = json::array();
     for (const auto& f : scan_plugins()) {
+        if (!ps::is_plugin_enabled(f.pid)) continue;  // 扩展合并：停用插件不贡献面板
         const json& manifest = f.manifest;
         if (!manifest.contains("ui") || !manifest.at("ui").is_object()) continue;
         const json& ui = manifest.at("ui");
@@ -194,6 +207,7 @@ json declarative_panels() {
 json service_flow_cards() {
     json out = json::array();
     for (const auto& f : scan_plugins()) {
+        if (!ps::is_plugin_enabled(f.pid)) continue;  // 扩展合并：停用插件不贡献卡片
         json desc = ps::describe(f.pid);
         if (desc.is_null()) continue;
         if (!desc.contains("flow_cards") || !desc.at("flow_cards").is_array()) continue;
@@ -208,6 +222,7 @@ json service_flow_cards() {
 json service_panels() {
     json out = json::array();
     for (const auto& f : scan_plugins()) {
+        if (!ps::is_plugin_enabled(f.pid)) continue;  // 扩展合并：停用插件不贡献面板
         json desc = ps::describe(f.pid);
         if (desc.is_null()) continue;
         if (!desc.contains("panels") || !desc.at("panels").is_array()) continue;
@@ -236,7 +251,7 @@ json plugin_info(const std::string& pid) {
     if (!cs::is_dir(dir)) return json();
     auto manifest = read_manifest(dir);
     if (!manifest) return json();
-    json entry = plugin_entry(pid, *manifest);
+    json entry = plugin_entry(pid, *manifest, ps::is_plugin_enabled(pid));
     json contrib = json::object();
     contrib["routes"] = json::array();
     contrib["tools"] = json::array();
@@ -399,7 +414,8 @@ json install_zip(const p3b::ZipReader& z, const std::string& filename) {
     }
     json out = json::object();
     out["id"] = pid;
-    out["plugin"] = plugin_entry(pid, manifest);
+    out["plugin"] = plugin_entry(pid, manifest, true);
+    ps::remember_installed_plugin(pid);  // 扩展合并：新装插件默认启用
     return out;
 }
 
@@ -430,6 +446,7 @@ void uninstall_plugin(const std::string& pid) {
     const std::string d = cs::join(plugins_root(), pid);
     if (!cs::is_dir(d)) throw PyValueError("plugin not found: " + pid);
     cs::remove_tree(d);
+    ps::forget_plugin(pid);  // 扩展合并：从启用列表移除
 }
 
 // install 后的响应条目：install_zip 在 §4 刷新之前合成了 entry，这里从盘上
@@ -473,6 +490,149 @@ std::string body_str_or(const Req& req, const char* key, const std::string& fall
     return json_truthy(v) ? json_str(v) : fallback;
 }
 
+// ---------------------------------------------------------------------------
+// 扩展合并（资源包 + 插件 -> /api/extensions）
+// ---------------------------------------------------------------------------
+// 统一视图：plugins_root 的插件（默认启用，plugins.json）与 packs_root 的资源
+// 包（opt-in，p3b packs.json active_ids）合并为一个列表；启用/停用统一走
+// POST /api/extensions/active 的 {"ids":[...]}，按 id 归属分别写入两边的启用
+// 集合。资源解析（aa）与 UI 聚合都据此生效；既有 /api/plugins 与
+// /api/resource_packs 保持兼容，不改变其响应形状。
+
+bool contains_id(const std::vector<std::string>& ids, const std::string& id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
+
+bool json_has_id(const json& arr, const std::string& id) {
+    if (!arr.is_array()) return false;
+    for (const auto& v : arr) {
+        if (v.is_string() && v.get<std::string>() == id) return true;
+    }
+    return false;
+}
+
+json resource_stats(const std::string& dir) {
+    json r = json::object();
+    r["aa"] = cs::is_file(cs::join(dir, "aa_index.json"));
+    r["base"] = cs::is_file(cs::join(dir, "base_data.json"));
+    r["cfgs"] = cs::is_dir(cs::join(dir, "Cfgs"));
+    r["tex"] = cs::is_dir(cs::join(dir, "tex"));
+    r["aud"] = cs::is_dir(cs::join(dir, "aud"));
+    return r;
+}
+
+bool plugin_dir_exists(const std::string& pid) {
+    return safe_pid(pid) && cs::is_dir(cs::join(plugins_root(), pid));
+}
+
+json plugin_extension_entry(const std::string& pid, const json& manifest, bool enabled) {
+    json e = plugin_entry(pid, manifest, enabled);
+    e["kind"] = "extension";
+    e["source"] = "plugins";
+    // 统一扩展：插件目录里也可以携带资源（aa_index/tex/base_data）。
+    e["resources"] = resource_stats(cs::join(plugins_root(), pid));
+    return e;
+}
+
+json pack_extension_entry(const json& pack, bool enabled) {
+    const std::string id = pack.value("id", std::string());
+    json e = json::object();
+    e["id"] = id;
+    e["name"] = pack.contains("name") ? pack.at("name") : json(id);
+    e["version"] = pack.value("version", std::string());
+    e["author"] = "";
+    e["description"] = pack.value("description", std::string());
+    e["entry"] = "";
+    e["enabled"] = enabled;
+    e["loaded"] = enabled;
+    e["error"] = "";
+    e["risk_ack_at"] = "";
+    e["kind"] = "resource";
+    e["source"] = "packs";
+    e["builtin"] = pack.value("builtin", false);
+    e["resources"] = resource_stats(cs::join(p3b::resource_pack::packs_root(), id));
+    return e;
+}
+
+json list_extensions() {
+    json out = json::object();
+    json exts = json::array();
+    json enabled = json::array();
+    std::set<std::string> seen;
+    const auto explicit_ids = ps::explicit_enabled_plugins();  // nullopt == 默认全启用
+    for (const auto& f : scan_plugins()) {
+        const bool on = !explicit_ids || contains_id(*explicit_ids, f.pid);
+        exts.push_back(plugin_extension_entry(f.pid, f.manifest, on));
+        if (on) enabled.push_back(f.pid);
+        seen.insert(f.pid);
+    }
+    json packs = p3b::resource_pack::list_packs();
+    const json active_ids = packs.contains("active_ids") ? packs.at("active_ids") : json();
+    if (packs.contains("packs") && packs.at("packs").is_array()) {
+        for (const auto& p : packs.at("packs")) {
+            const std::string id = p.value("id", std::string());
+            if (id.empty() || seen.count(id)) continue;
+            const bool on = json_has_id(active_ids, id);
+            exts.push_back(pack_extension_entry(p, on));
+            if (on) enabled.push_back(id);
+        }
+    }
+    out["enabled"] = std::move(enabled);
+    out["extensions"] = std::move(exts);
+    return out;
+}
+
+json set_extensions_enabled(const std::vector<std::string>& ids) {
+    std::set<std::string> plugin_ids;
+    for (const auto& f : scan_plugins()) plugin_ids.insert(f.pid);
+    std::set<std::string> pack_ids;
+    json packs = p3b::resource_pack::list_packs();
+    if (packs.contains("packs") && packs.at("packs").is_array()) {
+        for (const auto& p : packs.at("packs")) pack_ids.insert(p.value("id", std::string()));
+    }
+    std::vector<std::string> enable_plugins, enable_packs;
+    std::set<std::string> seen;
+    for (const auto& id : ids) {
+        if (id.empty() || !seen.insert(id).second) continue;
+        if (plugin_ids.count(id)) {
+            enable_plugins.push_back(id);
+        } else if (pack_ids.count(id)) {
+            enable_packs.push_back(id);
+        } else {
+            throw PyValueError("extension not found: " + id);
+        }
+    }
+    // 先校验后写入（set_active_ids 也会再校验一次，但此处已排除未知 id）。
+    ps::set_enabled_plugins(enable_plugins);
+    p3b::resource_pack::set_active_ids(enable_packs);
+    sa::invalidate_preview_cache();
+    return list_extensions();
+}
+
+json extension_fresh_entry(const std::string& pid) {
+    auto m = ps::read_manifest(cs::join(ps::plugins_root(), pid));
+    return plugin_extension_entry(pid, m ? *m : json::object(), ps::is_plugin_enabled(pid));
+}
+
+json extension_info(const std::string& id) {
+    if (plugin_dir_exists(id)) {
+        auto m = ps::read_manifest(cs::join(ps::plugins_root(), id));
+        if (m) return plugin_extension_entry(id, *m, ps::is_plugin_enabled(id));
+    }
+    json info = p3b::resource_pack::get_pack_info(id);
+    if (!info.is_null()) {
+        json e = json::object();
+        e["id"] = id;
+        e["kind"] = "resource";
+        e["source"] = "packs";
+        e["enabled"] = json_has_id(p3b::resource_pack::active_pack_ids(), id);
+        e["manifest"] = info.value("manifest", json::object());
+        e["stats"] = info.value("stats", json::object());
+        return e;
+    }
+    return json();
+}
+
 }  // namespace
 
 void register_plugins_routes(Router& r) {
@@ -480,6 +640,133 @@ void register_plugins_routes(Router& r) {
     // (httpd.cpp:488-495, fullmatch per method bucket), so the /<pid> patterns
     // below must not get a chance to swallow "ui"/"install"/"reload"/...
     // Registration order otherwise follows api.py:3006-3127.
+
+    // -----------------------------------------------------------------------
+    // /api/extensions — 资源包 + 插件合并后的统一扩展面（1A/2A/3A）
+    // -----------------------------------------------------------------------
+    // 统一安装落 plugins_root（1A：复用插件根）；资源包仍可通过
+    // /api/resource_packs/install 落到 packs_root（兼容）。启用为多选（2A）；
+    // 插件默认启用，资源包 opt-in。前端「扩展」页消费本族端点（3A）。
+
+    // GET /api/extensions — {"enabled":[...], "extensions":[...]}
+    r.get(R"(/api/extensions)", [](const Req&) -> Resp {
+        return Resp::Json(200, list_extensions());
+    });
+
+    // POST /api/extensions/active — {"ids":[...]}（或兼容 {"id":"..."}）
+    r.post(R"(/api/extensions/active)", [](const Req& req) -> Resp {
+        std::vector<std::string> ids;
+        const json& arr = b_ref(req, "ids");
+        if (arr.is_array()) {
+            for (const auto& v : arr) {
+                if (v.is_string()) ids.push_back(v.get<std::string>());
+            }
+        } else {
+            const std::string one = body_str_or(req, "id", "");
+            if (!one.empty()) ids.push_back(one);
+        }
+        try {
+            return Resp::Json(200, set_extensions_enabled(ids));
+        } catch (const PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/extensions/install — base64 zip（落 plugins_root）
+    r.post(R"(/api/extensions/install)", [](const Req& req) -> Resp {
+        const std::string b64 = body_str_or(req, "data", "");
+        if (b64.empty()) return Resp::Json(400, json{{"error", "zip data required"}});
+        auto raw = p3b::b64_decode_strict(b64);
+        if (!raw) return Resp::Json(400, json{{"error", "invalid base64"}});
+        if (raw->size() > kInstallMaxBytes) {
+            return Resp::Json(400, json{{"error", "zip too large (>100MB)"}});
+        }
+        try {
+            json result = install_plugin_bytes(*raw, body_str_or(req, "filename", "extension.zip"));
+            const std::string pid = result.at("id").get<std::string>();
+            ps::refresh_one(pid);
+            json body = json::object();
+            body["ok"] = true;
+            body["id"] = pid;
+            body["extension"] = extension_fresh_entry(pid);
+            return Resp::Json(200, std::move(body));
+        } catch (const PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/extensions/install_path — 本地 zip 路径（落 plugins_root）
+    r.post(R"(/api/extensions/install_path)", [](const Req& req) -> Resp {
+        const std::string path = body_str_or(req, "path", "");
+        if (path.empty()) return Resp::Json(400, json{{"error", "path required"}});
+        const std::string filename = body_str_or(req, "filename", cs::basename(path));
+        try {
+            json result =
+                install_plugin_from_path(path, filename.empty() ? "extension.zip" : filename);
+            const std::string pid = result.at("id").get<std::string>();
+            ps::refresh_one(pid);
+            json body = json::object();
+            body["ok"] = true;
+            body["id"] = pid;
+            body["extension"] = extension_fresh_entry(pid);
+            return Resp::Json(200, std::move(body));
+        } catch (const PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/extensions/install_upload — 网页版：{filename, data_base64}
+    r.post(R"(/api/extensions/install_upload)", [](const Req& req) -> Resp {
+        try {
+            return upload::install_from_upload(
+                req,
+                [](const std::string& path, const std::string& filename) {
+                    json result = install_plugin_from_path(path, filename);
+                    const std::string pid = result.at("id").get<std::string>();
+                    ps::refresh_one(pid);
+                    json body = json::object();
+                    body["ok"] = true;
+                    body["id"] = pid;
+                    body["extension"] = extension_fresh_entry(pid);
+                    return body;
+                },
+                "extension.zip");
+        } catch (const PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/extensions/reload — 重扫 + 重拉 §4 自描述
+    r.post(R"(/api/extensions/reload)", [](const Req&) -> Resp {
+        ps::refresh_all();
+        json body = list_extensions();
+        body["ok"] = true;
+        return Resp::Json(200, std::move(body));
+    });
+
+    // GET /api/extensions/<id> — 统一详情
+    r.get(R"(/api/extensions/(?P<id>[^/]+))", [](const Req& req) -> Resp {
+        const std::string id = req.params.count("id") ? req.params.at("id") : "";
+        json info = extension_info(id);
+        if (info.is_null()) return Resp::Json(404, json{{"error", "extension not found"}});
+        return Resp::Json(200, std::move(info));
+    });
+
+    // DELETE /api/extensions/<id> — 插件删目录 / 资源包删包
+    r.del(R"(/api/extensions/(?P<id>[^/]+))", [](const Req& req) -> Resp {
+        const std::string id = req.params.count("id") ? req.params.at("id") : "";
+        try {
+            if (plugin_dir_exists(id)) {
+                uninstall_plugin(id);
+                ps::refresh_one(id);
+            } else {
+                p3b::resource_pack::uninstall_pack(id);
+            }
+        } catch (const PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+        return Resp::Json(200, json{{"ok", true}});
+    });
 
     // GET /api/plugins — api.py:3006-3012 / list_plugins():403.
     r.get(R"(/api/plugins)", [](const Req&) -> Resp {

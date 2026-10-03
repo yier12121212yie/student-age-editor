@@ -42,6 +42,10 @@ std::once_flag g_schema_once;
 json g_schema;
 std::once_flag g_dicts_once;
 json g_dicts;
+// assets/PersonCfg.json — 官方人物表；仅作 /api/roles 在工作区/base 数据都没有
+// PersonCfg 时的兜底（含 id/name/gender/url/url2）。
+std::once_flag g_person_cfg_once;
+json g_person_cfg;
 
 // Convert a {str:str} JSON object into a std::map (non-string values skipped).
 std::map<std::string, std::string> to_str_map(const json& obj) {
@@ -121,6 +125,11 @@ const json& game_schema() {
 const json& dicts() {
     std::call_once(g_dicts_once, [] { g_dicts = load_asset("dicts.json"); });
     return g_dicts;
+}
+
+const json& person_cfg() {
+    std::call_once(g_person_cfg_once, [] { g_person_cfg = load_asset("PersonCfg.json"); });
+    return g_person_cfg;
 }
 
 json schema_response() {

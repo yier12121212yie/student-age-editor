@@ -192,6 +192,13 @@ Intent OpenModal(AppState& s, Page modal) {
 // The tree pane's navigation core, shared by the mod/cfg node keys.
 Intent HandleTree(AppState& s, const KeyInput& k) {
     auto items = s.TreeItems();
+    auto table_name = [&s](const TreeItem& it) -> std::string {
+        auto mt = s.mod_tables.find(s.mods[it.mod_index].name);
+        if (mt == s.mod_tables.end() || it.table_index < 0 ||
+            it.table_index >= static_cast<int>(mt->second.size()))
+            return {};
+        return mt->second[it.table_index];
+    };
     switch (k.kind) {
         case KeyInput::Up:
             if (!items.empty()) s.tree_sel = s.ClampSel(s.tree_sel - 1, static_cast<int>(items.size()));
@@ -200,18 +207,19 @@ Intent HandleTree(AppState& s, const KeyInput& k) {
             if (!items.empty()) s.tree_sel = s.ClampSel(s.tree_sel + 1, static_cast<int>(items.size()));
             return Intent::None;
         case KeyInput::Right: {
-            // Expand the node under the cursor; a collapsed unselected mod is
-            // selected first (the backend only lists the selected mod's cfgs).
+            // Expand the node under the cursor. An unselected mod must be
+            // selected first — that is the round-trip that caches its cfg list.
             if (items.empty()) return Intent::None;
             TreeItem it = items[s.ClampSel(s.tree_sel, static_cast<int>(items.size()))];
             if (it.table_index >= 0) return Intent::None;
-            if (s.mods[it.mod_index].name != s.selected_mod) {
-                s.selected_mod = s.mods[it.mod_index].name;
+            const std::string& name = s.mods[it.mod_index].name;
+            if (name != s.selected_mod) {
+                s.selected_mod = name;
                 s.mod_sel = it.mod_index;
-                s.expanded_mod = it.mod_index;
+                s.expanded_mods.insert(name);
                 return Intent::SelectMod;
             }
-            s.expanded_mod = it.mod_index;
+            s.expanded_mods.insert(name);
             return Intent::None;
         }
         case KeyInput::Left: {
@@ -221,7 +229,7 @@ Intent HandleTree(AppState& s, const KeyInput& k) {
                 s.tree_sel = it.mod_index;
                 return Intent::None;
             }
-            if (s.expanded_mod == it.mod_index) s.expanded_mod = -1;
+            s.expanded_mods.erase(s.mods[it.mod_index].name);
             return Intent::None;
         }
         case KeyInput::Enter: {
@@ -233,26 +241,39 @@ Intent HandleTree(AppState& s, const KeyInput& k) {
             if (it.table_index < 0) {
                 // Mod node: select + expand; Enter again on the selected node
                 // toggles the expansion like the Alpha tree did.
-                if (s.mods[it.mod_index].name == s.selected_mod &&
-                    s.expanded_mod == it.mod_index) {
-                    s.expanded_mod = -1;
+                const std::string& name = s.mods[it.mod_index].name;
+                if (name == s.selected_mod &&
+                    s.expanded_mods.find(name) != s.expanded_mods.end()) {
+                    s.expanded_mods.erase(name);
                     return Intent::None;
                 }
+                s.selected_mod = name;
+                s.mod_sel = it.mod_index;
+                s.expanded_mods.insert(name);
+                s.status = "加载中模组: " + s.selected_mod;
+                return Intent::SelectMod;
+            }
+            const std::string name = table_name(it);
+            if (name.empty()) return Intent::None;
+            if (s.mods[it.mod_index].name != s.selected_mod) {
+                // Opening a cfg of another mod: select it, then load the table
+                // once the selection (and its cfg list) has round-tripped.
                 s.selected_mod = s.mods[it.mod_index].name;
                 s.mod_sel = it.mod_index;
-                s.expanded_mod = it.mod_index;
+                s.expanded_mods.insert(s.selected_mod);
+                s.pending_table = name;
                 s.status = "加载中模组: " + s.selected_mod;
                 return Intent::SelectMod;
             }
             s.table = Table{};
-            s.table.name = s.tables[it.table_index];
+            s.table.name = name;
             s.focus = Focus::Rows;
             s.editing = false;
             s.editing_field = false;
             s.filter.clear();
             s.filtering = false;
             s.row_sel = 0;
-            s.detail_mode = DetailMode::Json;
+            s.detail_mode = DetailMode::Form;  // Alpha: form view is default
             s.field_sel = 0;
             s.status = "加载 " + s.table.name;
             return Intent::LoadTable;
@@ -468,6 +489,354 @@ Intent HandleUpdateModal(AppState& s, const KeyInput& k) {
     }
 }
 
+// 🔊 配音 (TTS) modal (t) — the Alpha's TtsScreen trimmed to the fields the
+// shared settings carry: provider / key / base url / model / voice, a test
+// round-trip and a synthesize-to-mod save. Enter edits the selected field,
+// t tests the connection, s synthesizes the text into the mod.
+Intent HandleTtsModal(AppState& s, const KeyInput& k) {
+    if (s.tts.editing_field) {
+        std::string* target = nullptr;
+        switch (s.tts.field_sel) {
+            case 0: target = &s.tts.provider; break;
+            case 1: target = &s.tts.api_key; break;
+            case 2: target = &s.tts.base_url; break;
+            case 3: target = &s.tts.model; break;
+            case 4: target = &s.tts.voice; break;
+            case 5: target = &s.tts.text; break;
+            default: s.tts.editing_field = false; return Intent::None;
+        }
+        switch (k.kind) {
+            case KeyInput::Enter:
+                s.tts.editing_field = false;
+                if (s.tts.field_sel == 5 && !s.tts.text.empty()) {
+                    return GateWrite(s, Intent::TtsSynthesize, "合成并保存配音",
+                                     "模组 " + s.selected_mod);
+                }
+                return Intent::None;
+            case KeyInput::Escape:
+                s.tts.editing_field = false;
+                return Intent::None;
+            case KeyInput::Backspace:
+                PopCodepoint(*target);
+                return Intent::None;
+            case KeyInput::Char:
+                *target += k.text;
+                return Intent::None;
+            default:
+                return Intent::None;
+        }
+    }
+    switch (k.kind) {
+        case KeyInput::Up:
+            s.tts.field_sel = s.ClampSel(s.tts.field_sel - 1, 6);
+            return Intent::None;
+        case KeyInput::Down:
+            s.tts.field_sel = s.ClampSel(s.tts.field_sel + 1, 6);
+            return Intent::None;
+        case KeyInput::Enter:
+            s.tts.editing_field = true;
+            return Intent::None;
+        case KeyInput::Char:
+            if (k.text == "t") {
+                if (s.tts.busy) return Intent::None;
+                s.tts.error.clear();
+                s.tts.result.clear();
+                return Intent::TtsTest;
+            }
+            if (k.text == "s") {
+                if (s.tts.busy) return Intent::None;
+                if (s.tts.text.empty()) {
+                    s.status = "输入要合成的文本";
+                    return Intent::None;
+                }
+                s.tts.error.clear();
+                s.tts.result.clear();
+                return GateWrite(s, Intent::TtsSynthesize, "合成并保存配音",
+                                 "模组 " + s.selected_mod + "  音色 " +
+                                     (s.tts.voice.empty() ? "(默认)" : s.tts.voice));
+            }
+            if (k.text == "q") {
+                s.page = Page::Main;
+                return Intent::None;
+            }
+            return Intent::None;
+        case KeyInput::Escape:
+            s.page = Page::Main;
+            return Intent::None;
+        default:
+            return Intent::None;
+    }
+}
+
+// 🚀 OOBE 首启向导 — step 0 types an optional workspace path, step 1 an
+// optional mod title, then the wizard completes (POST /api/oobe/complete).
+Intent HandleOobeModal(AppState& s, const KeyInput& k) {
+    if (s.oobe.step == 0) {
+        switch (k.kind) {
+            case KeyInput::Enter: {
+                std::string ws = TrimAscii(s.oobe.workspace_input);
+                s.oobe.workspace_input.clear();
+                if (!ws.empty()) return Intent::OobeSetWorkspace;
+                s.oobe.step = 1;
+                return Intent::None;
+            }
+            case KeyInput::Escape:
+                s.oobe.step = 1;
+                s.oobe.workspace_input.clear();
+                return Intent::None;
+            case KeyInput::Backspace:
+                PopCodepoint(s.oobe.workspace_input);
+                return Intent::None;
+            case KeyInput::Char:
+                s.oobe.workspace_input += k.text;
+                return Intent::None;
+            default:
+                return Intent::None;
+        }
+    }
+    if (s.oobe.step == 1) {
+        switch (k.kind) {
+            case KeyInput::Enter: {
+                std::string title = TrimAscii(s.oobe.mod_title);
+                s.oobe.mod_title.clear();
+                s.oobe.step = 2;
+                if (title.empty()) return Intent::OobeComplete;
+                s.mod_input = title;
+                return Intent::CreateMod;
+            }
+            case KeyInput::Escape:
+                s.oobe.active = false;
+                return Intent::OobeComplete;
+            case KeyInput::Backspace:
+                PopCodepoint(s.oobe.mod_title);
+                return Intent::None;
+            case KeyInput::Char:
+                s.oobe.mod_title += k.text;
+                return Intent::None;
+            default:
+                return Intent::None;
+        }
+    }
+    // step 2 (done): any key closes.
+    s.oobe.active = false;
+    return Intent::OobeComplete;
+}
+
+// ---- Ctrl-P command palette ------------------------------------------------
+
+Intent FormatCurrentRecord(AppState& s);
+
+void RebuildPalette(AppState& s) {
+    s.palette.items.clear();
+    auto add = [&s](const std::string& id, const std::string& label, const std::string& hint) {
+        s.palette.items.push_back(PaletteItem{id, label, hint});
+    };
+    for (int i = 0; i < static_cast<int>(s.mods.size()); ++i)
+        add("mod:" + std::to_string(i), "切换到模组 " + s.mods[i].name,
+            s.mods[i].name == s.selected_mod ? "当前" : "");
+    {
+        auto mt = s.mod_tables.find(s.selected_mod);
+        if (mt != s.mod_tables.end())
+            for (const auto& t : mt->second) add("table:" + t, "打开表 " + t, "");
+    }
+    add("action:save", "保存当前表", "Ctrl-S");
+    add("action:validate", "校验当前表", "v");
+    add("action:format", "格式化当前记录 JSON", "f");
+    add("action:search", "全局搜索对白", "Ctrl-K");
+    add("action:agent", "AI 助手", "a");
+    add("action:cloud", "云同步", "c");
+    add("action:plugins", "插件管理", "p");
+    add("action:bugfix", "Bug 扫描", "b");
+    add("action:tts", "配音 TTS", "t");
+    add("action:update", "检查更新", "u");
+    add("action:permission", "切换权限模式", "Ctrl-M");
+    add("action:nocode", "切换无代码模式", "Ctrl-N");
+    add("action:newmod", "新建模组", "N");
+    add("action:help", "键位帮助", "?");
+    add("action:refresh", "刷新模组列表", "r");
+    add("action:quit", "退出", "q");
+}
+
+Intent RunPaletteAction(AppState& s, const std::string& id) {
+    if (id.rfind("mod:", 0) == 0) {
+        int i = std::atoi(id.c_str() + 4);
+        if (i < 0 || i >= static_cast<int>(s.mods.size())) return Intent::None;
+        if (s.mods[i].name == s.selected_mod) return Intent::None;
+        s.selected_mod = s.mods[i].name;
+        s.mod_sel = i;
+        s.expanded_mods.insert(s.selected_mod);
+        s.tree_sel = i;
+        s.status = "加载中模组: " + s.selected_mod;
+        return Intent::SelectMod;
+    }
+    if (id.rfind("table:", 0) == 0) {
+        s.table = Table{};
+        s.table.name = id.substr(6);
+        s.focus = Focus::Rows;
+        s.row_sel = 0;
+        s.filter.clear();
+        s.detail_mode = DetailMode::Form;
+        s.status = "加载 " + s.table.name;
+        return Intent::LoadTable;
+    }
+    if (id == "action:save") {
+        if (s.table.name.empty() || s.table.edits.empty() || !s.table.removes.empty() ||
+            !s.table.adds.empty())
+            return Intent::SaveTable;
+        return Intent::SaveTable;
+    }
+    if (id == "action:validate") {
+        if (s.table.name.empty()) {
+            s.status = "先打开一张表";
+            return Intent::None;
+        }
+        s.validate.active = true;
+        s.validate.busy = true;
+        s.validate.cfg = s.table.name;
+        s.validate.error.clear();
+        return Intent::ValidateTable;
+    }
+    if (id == "action:format") return FormatCurrentRecord(s);
+    if (id == "action:search") {
+        s.search.active = true;
+        s.search.busy = false;
+        s.search.sel = 0;
+        s.search.error.clear();
+        return Intent::None;
+    }
+    if (id == "action:agent") { ClearTransient(s); s.page = Page::Agent; return Intent::None; }
+    if (id == "action:cloud") { ClearTransient(s); s.page = Page::Cloud; return Intent::None; }
+    if (id == "action:plugins") { ClearTransient(s); s.page = Page::Plugins; return Intent::None; }
+    if (id == "action:bugfix") { ClearTransient(s); s.page = Page::Bugfix; return Intent::None; }
+    if (id == "action:tts") { ClearTransient(s); s.page = Page::Tts; return Intent::None; }
+    if (id == "action:update") { ClearTransient(s); s.page = Page::Update; return Intent::None; }
+    if (id == "action:permission") {
+        s.permission_mode = s.permission_mode == "confirm" ? "full" : "confirm";
+        return Intent::SetPermissionMode;
+    }
+    if (id == "action:nocode") {
+        s.no_code_mode = !s.no_code_mode;
+        if (!s.no_code_mode) s.sug = FieldSuggestState{};
+        return Intent::SetNoCodeMode;
+    }
+    if (id == "action:newmod") {
+        s.mod_input_active = true;
+        s.mod_input.clear();
+        return Intent::None;
+    }
+    if (id == "action:help") { s.show_help = true; return Intent::None; }
+    if (id == "action:refresh") return Intent::RefreshMods;
+    if (id == "action:quit") return Intent::Quit;
+    return Intent::None;
+}
+
+// f — reformat the selected record's JSON with a 2-space indent (Alpha
+// action_format): the pretty text lands in the row editor, Enter stages it.
+Intent FormatCurrentRecord(AppState& s) {
+    if (s.table.name.empty()) {
+        s.status = "先打开一张表";
+        return Intent::None;
+    }
+    int ri = SelectedVisibleIndex(s);
+    if (ri < 0) {
+        s.status = "未选中记录";
+        return Intent::None;
+    }
+    const std::string& key = s.table.rows[ri].key;
+    if (std::find(s.table.removes.begin(), s.table.removes.end(), key) != s.table.removes.end()) {
+        s.status = "该行已标记删除（再按 d 取消）";
+        return Intent::None;
+    }
+    auto it = s.table.edits.find(key);
+    const std::string& raw = it != s.table.edits.end() ? it->second : s.table.rows[ri].raw;
+    Json parsed = Json::parse(raw, nullptr, false);
+    if (parsed.is_discarded()) {
+        s.status = "JSON 解析失败，无法格式化";
+        return Intent::None;
+    }
+    s.editing = true;
+    s.edit_buffer = sa_core::py_dumps_indent(parsed);
+    s.status = "已格式化 · Enter 应用，Esc 取消";
+    return Intent::None;
+}
+
+// ^P palette key handling: typing filters, ↑↓/Tab cycles, Enter runs.
+Intent HandlePaletteOverlay(AppState& s, const KeyInput& k) {
+    auto shown = [&s]() {
+        std::vector<int> out;
+        const std::string q = s.palette.input;
+        for (int i = 0; i < static_cast<int>(s.palette.items.size()); ++i) {
+            const PaletteItem& it = s.palette.items[i];
+            if (q.empty() || CaseInsensitiveContains(it.label, q) ||
+                CaseInsensitiveContains(it.id, q))
+                out.push_back(i);
+        }
+        return out;
+    };
+    switch (k.kind) {
+        case KeyInput::Up: {
+            auto v = shown();
+            if (!v.empty())
+                s.palette.sel = (s.palette.sel + static_cast<int>(v.size()) - 1) %
+                                static_cast<int>(v.size());
+            return Intent::None;
+        }
+        case KeyInput::Down:
+        case KeyInput::Tab: {
+            auto v = shown();
+            if (!v.empty()) s.palette.sel = (s.palette.sel + 1) % static_cast<int>(v.size());
+            return Intent::None;
+        }
+        case KeyInput::Enter: {
+            auto v = shown();
+            if (v.empty()) return Intent::None;
+            int idx = v[std::clamp(s.palette.sel, 0, static_cast<int>(v.size()) - 1)];
+            std::string id = s.palette.items[idx].id;
+            s.palette.active = false;
+            s.palette.input.clear();
+            s.palette.sel = 0;
+            return RunPaletteAction(s, id);
+        }
+        case KeyInput::Escape:
+            s.palette.active = false;
+            s.palette.input.clear();
+            s.palette.sel = 0;
+            return Intent::None;
+        case KeyInput::Backspace:
+            PopCodepoint(s.palette.input);
+            s.palette.sel = 0;
+            return Intent::None;
+        case KeyInput::Char:
+            s.palette.input += k.text;
+            s.palette.sel = 0;
+            return Intent::None;
+        default:
+            return Intent::None;
+    }
+}
+
+// Open the field editor for one FormRow: the buffer carries the *encoded*
+// display text (decoded back to JSON on Enter). Effect/role-ish fields in
+// no-code mode open straight into the candidate list.
+Intent BeginFieldEdit(AppState& s, const FormRow& row) {
+    s.editing_field = true;
+    s.field_name = row.key;
+    s.field_type = row.type;
+    s.field_buffer = row.value;
+    s.sug = FieldSuggestState{};
+    if (s.no_code_mode) {
+        s.sug.mode = FieldSuggestMode(s.table.name, row.key);
+        if (!s.sug.mode.empty()) return Intent::FetchFieldSuggestions;
+    }
+    // Dictionary-backed identity fields (roles/bgs/audios/...) suggest "ID ·
+    // 名称" entries even outside no-code mode.
+    if (!row.dict.empty()) {
+        s.sug.mode = row.dict;  // the intent runner reads the pool from mode
+        return Intent::FetchDictEntries;
+    }
+    return Intent::None;
+}
+
 }  // namespace
 
 int AppState::ClampSel(int sel, int count) const {
@@ -498,10 +867,15 @@ std::vector<TreeItem> AppState::TreeItems() const {
     std::vector<TreeItem> out;
     for (int i = 0; i < static_cast<int>(mods.size()); ++i) {
         out.push_back(TreeItem{i, -1});
-        // Only the selected mod has a cfg list (GET /api/cfg is per-selection),
-        // so only that node can render children.
-        if (expanded_mod == i && mods[i].name == selected_mod)
-            for (int t : VisibleTables()) out.push_back(TreeItem{i, t});
+        // Any mod whose cfg list is cached can show children (the Alpha tree
+        // kept several mods expanded; the cache fills on selection).
+        auto mt = mod_tables.find(mods[i].name);
+        if (mt == mod_tables.end() || expanded_mods.find(mods[i].name) == expanded_mods.end())
+            continue;
+        for (int t = 0; t < static_cast<int>(mt->second.size()); ++t) {
+            if (CaseInsensitiveContains(mt->second[t], table_filter))
+                out.push_back(TreeItem{i, t});
+        }
     }
     return out;
 }
@@ -654,6 +1028,15 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
             case 'q':
                 ClearTransient(s);
                 return Intent::Quit;
+            case 'p':
+                // Ctrl-P command palette (Alpha-later build's bottom bar entry).
+                ClearTransient(s);
+                s.show_help = false;
+                RebuildPalette(s);
+                s.palette.active = true;
+                s.palette.input.clear();
+                s.palette.sel = 0;
+                return Intent::None;
             case 'm':
                 // Desktop parity: the AI panel's permission-mode quick toggle.
                 s.permission_mode = s.permission_mode == "confirm" ? "full" : "confirm";
@@ -684,6 +1067,7 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
 
     // The approval dialog is the topmost modal and swallows every key.
     if (s.confirm.active) return HandleConfirmOverlay(s, k);
+    if (s.palette.active) return HandlePaletteOverlay(s, k);
     if (s.search.active) return HandleSearchOverlay(s, k);
     if (s.validate.active) return HandleValidateOverlay(s, k);
 
@@ -704,6 +1088,8 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
             case Page::Plugins: return HandlePluginsModal(s, k);
             case Page::Cloud: return HandleCloudModal(s, k);
             case Page::Update: return HandleUpdateModal(s, k);
+            case Page::Tts: return HandleTtsModal(s, k);
+            case Page::Oobe: return HandleOobeModal(s, k);
             case Page::Main: break;
         }
         return Intent::None;
@@ -806,11 +1192,20 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
         }
         switch (k.kind) {
             case KeyInput::Enter: {
+                // Decode the typed text through the field's schema type (the
+                // Alpha _decode): "1, 2, 3" becomes [1,2,3] for arrays etc.
                 std::string key, raw, out;
-                if (CurrentRowRaw(s, &key, &raw) &&
-                    ApplyFieldEdit(raw, s.field_name, s.field_buffer, &out)) {
-                    s.table.edits[key] = std::move(out);
-                    s.status = "标记修改字段 " + s.field_name + "（Ctrl-S 保存）";
+                if (CurrentRowRaw(s, &key, &raw)) {
+                    Json decoded = DecodeFieldValue(s.field_buffer, s.field_type);
+                    Json record = Json::parse(raw, nullptr, false);
+                    if (!record.is_discarded() && record.is_object()) {
+                        record[s.field_name] = std::move(decoded);
+                        s.table.edits[key] = record.dump();
+                        s.status = "标记修改字段 " + s.field_name + "（Ctrl-S 保存）";
+                    } else if (ApplyFieldEdit(raw, s.field_name, s.field_buffer, &out)) {
+                        s.table.edits[key] = std::move(out);
+                        s.status = "标记修改字段 " + s.field_name + "（Ctrl-S 保存）";
+                    }
                 }
                 s.editing_field = false;
                 return Intent::None;
@@ -905,6 +1300,50 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
         if (k.text == "p") return OpenModal(s, Page::Plugins);
         if (k.text == "b") return OpenModal(s, Page::Bugfix);
         if (k.text == "u") return OpenModal(s, Page::Update);
+        if (k.text == "t") {
+            OpenModal(s, Page::Tts);
+            return Intent::TtsLoadSettings;  // seed the fields from the backend
+        }
+        if (k.text == "f") return FormatCurrentRecord(s);
+        if (k.text == "s") {
+            // Alpha: `s` saves (the same patch flow Ctrl-S drives).
+            if (!TableDirty(s)) {
+                s.status = "无改动";
+                return Intent::None;
+            }
+            return GateWrite(s, Intent::SaveTable, "保存表格",
+                             s.table.name + "  修改 " + std::to_string(s.table.edits.size()) +
+                                 "  删除 " + std::to_string(s.table.removes.size()) + "  新增 " +
+                                 std::to_string(s.table.adds.size()));
+        }
+        if (k.text == "e") {
+            // 聚焦编辑 (Alpha action_edit_record): jump to the detail pane and
+            // open the selected field (form) / the whole-row editor (JSON).
+            std::string key, raw;
+            if (!CurrentRowRaw(s, &key, &raw)) return Intent::None;
+            if (s.detail_mode == DetailMode::Json) {
+                s.focus = Focus::Detail;
+                s.editing = true;
+                s.edit_buffer = raw;
+                return Intent::None;
+            }
+            s.focus = Focus::Detail;
+            auto rows = FormLayout(s.table.name, raw, s.schema, s.key_maps);
+            // Keep the cursor where the user was; snap a stale one onto the
+            // first field row (same rule the Detail pane applies on focus).
+            if (s.field_sel < 0 || s.field_sel >= static_cast<int>(rows.size()) ||
+                rows[s.field_sel].kind != FormRow::Kind::Field) {
+                for (int i = 0; i < static_cast<int>(rows.size()); ++i)
+                    if (rows[i].kind == FormRow::Kind::Field) {
+                        s.field_sel = i;
+                        break;
+                    }
+            }
+            if (s.field_sel < 0 || s.field_sel >= static_cast<int>(rows.size()) ||
+                rows[s.field_sel].kind != FormRow::Kind::Field)
+                return Intent::None;
+            return BeginFieldEdit(s, rows[s.field_sel]);
+        }
     }
     // Tab / Shift+Tab cycle the three panes (Alpha's panel switcher).
     if (k.kind == KeyInput::Tab || k.kind == KeyInput::ShiftTab) {
@@ -1009,42 +1448,77 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
             }
         }
         case Focus::Detail: {
-            auto fields = [&s] {
+            // Form rows (sections + fields) or the JSON pane — navigation
+            // addresses field rows only, sections render as headers.
+            auto rows = [&s]() {
                 std::string key, raw;
-                if (!CurrentRowRaw(s, &key, &raw)) return FormFields("");
-                return FormFields(raw);
+                if (!CurrentRowRaw(s, &key, &raw))
+                    return FormLayout(s.table.name, "{}", s.schema, s.key_maps);
+                return FormLayout(s.table.name, raw, s.schema, s.key_maps);
             }();
+            auto field_indices = [&rows]() {
+                std::vector<int> out;
+                for (int i = 0; i < static_cast<int>(rows.size()); ++i)
+                    if (rows[i].kind == FormRow::Kind::Field) out.push_back(i);
+                return out;
+            };
+            // A stale cursor (initial focus lands on row 0 = the first section
+            // header) snaps onto the first field row: sections never take it.
+            if (s.detail_mode == DetailMode::Form) {
+                bool on_field = s.field_sel >= 0 &&
+                                s.field_sel < static_cast<int>(rows.size()) &&
+                                rows[s.field_sel].kind == FormRow::Kind::Field;
+                if (!on_field)
+                    for (int i = 0; i < static_cast<int>(rows.size()); ++i)
+                        if (rows[i].kind == FormRow::Kind::Field) {
+                            s.field_sel = i;
+                            break;
+                        }
+            }
             switch (k.kind) {
-                case KeyInput::Up:
-                    s.field_sel = s.ClampSel(s.field_sel - 1, static_cast<int>(fields.size()));
+                case KeyInput::Up: {
+                    auto fr = field_indices();
+                    if (s.detail_mode == DetailMode::Json) return Intent::None;
+                    // Section headers do not take the cursor: step over them.
+                    int cur = s.field_sel;
+                    for (int step = 0; step < static_cast<int>(rows.size()); ++step) {
+                        cur = s.ClampSel(cur - 1, static_cast<int>(rows.size()));
+                        if (cur >= 0 && cur < static_cast<int>(rows.size()) &&
+                            rows[cur].kind == FormRow::Kind::Field)
+                            break;
+                    }
+                    s.field_sel = cur;
+                    (void)fr;
                     return Intent::None;
-                case KeyInput::Down:
-                    s.field_sel = s.ClampSel(s.field_sel + 1, static_cast<int>(fields.size()));
+                }
+                case KeyInput::Down: {
+                    if (s.detail_mode == DetailMode::Json) return Intent::None;
+                    int cur = s.field_sel;
+                    for (int step = 0; step < static_cast<int>(rows.size()); ++step) {
+                        cur = s.ClampSel(cur + 1, static_cast<int>(rows.size()));
+                        if (cur >= 0 && cur < static_cast<int>(rows.size()) &&
+                            rows[cur].kind == FormRow::Kind::Field)
+                            break;
+                    }
+                    s.field_sel = cur;
                     return Intent::None;
+                }
                 case KeyInput::Enter:
                     if (s.detail_mode == DetailMode::Json) {
                         s.detail_mode = DetailMode::Form;
                         return Intent::None;
                     }
-                    if (s.field_sel < 0 || s.field_sel >= static_cast<int>(fields.size()))
+                    if (s.field_sel < 0 || s.field_sel >= static_cast<int>(rows.size()) ||
+                        rows[s.field_sel].kind != FormRow::Kind::Field)
                         return Intent::None;
-                    s.editing_field = true;
-                    s.field_name = fields[s.field_sel].first;
-                    s.field_buffer = fields[s.field_sel].second;
-                    // No-code mode: effect/role-ish fields open straight into
-                    // the candidate list (backend empty-q = recent/curated).
-                    s.sug = FieldSuggestState{};
-                    if (s.no_code_mode) {
-                        s.sug.mode = FieldSuggestMode(s.table.name, s.field_name);
-                        if (!s.sug.mode.empty()) return Intent::FetchFieldSuggestions;
-                    }
-                    return Intent::None;
+                    return BeginFieldEdit(s, rows[s.field_sel]);
                 case KeyInput::Char:
                     if (k.text == "m") {
                         s.detail_mode = s.detail_mode == DetailMode::Json ? DetailMode::Form
                                                                           : DetailMode::Json;
                         return Intent::None;
                     }
+                    if (k.text == "f") return FormatCurrentRecord(s);
                     return Intent::None;
                 case KeyInput::Escape:
                     s.focus = Focus::Rows;

@@ -324,9 +324,17 @@ def main():
         check("repl banner + /help + exit", rc == 0
               and "Editor CLI" in out and "可用命令" in out
               and "再见" in out, (out + err)[-300:])
+        # --color forces the styled banner: the panel border rules must be
+        # whole UTF-8 "─" runs (multibyte char-literal fills break bytes).
+        cmd = [cli, "--data-root", ctx.data, "--workspace", ctx.ws, "--color"]
+        p = subprocess.run(cmd, env=ctx.env, capture_output=True, timeout=120,
+                           input=b"/help\nexit\n")
+        cout = (p.stdout or b"").decode("utf-8", "replace")
+        check("repl banner panel border (utf-8 rules)", p.returncode == 0
+              and "╭" in cout and "─" in cout and "╰" in cout, cout[-300:])
         rc, out, err = repl_run("/mods list\n/status\nexit\n")
-        check("repl /mods list + /status", rc == 0 and "selected:" in out
-              and "mods:" in out and "Workspace:" in out, (out + err)[-300:])
+        check("repl /mods list + /status", rc == 0 and "Mods @" in out
+              and "│" in out and "Workspace" in out, (out + err)[-300:])
         rc, out, err = repl_run("@EvtCfg:101\nexit\n")
         check("repl @mention reads the record", rc == 0 and "records:" in out
               and "测试事件" in out, (out + err)[-300:])
@@ -337,6 +345,9 @@ def main():
               and "你好同学" in out and "Imported" in out, (out + err)[-300:])
 
         # -- REPL /settings: bare = show; no-code on/off flips /status (M3) --
+        rc, out, err = repl_run("/mods\nexit\n")
+        check("repl bare /mods defaults to list", rc == 0 and "Mods @" in out
+              and "│" in out, (out + err)[-300:])
         rc, out, err = repl_run("/settings\nexit\n")
         check("repl /settings shows no-code", rc == 0 and "no-code: off" in out,
               (out + err)[-300:])

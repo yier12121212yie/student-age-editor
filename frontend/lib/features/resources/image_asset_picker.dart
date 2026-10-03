@@ -28,37 +28,53 @@ import 'local_import.dart' show importLocalAssets;
 
 // ---------------- 进程级字节缓存 ----------------
 
-/// tex key → PNG/WebP 字节的进程级缓存（null = 已加载但失败，避免反复请求）。
+/// 一张 tex 的来源：解码后的字节，或对象存储的公开 URL。
+///
+/// 人物图片扩展走对象存储时，服务端只回公开 URL（不代浏览器下载整张图），
+/// 由客户端自行 GET；web 端对象存储通常未开 CORS，故 URL 来源用
+/// `Image.network` 的 HTML `<img>` 策略渲染（见 [TexSourceImage]）。
+class TexSource {
+  const TexSource.bytes(this.bytes) : url = null;
+  const TexSource.url(this.url) : bytes = null;
+  final Uint8List? bytes;
+  final String? url;
+
+  bool get isEmpty => bytes == null && url == null;
+  bool get isNotEmpty => !isEmpty;
+}
+
+/// tex key → 来源（字节或 URL）的进程级缓存（null = 已加载但失败，避免反复请求）。
 ///
 /// LRU 上限 [_maxBytes]：画廊连续翻看几十张 1080p 原图时旧实现只进不出，
 /// 原图字节常驻可到上百 MB，低端手机直接 OOM。Map 插入序即 LRU 序
-/// （命中/写入都先 remove 再放回头部），超限时从最旧端淘汰。
+/// （命中/写入都先 remove 再放回头部），超限时从最旧端淘汰。URL 来源不占
+/// 字节，只按条数常驻。
 class TexBytesCache {
   TexBytesCache._();
-  static final Map<String, Uint8List?> _cache = {};
-  static final Map<String, Future<Uint8List?>> _inflight = {};
+  static final Map<String, TexSource?> _cache = {};
+  static final Map<String, Future<TexSource?>> _inflight = {};
   static int _bytes = 0;
   static const int _maxBytes = 64 * 1024 * 1024;
 
-  static void _put(String key, Uint8List? bytes) {
-    _bytes -= _cache.remove(key)?.length ?? 0;
-    _cache[key] = bytes;
-    _bytes += bytes?.length ?? 0;
+  static void _put(String key, TexSource? src) {
+    _bytes -= _cache.remove(key)?.bytes?.length ?? 0;
+    _cache[key] = src;
+    _bytes += src?.bytes?.length ?? 0;
     while (_bytes > _maxBytes && _cache.length > 1) {
       var oldest = _cache.keys.first;
       if (oldest == key) oldest = _cache.keys.elementAt(1);
-      _bytes -= _cache.remove(oldest)?.length ?? 0;
+      _bytes -= _cache.remove(oldest)?.bytes?.length ?? 0;
     }
   }
 
-  static Uint8List? peek(String key) => _cache[key];
+  static Uint8List? peek(String key) => _cache[key]?.bytes;
 
   /// 命中缓存直接返回；未命中发起请求并去重并发。
-  static Future<Uint8List?> load(String key) {
+  static Future<TexSource?> loadSource(String key) {
     if (key.isEmpty) return Future.value(null);
     if (_cache.containsKey(key)) {
       // 触碰即续命：移到 LRU 尾部。
-      final cached = _cache.remove(key);
+      final cached = _cache.remove(key)!;
       _cache[key] = cached;
       return Future.value(cached);
     }
@@ -69,10 +85,21 @@ class TexBytesCache {
     return f;
   }
 
-  static Future<Uint8List?> _fetch(String key) async {
+  /// 兼容旧消费方：只要字节（URL 来源返回 null）。
+  static Future<Uint8List?> load(String key) async =>
+      (await loadSource(key))?.bytes;
+
+  static Future<TexSource?> _fetch(String key) async {
     try {
       final r = await ApiClient.instance
           .post('/api/aa/preview', body: {'kind': 'tex', 'key': key});
+      // 对象存储立绘：服务端只回 URL，客户端自行请求。
+      final url = r['url'];
+      if (url is String && url.isNotEmpty) {
+        final src = TexSource.url(url);
+        _put(key, src);
+        return src;
+      }
       final data = r['data'];
       // 大图 base64 解码（数百 KB~数 MB 字符串）搬去后台 isolate：
       // 主 isolate 同步解是手机端滑画廊掉帧的直接原因。
@@ -81,8 +108,9 @@ class TexBytesCache {
               ? await compute(_base64DecodeIsolate, data)
               : base64Decode(data))
           : null;
-      _put(key, bytes);
-      return bytes;
+      final src = TexSource.bytes(bytes);
+      _put(key, src);
+      return src;
     } catch (_) {
       _put(key, null);
       return null;
@@ -97,7 +125,8 @@ class TexBytesCache {
 
   /// 测试注入：直接填充缓存，跳过网络栈（假时钟下 http 栈不与 pumpAndSettle
   /// 交错完成）。
-  static void debugPut(String key, Uint8List? bytes) => _put(key, bytes);
+  static void debugPut(String key, Uint8List? bytes) =>
+      _put(key, bytes == null ? null : TexSource.bytes(bytes));
 
   /// 字段 url 值 → 候选 tex key 列表：原样 + 去 bg/ cg/ 路径前缀。
   /// 本体数据 url 带 `bg/`、`cg/` 前缀而 AA 索引 key 不带，两个方向都可能命中。
@@ -112,18 +141,22 @@ class TexBytesCache {
   }
 
   /// 依次尝试 [keyCandidates] 直到命中；全失败返回 null。
-  static Future<Uint8List?> loadSmart(String raw) async {
+  static Future<TexSource?> loadSmartSource(String raw) async {
     String? firstKey;
-    Uint8List? bytes;
+    TexSource? src;
     for (final k in keyCandidates(raw)) {
       firstKey ??= k;
-      bytes = await load(k);
-      if (bytes != null) return bytes;
+      src = await loadSource(k);
+      if (src != null && src.isNotEmpty) return src;
     }
     // 全部未命中：把负结果缓存到首个候选，避免同值反复试探
     if (firstKey != null && !_cache.containsKey(firstKey)) _put(firstKey, null);
-    return bytes;
+    return src;
   }
+
+  /// 兼容旧消费方：依次尝试 [keyCandidates] 直到命中字节；全失败返回 null。
+  static Future<Uint8List?> loadSmart(String raw) async =>
+      (await loadSmartSource(raw))?.bytes;
 }
 
 /// [compute] 入口：后台 isolate base64 解码。
@@ -217,7 +250,7 @@ class TexThumb extends StatefulWidget {
 }
 
 class _TexThumbState extends State<TexThumb> {
-  Uint8List? _bytes;
+  TexSource? _src;
   bool _done = false;
 
   @override
@@ -234,37 +267,45 @@ class _TexThumbState extends State<TexThumb> {
 
   Future<void> _load() async {
     if (TexBytesCache.keyCandidates(widget.keyName).isEmpty) return;
-    final bytes = await TexBytesCache.loadSmart(widget.keyName);
+    final src = await TexBytesCache.loadSmartSource(widget.keyName);
     if (!mounted) return;
     setState(() {
-      _bytes = bytes;
+      _src = src;
       _done = true;
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final bytes = _bytes;
-    Widget child;
-    if (bytes != null) {
-      // 缩略图盒宽决定解码宽度：画廊 172 / 面板 56 / 悬停浮层 340 这类小盒
-      // 不需要 1920×1080 原图常驻解码位图。
-      child = LayoutBuilder(
-        builder: (context, box) => Image.memory(
-          bytes,
-          fit: widget.fit,
-          gaplessPlayback: true,
-          cacheWidth: _decodeCacheWidth(context, logicalWidth: box.maxWidth),
-        ),
-      );
-    } else {
-      child = Center(
+  Widget _placeholder() => Center(
         child: Icon(
           FluentIcons.image_24_regular,
           size: 14,
           color: _done ? palette.iconDisabled : palette.borderHover,
         ),
       );
+
+  @override
+  Widget build(BuildContext context) {
+    final src = _src;
+    Widget child;
+    if (src?.bytes != null) {
+      // 缩略图盒宽决定解码宽度：画廊 172 / 面板 56 / 悬停浮层 340 这类小盒
+      // 不需要 1920×1080 原图常驻解码位图。
+      child = LayoutBuilder(
+        builder: (context, box) => Image.memory(
+          src!.bytes!,
+          fit: widget.fit,
+          gaplessPlayback: true,
+          cacheWidth: _decodeCacheWidth(context, logicalWidth: box.maxWidth),
+        ),
+      );
+    } else if (src?.url != null) {
+      child = TexSourceImage(
+        source: src!,
+        fit: widget.fit,
+        errorBuilder: (_, _, _) => _placeholder(),
+      );
+    } else {
+      child = _placeholder();
     }
     final box = SizedBox(
       width: widget.width,
@@ -274,6 +315,38 @@ class _TexThumbState extends State<TexThumb> {
     return widget.borderRadius != null
         ? ClipRRect(borderRadius: widget.borderRadius!, child: box)
         : box;
+  }
+}
+
+/// 渲染一个 [TexSource]：字节走 `Image.memory`；对象存储 URL 走 `Image.network`
+/// 并采用 [WebHtmlElementStrategy.prefer]（web 端用 HTML `<img>` 元素加载，
+/// 无需对象存储开启 CORS；桌面端忽略该策略、正常取字节）。
+class TexSourceImage extends StatelessWidget {
+  const TexSourceImage({
+    super.key,
+    required this.source,
+    this.fit = BoxFit.contain,
+    this.errorBuilder,
+  });
+  final TexSource source;
+  final BoxFit fit;
+  final Widget Function(BuildContext, Object, StackTrace?)? errorBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = source.bytes;
+    if (bytes != null) {
+      return Image.memory(bytes, fit: fit, gaplessPlayback: true);
+    }
+    final url = source.url;
+    if (url == null || url.isEmpty) return const SizedBox.shrink();
+    return Image.network(
+      url,
+      fit: fit,
+      gaplessPlayback: true,
+      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+      errorBuilder: errorBuilder,
+    );
   }
 }
 
@@ -460,11 +533,11 @@ class _MobileImagePreviewPage extends StatelessWidget {
       child: Stack(
         children: [
           Positioned.fill(
-            child: FutureBuilder<Uint8List?>(
-              future: TexBytesCache.loadSmart(keyName),
+            child: FutureBuilder<TexSource?>(
+              future: TexBytesCache.loadSmartSource(keyName),
               builder: (context, snap) {
-                final bytes = snap.data;
-                if (bytes == null) {
+                final src = snap.data;
+                if (src == null || src.isEmpty) {
                   return Center(
                     child: snap.connectionState == ConnectionState.waiting
                         ? const CircularProgressIndicator(
@@ -476,7 +549,7 @@ class _MobileImagePreviewPage extends StatelessWidget {
                 return InteractiveViewer(
                   maxScale: 6,
                   child: Center(
-                    child: Image.memory(bytes, fit: BoxFit.contain),
+                    child: TexSourceImage(source: src, fit: BoxFit.contain),
                   ),
                 );
               },
@@ -1195,21 +1268,21 @@ class _PreviewPane extends StatefulWidget {
 }
 
 class _PreviewPaneState extends State<_PreviewPane> {
-  late Future<Uint8List?> _future;
+  late Future<TexSource?> _future;
 
   @override
   void initState() {
     super.initState();
-    _future = TexBytesCache.loadSmart(widget.keyName);
+    _future = TexBytesCache.loadSmartSource(widget.keyName);
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Uint8List?>(
+    return FutureBuilder<TexSource?>(
       future: _future,
       builder: (context, snap) {
-        final bytes = snap.data;
-        if (bytes == null) {
+        final src = snap.data;
+        if (src == null || src.isEmpty) {
           return Center(
             child: snap.connectionState == ConnectionState.waiting
                 ? const SizedBox(
@@ -1226,7 +1299,16 @@ class _PreviewPaneState extends State<_PreviewPane> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(child: ImagePreview(bytes: bytes, name: widget.keyName)),
+            Expanded(
+              child: src.bytes != null
+                  ? ImagePreview(bytes: src.bytes!, name: widget.keyName)
+                  : InteractiveViewer(
+                      maxScale: 6,
+                      child: Center(
+                        child: TexSourceImage(source: src, fit: BoxFit.contain),
+                      ),
+                    ),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
               child: Text(

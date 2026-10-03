@@ -220,26 +220,30 @@ class _ShimmerBoxState extends State<ShimmerBox>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _c,
-      builder: (context, _) {
-        return Container(
-          width: widget.width,
-          height: widget.height,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(widget.radius),
-            gradient: LinearGradient(
-              begin: Alignment(-1.0 + 2 * _c.value, -1),
-              end: Alignment(1.0 + 2 * _c.value, 1),
-              colors: [
-                palette.card,
-                palette.surface,
-                palette.card,
-              ],
+    // 与 PulseDot 同因：repeat() 每帧重建渐变 Container，不加边界时重绘会
+    // 向上传播到最近的边界（启动页/加载卡片所在的整块区域）。
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, _) {
+          return Container(
+            width: widget.width,
+            height: widget.height,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(widget.radius),
+              gradient: LinearGradient(
+                begin: Alignment(-1.0 + 2 * _c.value, -1),
+                end: Alignment(1.0 + 2 * _c.value, 1),
+                colors: [
+                  palette.card,
+                  palette.surface,
+                  palette.card,
+                ],
+              ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }

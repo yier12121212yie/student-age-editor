@@ -11,10 +11,12 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string_view>
 #include <thread>
 
 #include "p3b_support.h"
+#include "sa_core/atomic_io.h"
 #include "sa_core/http_client.h"
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
@@ -169,6 +171,105 @@ std::vector<Found> scan_plugins() {
     }
     return out;
 }
+
+// ---------------------------------------------------------------------------
+// 扩展合并：插件启用态（见头文件）。状态文件缺失 == 默认全启用。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::mutex g_enable_mu;
+
+std::optional<std::set<std::string>> load_explicit_enabled_locked() {
+    auto raw = cs::read_bytes(cs::join(plugins_root(), "plugins.json"));
+    if (!raw) return std::nullopt;
+    auto text = sa_core::decode_utf8_sig_strict(*raw);
+    if (!text) return std::nullopt;
+    json parsed = json::parse(*text, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) return std::nullopt;
+    if (!parsed.contains("enabled") || !parsed.at("enabled").is_array()) return std::nullopt;
+    std::set<std::string> ids;
+    for (const auto& v : parsed.at("enabled")) {
+        if (v.is_string()) ids.insert(v.get<std::string>());
+    }
+    return ids;
+}
+
+void save_enabled_locked(const std::set<std::string>& ids) {
+    json out = json::object();
+    json arr = json::array();
+    for (const auto& id : ids) arr.push_back(id);
+    out["enabled"] = arr;
+    try {
+        sa_core::write_text_atomic(cs::join(plugins_root(), "plugins.json"),
+                                   sa_core::py_dumps_indent(out));
+    } catch (...) {
+        // best-effort, like every other registry write in this service
+    }
+}
+
+}  // namespace
+
+std::string plugins_state_path() { return cs::join(plugins_root(), "plugins.json"); }
+
+std::optional<std::vector<std::string>> explicit_enabled_plugins() {
+    std::lock_guard<std::mutex> lk(g_enable_mu);
+    auto ex = load_explicit_enabled_locked();
+    if (!ex) return std::nullopt;
+    return std::vector<std::string>(ex->begin(), ex->end());
+}
+
+bool is_plugin_enabled(const std::string& pid) {
+    std::lock_guard<std::mutex> lk(g_enable_mu);
+    auto ex = load_explicit_enabled_locked();
+    if (!ex) return true;  // 未写状态：默认全启用
+    return ex->count(pid) != 0;
+}
+
+std::vector<std::string> enabled_plugin_ids() {
+    std::lock_guard<std::mutex> lk(g_enable_mu);
+    auto ex = load_explicit_enabled_locked();
+    std::vector<std::string> out;
+    for (const auto& f : scan_plugins()) {
+        if (!ex || ex->count(f.pid)) out.push_back(f.pid);
+    }
+    return out;
+}
+
+std::vector<std::string> enabled_plugin_dirs() {
+    std::vector<std::string> out;
+    const std::string root = plugins_root();
+    for (const auto& pid : enabled_plugin_ids()) out.push_back(cs::join(root, pid));
+    return out;
+}
+
+json set_enabled_plugins(const std::vector<std::string>& ids) {
+    std::set<std::string> set;
+    for (const auto& id : ids) set.insert(id);
+    std::lock_guard<std::mutex> lk(g_enable_mu);
+    save_enabled_locked(set);
+    json out = json::object();
+    json arr = json::array();
+    for (const auto& id : set) arr.push_back(id);
+    out["enabled"] = arr;
+    return out;
+}
+
+void remember_installed_plugin(const std::string& pid) {
+    std::lock_guard<std::mutex> lk(g_enable_mu);
+    auto ex = load_explicit_enabled_locked();
+    if (!ex) return;  // 默认全启用已覆盖新装插件
+    ex->insert(pid);
+    save_enabled_locked(*ex);
+}
+
+void forget_plugin(const std::string& pid) {
+    std::lock_guard<std::mutex> lk(g_enable_mu);
+    auto ex = load_explicit_enabled_locked();
+    if (!ex) return;  // 目录已删除，默认集自然不会包含它
+    if (ex->erase(pid) > 0) save_enabled_locked(*ex);
+}
+
 
 // ---------------------------------------------------------------------------
 // the "service" declaration (§4 URL whitelist)
@@ -413,6 +514,7 @@ json agent_tools() {
     json out = json::array();
     std::lock_guard<std::mutex> lk(g_mu);
     for (const auto& [pid, e] : g_cache) {
+        if (!is_plugin_enabled(pid)) continue;  // 扩展合并：停用插件不贡献工具
         if (e.desc.is_null()) continue;
         if (!e.desc.contains("agent_tools") || !e.desc.at("agent_tools").is_array()) continue;
         for (const auto& t : e.desc.at("agent_tools")) {
@@ -436,6 +538,7 @@ json agent_tools() {
 std::optional<ToolOwner> owner_of_tool(const std::string& name) {
     std::lock_guard<std::mutex> lk(g_mu);
     for (const auto& [pid, e] : g_cache) {
+        if (!is_plugin_enabled(pid)) continue;  // 扩展合并：停用插件不能被调用
         if (e.desc.is_null()) continue;  // failed/absent description owns nothing
         if (!e.desc.contains("agent_tools") || !e.desc.at("agent_tools").is_array()) continue;
         for (const auto& t : e.desc.at("agent_tools")) {

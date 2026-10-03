@@ -17,6 +17,7 @@ import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart';
 import 'effect_hint_field.dart';
 import 'field_meta.dart';
+import 'field_search.dart';
 import 'field_utils.dart';
 import 'id_ref_picker.dart';
 import '../resources/local_import.dart' show importLocalAssets;
@@ -1590,10 +1591,172 @@ class _FieldForm extends StatefulWidget {
 class _FieldFormState extends State<_FieldForm> {
   final ScrollController _scrollCtrl = ScrollController();
 
+  // 编辑页「查找字段」：输入即过滤当前条目的字段（模糊匹配标签/键/帮助/类型）。
+  // 只作用于本表单的展示，不修改数据；空查询时原样展示全部字段。
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void dispose() {
+    _searchCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FieldForm oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 切换到另一条记录时清空查找词，避免上一条的过滤把新条目的字段藏起来。
+    // 以 record['id'] 判定条目变化：record 是调用方每次 build 用 .cast() 新建
+    // 的视图，对象 identity 每次重建都会变，不能拿来判断。
+    if ((oldWidget.cfgName != widget.cfgName ||
+            oldWidget.record['id'] != widget.record['id']) &&
+        _searchQuery.isNotEmpty) {
+      _searchCtrl.clear();
+      _searchQuery = '';
+    }
+  }
+
+  /// 当前查找词过滤后的字段列表；空查询原样返回（保持 schema/表单顺序）。
+  ///
+  /// 结果按相关度降序；同分时按字段原始顺序稳定排列，避免同类字段被打散。
+  List<String> _visibleFieldKeys(List<String> fieldKeys) {
+    final q = _searchQuery.trim();
+    if (q.isEmpty) return fieldKeys;
+    final scored = <(int, String, int)>[]; // (原序号, key, 得分)
+    for (var i = 0; i < fieldKeys.length; i++) {
+      final key = fieldKeys[i];
+      final type = widget.fieldType(key) ?? 'String';
+      final score = fuzzyFieldScore(
+        query: q,
+        label: widget.translator.translate(key, widget.cfgName),
+        key: key,
+        help: _getHelpText(widget.cfgName, key, type),
+        type: type,
+      );
+      if (score != null) scored.add((i, key, score));
+    }
+    scored.sort((a, b) {
+      final d = b.$3.compareTo(a.$3);
+      return d != 0 ? d : a.$1.compareTo(b.$1);
+    });
+    return [for (final e in scored) e.$2];
+  }
+
+  void _clearFieldSearch() {
+    _searchCtrl.clear();
+    setState(() => _searchQuery = '');
+  }
+
+  /// 表单顶部的字段查找框：模糊搜索 + 命中计数 + 一键清除。
+  Widget _buildSearchBar({required int matchCount, required int total}) {
+    final active = _searchQuery.trim().isNotEmpty;
+    return Padding(
+      padding: widget.classic
+          ? const EdgeInsets.fromLTRB(14, 8, 14, 8)
+          : const EdgeInsets.fromLTRB(16, 10, 16, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: fluent.TextBox(
+              controller: _searchCtrl,
+              placeholder: '查找可编辑字段（支持模糊搜索）…',
+              prefix: const Icon(FluentIcons.search_24_regular, size: 12),
+              suffix: active
+                  ? MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: _clearFieldSearch,
+                        behavior: HitTestBehavior.opaque,
+                        child: Icon(
+                          FluentIcons.dismiss_24_regular,
+                          size: 12,
+                          color: palette.textMuted,
+                        ),
+                      ),
+                    )
+                  : null,
+              onChanged: (v) => setState(() => _searchQuery = v),
+            ),
+          ),
+          if (active) ...[
+            const SizedBox(width: 8),
+            Text(
+              '$matchCount / $total',
+              style: TextStyle(fontSize: 11, color: palette.textMuted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 查找无结果时的占位（保留清除入口，避免用户以为字段消失了）。
+  Widget _buildNoFieldMatch() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              FluentIcons.search_24_regular,
+              size: 28,
+              color: palette.iconDisabled,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '没有匹配「$_searchQuery」的字段',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12.5, color: palette.textMuted),
+            ),
+            const SizedBox(height: 8),
+            fluent.Button(
+              onPressed: _clearFieldSearch,
+              child: const Text('清除查找', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 查找时高亮命中片段；无查找词或未命中时退回普通 [Text]（保持布局不变）。
+  Widget _highlightedText(
+    String text, {
+    required TextStyle style,
+    int? maxLines = 1,
+    TextOverflow? overflow = TextOverflow.ellipsis,
+  }) {
+    final q = _searchQuery.trim();
+    if (q.isEmpty) {
+      return Text(text, maxLines: maxLines, overflow: overflow, style: style);
+    }
+    final ranges = fuzzyMatchRanges(q, text);
+    if (ranges.isEmpty) {
+      return Text(text, maxLines: maxLines, overflow: overflow, style: style);
+    }
+    final spans = <TextSpan>[];
+    var cursor = 0;
+    for (final (start, end) in ranges) {
+      if (start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, start)));
+      }
+      spans.add(TextSpan(
+        text: text.substring(start, end),
+        style: TextStyle(
+          color: accentColor,
+          fontWeight: FontWeight.bold,
+        ),
+      ));
+      cursor = end;
+    }
+    if (cursor < text.length) spans.add(TextSpan(text: text.substring(cursor)));
+    return Text.rich(
+      TextSpan(style: style, children: spans),
+      maxLines: maxLines,
+      overflow: overflow,
+    );
   }
 
 
@@ -1612,116 +1775,146 @@ class _FieldFormState extends State<_FieldForm> {
     final fieldKeys = widget.fieldKeys;
     final record = widget.record;
     final gameDicts = widget.gameDicts;
+    // 只有一个字段时查找框纯属噪声（也避免占据首个 EditableText 焦点位）。
+    final searchEnabled = fieldKeys.length > 1;
+    final visibleKeys =
+        searchEnabled ? _visibleFieldKeys(fieldKeys) : fieldKeys;
+    final searching = searchEnabled && _searchQuery.trim().isNotEmpty;
     if (widget.classic) {
-      return _buildClassicTable(fieldKeys, record, gameDicts);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (searchEnabled)
+            _buildSearchBar(
+              matchCount: visibleKeys.length,
+              total: fieldKeys.length,
+            ),
+          Expanded(
+            child: visibleKeys.isEmpty && searching
+                ? _buildNoFieldMatch()
+                : _buildClassicTable(visibleKeys, record, gameDicts),
+          ),
+        ],
+      );
     }
-    return fluent.Scrollbar(
-      controller: _scrollCtrl,
-      child: ListView.builder(
-        controller: _scrollCtrl,
-        padding: const EdgeInsets.all(16),
-        addAutomaticKeepAlives: false,
-        addRepaintBoundaries: true,
-        itemCount: fieldKeys.length + 1,
-        itemBuilder: (context, i) {
-          if (i == 0) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  Text(
-                    'ID: ${record['id'] ?? record.keys.first}',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: palette.textHigh,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    widget.cfgName,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: palette.textHint,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }
-          final key = fieldKeys[i - 1];
-          final type = widget.fieldType(key) ?? 'String';
-          final label = widget.translator.translate(key, widget.cfgName);
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      flex: 2,
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: palette.textPrimary,
-                          fontWeight: FontWeight.w600,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (searchEnabled)
+          _buildSearchBar(
+            matchCount: visibleKeys.length,
+            total: fieldKeys.length,
+          ),
+        Expanded(
+          child: visibleKeys.isEmpty && searching
+              ? _buildNoFieldMatch()
+              : fluent.Scrollbar(
+                  controller: _scrollCtrl,
+                  child: ListView.builder(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                    addAutomaticKeepAlives: false,
+                    addRepaintBoundaries: true,
+                    itemCount: visibleKeys.length + 1,
+                    itemBuilder: (context, i) {
+                    if (i == 0) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            Text(
+                              'ID: ${record['id'] ?? record.keys.first}',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: palette.textHigh,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const Spacer(),
+                            Text(
+                              widget.cfgName,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: palette.textHint,
+                              ),
+                            ),
+                          ],
                         ),
+                      );
+                    }
+                    final key = visibleKeys[i - 1];
+                    final type = widget.fieldType(key) ?? 'String';
+                    final label =
+                        widget.translator.translate(key, widget.cfgName);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                flex: 2,
+                                child: _highlightedText(
+                                  label,
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    color: palette.textPrimary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: _highlightedText(
+                                  key,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: palette.textFaint,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '[$type]',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: palette.textFaint,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _getHelpText(widget.cfgName, key, type),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: palette.textMuted,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          _FieldInput(
+                            cfgName: widget.cfgName,
+                            fieldKey: key,
+                            value: record[key],
+                            type: type,
+                            rule: fieldRuleFor(widget.cfgName, key),
+                            gameDicts: gameDicts,
+                            idCandidates: widget.loadIdCandidates,
+                            noCodeMode: widget.noCodeMode,
+                            onChanged: (v) {
+                              record[key] = v;
+                              widget.onChanged();
+                            },
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        key,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: palette.textFaint,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '[$type]',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: palette.textFaint,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _getHelpText(widget.cfgName, key, type),
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: palette.textMuted,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                _FieldInput(
-                  cfgName: widget.cfgName,
-                  fieldKey: key,
-                  value: record[key],
-                  type: type,
-                  rule: fieldRuleFor(widget.cfgName, key),
-                  gameDicts: gameDicts,
-                  idCandidates: widget.loadIdCandidates,
-                  noCodeMode: widget.noCodeMode,
-                  onChanged: (v) {
-                    record[key] = v;
-                    widget.onChanged();
+                    );
                   },
                 ),
-              ],
-            ),
-          );
-        },
-      ),
+              ),
+        ),
+      ],
     );
   }
 
@@ -1812,16 +2005,17 @@ class _FieldFormState extends State<_FieldForm> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  _highlightedText(
                     widget.translator.translate(key, widget.cfgName),
                     style: TextStyle(
                       fontSize: 12.5,
                       color: palette.textPrimary,
                       fontWeight: FontWeight.w600,
                     ),
+                    maxLines: 3,
                   ),
                   const SizedBox(height: 2),
-                  Text(
+                  _highlightedText(
                     key,
                     style: TextStyle(
                       fontSize: 10.5,
@@ -2458,9 +2652,10 @@ class _FieldInputState extends State<_FieldInput> {
   }
 
   /// 单击字段缩略图 → 大图预览。
-  Future<void> _previewTexValue(String raw) async {    final bytes = await TexBytesCache.loadSmart(raw);
+  Future<void> _previewTexValue(String raw) async {
+    final src = await TexBytesCache.loadSmartSource(raw);
     if (!mounted) return;
-    if (bytes == null) {
+    if (src == null || src.isEmpty) {
       fluent.displayInfoBar(
         context,
         builder: (_, close) => fluent.InfoBar(
@@ -2479,7 +2674,13 @@ class _FieldInputState extends State<_FieldInput> {
         content: SizedBox(
           width: min(860, screen.width - 80),
           height: min(620, screen.height - 120),
-          child: ImagePreview(bytes: bytes, name: raw),
+          child: src.bytes != null
+              ? ImagePreview(bytes: src.bytes!, name: raw)
+              : InteractiveViewer(
+                  maxScale: 6,
+                  child: Center(
+                      child: TexSourceImage(source: src, fit: BoxFit.contain)),
+                ),
         ),
         actions: [
           fluent.Button(

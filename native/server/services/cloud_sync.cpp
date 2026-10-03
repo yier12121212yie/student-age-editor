@@ -25,6 +25,7 @@
 #include "sa_core/md5.h"
 #include "sa_core/paths.h"
 #include "sa_core/sha1.h"
+#include "sa_core/sha256.h"
 #include "sa_core/strings.h"
 #include "sa_core/util.h"
 #include "server/cfg_store.h"
@@ -2995,8 +2996,391 @@ class OneDriveDriver : public NetDiskDriver {
     }
 };
 
+// ---------------------------------------------------------------------------
+// S3 兼容对象存储：AWS S3 / 阿里云 OSS / 腾讯云 COS / Cloudflare R2。
+//
+// 四者是同一套 S3 REST（SigV4 签名）语义，差别只在默认 endpoint、默认
+// region 与 SigV4 的 service 名（s3 / oss / cos）。对象存储没有真正的目录，
+// list() 用 delimiter="/" 把 CommonPrefixes 映射成目录、Contents 映射成文件，
+// 与同步引擎 _list_remote_recursive 期望的「相对路径 + is_dir」契约保持一致；
+// mkdir() 是空操作（对象键天然带前缀）。
+//
+// 配置键（config）：bucket / access_key / secret_key 必填；endpoint、region、
+// account_id（R2）、session_token、path_style 可选。endpoint 可指向自建/
+// 兼容服务（MinIO 等），是本地 mock 测试的注入点。
+// ---------------------------------------------------------------------------
+enum class S3Kind { AwsS3, AliyunOss, TencentCos, CloudflareR2 };
+
+class S3Driver : public Driver {
+  public:
+    S3Driver(json config, S3Kind kind, std::string type_name)
+        : Driver(std::move(config)), kind_(kind), type_name_(std::move(type_name)) {}
+
+    // 每次 put/get 都是无状态签名请求，可并发（不共享 token 状态）。
+    bool parallel_transfers() const override { return true; }
+
+    std::string region() const {
+        std::string r = p4::strip(json_str_or(config_, "region"));
+        if (!r.empty()) return r;
+        switch (kind_) {
+            case S3Kind::AwsS3: return "us-east-1";
+            case S3Kind::AliyunOss: return "cn-hangzhou";
+            case S3Kind::TencentCos: return "ap-guangzhou";
+            case S3Kind::CloudflareR2: return "auto";
+        }
+        return "us-east-1";
+    }
+    std::string service() const {
+        switch (kind_) {
+            case S3Kind::AliyunOss: return "oss";
+            case S3Kind::TencentCos: return "cos";
+            default: return "s3";
+        }
+    }
+    std::string endpoint() const {
+        std::string ep = p4::strip(json_str_or(config_, "endpoint"));
+        if (ep.empty()) ep = p4::strip(json_str_or(config_, "url"));
+        if (!ep.empty()) return rstrip_slashes(ep);
+        const std::string r = region();
+        switch (kind_) {
+            case S3Kind::AwsS3: return "https://s3." + r + ".amazonaws.com";
+            case S3Kind::AliyunOss: return "https://oss-" + r + ".aliyuncs.com";
+            case S3Kind::TencentCos: return "https://cos." + r + ".myqcloud.com";
+            case S3Kind::CloudflareR2: {
+                std::string acct = p4::strip(json_str_or(config_, "account_id"));
+                if (!acct.empty())
+                    return "https://" + acct + ".r2.cloudflarestorage.com";
+                raise_value_error("cloudflare_r2 需要 endpoint 或 account_id");
+            }
+        }
+        return ep;
+    }
+    std::string bucket() const {
+        std::string b = p4::strip(json_str_or(config_, "bucket"));
+        if (b.empty()) raise_value_error(type_name_ + " bucket required");
+        return b;
+    }
+    std::string access_key() const {
+        std::string v = p4::strip(json_str_or(config_, "access_key"));
+        if (v.empty()) v = p4::strip(json_str_or(config_, "access_key_id"));
+        if (v.empty()) v = p4::strip(json_str_or(config_, "key"));
+        if (v.empty()) raise_value_error(type_name_ + " access_key required");
+        return v;
+    }
+    std::string secret_key() const {
+        std::string v = p4::strip(json_str_or(config_, "secret_key"));
+        if (v.empty()) v = p4::strip(json_str_or(config_, "secret_access_key"));
+        if (v.empty()) v = p4::strip(json_str_or(config_, "secret"));
+        if (v.empty()) raise_value_error(type_name_ + " secret_key required");
+        return v;
+    }
+    std::string session_token() const {
+        return p4::strip(json_str_or(config_, "session_token"));
+    }
+
+    // AWS SigV4 URI 编码：S3 的规范化请求不做二次编码；keep_slash 用于
+    // 规范化路径（保留 '/'）。
+    static std::string uri_encode(const std::string& s, bool keep_slash) {
+        static const char* hexd = "0123456789ABCDEF";
+        std::string out;
+        for (unsigned char c : s) {
+            if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~' ||
+                (keep_slash && c == '/')) {
+                out += static_cast<char>(c);
+            } else {
+                out += '%';
+                out += hexd[c >> 4];
+                out += hexd[c & 0xF];
+            }
+        }
+        return out;
+    }
+
+    struct Signed {
+        std::string url;
+        std::vector<std::pair<std::string, std::string>> headers;
+    };
+
+    // 生成一条 SigV4 签名请求（URL + 需携带的头）。key 为空表示桶级操作。
+    Signed sign(const std::string& method, const std::string& key,
+                const std::vector<std::pair<std::string, std::string>>& query,
+                const std::string& payload, const std::string& content_type) const {
+        const std::string ep = endpoint();
+        sa_core::http::Url u;
+        if (!sa_core::http::parse_url(ep, &u))
+            raise_value_error(type_name_ + " invalid endpoint: " + ep);
+
+        // Validate bucket then credentials up front so the error order is
+        // deterministic regardless of which value is consumed first below.
+        const std::string bkt = bucket();
+        const std::string ak = access_key();
+        const std::string sk = secret_key();
+
+        std::string canonical_path = "/" + bkt;
+        if (!key.empty()) canonical_path += "/" + key;
+        std::string encoded_path = uri_encode(canonical_path, true);
+
+        std::vector<std::pair<std::string, std::string>> sorted = query;
+        std::sort(sorted.begin(), sorted.end());
+        std::string canonical_query;
+        for (const auto& [k, v] : sorted) {
+            if (!canonical_query.empty()) canonical_query += "&";
+            canonical_query += uri_encode(k, false) + "=" + uri_encode(v, false);
+        }
+
+        std::time_t now = std::time(nullptr);
+        std::tm g{};
+#ifdef _WIN32
+        gmtime_s(&g, &now);
+#else
+        gmtime_r(&now, &g);
+#endif
+        char amz_date[32];
+        char date_stamp[16];
+        std::strftime(amz_date, sizeof(amz_date), "%Y%m%dT%H%M%SZ", &g);
+        std::strftime(date_stamp, sizeof(date_stamp), "%Y%m%d", &g);
+
+        const std::string payload_hash = sa_core::sha256_hex_strict(payload);
+
+        std::string host = sp::lower(u.host);
+        const bool default_port = (u.https && u.port == 443) || (!u.https && u.port == 80);
+        if (!default_port && u.port > 0) host += ":" + std::to_string(u.port);
+
+        std::vector<std::pair<std::string, std::string>> to_sign;
+        to_sign.emplace_back("host", host);
+        to_sign.emplace_back("x-amz-content-sha256", payload_hash);
+        to_sign.emplace_back("x-amz-date", amz_date);
+        const std::string token = session_token();
+        if (!token.empty()) to_sign.emplace_back("x-amz-security-token", token);
+        if (!content_type.empty()) to_sign.emplace_back("content-type", content_type);
+        std::sort(to_sign.begin(), to_sign.end());
+
+        std::string canonical_headers;
+        std::string signed_headers;
+        for (const auto& [k, v] : to_sign) {
+            canonical_headers += k + ":" + v + "\n";
+            if (!signed_headers.empty()) signed_headers += ";";
+            signed_headers += k;
+        }
+
+        std::string canonical_request = method + "\n" + encoded_path + "\n" + canonical_query +
+                                        "\n" + canonical_headers + "\n" + signed_headers + "\n" +
+                                        payload_hash;
+        const std::string scope =
+            std::string(date_stamp) + "/" + region() + "/" + service() + "/aws4_request";
+        const std::string string_to_sign = "AWS4-HMAC-SHA256\n" + std::string(amz_date) + "\n" +
+                                           scope + "\n" +
+                                           sa_core::sha256_hex_strict(canonical_request);
+
+        std::string k_date = sa_core::hmac_sha256_raw("AWS4" + sk, date_stamp);
+        std::string k_region = sa_core::hmac_sha256_raw(k_date, region());
+        std::string k_service = sa_core::hmac_sha256_raw(k_region, service());
+        std::string k_signing = sa_core::hmac_sha256_raw(k_service, "aws4_request");
+        const std::string signature = sa_core::http::bytes_to_hex(
+            sa_core::hmac_sha256_raw(k_signing, string_to_sign));
+
+        const std::string authorization = "AWS4-HMAC-SHA256 Credential=" + ak + "/" + scope +
+                                          ", SignedHeaders=" + signed_headers +
+                                          ", Signature=" + signature;
+
+        Signed out;
+        out.url = ep + encoded_path;
+        if (!canonical_query.empty()) out.url += "?" + canonical_query;
+        out.headers.emplace_back("x-amz-content-sha256", payload_hash);
+        out.headers.emplace_back("x-amz-date", amz_date);
+        if (!token.empty()) out.headers.emplace_back("x-amz-security-token", token);
+        if (!content_type.empty()) out.headers.emplace_back("Content-Type", content_type);
+        out.headers.emplace_back("Authorization", authorization);
+        return out;
+    }
+
+    HttpResult request(const std::string& method, const std::string& key,
+                       const std::vector<std::pair<std::string, std::string>>& query,
+                       const std::string& payload, double timeout,
+                       const std::string& content_type = "") const {
+        Signed s = sign(method, key, query, payload, content_type);
+        const std::string* data = payload.empty() ? nullptr : &payload;
+        return http_request(s.url, method, s.headers, data, timeout);
+    }
+
+    void test() override {
+        std::vector<std::pair<std::string, std::string>> q;
+        q.emplace_back("list-type", "2");
+        q.emplace_back("max-keys", "1");
+        auto r = request("GET", "", q, "", 15);
+        if (r.status != 200)
+            raise_value_error(type_name_ + " test failed: " + std::to_string(r.status));
+    }
+    std::vector<Obj> list(const std::string& remote_path) override {
+        const std::string prefix = norm_remote(remote_path);
+        const std::string p = prefix.empty() ? std::string() : prefix + "/";
+        std::vector<Obj> out;
+        std::string token;
+        static const std::regex rx_contents("<Contents>([\\s\\S]*?)</Contents>",
+                                            std::regex::icase);
+        static const std::regex rx_common(
+            "<CommonPrefixes>([\\s\\S]*?)</CommonPrefixes>", std::regex::icase);
+        static const std::regex rx_key("<Key>([\\s\\S]*?)</Key>", std::regex::icase);
+        static const std::regex rx_size("<Size>([\\s\\S]*?)</Size>", std::regex::icase);
+        static const std::regex rx_lm("<LastModified>([\\s\\S]*?)</LastModified>",
+                                      std::regex::icase);
+        static const std::regex rx_prefix("<Prefix>([\\s\\S]*?)</Prefix>", std::regex::icase);
+        static const std::regex rx_trunc("<IsTruncated>([\\s\\S]*?)</IsTruncated>",
+                                         std::regex::icase);
+        static const std::regex rx_next(
+            "<NextContinuationToken>([\\s\\S]*?)</NextContinuationToken>", std::regex::icase);
+        for (int page = 0; page < 10000; ++page) {
+            std::vector<std::pair<std::string, std::string>> q;
+            q.emplace_back("list-type", "2");
+            q.emplace_back("delimiter", "/");
+            if (!p.empty()) q.emplace_back("prefix", p);
+            if (!token.empty()) q.emplace_back("continuation-token", token);
+            auto r = request("GET", "", q, "", 30);
+            if (r.status != 200)
+                raise_value_error(type_name_ + " list failed: " +
+                                  std::to_string(r.status));
+            const std::string text = utf8_ignore(r.body);
+            for (std::sregex_iterator it(text.begin(), text.end(), rx_contents), end;
+                 it != end; ++it) {
+                const std::string blk = (*it)[1].str();
+                auto k = re_search_1(blk, rx_key);
+                if (!k) continue;
+                std::string key = xml_unescape(p4::strip(*k));
+                if (key == p || key == prefix) continue;  // 跳过前缀自身
+                long long size = 0;
+                if (auto sz = re_search_1(blk, rx_size)) {
+                    std::string ds = p4::strip(*sz);
+                    if (digits_only(ds)) size = std::stoll(ds);
+                }
+                long long mtime = 0;
+                if (auto lm = re_search_1(blk, rx_lm))
+                    mtime = parse_iso_time(p4::strip(*lm)).value_or(0);
+                out.push_back(Obj{spath::basename(key), key, false, size, mtime, ""});
+            }
+            for (std::sregex_iterator it(text.begin(), text.end(), rx_common), end;
+                 it != end; ++it) {
+                auto pre = re_search_1((*it)[1].str(), rx_prefix);
+                if (!pre) continue;
+                std::string dkey = rstrip_slashes(xml_unescape(p4::strip(*pre)));
+                if (dkey.empty() || dkey == prefix) continue;
+                out.push_back(Obj{spath::basename(dkey), dkey, true, 0, 0, ""});
+            }
+            auto trunc = re_search_1(text, rx_trunc);
+            if (!trunc || sp::lower(p4::strip(*trunc)) != "true") break;
+            auto next = re_search_1(text, rx_next);
+            if (!next) break;
+            token = p4::strip(*next);
+            if (token.empty()) break;
+        }
+        return out;
+    }
+    std::optional<Obj> stat(const std::string& remote_path) override {
+        const std::string key = norm_remote(remote_path);
+        if (key.empty()) return std::nullopt;
+        std::vector<std::pair<std::string, std::string>> q;
+        q.emplace_back("list-type", "2");
+        q.emplace_back("prefix", key);
+        q.emplace_back("max-keys", "1");
+        auto r = request("GET", "", q, "", 30);
+        if (r.status != 200)
+            raise_value_error(type_name_ + " stat failed: " + std::to_string(r.status));
+        const std::string text = utf8_ignore(r.body);
+        static const std::regex rx_contents("<Contents>([\\s\\S]*?)</Contents>",
+                                            std::regex::icase);
+        static const std::regex rx_key("<Key>([\\s\\S]*?)</Key>", std::regex::icase);
+        static const std::regex rx_size("<Size>([\\s\\S]*?)</Size>", std::regex::icase);
+        static const std::regex rx_lm("<LastModified>([\\s\\S]*?)</LastModified>",
+                                      std::regex::icase);
+        for (std::sregex_iterator it(text.begin(), text.end(), rx_contents), end; it != end;
+             ++it) {
+            const std::string blk = (*it)[1].str();
+            auto k = re_search_1(blk, rx_key);
+            if (!k) continue;
+            std::string found = xml_unescape(p4::strip(*k));
+            if (found == key) {
+                long long size = 0;
+                if (auto sz = re_search_1(blk, rx_size)) {
+                    std::string ds = p4::strip(*sz);
+                    if (digits_only(ds)) size = std::stoll(ds);
+                }
+                long long mtime = 0;
+                if (auto lm = re_search_1(blk, rx_lm))
+                    mtime = parse_iso_time(p4::strip(*lm)).value_or(0);
+                return Obj{spath::basename(key), key, false, size, mtime, ""};
+            }
+            if (found.size() > key.size() && sp::starts_with(found, key + "/"))
+                return Obj{spath::basename(key), key, true, 0, 0, ""};
+        }
+        return std::nullopt;
+    }
+    void get(const std::string& remote_path, const std::string& local_path) override {
+        const std::string key = norm_remote(remote_path);
+        auto r = request("GET", key, {}, "", 60);
+        if (r.status != 200)
+            raise_value_error(type_name_ + " get failed: " + std::to_string(r.status));
+        spath::create_dirs(spath::dirname(spath::abs_path(local_path)));
+        if (!spath::write_bytes_simple(local_path, r.body))
+            raise_typed("OSError", "write failed: " + local_path);
+    }
+    void put(const std::string& local_path, const std::string& remote_path) override {
+        if (!spath::is_file(local_path)) raise_file_not_found(local_path);
+        std::string data = read_file_or_throw(local_path, "read");
+        const std::string key = norm_remote(remote_path);
+        auto r = request("PUT", key, {}, data, 120, "application/octet-stream");
+        if (!(r.status == 200 || r.status == 201 || r.status == 204))
+            raise_value_error(type_name_ + " put failed: " + std::to_string(r.status));
+    }
+    void remove(const std::string& remote_path) override {
+        const std::string key = norm_remote(remote_path);
+        auto r = request("DELETE", key, {}, "", 30);
+        if (!(r.status == 200 || r.status == 202 || r.status == 204 || r.status == 404))
+            raise_value_error(type_name_ + " delete failed: " + std::to_string(r.status));
+    }
+    void mkdir(const std::string& /*remote_path*/) override {}  // 对象存储无目录
+
+    json config_schema() override {
+        json s;
+        s["bucket"] = "存储桶名称";
+        s["access_key"] = "Access Key ID";
+        s["secret_key"] = "Access Key Secret";
+        s["endpoint"] =
+            "Endpoint（可选；OSS/COS/S3 可按区域推导，R2 需填 <account_id>.r2."
+            "cloudflarestorage.com）";
+        s["region"] =
+            "区域（如 us-east-1 / cn-hangzhou / ap-guangzhou；Cloudflare R2 用 auto）";
+        return s;
+    }
+
+  private:
+    static std::string xml_unescape(std::string s) {
+        struct Ent {
+            const char* from;
+            const char* to;
+        };
+        static const Ent kEnts[] = {{"&lt;", "<"},   {"&gt;", ">"},  {"&quot;", "\""},
+                                    {"&apos;", "'"}, {"&#39;", "'"}, {"&amp;", "&"}};
+        for (const auto& e : kEnts) s = sa_core::str::replace_all(s, e.from, e.to);
+        return s;
+    }
+
+    S3Kind kind_;
+    std::string type_name_;
+};
+
 std::shared_ptr<Driver> new_local(json c) { return std::make_shared<LocalDriver>(std::move(c)); }
 std::shared_ptr<Driver> new_webdav(json c) { return std::make_shared<WebDAVDriver>(std::move(c)); }
+std::shared_ptr<Driver> new_aws_s3(json c) {
+    return std::make_shared<S3Driver>(std::move(c), S3Kind::AwsS3, "aws_s3");
+}
+std::shared_ptr<Driver> new_aliyun_oss(json c) {
+    return std::make_shared<S3Driver>(std::move(c), S3Kind::AliyunOss, "aliyun_oss");
+}
+std::shared_ptr<Driver> new_tencent_cos(json c) {
+    return std::make_shared<S3Driver>(std::move(c), S3Kind::TencentCos, "tencent_cos");
+}
+std::shared_ptr<Driver> new_cloudflare_r2(json c) {
+    return std::make_shared<S3Driver>(std::move(c), S3Kind::CloudflareR2, "cloudflare_r2");
+}
 std::shared_ptr<Driver> new_openlist(json c) {
     return std::make_shared<OpenListDriver>(std::move(c));
 }
@@ -3170,20 +3554,35 @@ std::shared_ptr<Driver> make_local(json config) { return new_local(std::move(con
 std::shared_ptr<Driver> make_openlist(json config) { return new_openlist(std::move(config)); }
 
 const std::vector<std::pair<std::string, DriverFactory>>& drivers() {
+    // 只登记「规范」驱动；历史别名（alist/baidu/123pan/gdrive）见
+    // driver_aliases()，仍可解析旧配置，但不再作为新配置的候选类型，UI 也
+    // 不会出现重复项。
     static const std::vector<std::pair<std::string, DriverFactory>> kReg = {
         {"local", new_local},
         {"webdav", new_webdav},
         {"openlist", new_openlist},
-        {"alist", new_openlist},
         {"baidu_netdisk", new_baidu},
-        {"baidu", new_baidu},
         {"123", new_123},
-        {"123pan", new_123},
         {"google_drive", new_gdrive},
-        {"gdrive", new_gdrive},
         {"onedrive", new_onedrive},
+        {"aliyun_oss", new_aliyun_oss},
+        {"tencent_cos", new_tencent_cos},
+        {"aws_s3", new_aws_s3},
+        {"cloudflare_r2", new_cloudflare_r2},
     };
     return kReg;
+}
+
+// 历史别名 → 规范驱动工厂（仅 get_driver 解析用；不进 drivers()）。
+const std::map<std::string, DriverFactory>& driver_aliases() {
+    static const std::map<std::string, DriverFactory> kAliases = {
+        {"alist", new_openlist},
+        {"baidu", new_baidu},
+        {"123pan", new_123},
+        {"gdrive", new_gdrive},
+        {"s3", new_aws_s3},
+    };
+    return kAliases;
 }
 
 std::shared_ptr<Driver> get_driver(const json& type_val, const json& config) {
@@ -3210,6 +3609,11 @@ std::shared_ptr<Driver> get_driver(const json& type_val, const json& config) {
             // BaseDriver.__init__: self.config = config or {}
             return factory(p5::py_truthy(config) ? config : json::object());
         }
+    }
+    // 兼容旧配置的历史别名（alist/baidu/123pan/gdrive/s3）。
+    auto alias = driver_aliases().find(key);
+    if (alias != driver_aliases().end()) {
+        return alias->second(p5::py_truthy(config) ? config : json::object());
     }
     raise_value_error("unknown driver: " + type_name_disp);
 }

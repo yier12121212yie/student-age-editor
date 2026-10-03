@@ -57,13 +57,14 @@ TEST_CASE("HandleKey: tree navigation clamps and Enter selects + expands", "[p8]
     REQUIRE(s.tree_sel == 1);
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::SelectMod);
     REQUIRE(s.selected_mod == "B");
-    REQUIRE(s.expanded_mod == 1);  // the newly selected mod shows its cfgs
+    REQUIRE(s.expanded_mods.count("B") == 1);  // the newly selected mod shows its cfgs
 }
 
 TEST_CASE("HandleKey: cfg node Enter loads the table; Left collapses", "[p8]") {
     AppState s = NavState();
     s.tables = {"TalkCfg", "ItemCfg"};
-    s.expanded_mod = 0;  // selected mod "A" renders its cfg children
+    s.expanded_mods.insert("A");
+    s.mod_tables["A"] = {"TalkCfg", "ItemCfg"};  // selected mod "A" renders its cfg children
     auto items = s.TreeItems();
     REQUIRE(items.size() == 4);  // A, TalkCfg, ItemCfg (expanded) + the B node
     s.tree_sel = 1;              // TalkCfg
@@ -77,7 +78,7 @@ TEST_CASE("HandleKey: cfg node Enter loads the table; Left collapses", "[p8]") {
     REQUIRE(s.tree_sel == 0);  // the mod node index
     // Enter again on the selected+expanded node collapses it.
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
-    REQUIRE(s.expanded_mod == -1);
+    REQUIRE(s.expanded_mods.count("A") == 0);
     REQUIRE(s.TreeItems().size() == 2);
 }
 
@@ -182,8 +183,8 @@ TEST_CASE("HandleKey: Tab/Shift+Tab cycles browse panes; tree Enter loads", "[p8
     REQUIRE(s.focus == Focus::Tables);  // browse starts on the tree pane
     s.mods = {ModEntry{"A", "r/A"}};
     s.selected_mod = "A";
-    s.expanded_mod = 0;
-    s.tables = {"TalkCfg", "ItemCfg"};
+    s.expanded_mods.insert("A");
+    s.mod_tables["A"] = {"TalkCfg", "ItemCfg"};
     s.tree_sel = 1;  // TalkCfg under A
     // Tab: Tables -> Rows -> Detail -> Tables; Shift+Tab walks back.
     REQUIRE(HandleKey(s, K(KeyInput::Tab)) == Intent::None);
@@ -315,11 +316,10 @@ TEST_CASE("HandleKey: v opens the validate overlay, any key closes", "[p8]") {
 TEST_CASE("HandleKey: form-mode field edit writes back into the row edit", "[p8]") {
     AppState s = RowsState();
     s.table.rows = {TableRow{"1", "x", R"({"id":1,"content":"你好"})"}};
-    // Detail focus via Tab, switch to form, pick the second field, edit it.
+    // Detail focus via Tab: form view is the default, the cursor snaps onto
+    // the first field row and Enter opens the field editor.
     HandleKey(s, K(KeyInput::Tab));   // Rows -> Detail
-    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
     REQUIRE(s.detail_mode == DetailMode::Form);
-    HandleKey(s, K(KeyInput::Down));  // -> "content"
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
     REQUIRE(s.editing_field);
     REQUIRE(s.field_name == "content");
@@ -957,7 +957,7 @@ TEST_CASE("HandleKey: entering a suggestable field in no-code mode fetches candi
 
     // A field with no suggestion source just opens the plain editor.
     AppState t = EffectEditor();
-    t.field_sel = 1;  // id
+    t.field_sel = 2;  // id（行 0 是组标题，行 1 是 effect）
     REQUIRE(HandleKey(t, K(KeyInput::Enter)) == Intent::None);
     REQUIRE(t.editing_field);
     REQUIRE(t.field_name == "id");
@@ -1119,7 +1119,7 @@ TEST_CASE("HandleKey: Esc inside the slot flow cancels without touching the buff
 TEST_CASE("HandleKey: speaker field offers roles and reports role usage", "[p8]") {
     AppState s = EffectEditor();
     s.table.rows = {TableRow{"1", "无说话人", R"({"speaker":"","effect":""})"}};
-    s.field_sel = 0;
+    s.field_sel = 2;  // speaker（行 0 是组标题，行 1 是 effect）
     REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::FetchFieldSuggestions);
     REQUIRE(s.field_name == "speaker");
     REQUIRE(s.sug.mode == "role");

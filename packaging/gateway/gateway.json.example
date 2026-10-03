@@ -6,6 +6,8 @@
     "https://editor.example.com"
   ],
   "session_ttl_hours": 24,
+  "refresh_ttl_days": 30,
+  "max_body_bytes": 268435456,
   "instance": {
     "max": 8,
     "idle_minutes": 30
@@ -16,6 +18,10 @@
     "invite_code": "",
     "max_accounts": 0,
     "min_password_length": 8
+  },
+  "portraits": {
+    "dir": "",
+    "base_url": ""
   },
   "accounts": [
     {

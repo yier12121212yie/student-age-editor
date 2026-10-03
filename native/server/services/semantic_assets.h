@@ -29,6 +29,9 @@ using json = nlohmann::ordered_json;
 const json& game_schema();
 // dicts.json: {key_maps, game_dicts, story_dicts} — /api/dicts backing store.
 const json& dicts();
+// assets/PersonCfg.json: 官方人物表（id -> {name,gender,url,url2}）。作 /api/roles
+// 在工作区 mod 与已加载 base 数据都没有 PersonCfg 时的兜底。
+const json& person_cfg();
 
 // /api/schema response assembly (api.py:1361-1368), field-by-field:
 //   {game_schema, field_types, cfg_names} where field_types flattens every

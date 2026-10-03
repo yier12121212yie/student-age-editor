@@ -94,7 +94,9 @@
 ### 2.5 网关口令与会话（安全批次 A）
 
 见 §1：PBKDF2 v2 + 透明升级、登录限速。会话 Bearer token 机制与
-`session_ttl_hours` 不变。
+`session_ttl_hours` 不变；长期鉴权（记住我）另加 refresh token：
+`POST /api/auth/refresh` 旋转换新，落盘只存 SHA-256 哈希（
+`<state_dir>/refresh_tokens.json`），登出同时吊销 access 与 refresh。
 
 ---
 

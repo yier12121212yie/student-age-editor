@@ -87,17 +87,18 @@ class CreationShell extends StatelessWidget {
                       ],
                     ),
                   ),
+                  // 编辑区 + AI 面板：宽布局并排停靠；紧凑布局（窄 Web 窗口）
+                  // AI 浮层化，不再占用布局宽度挤占编辑区。
                   Expanded(
-                    child: EditorArea(
+                    child: AiDockHost(
                       state: state,
-                      controller: shell.controller,
+                      shell: shell,
+                      onOpenSettings: () => shell.selectPane(SidePane.settings),
+                      content: EditorArea(
+                        state: state,
+                        controller: shell.controller,
+                      ),
                     ),
-                  ),
-                  // AI 面板：共享停靠组件（拖宽/折叠条/持久化统一处理）
-                  AiDock(
-                    state: state,
-                    shell: shell,
-                    onOpenSettings: () => shell.selectPane(SidePane.settings),
                   ),
                 ],
               ),

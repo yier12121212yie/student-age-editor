@@ -238,3 +238,68 @@ TEST_CASE("/api/aa/preview of a game-index tex answers 422 (C++ cannot decode)",
     reset_aa_singletons_for_test();
     sa::detail::set_editor_root("");
 }
+
+TEST_CASE("/api/aa/preview falls back to EDITOR_PORTRAIT_DIR (人物图片扩展·本地)",
+          "[p4][aa][routes][portraits]") {
+    // 既无游戏索引也无活动包：仅配置人物图片本地目录时，preview 不应 400，
+    // 而应按解码包语义从 tex/<文件> 提供立绘字节。
+    auto root = sat::make_temp_dir("p4_aa_portrait_root");
+    auto portraits = sat::make_temp_dir("p4_aa_portrait_pack");
+    sa::detail::set_editor_root(sa_core::paths::path_to_utf8(root));
+    wfile(portraits / "tex" / "role_xiaomei.webp", std::string("RIFFwebp-bytes"));
+    _putenv(("EDITOR_PORTRAIT_DIR=" + sa_core::paths::path_to_utf8(portraits))
+                .c_str());
+    _putenv("EDITOR_PORTRAIT_BASE_URL=");
+    _putenv("EDITOR_DECODED_PACK_DIR=");
+    reset_aa_singletons_for_test();
+    {
+        std::lock_guard<std::mutex> lk(STATE().mu_);
+        STATE().aa_status = "idle";
+        STATE().aa_error.clear();
+    }
+    Router r;
+    register_aa_routes(r);
+    // 键含 '/' 时走 safe_asset_name（'/'→'_'）回退：命中 role_xiaomei.webp。
+    auto hit = sat::call_router(r, "POST", "/api/aa/preview", {},
+                                json{{"kind", "tex"}, {"key", "role/xiaomei"}});
+    REQUIRE(hit.status == 200);
+    CHECK(hit.json_payload["kind"] == "tex");
+    CHECK(!hit.json_payload["data"].get<std::string>().empty());
+    auto miss = sat::call_router(r, "POST", "/api/aa/preview", {},
+                                 json{{"kind", "tex"}, {"key", "role/nobody"}});
+    CHECK(miss.status == 404);
+    // 清理：避免 EDITOR_PORTRAIT_DIR 泄漏到后续用例。
+    _putenv("EDITOR_PORTRAIT_DIR=");
+    reset_aa_singletons_for_test();
+    sa::detail::set_editor_root("");
+}
+
+TEST_CASE("/api/aa/preview returns a COS URL for portraits (人物图片扩展·对象存储)",
+          "[p4][aa][routes][portraits]") {
+    // 配置对象存储 base_url 时：本地目录未命中，preview 返回 200 + url，
+    // 服务端不再代下载图片（客户端自行 GET）。
+    auto root = sat::make_temp_dir("p4_aa_portrait_url_root");
+    sa::detail::set_editor_root(sa_core::paths::path_to_utf8(root));
+    _putenv("EDITOR_PORTRAIT_DIR=");
+    _putenv("EDITOR_PORTRAIT_BASE_URL=https://cos.example.com/portraits/");
+    _putenv("EDITOR_DECODED_PACK_DIR=");
+    reset_aa_singletons_for_test();
+    {
+        std::lock_guard<std::mutex> lk(STATE().mu_);
+        STATE().aa_status = "idle";
+        STATE().aa_error.clear();
+    }
+    Router r;
+    register_aa_routes(r);
+    auto hit = sat::call_router(r, "POST", "/api/aa/preview", {},
+                                json{{"kind", "tex"}, {"key", "role/xiaomei"}});
+    REQUIRE(hit.status == 200);
+    CHECK(hit.json_payload["kind"] == "tex");
+    CHECK(hit.json_payload["url"] ==
+          "https://cos.example.com/portraits/tex/role_xiaomei.webp");
+    CHECK(!hit.json_payload.contains("data"));
+    // 清理：避免 base_url 泄漏到后续用例。
+    _putenv("EDITOR_PORTRAIT_BASE_URL=");
+    reset_aa_singletons_for_test();
+    sa::detail::set_editor_root("");
+}

@@ -869,7 +869,15 @@ class AiPanelState extends State<AiPanel> {
     // 隐藏层，不产生重复文本命中），浮层打开时滑入淡入（阶段 3a）。
     return Stack(
       children: [
-        Offstage(offstage: _showHistory, child: _buildChatView(showWelcome)),
+        // TickerMode：Offstage 只挡绘制，隐藏时聊天区里的流式点点动画
+        // 仍会持续出帧；停掉后重新展开自动恢复。
+        Offstage(
+          offstage: _showHistory,
+          child: TickerMode(
+            enabled: !_showHistory,
+            child: _buildChatView(showWelcome),
+          ),
+        ),
         if (_showHistory)
           Positioned.fill(
             child: _HistoryFadeIn(

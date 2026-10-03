@@ -700,36 +700,39 @@ class _TypingDotsState extends State<TypingDots>
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 22,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('思考中', style: TextStyle(fontSize: 12, color: palette.textMuted)),
-          const SizedBox(width: 6),
-          for (var i = 0; i < 3; i++)
-            AnimatedBuilder(
-              animation: _c,
-              builder: (context, _) {
-                final phase = ((_c.value * 3 - i) % 3 + 3) % 3;
-                final opacity = 0.25 + 0.75 * (1 - phase).clamp(0.0, 1.0);
-                return Padding(
-                  padding: const EdgeInsets.only(right: 3),
-                  child: Opacity(
-                    opacity: opacity,
-                    child: Container(
-                      width: 5,
-                      height: 5,
-                      decoration: BoxDecoration(
-                        color: palette.textSecondary,
-                        shape: BoxShape.circle,
+    // repeat() 的永久动画每帧标脏：包一层边界，重绘不向上传播到整条气泡。
+    return RepaintBoundary(
+      child: SizedBox(
+        height: 22,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('思考中', style: TextStyle(fontSize: 12, color: palette.textMuted)),
+            const SizedBox(width: 6),
+            for (var i = 0; i < 3; i++)
+              AnimatedBuilder(
+                animation: _c,
+                builder: (context, _) {
+                  final phase = ((_c.value * 3 - i) % 3 + 3) % 3;
+                  final opacity = 0.25 + 0.75 * (1 - phase).clamp(0.0, 1.0);
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 3),
+                    child: Opacity(
+                      opacity: opacity,
+                      child: Container(
+                        width: 5,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: palette.textSecondary,
+                          shape: BoxShape.circle,
+                        ),
                       ),
                     ),
-                  ),
-                );
-              },
-            ),
-        ],
+                  );
+                },
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1004,7 +1007,12 @@ class _ModImageThumbState extends State<ModImageThumb> {
               borderRadius: BorderRadius.circular(4),
               border: Border.all(color: palette.border),
               image: DecorationImage(
-                image: MemoryImage(bytes),
+                // AI 生成图可能有数千万像素，88×88 的缩略图没必要全尺寸解码
+                // （解码 + 纹理上传是这里唯一的大额 GPU 开销）。
+                image: ResizeImage(
+                  MemoryImage(bytes),
+                  width: (88 * MediaQuery.devicePixelRatioOf(context)).round(),
+                ),
                 fit: BoxFit.cover,
               ),
             ),

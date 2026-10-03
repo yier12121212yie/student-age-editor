@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <initializer_list>
@@ -22,6 +23,7 @@
 
 #include "sa_core/atomic_io.h"
 #include "sa_core/http_client.h"
+#include "sa_core/md5.h"
 #include "sa_core/paths.h"
 #include "sa_core/sha256.h"
 #include "sa_core/strings.h"
@@ -118,9 +120,24 @@ std::string signing_key(const std::string& secret, const char* date_stamp,
     return sa_core::hmac_sha256_raw(k_service, "aws4_request");
 }
 
-std::string canonical_path_for(const CosConfig& cfg, const std::string& key) {
-    std::string p = "/" + cfg.bucket;
+// endpoint 是否已是虚拟主机风格（host 以 "<bucket>." 开头）。腾讯云新桶默认
+// 禁用路径风格（PathStyleDomainForbidden），必须用虚拟主机风格，此时对象路径
+// 不再前置桶名。
+bool endpoint_is_virtual_host(const CosConfig& cfg, const std::string& endpoint) {
+    if (cfg.bucket.empty()) return false;
+    sa_core::http::Url u;
+    if (!sa_core::http::parse_url(endpoint, &u)) return false;
+    const std::string host = sp::lower(u.host);
+    const std::string prefix = sp::lower(cfg.bucket) + ".";
+    return host.rfind(prefix, 0) == 0;
+}
+
+std::string canonical_path_for(const CosConfig& cfg, const std::string& endpoint,
+                               const std::string& key) {
+    std::string p = endpoint_is_virtual_host(cfg, endpoint) ? std::string()
+                                                            : ("/" + cfg.bucket);
     if (!key.empty()) p += "/" + key;
+    if (p.empty()) p = "/";
     return p;
 }
 
@@ -144,7 +161,8 @@ SignedHttp sign_headers(const CosConfig& cfg, const std::string& endpoint,
     sa_core::http::Url u;
     if (!sa_core::http::parse_url(endpoint, &u)) return out;
 
-    const std::string encoded_path = uri_encode(canonical_path_for(cfg, key), true);
+    const std::string encoded_path =
+        uri_encode(canonical_path_for(cfg, endpoint, key), true);
     char amz_date[32] = {};
     char date_stamp[16] = {};
     utc_stamps(std::time(nullptr), amz_date, sizeof(amz_date), date_stamp, sizeof(date_stamp));
@@ -331,10 +349,66 @@ CosOps active_ops() {
     return make_default_ops();
 }
 
-std::string download_url(const CosConfig& cfg, const std::string& key) {
-    if (!cfg.cdn_domain.empty())
-        return rstrip_slash(cfg.cdn_domain) + "/" + key;
-    return presign_url(cfg, "GET", key, cfg.download_ttl_seconds);
+// rand 字段：0-100 位大小写字母与数字。
+std::string random_alnum(std::size_t n) {
+    static const char kChars[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    thread_local std::mt19937_64 rng{std::random_device{}()};
+    std::uniform_int_distribution<std::size_t> dist(0, sizeof(kChars) - 2);
+    std::string out;
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) out.push_back(kChars[dist(rng)]);
+    return out;
+}
+
+// 腾讯云 CDN URL 鉴权（TypeA/B/C/D）签名 query（不含 '?'）。path 以 '/' 开头，
+// 未配置 type/key 时返回空串（此时 CDN 直链要求源资源公开读）。
+//   TypeD：sign=md5(key+path+timestamp)&t=timestamp（timestamp 十进制 Unix）
+//   TypeC：sign=timestamp-rand-uid-md5，md5(key+path+timestamp)，timestamp 十六进制
+//   TypeA：sign=timestamp-rand-uid-md5，md5(path-timestamp-rand-uid-key)，timestamp 十进制
+//   TypeB：sign=timestamp-rand-uid-md5，md5(key+timestamp+path)，timestamp=UTC+8 YYYYMMDDHHMM
+std::string cdn_auth_query(const CosConfig& cfg, const std::string& path, long long now_unix) {
+    if (cfg.cdn_auth_type.empty() || cfg.cdn_auth_key.empty()) return {};
+    const char t = static_cast<char>(
+        std::toupper(static_cast<unsigned char>(cfg.cdn_auth_type[0])));
+    const long long now =
+        now_unix > 0 ? now_unix : static_cast<long long>(std::time(nullptr));
+    const std::string param = cfg.cdn_auth_param.empty() ? "sign" : cfg.cdn_auth_param;
+
+    if (t == 'D') {
+        const std::string ts = std::to_string(now);
+        const std::string hash = sa_core::md5_hex(cfg.cdn_auth_key + path + ts);
+        const std::string tsp = cfg.cdn_auth_ts_param.empty() ? "t" : cfg.cdn_auth_ts_param;
+        return uri_encode(param, false) + "=" + hash + "&" + uri_encode(tsp, false) + "=" + ts;
+    }
+
+    std::string ts;
+    std::string hash;
+    std::string rand;
+    if (t == 'B') {
+        const std::time_t shifted = static_cast<std::time_t>(now) + 8 * 3600;
+        std::tm g{};
+#if defined(_WIN32)
+        gmtime_s(&g, &shifted);
+#else
+        gmtime_r(&shifted, &g);
+#endif
+        char buf[16] = {};
+        std::strftime(buf, sizeof(buf), "%Y%m%d%H%M", &g);
+        ts = buf;
+        hash = sa_core::md5_hex(cfg.cdn_auth_key + ts + path);
+    } else if (t == 'C') {
+        char buf[32] = {};
+        std::snprintf(buf, sizeof(buf), "%llx", static_cast<unsigned long long>(now));
+        ts = buf;
+        hash = sa_core::md5_hex(cfg.cdn_auth_key + path + ts);
+    } else {
+        ts = std::to_string(now);
+        rand = random_alnum(10);
+        hash = sa_core::md5_hex(path + "-" + ts + "-" + rand + "-0-" + cfg.cdn_auth_key);
+    }
+    if (rand.empty()) rand = random_alnum(10);
+    return uri_encode(param, false) + "=" + ts + "-" + rand + "-0-" + hash;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +464,16 @@ json patch_and_get(const std::string& root, const std::string& id,
 }
 
 }  // namespace
+
+std::string download_url(const CosConfig& cfg, const std::string& key, long long now_unix) {
+    if (cfg.cdn_domain.empty())
+        return presign_url(cfg, "GET", key, cfg.download_ttl_seconds, now_unix);
+    const std::string path = "/" + key;
+    std::string url = rstrip_slash(cfg.cdn_domain) + uri_encode(path, true);
+    const std::string q = cdn_auth_query(cfg, path, now_unix);
+    if (!q.empty()) url += "?" + q;
+    return url;
+}
 
 // ---------------------------------------------------------------------------
 // 状态机
@@ -449,6 +533,21 @@ CosConfig load_config() {
 
     cfg.cdn_domain = rstrip_slash(
         env_first({"EDITOR_FILE_COS_CDN_DOMAIN", "EDITOR_COS_CDN_DOMAIN"}));
+
+    // CDN URL 鉴权（可选）：type + pkey 同时给出才签名；参数名可自定义。
+    cfg.cdn_auth_type = env_first({"EDITOR_FILE_COS_CDN_AUTH_TYPE",
+                                    "EDITOR_COS_CDN_AUTH_TYPE"});
+    cfg.cdn_auth_key = env_first({"EDITOR_FILE_COS_CDN_AUTH_KEY",
+                                   "EDITOR_COS_CDN_AUTH_KEY"});
+    {
+        std::string p = env_first({"EDITOR_FILE_COS_CDN_AUTH_PARAM",
+                                    "EDITOR_COS_CDN_AUTH_PARAM"});
+        if (!p.empty()) cfg.cdn_auth_param = p;
+        std::string tp = env_first({"EDITOR_FILE_COS_CDN_AUTH_TS_PARAM",
+                                     "EDITOR_COS_CDN_AUTH_TS_PARAM"});
+        if (!tp.empty()) cfg.cdn_auth_ts_param = tp;
+    }
+    cfg.cdn_auth_ttl_seconds = env_i64("EDITOR_FILE_COS_CDN_AUTH_TTL", 0);
 
     cfg.prefix = env_first({"EDITOR_FILE_COS_PREFIX", "EDITOR_COS_PREFIX"});
     if (cfg.prefix.empty()) cfg.prefix = "editor-files";
@@ -513,7 +612,8 @@ std::string presign_url(const CosConfig& cfg, const std::string& method, const s
     if (!sa_core::http::parse_url(cfg.public_endpoint, &u)) return {};
     if (expires_seconds <= 0) expires_seconds = 900;
 
-    const std::string encoded_path = uri_encode(canonical_path_for(cfg, key), true);
+    const std::string encoded_path =
+        uri_encode(canonical_path_for(cfg, cfg.public_endpoint, key), true);
     const time_t now = now_unix > 0 ? static_cast<time_t>(now_unix) : std::time(nullptr);
     char amz_date[32] = {};
     char date_stamp[16] = {};
@@ -1063,13 +1163,16 @@ void register_file_transfer_routes(Router& r) {
                 patch_and_get(root, id, [](json& r) {
                     r["last_download_at"] = sa_core::now_ms();
                 });
+                long long expires = 0;
+                if (cfg.cdn_domain.empty())
+                    expires = cfg.download_ttl_seconds;
+                else if (!cfg.cdn_auth_type.empty() && !cfg.cdn_auth_key.empty())
+                    expires = cfg.cdn_auth_ttl_seconds;
                 return Resp::Json(200, json{{"file_id", id},
                                             {"status", "ready"},
                                             {"url", url},
                                             {"method", "GET"},
-                                            {"expires_in", cfg.cdn_domain.empty()
-                                                               ? cfg.download_ttl_seconds
-                                                               : 0}});
+                                            {"expires_in", expires}});
             }
         }
         return err_json(500, "unknown file state");

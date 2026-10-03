@@ -1,0 +1,48 @@
+name: flutter-ci
+
+# Flutter 前端的独立 CI：analyze + 全量 widget/单元测试。
+# 此前 CI 完全不跑 Flutter 测试，渲染/性能回归只能本地手跑（故事流 bench、
+# 时间轴 bench、常驻动画绘制边界、预览屏效都在 frontend/test/ 里）。
+# 与 native-ci 同策略：不触碰 release 工作流，只加一条独立流水线。
+#
+# 平台取 Windows：与团队验证平台一致（桌面 Windows 优先）；widget 测试不依赖
+# 显示器，analyze 只把 error 当失败（仓库仍有历史 info/warning，见 82 issues）。
+
+on:
+  push:
+    branches: [main, cpp-backend]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/flutter-ci.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.47.0"
+
+jobs:
+  test:
+    name: Windows (analyze + flutter test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: frontend
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: flutter pub get
+        run: flutter pub get
+      - name: flutter analyze（历史 info/warning 不阻断）
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: flutter test
+        run: flutter test

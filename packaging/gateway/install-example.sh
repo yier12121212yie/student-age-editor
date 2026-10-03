@@ -73,5 +73,6 @@ echo "  - 解压 server-linux 包 → $OPT_DIR（含 backend 与 backend_gateway
 echo "  - 解压 web-app.zip     → $OPT_DIR/web（对应 gateway.json 的 web_root）"
 echo "  - 用 '$EDITOR_USER 身份跑 backend_gateway --hash-password' 生成真实哈希，"
 echo "    编辑 $ETC_DIR/gateway.json（accounts、trusted_origins 换成你的域名）"
+echo "  - （可选）人物图片资源扩展：本地目录 / 对象存储 URL 见 PORTRAITS.md"
 echo "  - sudo systemctl daemon-reload && sudo systemctl enable --now editor-gateway"
 echo "  - 配置 Caddy（Caddyfile.example）并放行防火墙 443"

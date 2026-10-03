@@ -62,6 +62,7 @@ std::string tmp_file(const std::string& name, const std::string& content) {
 
 TEST_CASE("p7 parse: every command family maps to a Kind", "[p7]") {
     CHECK(run({"mods", "list"}).c.kind == Kind::ModsList);
+    CHECK(run({"mods"}).c.kind == Kind::ModsList);  // bare mods defaults to list
     CHECK(run({"mods", "create", "T"}).c.kind == Kind::ModsCreate);
     CHECK(run({"mods", "add", "T"}).c.kind == Kind::ModsCreate);
     CHECK(run({"mods", "add", "--path", "d"}).c.kind == Kind::ModsAddPath);
@@ -501,12 +502,22 @@ TEST_CASE("p7 format_text: mods list marks the selection", "[p7]") {
         {json{{"name", "A"}, {"cfg_files", json::array({"EvtCfg"})}, {"manifest_title", "T"}}});
     body["mods"].push_back(json{{"name", "B"}, {"cfg_files", json::array()}});
     auto s = format_text(c, body);
-    CHECK(s.find("selected: B") != std::string::npos);
-    auto line_a = s.find("A");
-    auto star = s.find("*   B");
-    CHECK(star != std::string::npos);
-    CHECK(s.substr(line_a, 6).find("*") == std::string::npos);  // A unmarked
-    CHECK(s.find("cfgs=1") != std::string::npos);
+    // Rich-style box table: heavy head rule, header cells, body rows. The
+    // horizontal fills must be whole "━"/"─" UTF-8 strings — a multibyte
+    // narrow-char literal ('─') truncates to 0x80 on MSVC and corrupts the
+    // rule bytes (5dd88ec lesson).
+    CHECK(s.find("Mods @ -") != std::string::npos);
+    CHECK(s.find("┡") != std::string::npos);
+    CHECK(s.find("┏━") != std::string::npos);
+    CHECK(s.find("╇━") != std::string::npos);
+    CHECK(s.find("└─") != std::string::npos);
+    CHECK(s.find("Name") != std::string::npos);
+    CHECK(s.find("│ A") != std::string::npos);
+    // B is the selection: the 当前 column carries the dot.
+    auto line_b = s.find("│ B");
+    CHECK(line_b != std::string::npos);
+    CHECK(s.substr(line_b).find("●") != std::string::npos);
+    CHECK(s.find("EvtCfg") != std::string::npos);  // Cfgs column lists names
 }
 
 TEST_CASE("p7 format_text: cfg get rows, id projection and --limit", "[p7]") {

@@ -18,6 +18,10 @@
 #include "server/cfg_store.h"
 #include "server/httpd.h"
 #include "server/perf.h"
+#include "server/services/p3b_resource_pack.h"  // p3b::PyValueError（400 信封）
+#include "server/services/p3b_support.h"        // p3b::ZipReader / b64_encode
+#include "server/services/upload_staging.h"     // 网页版 base64 zip 上传暂存
+#include "server/services/zip_store_writer.h"   // store-only zip 打包
 #include "server/state.h"
 
 namespace sa {
@@ -48,16 +52,244 @@ std::string now_iso_seconds() {
     return buf;
 }
 
+// ---------------------------------------------------------------------------
+// 模组打包 / 导入（网页端上传下载）
+// ---------------------------------------------------------------------------
+
+// 允许解压的条目名：拒绝空、绝对路径、盘符/ADS、'..'（与资源包安装同款规则）。
+bool mod_zip_entry_safe(const std::string& n) {
+    if (n.empty()) return false;
+    if (n[0] == '/' || n[0] == '\\') return false;
+    if (n.find(':') != std::string::npos) return false;
+    if (n.find("..") != std::string::npos) return false;
+    return true;
+}
+
+// 若所有条目都在同一顶层目录下，返回 "top/"（'/' 分隔），否则 ""。常见于把整个
+// 文件夹拖进压缩工具；不剥掉这层会得到 <mod>/<folder>/Cfgs 的错位结构。
+std::string single_top_dir(const std::vector<std::string>& names) {
+    std::string prefix;
+    for (const auto& raw : names) {
+        std::string n = raw;
+        std::replace(n.begin(), n.end(), '\\', '/');
+        auto pos = n.find('/');
+        if (pos == std::string::npos) return "";  // 顶层直接是文件 -> 无统一前缀
+        std::string top = n.substr(0, pos);
+        if (prefix.empty()) prefix = top;
+        else if (prefix != top) return "";
+    }
+    return prefix.empty() ? std::string() : prefix + "/";
+}
+
+std::string strip_zip_ext(std::string s) {
+    auto p = s.find_last_of('.');
+    if (p != std::string::npos && p > 0 &&
+        sa_core::str::lower(s.substr(p)) == ".zip")
+        s = s.substr(0, p);
+    return s;
+}
+
+// 目录名净化（与 /api/mods/create 同款非法字符集）。
+std::string safe_mod_dir_name(std::string s) {
+    s = sa_core::str::trim(s);
+    static const std::regex illegal(R"([\\/:*?"<>|\x00-\x1f])");
+    s = std::regex_replace(s, illegal, std::string("_"));
+    if (s == "." || s == "..") s.clear();
+    return s;
+}
+
+// 模组 zip -> workspace 下的新目录；返回该模组信息。失败抛 p3b::PyValueError。
+json import_mod_zip(const std::string& path, const std::string& filename) {
+    if (path.empty() || !cs::is_file(path)) throw p3b::PyValueError("file not found: " + path);
+    auto z = p3b::ZipReader::open_file(path);
+    if (!z) throw p3b::PyValueError("invalid zip: File is not a zip file");
+    const std::vector<std::string> names = z->names();
+    if (names.empty()) throw p3b::PyValueError("empty zip");
+    for (const auto& n : names) {
+        if (!mod_zip_entry_safe(n))
+            throw p3b::PyValueError("illegal entry: " + sa_core::py_repr_str(n));
+    }
+
+    // 顶层目录（若有）先算出来：manifest 可能在其内（压缩整个文件夹的形态）。
+    const std::string top = single_top_dir(names);
+    const std::string manifest_entry =
+        top.empty() ? std::string("manifest.json") : top + "manifest.json";
+
+    // 目录名优先级：manifest 标题 > 压缩包文件名 > imported_mod
+    std::string mod_name;
+    if (z->has(manifest_entry)) {
+        if (auto m = z->read(manifest_entry)) {
+            json mf = json::parse(*m, nullptr, false);
+            if (mf.is_object()) {
+                std::string t = body_str(mf, "title");
+                if (t.empty()) t = body_str(mf, "name");
+                mod_name = safe_mod_dir_name(t);
+            }
+        }
+    }
+    if (mod_name.empty()) mod_name = safe_mod_dir_name(strip_zip_ext(filename));
+    if (mod_name.empty()) mod_name = "imported_mod";
+
+    std::string base;
+    {
+        std::lock_guard<std::mutex> lk(STATE().mu_);
+        base = STATE().workspace_root;
+    }
+    if (base.empty())
+        base = cs::join(cs::path_to_utf8(std::filesystem::current_path()), "mods");
+
+    std::string unique = mod_name;
+    for (int i = 1; cs::exists(cs::join(base, unique)); ++i)
+        unique = mod_name + "_" + std::to_string(i);
+    const std::string dest = cs::join(base, unique);
+
+    cs::create_dirs(dest);
+    bool ok = true;
+    for (const auto& raw : names) {
+        std::string rel = raw;
+        std::replace(rel.begin(), rel.end(), '\\', '/');
+        if (!top.empty()) {
+            if (rel.rfind(top, 0) != 0) continue;
+            rel = rel.substr(top.size());
+        }
+        if (rel.empty() || rel.back() == '/') continue;  // 目录条目
+        if (!mod_zip_entry_safe(rel)) { ok = false; break; }
+        auto data = z->read(raw);
+        if (!data) { ok = false; break; }
+        std::string out = cs::join(dest, rel);
+        // UTF-8-safe parent extraction: std::filesystem::path(std::string) uses
+        // the ANSI code page on Windows and throws for non-ASCII resource names
+        // (e.g. 贴图/配乐), so route through the u8 helpers like every other path.
+        cs::create_dirs(cs::dirname(out));
+        if (!cs::write_bytes_simple(out, *data)) { ok = false; break; }
+    }
+    if (!ok) {
+        cs::remove_tree(dest);
+        throw p3b::PyValueError("extract failed: zip extraction error");
+    }
+
+    const bool has_manifest = cs::is_file(cs::join(dest, "manifest.json"));
+    const bool has_cfgs = cs::is_dir(cs::join(cs::join(dest, "Cfgs"), "zh-cn"));
+    if (!has_manifest && !has_cfgs) {
+        cs::remove_tree(dest);
+        throw p3b::PyValueError("zip missing Cfgs/zh-cn or manifest.json");
+    }
+    json manifest;
+    if (has_manifest) {
+        auto raw = cs::read_bytes(cs::join(dest, "manifest.json"));
+        if (raw) {
+            json parsed = json::parse(std::string(*raw), nullptr, false);
+            if (parsed.is_object()) manifest = parsed;
+        }
+    }
+    if (!manifest.is_object()) manifest = json::object();
+    if (!manifest.contains("title") || !manifest["title"].is_string() ||
+        manifest["title"].get<std::string>().empty())
+        manifest["title"] = unique;
+    if (!manifest.contains("version")) manifest["version"] = "1.0.0";
+    if (!manifest.contains("description")) manifest["description"] = "";
+    if (!manifest.contains("created_at")) manifest["created_at"] = now_iso_seconds();
+    cs::write_bytes_simple(cs::join(dest, "manifest.json"),
+                           sa_core::py_dumps_indent(manifest));
+
+    json mod = select_mod(unique, dest);
+    json out;
+    out["ok"] = true;
+    out["mod"] = std::move(mod);
+    return out;
+}
+
+// 当前/指定模组 -> store-only zip（base64 返回，供浏览器下载）。
+json export_mod_zip(const std::string& req_name) {
+    std::string name = req_name;
+    std::string root;
+    if (name.empty()) {
+        std::lock_guard<std::mutex> lk(STATE().mu_);
+        name = STATE().mod_name;
+        root = STATE().mod_root;
+    } else {
+        for (const auto& m : list_mods())
+            if (m.value("name", "") == name) { root = m.value("root", ""); break; }
+    }
+    if (name.empty() || root.empty() || !cs::is_dir(root))
+        throw p3b::PyValueError("mod not found: " +
+                                (name.empty() ? std::string("(none)") : name));
+
+    std::vector<zipstore::Entry> entries;
+    // to_path, not path(root): root is UTF-8 and may contain a Chinese mod name;
+    // the ANSI narrow constructor would throw before any file is packed.
+    const std::filesystem::path base = cs::to_path(root);
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(base, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (it->is_directory(ec)) continue;
+        if (!it->is_regular_file(ec)) continue;
+        std::error_code rel_ec;
+        auto rel = std::filesystem::relative(it->path(), base, rel_ec);
+        if (rel_ec) continue;
+        // generic_u8string, not generic_string(): the latter narrows through the
+        // ANSI code page on Windows, so 贴图/配乐 names become GBK mojibake that
+        // no longer reads back as UTF-8. generic_u8string keeps '/' separators and
+        // the original UTF-8 bytes, so the exported zip re-imports identically.
+        const std::u8string rel_u8 = rel.generic_u8string();
+        const std::string relname(reinterpret_cast<const char*>(rel_u8.data()),
+                                  rel_u8.size());
+        // 不打包编辑器本地历史（体积大、无分发价值）。
+        if (relname.rfind(".editor_history/", 0) == 0) continue;
+        auto bytes = cs::read_bytes(cs::path_to_utf8(it->path()));
+        if (!bytes) continue;
+        entries.push_back({relname, std::string(*bytes)});
+    }
+    if (entries.empty()) throw p3b::PyValueError("mod is empty: " + name);
+
+    std::string zip;
+    if (!zipstore::build(entries, zip)) throw p3b::PyValueError("archive too large");
+    json out;
+    out["filename"] = name + ".zip";
+    out["data_base64"] = p3b::b64_encode(zip);
+    out["size"] = static_cast<long long>(zip.size());
+    out["entries"] = static_cast<long long>(entries.size());
+    return out;
+}
+
 }  // namespace
 
 void register_mods_routes(Router& r) {
-    // GET /api/mods — api.py:872-874.
-    r.get(R"(/api/mods)", [](const Req&) -> Resp {
+    // GET /api/mods — api.py:872-874. `?with_counts=1` additionally returns
+    // cfg_counts {mod_name: {cfg_name: record_count}} for the TUI tree (and a
+    // workspace field with the resolved workspace root); both are additive and
+    // omitted unless asked for, so the plain response stays contract-identical.
+    r.get(R"(/api/mods)", [](const Req& req) -> Resp {
         json body;
         body["mods"] = list_mods();
         {
             std::lock_guard<std::mutex> lk(STATE().mu_);
             body["selected"] = STATE().mod_name;
+            body["workspace"] = STATE().workspace_root;
+        }
+        if (req.query.count("with_counts")) {
+            json counts_all = json::object();
+            for (const auto& m : body["mods"]) {
+                const std::string root = m.value("root", "");
+                const std::string cfg_dir =
+                    sa_core::paths::join(sa_core::paths::join(root, "Cfgs"), "zh-cn");
+                bool ok = false;
+                auto names = sa_core::paths::listdir_sorted(cfg_dir, &ok);
+                if (!ok) continue;
+                json counts = json::object();
+                for (const auto& f : names) {
+                    if (f.size() < 5 || f.compare(f.size() - 5, 5, ".json") != 0) continue;
+                    auto raw = sa_core::paths::read_bytes(sa_core::paths::join(cfg_dir, f));
+                    if (!raw) continue;
+                    auto text = sa_core::decode_utf8_sig_strict(*raw);
+                    if (!text) continue;
+                    json parsed = json::parse(*text, nullptr, false);
+                    if (parsed.is_discarded() || !parsed.is_object()) continue;
+                    counts[f.substr(0, f.size() - 5)] = parsed.size();
+                }
+                if (!counts.empty()) counts_all[m.value("name", "")] = std::move(counts);
+            }
+            body["cfg_counts"] = std::move(counts_all);
         }
         return Resp::Json(200, std::move(body));
     });
@@ -222,6 +454,42 @@ void register_mods_routes(Router& r) {
             return Resp::Json(200, std::move(body));
         }
         return Resp::Json(404, json{{"error", "mod not found"}});
+    });
+
+    // POST /api/mods/export — 把当前/指定模组打包成 zip（store-only），以 base64
+    // 返回给前端落盘下载。网页/桌面同一契约（浏览器拿不到本机路径）。
+    r.post(R"(/api/mods/export)", [](const Req& req) -> Resp {
+        try {
+            return Resp::Json(200, export_mod_zip(body_str(req.body, "name")));
+        } catch (const p3b::PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/mods/import_path — 本机 zip 路径导入（桌面；网关封禁此端点）。
+    r.post(R"(/api/mods/import_path)", [](const Req& req) -> Resp {
+        const std::string path = body_str(req.body, "path");
+        if (path.empty()) return Resp::Json(400, json{{"error", "path required"}});
+        try {
+            return Resp::Json(200, import_mod_zip(path, body_str(req.body, "filename")));
+        } catch (const p3b::PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/mods/import_upload — 网页版：浏览器把 zip 以 {filename,
+    // data_base64} 上传，落临时文件后走与 import_path 完全相同的导入管线。
+    r.post(R"(/api/mods/import_upload)", [](const Req& req) -> Resp {
+        try {
+            return upload::install_from_upload(
+                req,
+                [](const std::string& path, const std::string& filename) {
+                    return import_mod_zip(path, filename);
+                },
+                "mod.zip");
+        } catch (const p3b::PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
     });
 }
 

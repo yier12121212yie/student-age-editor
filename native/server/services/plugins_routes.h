@@ -25,6 +25,17 @@
 //   POST   /api/plugins/<pid>/disable      410（§5 永久废弃）
 //   DELETE /api/plugins/<pid>              递归删目录（纯卸载，并清 §4 缓存项）
 //
+// 扩展合并（资源包 + 插件 -> 统一「扩展」面，1A/2A/3A）：
+//   GET    /api/extensions                 插件 + 资源包统一列表 {enabled, extensions}
+//   POST   /api/extensions/active          {"ids":[...]} 多选启用（兼容 {"id"}）
+//   POST   /api/extensions/install/_path/_upload  统一安装（落 plugins_root）
+//   POST   /api/extensions/reload          重扫 + 重拉 §4 自描述
+//   GET    /api/extensions/<id>            统一详情（插件或资源包）
+//   DELETE /api/extensions/<id>            插件删目录 / 资源包删包
+//   插件启用态存于 <plugins_root>/plugins.json（缺失 => 默认全启用）；资源包
+//   沿用 p3b packs.json 的 active_ids。既有 /api/plugins 与 /api/resource_packs
+//   形状不变。
+//
 // Not registered on purpose: the GET/POST/PUT/DELETE /api/plugins/<pid>/<rest>
 // catch-all proxy fallback — only the explicit /service/<pid>/<subpath> form
 // is proxied; anything else stays 404.

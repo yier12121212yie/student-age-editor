@@ -66,23 +66,45 @@ struct AiRelayCfg {
     long long daily_limit = 0;     // 0 == unlimited
 };
 
+// 人物图片资源扩展（自托管服务器端「2 种安装方式」）：
+//   dir      本地安装：已解包的立绘目录（EDITOR_PORTRAIT_DIR）
+//   base_url 对象存储：公开基址（EDITOR_PORTRAIT_BASE_URL）
+// 二者可同时配置（本地优先）；均为空则关闭。由网关 fork 的每个 backend
+// 实例作为环境变量继承。
+struct PortraitCfg {
+    std::string dir;
+    std::string base_url;
+};
+
 struct Config {
     std::string user_data_root;    // absolute, created if missing
     std::string web_root;          // "" == no static hosting
     int listen_port = 8770;
     std::vector<std::string> trusted_origins;
     long long session_ttl_hours = 24;
+    // 网页端「记住我」：勾选后签发的 refresh token 有效期（天），落盘到
+    // <state_dir>/refresh_tokens.json，网关重启后仍可长期免登。access token
+    // 仍按 session_ttl_hours 短暂有效并自动刷新。默认 30 天。
+    long long refresh_ttl_days = 30;
+    // 请求体/上传上限（字节）：同时作用于网关自身 Httpd 与 fork 的 backend
+    // （--max-body），并据此派生实例的 EDITOR_MAX_UPLOAD_BYTES（解码上限 = 其
+    // 3/4）。管理员按需调大即可支持更大的模组/资源包上传。默认 256 MiB。
+    long long max_body_bytes = 256ll * 1024 * 1024;
     int instance_max = 8;
     int idle_minutes = 30;
     std::string state_dir;         // resolved (defaults to <root>/.gateway)
     // 自助注册账号的持久化文件（默认为 <state_dir>/accounts.json）；由
     // parse_config 派生，管理员无需配置。
     std::string accounts_file;
+    // 「记住我」refresh token 的持久化文件（默认为
+    // <state_dir>/refresh_tokens.json）；由 parse_config 派生。
+    std::string refresh_file;
     // 安全批次：注册写入是低频但并发的，用 std::deque 保证既有 Account*
     // 在 push_back 后不失效（vector 扩容会让代理/进程池持有的指针悬空）。
     std::deque<Account> accounts;
     AiRelayCfg ai;
     RegistrationCfg registration;
+    PortraitCfg portraits;
     // 托管模式 SSRF 护栏（安全批次 A）：true 时网关 fork 的 backend 以
     // --cloud-public-only 启动，云同步出站 URL 强校验为公网地址。
     bool cloud_public_only = true;

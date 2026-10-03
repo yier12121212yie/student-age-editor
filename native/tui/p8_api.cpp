@@ -22,9 +22,15 @@ namespace {
 // 安全批次 B：后端进程令牌（.backend_token 与 backend 可执行文件同目录；
 // 发行包/构建产物里 TUI 与 backend 同目录，兜底 cwd）。空串 = 未找到（旧包
 // 后端未启用令牌）。仅对 loopback base 注入。
+// 候选顺序镜像 server/state.cpp 的 editor_root()：EDITOR_DATA_ROOT env 最先
+// （web/冒烟等场景把数据根重定向后，令牌落盘在 env 根，exe 目录里的存量
+// 令牌属于别的实例），然后 exe 目录、cwd。
 std::string read_backend_token() {
     std::vector<std::string> dirs;
     std::error_code ec;
+    if (const char* env_root = std::getenv("EDITOR_DATA_ROOT");
+        env_root != nullptr && *env_root != '\0')
+        dirs.push_back(env_root);
     dirs.push_back(sa_core::paths::exe_dir());
     dirs.push_back(sa_core::paths::path_to_utf8(std::filesystem::current_path(ec)));
     for (const auto& dir : dirs) {
@@ -59,6 +65,37 @@ std::vector<ModEntry> BackendApi::ParseMods(const Json& body) {
     for (const auto& m : body.at("mods")) {
         if (!m.is_object()) continue;
         out.push_back(ModEntry{m.value("name", std::string()), m.value("root", std::string())});
+    }
+    return out;
+}
+
+ModsListing BackendApi::ParseModsFull(const Json& body) {
+    ModsListing out;
+    out.mods = ParseMods(body);
+    // Fill the manifest title / cfg count the tree label shows.
+    if (body.is_object() && body.contains("mods") && body.at("mods").is_array()) {
+        size_t i = 0;
+        for (const auto& m : body.at("mods")) {
+            if (i >= out.mods.size()) break;
+            if (m.is_object()) {
+                out.mods[i].title = m.value("manifest_title", std::string());
+                if (m.contains("cfg_files") && m.at("cfg_files").is_array())
+                    out.mods[i].cfg_count = static_cast<int>(m.at("cfg_files").size());
+            }
+            ++i;
+        }
+    }
+    if (body.is_object() && body.contains("workspace") && body.at("workspace").is_string())
+        out.workspace = body.at("workspace").get<std::string>();
+    if (body.is_object() && body.contains("cfg_counts") && body.at("cfg_counts").is_object()) {
+        for (auto mod = body.at("cfg_counts").begin(); mod != body.at("cfg_counts").end();
+             ++mod) {
+            if (!mod.value().is_object()) continue;
+            std::map<std::string, long long> counts;
+            for (auto c = mod.value().begin(); c != mod.value().end(); ++c)
+                if (c.value().is_number()) counts[c.key()] = c.value().get<long long>();
+            out.cfg_counts[mod.key()] = std::move(counts);
+        }
     }
     return out;
 }
@@ -868,6 +905,130 @@ void BackendApi::ReportUsage(const std::string& kind, const std::string& key) {
     int status = 0;
     std::string err;
     Call("POST", "/api/usage", &req, &status, &err);
+}
+
+// ---- v0.3 界面恢复：schema/字典标签/OOBE/TTS -------------------------------
+
+ModsListing BackendApi::ListModsWithCounts(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/mods?with_counts=1", nullptr, &status, err);
+    if (!err->empty()) return {};
+    return ParseModsFull(body);
+}
+
+Json BackendApi::GetSchema(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/schema", nullptr, &status, err);
+    if (!err->empty() || status != 200 || !body.is_object()) return Json::object();
+    auto gs = body.find("game_schema");
+    if (gs == body.end() || !gs->is_object()) return Json::object();
+    return *gs;
+}
+
+Json BackendApi::GetKeyMaps(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/dicts", nullptr, &status, err);
+    if (!err->empty() || status != 200 || !body.is_object()) return Json::object();
+    auto km = body.find("key_maps");
+    if (km == body.end() || !km->is_object()) return Json::object();
+    return *km;
+}
+
+std::string BackendApi::SetWorkspace(const std::string& root, std::string* err) {
+    if (err) err->clear();
+    Json body = Json::object();
+    body["root"] = root;
+    int status = 0;
+    Json resp = Call("POST", "/api/workspace", &body, &status, err);
+    if (!err->empty()) return {};
+    if (status != 200) {
+        *err = resp.value("error", std::string("设置工作区失败 (HTTP " + std::to_string(status) + ")"));
+        return {};
+    }
+    return resp.value("workspace_root", std::string());
+}
+
+bool BackendApi::OobeDone(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/oobe/status", nullptr, &status, err);
+    if (!err->empty()) return true;  // 保守：查不到就不再打扰
+    return body.is_object() ? body.value("done", true) : true;
+}
+
+bool BackendApi::OobeComplete(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Call("POST", "/api/oobe/complete", nullptr, &status, err);
+    return err->empty();
+}
+
+Json BackendApi::TtsSettings(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("GET", "/api/tts/settings", nullptr, &status, err);
+    if (!err->empty() || !body.is_object()) return Json::object();
+    auto s = body.find("settings");
+    return s != body.end() && s->is_object() ? *s : Json::object();
+}
+
+bool BackendApi::TtsSaveSettings(const Json& settings, std::string* err) {
+    if (err) err->clear();
+    Json body = Json::object();
+    body["settings"] = settings;
+    int status = 0;
+    Json resp = Call("PUT", "/api/tts/settings", &body, &status, err);
+    if (!err->empty()) return false;
+    if (status != 200) {
+        *err = resp.value("error", std::string("保存配音设置失败"));
+        return false;
+    }
+    return true;
+}
+
+Json BackendApi::TtsTest(std::string* err) {
+    if (err) err->clear();
+    int status = 0;
+    Json body = Call("POST", "/api/tts/test", nullptr, &status, err);
+    if (!err->empty()) return Json::object();
+    return body.is_object() ? body : Json::object();
+}
+
+Json BackendApi::TtsSynthesize(const std::string& text, const std::string& voice,
+                               std::string* err) {
+    if (err) err->clear();
+    Json body = Json::object();
+    body["text"] = text;
+    if (!voice.empty()) body["voice"] = voice;
+    int status = 0;
+    Json resp = Call("POST", "/api/tts/synthesize", &body, &status, err);
+    if (!err->empty()) return Json::object();
+    if (status != 200) {
+        *err = resp.value("error", std::string("合成失败 (HTTP " + std::to_string(status) + ")"));
+        return Json::object();
+    }
+    return resp;
+}
+
+Json BackendApi::TtsSave(const std::string& audio_b64, const std::string& ext,
+                         const std::string& title, bool write_cfg, std::string* err) {
+    if (err) err->clear();
+    Json body = Json::object();
+    body["audio"] = audio_b64;
+    body["ext"] = ext;
+    body["title"] = title;
+    body["writeCfg"] = write_cfg;
+    int status = 0;
+    Json resp = Call("POST", "/api/tts/save", &body, &status, err);
+    if (!err->empty()) return Json::object();
+    if (status != 200) {
+        *err = resp.value("error", std::string("保存音频失败 (HTTP " + std::to_string(status) + ")"));
+        return Json::object();
+    }
+    return resp;
 }
 
 void BackendApi::Shutdown() {

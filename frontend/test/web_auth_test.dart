@@ -28,6 +28,7 @@ void main() {
     bool inviteRequired = false,
     bool registerOk = true,
     String? registerErrorCode,
+    bool refreshOk = true,
   }) {
     ApiClient.instance.client = MockClient((req) async {
       recorded.add(req);
@@ -50,7 +51,28 @@ void main() {
           'token': validToken ?? 'tok-new',
           'name': body['name'],
           'expires_in': 86400,
+          'refresh_token': 'rt-new',
+          'refresh_expires_in': body['remember'] == true ? 2592000 : 86400,
         }, 200);
+      }
+      if (path == '/api/auth/refresh') {
+        if (!refreshOk) {
+          return _json({'error': 'invalid refresh token', 'code': 'invalid_refresh'},
+              401);
+        }
+        final body = jsonDecode(req.body) as Map<String, dynamic>;
+        // 契约：refresh 旋转后签发新 access + 新 refresh。
+        return _json({
+          'token': validToken ?? 'tok-refreshed',
+          'name': 'alice',
+          'expires_in': 86400,
+          'refresh_token': 'rt-rotated',
+          'refresh_expires_in': 2592000,
+          'echo': body['refresh_token'],
+        }, 200);
+      }
+      if (path == '/api/auth/logout') {
+        return _json({'ok': true}, 200);
       }
       if (path == '/api/auth/whoami') {
         final authed =
@@ -68,6 +90,8 @@ void main() {
           'token': validToken ?? 'tok-abc',
           'name': body['name'],
           'expires_in': 86400,
+          'refresh_token': 'rt-login',
+          'refresh_expires_in': body['remember'] == true ? 2592000 : 86400,
         }, 200);
       }
       // 业务接口：hosted 下不带有效 Bearer → 401
@@ -95,12 +119,16 @@ void main() {
     recorded.clear();
     SharedPreferences.setMockInitialValues({});
     ApiClient.instance.accessToken = null;
+    ApiClient.instance.refreshToken = null;
     ApiClient.instance.onUnauthorized = null;
+    ApiClient.instance.onRefresh = null;
   });
 
   tearDown(() {
     ApiClient.instance.accessToken = null;
+    ApiClient.instance.refreshToken = null;
     ApiClient.instance.onUnauthorized = null;
+    ApiClient.instance.onRefresh = null;
   });
 
   group('模式探测', () {
@@ -164,24 +192,32 @@ void main() {
   });
 
   group('登录', () {
-    test('登录成功后 token 持久化并注入后续请求头', () async {
+    test('记住我：登录成功后 token/refresh 持久化并注入后续请求头', () async {
       mockGateway(whoamiUnauthorized: true, validToken: 'tok-abc');
       final auth = AuthState(isWebOverride: true);
       ApiClient.instance.onUnauthorized = auth.logout;
       await auth.probe();
       expect(auth.requiresLogin, isTrue);
 
-      final ok = await auth.login('alice', 'hunter2');
+      final ok = await auth.login('alice', 'hunter2', remember: true);
       expect(ok, isTrue);
       expect(auth.authenticated, isTrue);
       expect(auth.requiresLogin, isFalse);
       expect(auth.name, 'alice');
       expect(auth.error, isNull);
       expect(ApiClient.instance.accessToken, 'tok-abc');
+      expect(ApiClient.instance.refreshToken, 'rt-login');
 
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getString('auth_token_v1'), 'tok-abc');
+      expect(prefs.getString('auth_refresh_v1'), 'rt-login');
       expect(prefs.getString('auth_name_v1'), 'alice');
+      expect(prefs.getBool('auth_remember_v1'), isTrue);
+
+      // 请求体契约：带 remember
+      final loginReq =
+          recorded.firstWhere((r) => r.url.path == '/api/auth/login');
+      expect((jsonDecode(loginReq.body) as Map)['remember'], true);
 
       // 业务请求自动带 Bearer 且能通过网关
       final recordedBefore = recorded.length;
@@ -189,6 +225,23 @@ void main() {
       expect(resp, {'ok': true});
       expect(recordedBefore < recorded.length, isTrue);
       expect(recorded.last.headers['Authorization'], 'Bearer tok-abc');
+    });
+
+    test('未勾选记住我：令牌仅内存、不落 prefs', () async {
+      mockGateway(whoamiUnauthorized: true, validToken: 'tok-abc');
+      final auth = AuthState(isWebOverride: true);
+      ApiClient.instance.onUnauthorized = auth.logout;
+      await auth.probe();
+
+      final ok = await auth.login('alice', 'hunter2');  // remember 默认 false
+      expect(ok, isTrue);
+      expect(auth.authenticated, isTrue);
+      expect(ApiClient.instance.accessToken, 'tok-abc');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('auth_token_v1'), isNull);
+      expect(prefs.getString('auth_refresh_v1'), isNull);
+      expect(prefs.getBool('auth_remember_v1'), isNull);
     });
 
     test('登录 401：错误文案、无 token、可重试', () async {
@@ -202,7 +255,7 @@ void main() {
       expect(auth.authenticated, isFalse);
       expect(ApiClient.instance.accessToken, isNull);
 
-      // 请求体契约：{name, password}
+      // 请求体契约：{name, password, remember}
       final loginReq =
           recorded.firstWhere((r) => r.url.path == '/api/auth/login');
       final body = jsonDecode(loginReq.body) as Map<String, dynamic>;
@@ -303,6 +356,91 @@ void main() {
       expect(await auth.register('bob', 'hunter2x'), isFalse);
       expect(auth.error, '请输入邀请码');
       expect(recorded.length, before); // 三次均本地拦截
+    });
+  });
+
+  group('长期鉴权（refresh）', () {
+    test('access 过期但带 refresh：whoami 401 → 自动刷新并重试直进', () async {
+      SharedPreferences.setMockInitialValues({
+        'auth_token_v1': 'stale-tok',
+        'auth_refresh_v1': 'rt-good',
+        'auth_name_v1': 'alice',
+        'auth_remember_v1': true,
+      });
+      mockGateway(whoamiUnauthorized: true, validToken: 'tok-new');
+      final auth = AuthState(isWebOverride: true);
+      await auth.probe();
+      expect(auth.mode, AuthMode.hosted);
+      expect(auth.requiresLogin, isFalse);
+      expect(auth.authenticated, isTrue);
+      expect(ApiClient.instance.accessToken, 'tok-new');
+      expect(ApiClient.instance.refreshToken, 'rt-rotated');
+
+      // 发生了一次 refresh 旋转；重试 whoami 带的是新 token。
+      final paths = recorded.map((r) => r.url.path).toList();
+      expect(paths.where((p) => p == '/api/auth/refresh').length, 1);
+      final lastWhoami =
+          recorded.lastWhere((r) => r.url.path == '/api/auth/whoami');
+      expect(lastWhoami.headers['Authorization'], 'Bearer tok-new');
+
+      // 旋转后的 refresh 落盘（记住我）。
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('auth_refresh_v1'), 'rt-rotated');
+      expect(prefs.getString('auth_token_v1'), 'tok-new');
+    });
+
+    test('业务请求 401 → 自动刷新并重试一次（不回登录页）', () async {
+      mockGateway(whoamiUnauthorized: true, validToken: 'tok-abc');
+      final auth = AuthState(isWebOverride: true);
+      ApiClient.instance.onUnauthorized = auth.logout;
+      await auth.probe();
+      await auth.login('alice', 'hunter2', remember: true);
+      expect(auth.requiresLogin, isFalse);
+
+      // access 失效但 refresh 有效：业务接口 401 → 刷新 → 重试成功。
+      ApiClient.instance.client = MockClient((req) async {
+        recorded.add(req);
+        final path = req.url.path;
+        if (path == '/api/auth/refresh') {
+          return _json({
+            'token': 'tok-fresh',
+            'name': 'alice',
+            'expires_in': 86400,
+            'refresh_token': 'rt-rotated2',
+            'refresh_expires_in': 2592000,
+          }, 200);
+        }
+        if (req.headers['Authorization'] == 'Bearer tok-fresh') {
+          return _json({'ok': true}, 200);
+        }
+        return _json({'error': 'unauthorized'}, 401);
+      });
+
+      final resp = await ApiClient.instance.get('/api/state');
+      expect(resp, {'ok': true});
+      expect(auth.requiresLogin, isFalse); // 未回登录页
+      expect(ApiClient.instance.accessToken, 'tok-fresh');
+      expect(ApiClient.instance.refreshToken, 'rt-rotated2');
+    });
+
+    test('刷新失败 → 回登录页清态清 prefs', () async {
+      SharedPreferences.setMockInitialValues({
+        'auth_token_v1': 'stale-tok',
+        'auth_refresh_v1': 'rt-bad',
+        'auth_name_v1': 'alice',
+        'auth_remember_v1': true,
+      });
+      mockGateway(
+          whoamiUnauthorized: true, validToken: 'tok-abc', refreshOk: false);
+      final auth = AuthState(isWebOverride: true);
+      ApiClient.instance.onUnauthorized = auth.logout;
+      await auth.probe();
+      expect(auth.requiresLogin, isTrue);
+      expect(auth.authenticated, isFalse);
+      expect(ApiClient.instance.accessToken, isNull);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('auth_refresh_v1'), isNull);
+      expect(prefs.getString('auth_token_v1'), isNull);
     });
   });
 

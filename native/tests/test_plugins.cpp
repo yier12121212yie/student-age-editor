@@ -677,3 +677,96 @@ TEST_CASE("plugins delete removes the directory; unknown ids mirror uninstall_pl
     CHECK(fx.call("DELETE", "/api/plugins/a:b").json_payload.value("error", std::string()) ==
           "invalid plugin id");
 }
+
+// ---------------------------------------------------------------------------
+// 扩展合并：/api/extensions（资源包 + 插件统一列表 / 多选启用 / UI 过滤）
+// ---------------------------------------------------------------------------
+
+TEST_CASE("extensions: unified list / multi-enable / UI filtering",
+          "[plugins][extensions]") {
+    const std::string proot = fresh_root("ext_plugins");
+    const std::string kroot = fresh_root("ext_packs");
+    ScopedEnv ep("EDITOR_PLUGINS_ROOT", proot);
+    ScopedEnv ek("EDITOR_PACKS_ROOT", kroot);
+
+    // A plugin that also carries resources (unified: one dir can do both).
+    make_plugin(proot, "alpha",
+                R"({"name":"A","ui":{"flow_cards":[{"type_id":"t","name":"c"}]}})");
+    cs::write_bytes_simple(cs::join(cs::join(proot, "alpha"), "aa_index.json"), "{}");
+    // Two resource-pack dirs (manifest optional): two avoids the single-pack
+    // first-launch auto-activation, so packs default to opt-in.
+    for (const char* id : {"myres", "otherres"}) {
+        const std::string d = cs::join(kroot, id);
+        cs::create_dirs(cs::join(d, "tex"));
+        cs::write_bytes_simple(cs::join(d, "aa_index.json"), "{}");
+    }
+
+    PluginsFixture fx;
+
+    auto list = fx.call("GET", "/api/extensions");
+    REQUIRE(list.status == 200);
+    const auto& exts = list.json_payload["extensions"];
+    REQUIRE(exts.size() == 3);
+    // Plugin rows come first (unified root), default-enabled; packs opt-in.
+    CHECK(exts[0]["id"] == "alpha");
+    CHECK(exts[0]["source"] == "plugins");
+    CHECK(exts[0]["enabled"] == true);
+    CHECK(exts[0]["resources"]["aa"] == true);
+    bool saw_res = false;
+    for (const auto& e : exts) {
+        if (e.value("id", std::string()) == "myres") {
+            saw_res = true;
+            CHECK(e["source"] == "packs");
+            CHECK(e["enabled"] == false);
+            CHECK(e["resources"]["tex"] == true);
+        }
+    }
+    CHECK(saw_res);
+
+    // Multi-enable: plugin alpha + resource pack myres in one call.
+    auto act = fx.call("POST", "/api/extensions/active", {},
+                       sa::json{{"ids", sa::json::array({"alpha", "myres"})}});
+    REQUIRE(act.status == 200);
+    CHECK(act.json_payload["enabled"] == sa::json::array({"alpha", "myres"}));
+    // The pack half is visible through the legacy endpoint too (shared state).
+    CHECK(fx.call("GET", "/api/resource_packs").json_payload.value("active", std::string()) ==
+          "myres");
+
+    // Disabling the plugin stops its UI contribution but keeps the pack enabled.
+    auto act2 = fx.call("POST", "/api/extensions/active", {},
+                        sa::json{{"ids", sa::json::array({"myres"})}});
+    REQUIRE(act2.status == 200);
+    CHECK(fx.call("GET", "/api/plugins/ui/flow_cards").json_payload["flow_cards"].empty());
+    CHECK(fx.call("GET", "/api/resource_packs").json_payload.value("active", std::string()) ==
+          "myres");
+
+    // Re-enable: the plugin's flow card comes back.
+    auto act3 = fx.call("POST", "/api/extensions/active", {},
+                        sa::json{{"ids", sa::json::array({"alpha", "myres"})}});
+    REQUIRE(act3.status == 200);
+    auto fc = fx.call("GET", "/api/plugins/ui/flow_cards");
+    REQUIRE(fc.json_payload["flow_cards"].size() == 1);
+    CHECK(fc.json_payload["flow_cards"][0]["plugin_id"] == "alpha");
+
+    // Unknown ids are rejected, not silently dropped.
+    auto bad = fx.call("POST", "/api/extensions/active", {},
+                       sa::json{{"ids", sa::json::array({"ghost"})}});
+    CHECK(bad.status == 400);
+    CHECK(bad.json_payload.value("error", std::string()) == "extension not found: ghost");
+
+    // Unified install lands in the plugin root (1A) and is enabled by default.
+    auto inst = fx.call("POST", "/api/extensions/install", {},
+                        sa::json{{"data", kNO_ID_ZIP}, {"filename", "extpkg.zip"}});
+    REQUIRE(inst.status == 200);
+    CHECK(inst.json_payload["id"] == "extpkg");
+    CHECK(inst.json_payload["extension"]["source"] == "plugins");
+    CHECK(inst.json_payload["extension"]["enabled"] == true);
+    CHECK(cs::is_dir(cs::join(proot, "extpkg")));
+
+    CHECK(fx.call("GET", "/api/extensions/extpkg").status == 200);
+    auto del = fx.call("DELETE", "/api/extensions/extpkg");
+    REQUIRE(del.status == 200);
+    CHECK_FALSE(cs::is_dir(cs::join(proot, "extpkg")));
+    CHECK(fx.call("GET", "/api/extensions/extpkg").status == 404);
+}
+

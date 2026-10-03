@@ -4,6 +4,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
+import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import 'ai_dock.dart';
 import '../base/base_search_page.dart';
@@ -86,41 +87,68 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
         builder: (context, _) => Column(
           children: [
             Expanded(
-              child: Stack(
-                children: [
-                  // 懒加载保活内容栈：未访问视图不构建，已访问的保持状态。
-                  // 标签条常驻悬浮在顶上（margin 6 + 高 42），
-                  // 内容（含画布）统一让出这 50px。
-                  Positioned.fill(
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 50),
-                      child: _contentStack(),
-                    ),
-                  ),
-                  // AI 侧栏（右侧停靠，让出常驻标签条的高度）
-                  Positioned(right: 0, top: 50, bottom: 0, child: _aiDock()),
-                  // 顶部常驻标签条
-                  StoryFlowTopTabs(
-                    view: _view,
-                    controller: widget.shell.controller,
-                    onView: _setView,
-                    onSelectDoc: (i) {
-                      final docs = widget.shell.controller.docs;
-                      if (i < 0 || i >= docs.length) return;
-                      _openDoc(docs[i]);
-                    },
-                    onCloseDoc: (i) {
-                      // 按下标关页签要在点击瞬间回找 doc 引用：标签组件
-                      // 持有的下标可能落后于最新列表，直接 close(i) 会关错。
-                      final docs = widget.shell.controller.docs;
-                      if (i < 0 || i >= docs.length) return;
-                      widget.shell.controller.closeDoc(docs[i]);
-                      if (widget.shell.controller.docs.isEmpty) {
-                        setState(() => _view = StoryFlowView.graph);
-                      }
-                    },
-                  ),
-                ],
+              // 宽度自适应：宽布局 AI 右侧停靠；紧凑布局（窄 Web 窗口）AI
+              // 浮层化，不再压占画布横向空间。两者都让出常驻标签条高度。
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxWidth < Breakpoints.compact;
+                  return Stack(
+                    children: [
+                      // 懒加载保活内容栈：未访问视图不构建，已访问的保持状态。
+                      // 标签条常驻悬浮在顶上（margin 6 + 高 42），
+                      // 内容（含画布）统一让出这 50px。
+                      Positioned.fill(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 50),
+                          child: _contentStack(),
+                        ),
+                      ),
+                      // AI 侧栏（让出常驻标签条的高度）
+                      if (compact)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 50,
+                          bottom: 0,
+                          child: AiOverlayDock(
+                            state: widget.state,
+                            shell: widget.shell,
+                            panelBackground: palette.panel,
+                            onOpenSettings: () =>
+                                _setView(StoryFlowView.settings),
+                          ),
+                        )
+                      else
+                        Positioned(
+                          right: 0,
+                          top: 50,
+                          bottom: 0,
+                          child: _aiDock(),
+                        ),
+                      // 顶部常驻标签条
+                      StoryFlowTopTabs(
+                        view: _view,
+                        controller: widget.shell.controller,
+                        onView: _setView,
+                        onSelectDoc: (i) {
+                          final docs = widget.shell.controller.docs;
+                          if (i < 0 || i >= docs.length) return;
+                          _openDoc(docs[i]);
+                        },
+                        onCloseDoc: (i) {
+                          // 按下标关页签要在点击瞬间回找 doc 引用：标签组件
+                          // 持有的下标可能落后于最新列表，直接 close(i) 会关错。
+                          final docs = widget.shell.controller.docs;
+                          if (i < 0 || i >= docs.length) return;
+                          widget.shell.controller.closeDoc(docs[i]);
+                          if (widget.shell.controller.docs.isEmpty) {
+                            setState(() => _view = StoryFlowView.graph);
+                          }
+                        },
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
             StatusBar(
@@ -142,7 +170,16 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
       if (_visited.contains(i)) {
         children.add(
           Positioned.fill(
-            child: Offstage(offstage: i != _view.index, child: _childFor(i)),
+            child: Offstage(
+              offstage: i != _view.index,
+              // Offstage 只挡绘制与命中，不挡 ticker：保活的视图里若有
+              // repeat/呼吸类动画，隐藏期间仍会持续出帧。TickerMode 把隐藏
+              // 视图的动画一并停住（重新可见时自动恢复）。
+              child: TickerMode(
+                enabled: i == _view.index,
+                child: _childFor(i),
+              ),
+            ),
           ),
         );
       }

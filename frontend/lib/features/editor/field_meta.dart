@@ -6,6 +6,7 @@ library;
 
 import '../../core/models.dart';
 import 'field_help_data.dart';
+import 'field_ref_data.dart';
 import 'field_utils.dart';
 
 /// [dictName] 指向 /api/dicts 返回的 game_dicts 字典名；[fixed] 为固定选项（id → 名称）；
@@ -99,10 +100,11 @@ const kRuleByCfgField = <String, FieldRule>{
   'NegotiationTeammateCfg:skills': FieldRule(idRefCfg: 'NegotiationSkillCfg'),
   'NegotiationTopicCfg:buff1': FieldRule(idRefCfg: 'NegotiationBuffCfg'),
   'NegotiationTopicCfg:buff2': FieldRule(idRefCfg: 'NegotiationBuffCfg'),
-  // 目标：前置 / 下一目标自引用，奖励物品
+  // 目标：前置 / 下一目标自引用。
+  // 注意 `reward` 不是物品 ID 而是效果码（帮助文档：「见文档中的“效果”格式」），
+  // 故不在此列规则；它归 kCodeFieldByCfg（无代码模式走积木编辑器）。
   'IntentCfg:before': FieldRule(idRefCfg: 'IntentCfg'),
   'IntentCfg:next': FieldRule(idRefCfg: 'IntentCfg'),
-  'IntentCfg:reward': FieldRule(dictName: 'items', idRefCfg: 'ItemCfg'),
   // 生日派对：连线题目左右列无需引用规则（自由文本）
   // 角色 id 列表（1D，非指令行）：原先没有规则，被 isEffectLikeField 的
   // 'roles' 猜中而误走效果补全框；补规则后回到「多值 + 角色候选」，
@@ -128,6 +130,33 @@ const kRuleByCfgField = <String, FieldRule>{
   'AnimeConCfg:evtId': FieldRule(idRefCfg: 'EvtCfg'),
   'MovieCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
   'NegotiationCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
+  // 第三方权威 schema 有说明但未标 range（或 range 是复合目标）的引用/枚举：
+  // 无代码模式下列为「只选不敲」，关闭时也走候选下拉。
+  'EndingOptionCfg:part': FieldRule(idRefCfg: 'EndingPartCfg'),
+  'EndingPartCfg:options': FieldRule(idRefCfg: 'EndingOptionCfg'),
+  'EndingPartCfg:evt': FieldRule(idRefCfg: 'EvtCfg'),
+  'PersonAttrCfg:order': FieldRule(idRefCfg: 'TraitsCfg'),
+  // 说明文明确是「某某 ID 列表」、但第三方 schema 未标 range.table 的数组字段：
+  // 补齐后不再落进效果积木编辑器（它们本就不是效果码）。
+  'ActionCfg:attrs': FieldRule(dictName: 'attrs'),
+  'ActionEvtCfg:evts': FieldRule(idRefCfg: 'EvtCfg'),
+  'CGCfg:startTalks': FieldRule(idRefCfg: 'TalkCfg'),
+  'EvtCfg:miniGame': FieldRule(idRefCfg: 'MinigameCfg'),
+  'IntentCfg:failTalk': FieldRule(idRefCfg: 'TalkCfg'),
+  'IntentCfg:finishTalk': FieldRule(idRefCfg: 'TalkCfg'),
+  'PhoneMsgCfg:next': FieldRule(idRefCfg: 'PhoneMsgCfg'),
+  'TVCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
+  // BookCfg.themes：固定主题编号（第三方 schema 说明 1/2/4/5/6/7/9/11）。
+  'BookCfg:themes': FieldRule(fixed: {
+    '1': '益智',
+    '2': '现实',
+    '4': '励志',
+    '5': '少儿',
+    '6': '科普',
+    '7': '幻想',
+    '9': '历史',
+    '11': '古典',
+  }),
 };
 
 /// 全局字段 key → 下拉框规则（兜底）。
@@ -159,9 +188,36 @@ const kRuleByField = <String, FieldRule>{
   'evt': FieldRule(idRefCfg: 'EvtCfg'), // 关联事件（世博展馆）
 };
 
-/// 取字段对应的下拉框规则：cfg 限定优先，其次全局 key。
-FieldRule? fieldRuleFor(String cfgName, String key) =>
-    kRuleByCfgField['$cfgName:$key'] ?? kRuleByField[key];
+/// 生成引用规则的稳定实例缓存。
+///
+/// `_options()` 等处以 `rule` 的 identical 作为缓存键（见 schema 编辑器的
+/// `_optCacheKey`），每次 build 都 new 一个 FieldRule 会让缓存恒失效，故按
+/// `cfg:key` 记忆化。
+final Map<String, FieldRule> _generatedRules = {};
+
+/// 第三方权威 schema 声明的引用目标 → idRef 规则（仅 `cfg:key` 精确匹配）。
+FieldRule? _generatedRuleFor(String cfgName, String key) {
+  final id = '$cfgName:$key';
+  final target = kFieldRefTargets[id];
+  if (target == null) return null;
+  return _generatedRules.putIfAbsent(id, () => FieldRule(idRefCfg: target));
+}
+
+/// 取字段对应的下拉框规则：手写 cfg 限定优先 → 手写全局 key → 生成引用兜底。
+///
+/// 生成兜底来自第三方权威 schema 的 `range.table`（见 field_ref_data.dart），
+/// 覆盖那些「本体 schema 里是裸 Number/数组、但语义是另一张表记录 ID」的字段，
+/// 让无代码模式在所有编辑页都能把它们收敛为「只选不敲」的引用形态。
+///
+/// [kCodeFieldByCfg] 显式登记的效果码**永不**是引用：`reward` 这类全局 key 规则
+/// 会把 IntentCfg 的效果码误当物品 ID，命中即短路成 null，交回效果补全/积木。
+FieldRule? fieldRuleFor(String cfgName, String key) {
+  final id = '$cfgName:$key';
+  if (kCodeFieldByCfg.contains(id)) return null;
+  return kRuleByCfgField[id] ??
+      kRuleByField[key] ??
+      _generatedRuleFor(cfgName, key);
+}
 
 /// 后端 `DEFAULT_TALK_KEY_MAP` / `DEFAULT_OPT_KEY_MAP` 缺标签的字段。
 ///
@@ -346,6 +402,9 @@ const kCodeFieldByCfg = <String>{
   'MinigameActionCfg:effect',
   // 成长码
   'PersonGrowCfg:grow',
+  // 目标奖励：帮助文档明确是「效果」格式（第三方 schema 亦标 Effect）；
+  // key 不含任何码家族词，必须显式登记，否则会被误当物品引用而无法积木化。
+  'IntentCfg:reward',
 };
 
 /// 显式排除：key 命中码家族、但语义不是码的数组字段。
@@ -552,12 +611,16 @@ enum NoCodeShape {
 
 /// 按优先级表派生渲染形态：
 ///   1. 有专用视觉控件 → [NoCodeShape.visual]
-///   2. 有下拉/引用规则 → [NoCodeShape.reference]
-///   3. 效果/条件/指令类，或本身就是 1D/2D 数组 → [NoCodeShape.blocks]
-///   4. 其余 → [NoCodeShape.untouched]
+///   2. 效果/条件/指令类 → [NoCodeShape.blocks]
+///   3. 有下拉/引用规则 → [NoCodeShape.reference]
+///   4. 其余 1D/2D 数组 → [NoCodeShape.blocks]
+///   5. 其余 → [NoCodeShape.untouched]
 ///
-/// 第 3 步不依赖 key 名猜中：判定表只决定积木编辑器的 mode
-/// （effect/condition/cost/action/screen），不再决定"要不要出现"。
+/// 第 2 步压过第 3 步：[kCodeFieldByCfg] 显式登记的效果码是唯一真源，即使它
+/// 同时也命中某条 range/引用规则，也必须积木化——否则开启无代码后就只剩一个
+/// "选 ID"的下拉，用户改不了效果（`IntentCfg:reward` 曾被物品引用规则误降级）。
+/// 判定表只决定积木编辑器的 mode（effect/condition/cost/action/screen），
+/// 不再决定"要不要出现"。
 NoCodeShape noCodeShapeFor(
   String cfg,
   String key,
@@ -571,8 +634,8 @@ NoCodeShape noCodeShapeFor(
       visual != FieldVisual.numberSlider) {
     return NoCodeShape.visual;
   }
-  if (rule != null) return NoCodeShape.reference;
   if (isEffectLikeField(cfg, key, type)) return NoCodeShape.blocks;
+  if (rule != null) return NoCodeShape.reference;
   if (type == '1D Array' || type == '2D Array') return NoCodeShape.blocks;
   return NoCodeShape.untouched;
 }

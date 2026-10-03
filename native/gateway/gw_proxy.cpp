@@ -32,6 +32,33 @@ bool under(std::string_view path, std::string_view pfx) {
             path[pfx.size()] == '/');
 }
 
+// 解析请求体里的 "remember"（真值语义：bool true 或字符串 "true"）。
+bool body_remember(const sa::json& body) {
+    if (!body.is_object() || !body.contains("remember")) return false;
+    const auto& v = body.at("remember");
+    if (v.is_boolean()) return v.get<bool>();
+    if (v.is_string()) return sa_core::str::lower(v.get<std::string>()) == "true";
+    return false;
+}
+
+// 签发一次登录/注册/刷新结果：内存 access 会话 + （可选）refresh token。
+// remember=true 时 refresh token 走长期有效期（refresh_ttl_days）并落盘，
+// 否则与 access 会话同寿且仅内存（关闭浏览器即失效）。g.refresh 为空
+// （测试/未装配）时只签发 access 会话。
+void issue_session_tokens(Gateway& g, const std::string& name, bool remember,
+                          sa::json* out) {
+    const long long access_ttl_s = g.cfg.session_ttl_hours * 3600LL;
+    (*out)["token"] = g.sessions->issue(name);
+    (*out)["name"] = name;
+    (*out)["expires_in"] = access_ttl_s;
+    if (!g.refresh) return;
+    const long long session_ttl_ms = access_ttl_s * 1000LL;
+    const long long refresh_ttl_ms =
+        remember ? g.cfg.refresh_ttl_days * 86400LL * 1000LL : session_ttl_ms;
+    (*out)["refresh_token"] = g.refresh->issue(name, refresh_ttl_ms, remember);
+    (*out)["refresh_expires_in"] = refresh_ttl_ms / 1000;
+}
+
 // 登录限速参数（安全批次 A）：60 秒滑动窗口 10 次失败 → 锁 5 分钟。
 constexpr long long kFailWindowMs = 60ll * 1000;
 constexpr int kMaxFailsPerWindow = 10;
@@ -117,8 +144,10 @@ bool endpoint_banned(const std::string& method, const std::string& path) {
     // 任意文件读取原语）。Web 通道的安全等价物是 *_upload（字节走 body）。
     static const char* kPathImportPrefixes[] = {
         "/api/plugins/install_path",       // plugins_routes.cpp: install_plugin_from_path
+        "/api/extensions/install_path",    // 扩展合并：同型本机路径安装
         "/api/resource_packs/import_path", // p3b_domain_tools_routes.cpp: 同型
         "/api/mod/import_files",           // mod_files_routes.cpp: files[] 本机路径
+        "/api/mods/import_path",           // mods_routes.cpp: 模组 zip 本机路径导入
     };
     for (const char* p : kPathImportPrefixes)
         if (under(path, p)) return true;
@@ -209,11 +238,13 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
     // ---- POST /api/auth/login --------------------------------------------
     r.post(R"(/api/auth/login)", [&g](const sa::Req& req) -> sa::Resp {
         std::string name, password;
+        bool remember = false;
         if (req.body.is_object()) {
             if (req.body.contains("name") && req.body.at("name").is_string())
                 name = req.body.at("name").get<std::string>();
             if (req.body.contains("password") && req.body.at("password").is_string())
                 password = req.body.at("password").get<std::string>();
+            remember = body_remember(req.body);
         }
         // 滑动窗口限速（安全批次 A）：锁定中的账号直接 429，不进入昂贵的
         // PBKDF2 校验（既挡在线爆破也挡 DoS 式的 KDF 算力耗尽）。
@@ -229,11 +260,45 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
             return err_json(401, "invalid credentials");
         }
         g.login_limiter.record_success(name);
-        std::string token = g.sessions->issue(a->name);
         sa::json out;
-        out["token"] = token;
-        out["name"] = a->name;
-        out["expires_in"] = g.cfg.session_ttl_hours * 3600LL;
+        issue_session_tokens(g, a->name, remember, &out);
+        return sa::Resp::Json(200, std::move(out));
+    });
+
+    // ---- POST /api/auth/refresh ------------------------------------------
+    // 长期鉴权核心：拿 refresh token 换一对新令牌（旋转，旧的立即失效）。
+    // 无需 Bearer —— access token 正是可能已过期的那个。
+    r.post(R"(/api/auth/refresh)", [&g](const sa::Req& req) -> sa::Resp {
+        std::string refresh_token;
+        if (req.body.is_object() && req.body.contains("refresh_token") &&
+            req.body.at("refresh_token").is_string())
+            refresh_token = req.body.at("refresh_token").get<std::string>();
+        if (refresh_token.empty() || !g.refresh)
+            return err_code(401, "invalid refresh token", "invalid_refresh");
+        // 账号在签发 refresh token 后被停用时，长期凭据必须立刻失效。
+        std::string account;
+        if (!g.refresh->check(refresh_token, &account))
+            return err_code(401, "invalid refresh token", "invalid_refresh");
+        const Account* acc = g.cfg.find_account(account);
+        if (!acc || acc->disabled) {
+            g.refresh->revoke(refresh_token);
+            return err_code(403, "account disabled", "account_disabled");
+        }
+        const long long session_ttl_ms = g.cfg.session_ttl_hours * 3600LL * 1000LL;
+        const long long remember_ttl_ms =
+            g.cfg.refresh_ttl_days * 86400LL * 1000LL;
+        std::string new_refresh;
+        long long new_refresh_ttl_ms = session_ttl_ms;
+        if (!g.refresh->refresh(refresh_token, remember_ttl_ms, session_ttl_ms,
+                                &new_refresh, &account, &new_refresh_ttl_ms))
+            return err_code(401, "invalid refresh token", "invalid_refresh");
+        sa::json out;
+        const long long access_ttl_s = g.cfg.session_ttl_hours * 3600LL;
+        out["token"] = g.sessions->issue(account);
+        out["name"] = account;
+        out["expires_in"] = access_ttl_s;
+        out["refresh_token"] = new_refresh;
+        out["refresh_expires_in"] = new_refresh_ttl_ms / 1000;
         return sa::Resp::Json(200, std::move(out));
     });
 
@@ -267,6 +332,7 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
             if (req.body.contains("invite_code") && req.body.at("invite_code").is_string())
                 invite = req.body.at("invite_code").get<std::string>();
         }
+        const bool remember = body_remember(req.body);
         // 限速复用登录限速器（固定键）：挡邀请码爆破与重复注册尝试，
         // 同时挡 PBKDF2 算力耗尽。成功即清零。
         static const char kRegKey[] = "__register__";
@@ -316,11 +382,8 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         sa_core::paths::create_dirs(created.dir);
         g.login_limiter.record_success(kRegKey);
         std::fprintf(stderr, "[gateway] registered account '%s'\n", name.c_str());
-        std::string token = g.sessions->issue(created.name);
         sa::json out;
-        out["token"] = token;
-        out["name"] = created.name;
-        out["expires_in"] = g.cfg.session_ttl_hours * 3600LL;
+        issue_session_tokens(g, created.name, remember, &out);
         return sa::Resp::Json(200, std::move(out));
     });
 
@@ -333,14 +396,23 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
     });
 
     // ---- POST /api/auth/logout -------------------------------------------
+    // 吊销 access 会话（Bearer）与 refresh token（body）。access 已过期时
+    // 仍允许仅凭 refresh token 登出（否则“登出”会留下长期凭据继续有效）；
+    // 二者都没有/都无效才 401。
     r.post(R"(/api/auth/logout)", [&g](const sa::Req& req) -> sa::Resp {
-        std::string token;
-        if (!parse_bearer(req.authorization_header, &token))
+        std::string token, account;
+        const bool bearer_ok = parse_bearer(req.authorization_header, &token) &&
+                               bearer_account(g, req, &account, nullptr);
+        std::string refresh_token;
+        if (req.body.is_object() && req.body.contains("refresh_token") &&
+            req.body.at("refresh_token").is_string())
+            refresh_token = req.body.at("refresh_token").get<std::string>();
+        bool refresh_revoked = false;
+        if (g.refresh && !refresh_token.empty())
+            refresh_revoked = g.refresh->revoke(refresh_token);
+        if (bearer_ok) g.sessions->logout(token);
+        if (!bearer_ok && !refresh_revoked)
             return err_json(401, "unauthorized");
-        std::string account;
-        if (!bearer_account(g, req, &account, nullptr))
-            return err_json(401, "unauthorized");
-        g.sessions->logout(token);
         return sa::Resp::Json(200, sa::json{{"ok", true}});
     });
 

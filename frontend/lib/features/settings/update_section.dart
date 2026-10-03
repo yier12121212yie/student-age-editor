@@ -112,13 +112,25 @@ class _UpdateCheckSectionState extends State<UpdateCheckSection> {
                       )
                     : const Text('检查更新'),
               ),
-              fluent.Checkbox(
-                checked: s.autoCheck,
-                onChanged: (v) => s.setAutoCheck(v ?? false),
-                content: const Text(
-                  '启动时自动检查（最多 24 小时一次）',
-                  style: TextStyle(fontSize: 12),
-                ),
+              // Fluent Checkbox 的标签是非弹性子项（Row 给无界宽度），窄栏
+              // （手机 320 / 经典侧栏）下长标签会横向溢出。用 LayoutBuilder 取
+              // 当前可用宽度，给标签封顶后即可正常换行。
+              LayoutBuilder(
+                builder: (context, box) {
+                  final labelMax =
+                      (box.maxWidth - 32).clamp(96.0, 320.0);
+                  return fluent.Checkbox(
+                    checked: s.autoCheck,
+                    onChanged: (v) => s.setAutoCheck(v ?? false),
+                    content: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: labelMax),
+                      child: const Text(
+                        '启动时自动检查（最多 24 小时一次）',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  );
+                },
               ),
             ],
           ),

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -18,15 +19,15 @@ using Json = nlohmann::ordered_json;
 
 // Main is the Alpha-v0.3 home screen: the three-pane browser (📦 Mods / Cfgs
 // two-level tree | 📋 Records | 📝 Detail). The rest are the centered modal
-// dialogs the Alpha opened over it (a/c/p/b/u keys) — `page` doubles as the
+// dialogs the Alpha opened over it (a/c/p/b/u/t keys) — `page` doubles as the
 // "which modal is up" selector, None == Main.
-enum class Page { Main, Bugfix, Agent, Plugins, Cloud, Update };
+enum class Page { Main, Bugfix, Agent, Plugins, Cloud, Update, Tts, Oobe };
 
-// One flat row of the left pane's two-level tree: a mod node (table_index<0)
-// or, under the expanded+selected mod, one of its Cfg tables.
+// One flat row of the left pane's tree: a mod node (table_index<0) or, under
+// an expanded mod whose cfg list is cached, one of its Cfg tables.
 struct TreeItem {
     int mod_index = -1;
-    int table_index = -1;  // index into `tables` (the selected mod's cfg list)
+    int table_index = -1;  // index into the owning mod's cached table list
 };
 
 // Which pane of the browse page owns the keyboard.
@@ -40,7 +41,7 @@ enum class DetailMode { Json, Form };
 // intents — which is what makes it unit-testable.
 enum class Intent {
     None,
-    RefreshMods,   // GET /api/mods
+    RefreshMods,   // GET /api/mods?with_counts=1
     SelectMod,     // POST /api/mods/select {name}
     RefreshTables, // GET /api/cfg
     LoadTable,     // GET /api/cfg/<name>?keys=1
@@ -66,12 +67,23 @@ enum class Intent {
     FetchFieldSuggestions, // GET /api/effect_suggest?mode&q= (or /api/roles)
     FetchSlotEntries,  // dict-pool / role entries for the active slot
     ReportUsage,       // POST /api/usage {kind,key} (accepted candidate)
+    LoadSchema,        // GET /api/schema (once at startup; column + form metadata)
+    LoadDictLabels,    // GET /api/dicts (key_maps field labels; once at startup)
+    FetchDictEntries,  // game_dicts pool for a form field's suggest list
+    TtsLoadSettings,   // GET /api/tts/settings (t page)
+    TtsSaveSettings,   // PUT /api/tts/settings {settings:{tts*}}
+    TtsTest,           // POST /api/tts/test
+    TtsSynthesize,     // POST /api/tts/synthesize + /api/tts/save
+    OobeSetWorkspace,  // POST /api/workspace {root} (OOBE step 1)
+    OobeComplete,      // POST /api/oobe/complete
     Quit,
 };
 
 struct ModEntry {
     std::string name;
     std::string root;
+    std::string title;   // manifest.json title (tree label dim part)
+    int cfg_count = 0;   // number of cfg files (tree label count)
 };
 
 struct BugEntry {
@@ -138,6 +150,47 @@ struct SearchHit {
     std::string evt_title;
     std::string talk_id;
     std::string content;
+};
+
+// ^P command palette entry (Alpha-later build's bottom-bar "palette"): a fuzzy
+// searchable list of every command the TUI offers. `id` selects the action in
+// RunPaletteAction; `hint` is the keyboard shortcut shown on the right.
+struct PaletteItem {
+    std::string id;
+    std::string label;
+    std::string hint;
+};
+
+struct PaletteOverlay {
+    bool active = false;
+    std::string input;
+    int sel = 0;
+    std::vector<PaletteItem> items;
+};
+
+// 🔊 配音 (TTS) page state (the Alpha's TtsScreen; backend /api/tts/*).
+struct TtsState {
+    bool loaded = false;
+    std::string provider;       // ttsProvider (aliyun / minimax / ...)
+    std::string api_key;
+    std::string base_url;
+    std::string model;
+    std::string voice;
+    std::string text;           // 试听/合成文本
+    bool busy = false;          // a test / synthesize round-trip is running
+    std::string result;         // last success message (saved path / audioCfgId)
+    std::string error;
+    bool editing_field = false;  // which field the keyboard edits (0..3)
+    int field_sel = 0;           // provider/key/base_url/model/voice/text rows
+};
+
+// 🚀 OOBE 首启向导 (the Alpha's OobeScreen, trimmed to what the HTTP backend
+// can do from the TUI): step 0 welcome/workspace, 1 optional new mod, 2 done.
+struct OobeState {
+    bool active = false;
+    int step = 0;
+    std::string workspace_input;  // step 0: typed workspace path (empty = keep)
+    std::string mod_title;        // step 1: optional new mod title
 };
 
 // One schema/cross-table problem reported by POST /api/validate.
@@ -223,6 +276,9 @@ struct Table {
     bool exists = false;
     long long mtime_ns = 0;  // from the load; sent back as expect_mtime_ns
     std::vector<TableRow> rows;  // sorted by key (stable navigation order)
+    // Display columns (Alpha _choose_columns: ID + up to 3 schema fields +
+    // optional 预览). Filled by the caller after LoadTable.
+    std::vector<std::string> columns;
     // key -> raw edit buffer (JSON text). Only dirty rows appear here; an entry
     // whose text round-trips to the base value is a no-op and dropped at save.
     std::map<std::string, std::string> edits;
@@ -244,22 +300,34 @@ struct KeyInput {
 struct AppState {
     Page page = Page::Main;
 
-    // mods + the left pane's two-level tree (mod node -> cfg nodes). The tree
-    // cursor addresses TreeItems(); `expanded_mod` marks which mod node shows
-    // its cfg list (only the selected mod has one — that is what the backend
-    // lists). <0 = collapsed.
+    // mods + the left pane's tree (Alpha Textual Tree parity): every mod node
+    // can expand once its cfg list is cached, and several can stay expanded at
+    // once. `mod_tables` caches each mod's cfg list the moment it is selected
+    // (GET /api/cfg is per-selection), `cfg_counts` maps mod -> cfg -> record
+    // count (GET /api/mods?with_counts=1) so unopened cfgs still show counts.
     std::vector<ModEntry> mods;
     int tree_sel = 0;
-    int expanded_mod = -1;
+    std::set<std::string> expanded_mods;
+    std::map<std::string, std::vector<std::string>> mod_tables;
+    std::map<std::string, std::map<std::string, long long>> cfg_counts;
     int mod_sel = 0;  // index of the selected mod within mods
     bool mod_input_active = false;  // N: typing a title for POST /api/mods/create
     std::string mod_input;
     std::string selected_mod;
+    std::string workspace;    // resolved workspace root (header "@ path")
+    std::string pending_table;  // Enter on a cfg of an unselected mod: load it
+                                // right after the selection round-trips
 
     // tables (left pane of the browse page)
     std::vector<std::string> tables;
     std::string table_filter;  // `/` filter over the tree's cfg nodes
     bool filtering = false;    // `/` filter capture: every char feeds the filter
+
+    // schema + dicts metadata (fetched once at startup): game_schema
+    // {cfg -> {field -> type}} drives the middle pane's column choice and the
+    // form's field types; key_maps {cfg -> {field -> 中文名}} labels the form.
+    Json schema = Json::object();
+    Json key_maps = Json::object();
 
     // current table (middle pane: browse + edit)
     Table table;
@@ -270,11 +338,12 @@ struct AppState {
 
     // browse-page pane focus + detail (right pane)
     Focus focus = Focus::Tables;      // tables first: nothing loaded yet
-    DetailMode detail_mode = DetailMode::Json;
-    int field_sel = 0;                // form mode: selected field index
+    DetailMode detail_mode = DetailMode::Form;  // Alpha: form view is default
+    int field_sel = 0;                // form mode: selected field row index
     bool editing_field = false;       // form mode: one field value being edited
     std::string field_name;           // field being edited
-    std::string field_buffer;         // JSON text being typed for that field
+    std::string field_buffer;         // text being typed for that field
+    std::string field_type;           // schema type of that field (decode hint)
 
     // bugfix
     std::vector<BugEntry> bugs;
@@ -333,9 +402,15 @@ struct AppState {
     // overlays
     SearchOverlay search;      // Ctrl-K global talk search
     ValidateOverlay validate;  // v: validate the open table
+    PaletteOverlay palette;    // Ctrl-P command palette
+
+    // 🔊 TTS page (t) + 🚀 OOBE first-run wizard
+    TtsState tts;
+    OobeState oobe;
 
     // shared chrome
     std::string status;   // one-line transient status / error
+    std::string status_level;  // "" | "success" | "warning" | "error"
     std::string agent_label;  // "provider · model" for the AI modal title
     bool show_help = false;
 
@@ -345,8 +420,8 @@ struct AppState {
     std::vector<int> VisibleRows() const;
     // Tables currently visible after the table filter (indices into tables).
     std::vector<int> VisibleTables() const;
-    // The left pane's flat tree rows: every mod, then (under the expanded
-    // selected mod) its filter-visible cfgs.
+    // The left pane's flat tree rows: every mod, then (under each expanded mod
+    // whose cfg list is cached) its filter-visible cfgs.
     std::vector<TreeItem> TreeItems() const;
     // Chat transcript rows for the current message list (used by render too).
 };

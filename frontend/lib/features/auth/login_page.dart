@@ -39,6 +39,7 @@ class _LoginPageState extends State<LoginPage> {
   final _inviteFocus = FocusNode();
   bool _obscure = true;
   bool _isRegister = false;
+  bool _remember = true;
 
   @override
   void dispose() {
@@ -71,8 +72,9 @@ class _LoginPageState extends State<LoginPage> {
     _localError = null;
     final ok = _isRegister
         ? await widget.auth.register(_nameCtrl.text, _passCtrl.text,
-            inviteCode: _inviteCtrl.text)
-        : await widget.auth.login(_nameCtrl.text, _passCtrl.text);
+            inviteCode: _inviteCtrl.text, remember: _remember)
+        : await widget.auth.login(_nameCtrl.text, _passCtrl.text,
+            remember: _remember);
     if (ok && mounted) widget.onLoggedIn?.call();
   }
 
@@ -189,6 +191,39 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ],
                   ],
+                  const SizedBox(height: 12),
+                  // 「记住我」：勾选走长期 refresh token（落本地存储，冷启动
+                  // 免登）；不勾选令牌仅内存，关闭标签页即需重新登录。
+                  ListenableBuilder(
+                    listenable: widget.auth,
+                    builder: (context, _) {
+                      final busy = widget.auth.busy;
+                      return Row(
+                        children: [
+                          fluent.Checkbox(
+                            checked: _remember,
+                            onChanged: busy
+                                ? null
+                                : (v) => setState(() => _remember = v ?? false),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: busy
+                                  ? null
+                                  : () =>
+                                      setState(() => _remember = !_remember),
+                              child: Text('记住我（长期保持登录）',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: palette.textMuted)),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
                   // 错误文案：限高滚动兜底，避免长报错撑破卡片
                   ListenableBuilder(
                     listenable: widget.auth,

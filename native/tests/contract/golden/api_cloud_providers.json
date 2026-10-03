@@ -6,14 +6,14 @@
       "local",
       "webdav",
       "openlist",
-      "alist",
       "baidu_netdisk",
-      "baidu",
       "123",
-      "123pan",
       "google_drive",
-      "gdrive",
-      "onedrive"
+      "onedrive",
+      "aliyun_oss",
+      "tencent_cos",
+      "aws_s3",
+      "cloudflare_r2"
     ],
     "providers": []
   },

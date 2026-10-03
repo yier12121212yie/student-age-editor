@@ -16,6 +16,7 @@
 - **收起态折叠条**:收起后右侧保留一条宽 `AiDock.railWidth = 36` 的竖排图标条(`AiCollapsedRail`),点击即展开。图标右上角有小角标:
   - **呼吸点**(accent 色,约 900ms 一次明暗脉动)= AI 正在流式回复;
   - **实心警示点**(黄色)= 有审批/提问弹窗在等你应答(`hasPendingPrompt`,优先于呼吸点显示)。
+- **窄窗自适应(含 Web)**:窗口宽度 `< Breakpoints.compact = 1100` 时,外壳经 `AiDockHost` 把 AI 由**并排停靠**切换为 `AiOverlayDock` **悬浮抽屉**——不占用布局宽度,展开时覆盖内容右缘并带遮罩(点遮罩或右下角悬浮按钮开合),因此窄浏览器窗口下「活动栏 + 侧边栏 + AI 面板」不再叠加把编辑区压成负宽 / 溢出;宽度 ≥ 断点时恢复原有并排停靠。纯判宽函数 `isCompactWidth` 在 `core/responsive.dart`,三个桌面壳(AI 停靠区)均已接入。
 - **持久化**:开合状态与 AI 宽度(连同左侧栏宽度)以 key `shell_layout_v1` 存入 SharedPreferences,冷启动 `loadLayout()` 恢复;连续拖拽在同一事件轮次内合并落盘一次。
 
 ### 应用级会话单例
@@ -147,7 +148,7 @@ python tools/mcp_bridge/mcp_bridge.py --backend http://127.0.0.1:9000  # 后端�
 | 文件 | 职责 |
 |---|---|
 | `shell_state.dart` | 三壳共享界面状态:`aiOpen`/`aiWidth` 与范围常量、`shell_layout_v1` 持久化、AiChatController 单例持有 |
-| `ai_dock.dart` | 右侧停靠区 AiDock 与收起态 36px 折叠条 |
+| `ai_dock.dart` | 右侧停靠区 `AiDock`、收起态 36px 折叠条 `AiCollapsedRail`,以及窄窗自适应宿主 `AiDockHost` / 悬浮抽屉 `AiOverlayDock` |
 | `shell_widgets.dart` | ResizeHandle(拖拽调宽、双击复位) |
 | `editor_shell.dart` / `classic_shell.dart` / `story_flow_shell.dart` | 三个桌面壳,均内嵌 AiDock |
 | `mobile_shell.dart` | 移动端壳:AI 底部滑出 sheet ↔ 全屏页,共用同一控制器 |

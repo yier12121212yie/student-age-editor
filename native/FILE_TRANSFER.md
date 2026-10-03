@@ -75,6 +75,11 @@ curl http://127.0.0.1:8765/api/v1/files/<id>/download
 | `EDITOR_FILE_COS_PUBLIC_ENDPOINT` | 否 | 默认 `https://cos.<region>.myqcloud.com`（客户端直传/下载） |
 | `EDITOR_FILE_COS_INTERNAL_ENDPOINT` | 否 | 默认同公网；**自托管请填内网域名/IP**（Worker 落盘/预热） |
 | `EDITOR_FILE_COS_CDN_DOMAIN` | 否 | 设置后下载直链优先用 CDN |
+| `EDITOR_FILE_COS_CDN_AUTH_TYPE` | 否 | 腾讯云 CDN URL 鉴权类型 `A`/`B`/`C`/`D`；与 KEY 同时给出才签名 |
+| `EDITOR_FILE_COS_CDN_AUTH_KEY` | 否 | CDN 鉴权主密钥 pkey（回源鉴权与 URL 鉴权均在 CDN 侧配置） |
+| `EDITOR_FILE_COS_CDN_AUTH_PARAM` | 否 | 签名参数名，默认 `sign` |
+| `EDITOR_FILE_COS_CDN_AUTH_TS_PARAM` | 否 | TypeD 时间戳参数名，默认 `t` |
+| `EDITOR_FILE_COS_CDN_AUTH_TTL` | 否 | 鉴权有效期秒数（仅用于回报 `expires_in`；真实时长在 CDN 控制台） |
 | `EDITOR_FILE_COS_PREFIX` | 否 | 默认 `editor-files` |
 | `EDITOR_FILE_LOCAL_ROOT` | 否 | 本地落盘根目录（大容量盘）；默认 `<data_root>/_cache/file_transfer/objects` |
 | `EDITOR_FILE_MAX_BYTES` | 否 | 单文件上限，默认 100 GiB |
@@ -88,6 +93,16 @@ curl http://127.0.0.1:8765/api/v1/files/<id>/download
 
 ## 说明与边界
 
+- **Endpoint 风格**：`EDITOR_FILE_COS_PUBLIC_ENDPOINT` / `_INTERNAL_ENDPOINT`
+  同时支持路径风格（`https://cos.<region>.myqcloud.com`）与虚拟主机风格
+  （`https://<bucket>.cos.<region>.myqcloud.com`）。腾讯云新桶默认禁用路径
+  风格（返回 `PathStyleDomainForbidden`），此时必须填虚拟主机风格——后端会
+  自检 host 是否已含桶名前缀，含则不再重复拼 `/<bucket>/`。
+- **私有 COS + CDN 加速**：COS 保持私有读、CDN 开「回源鉴权」拉私有桶；下载
+  直链由后端按 `EDITOR_FILE_COS_CDN_AUTH_*` 规则生成**带签名的 CDN URL**
+  （不可把 COS 预签名 URL 的域名直接换成 CDN 域名——两套鉴权不通）。若希望
+  立绘等公开图片走同一 CDN，请在 CDN 鉴权范围里选择「指定类型文件鉴权」或
+  「指定类型文件不做鉴权」，把图片后缀排除。
 - COS 对象键：暂存 `"<prefix>/staging/<id>/<safe_name>"`，预热
   `"<prefix>/warm/<id>/<safe_name>"`。`safe_name` 仅保留
   `[A-Za-z0-9._-]`，路径分隔符与点号串被清洗，杜绝目录穿越。

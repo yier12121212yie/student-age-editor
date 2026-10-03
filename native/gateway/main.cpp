@@ -29,6 +29,7 @@
 #include "gw_config.h"
 #include "gw_pool.h"
 #include "gw_proxy.h"
+#include "gw_refresh.h"
 #include "gw_sessions.h"
 #include "gw_usage.h"
 
@@ -175,6 +176,8 @@ int main(int argc, char** argv) {
                      g.accounts->count(), g.cfg.accounts_file.c_str());
     }
     g.sessions = std::make_unique<gw::Sessions>(g.cfg.session_ttl_hours * 3600LL * 1000LL);
+    // 长期鉴权（记住我）：refresh token 落盘，网关重启后仍可免登。
+    g.refresh = std::make_unique<gw::RefreshTokens>(g.cfg.refresh_file);
     g.usage = std::make_unique<gw::UsageStore>(
         sa_core::paths::join(g.cfg.state_dir, "usage.json"), g.cfg.ai.daily_limit);
     g.relay = gw::resolve_relay(g.cfg);
@@ -202,6 +205,11 @@ int main(int argc, char** argv) {
     // SSRF 护栏透传（安全批次 A）：cloud_public_only 默认 true，管理员可
     // 在 gateway.json 显式关闭（纯内网自托管场景）。
     po.cloud_public_only = g.cfg.cloud_public_only;
+    // 人物图片资源扩展（服务器端「2 种安装方式」）透传给每个 backend 实例。
+    po.portrait_dir = g.cfg.portraits.dir;
+    po.portrait_base_url = g.cfg.portraits.base_url;
+    // 上传/请求体上限：网关自身与每个实例用同一个配置值。
+    po.max_body_bytes = g.cfg.max_body_bytes;
     // 读 g.cfg（而非启动时的局部副本）：自助注册会在运行时追加账号。
     po.account_dir = [&g](const std::string& name) -> std::string {
         const gw::Account* acc = g.cfg.find_account(name);
@@ -225,6 +233,10 @@ int main(int argc, char** argv) {
     cors.trusted_origins = cfg.trusted_origins;
     httpd.set_cors(cors);
     httpd.set_max_slots(256);  // gateway fans out; lift the default 64 slot cap
+    // 大体积上传：网关必须能收下整个 body 并原样转发给实例，所以 body 上限与
+    // raw_body 保留上限都用 gateway.json 的 max_body_bytes。
+    httpd.set_max_body_bytes(g.cfg.max_body_bytes);
+    httpd.set_raw_body_keep_max(g.cfg.max_body_bytes);
 
     // 默认只绑环回（安全批次 A）：面向外网部署必须显式 --host 0.0.0.0
     // （或管理员在配置里声明），避免「顺手起个网关」把托管面直接暴露公网。
@@ -260,6 +272,7 @@ int main(int argc, char** argv) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             if (reaper_quit.load()) break;
             g.sessions->prune_expired();
+            if (g.refresh) g.refresh->prune_expired();
             if (g.pool) g.pool->reap_idle();
         }
     });

@@ -55,21 +55,20 @@ std::string qget(const Req& req, const std::string& key, const std::string& def 
 // ---- kind=txt: decoded-pack Cfgs/zh-cn fallback (wave-2 integration) ------
 // File naming per export_decoded_pack.py: core tables land as "<TableName>.json",
 // the ~300 non-core game texts as _safe_name(norm key).json. Resolve
-// case-insensitively over the lowercased stem map (pack dir change invalidates).
-std::optional<std::string> read_pack_txt(const std::string& key) {
+// case-insensitively over the lowercased stem map. 多 base：按启用顺序逐包查找，
+// 靠前的包优先（首个命中即返回）。
+std::optional<std::string> read_pack_txt_one(const std::string& dir, const std::string& key) {
     namespace ps = sa_core::paths;
     static std::mutex mu;
-    static std::map<std::string, std::string> stems;  // lower stem -> file name
-    static std::string stems_dir;
-    const std::string dir = sa::active_pack_dir();
-    if (dir.empty()) return std::nullopt;
+    static std::map<std::string, std::map<std::string, std::string>> stems_by_dir;
+    static std::set<std::string> loaded;
     const std::string cfgs_dir = ps::join(ps::join(dir, "Cfgs"), "zh-cn");
     std::string fname;
     {
         std::lock_guard<std::mutex> lk(mu);
-        if (stems_dir != dir) {
-            stems.clear();
-            stems_dir = dir;
+        auto& stems = stems_by_dir[dir];
+        if (!loaded.count(dir)) {
+            loaded.insert(dir);
             for (const auto& f : ps::listdir_sorted(cfgs_dir)) {
                 if (f.size() > 5 && sa_core::str::lower(f.substr(f.size() - 5)) == ".json")
                     stems[sa_core::str::lower(f.substr(0, f.size() - 5))] = f;
@@ -86,6 +85,13 @@ std::optional<std::string> read_pack_txt(const std::string& key) {
         fname = it->second;
     }
     return ps::read_bytes(ps::join(cfgs_dir, fname));
+}
+
+std::optional<std::string> read_pack_txt(const std::string& key) {
+    for (const auto& dir : sa::active_pack_dirs()) {
+        if (auto raw = read_pack_txt_one(dir, key)) return raw;
+    }
+    return std::nullopt;
 }
 
 // preview payload: utf-8 errors=replace decode + 200 000 codepoint slice
@@ -360,7 +366,8 @@ void register_aa_routes(Router& r) {
         auto idx = ensure_aa_index();
         auto store = ensure_pack_store();
         bool store_active = store && store->active();
-        if (!idx && !store_active) return Resp::Json(400, json{{"error", "index not ready"}});
+        if (!idx && !store_active && !portrait_source_configured())
+            return Resp::Json(400, json{{"error", "index not ready"}});
         const json& body = req.body;
         std::string kind = body.is_object() && body.contains("kind") ? sa_core::py_str(body.at("kind")) : "";
         std::string key = body.is_object() && body.contains("key") ? sa_core::py_str(body.at("key")) : "";
@@ -375,6 +382,17 @@ void register_aa_routes(Router& r) {
                                                 {"mime", tex_mime(r->second)},
                                                 {"data", b64_encode(r->first)}});
             }
+            // 人物图片资源扩展：本地目录直接出字节；对象存储只回公开 URL，
+            // 由客户端自行 GET（服务端不再代下载整张图）。
+            if (auto pr = read_portrait_local_tex(key)) {
+                return Resp::Json(200, json{{"kind", "tex"},
+                                            {"mime", tex_mime(pr->second)},
+                                            {"data", b64_encode(pr->first)}});
+            }
+            if (auto url = portrait_url_for(key))
+                return Resp::Json(200, json{{"kind", "tex"},
+                                            {"mime", "image/webp"},
+                                            {"url", *url}});
             if (found) return Resp::Json(422, json{{"error", "texture decode failed: " + key}});
             return Resp::Json(404, json{{"error", "texture key not found: " + key}});
         }

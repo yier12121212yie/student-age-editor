@@ -862,10 +862,27 @@ void register_semantic_routes(Router& r) {
             r["id"] = it.key();
             r["name"] = it.value().is_string() ? it.value() : json(sa_core::py_str(it.value()));
             r["gender"] = nullptr;
+            // portrait = 兼容旧字段（url2 优先，否则 url）；portrait1/portrait2
+            // 分别对应「小学立绘」(url) 与「中学立绘」(url2)，供人物资源库分阶段展示。
             r["portrait"] = "";
+            r["portrait1"] = "";
+            r["portrait2"] = "";
             by_id[it.key()] = std::move(r);
         }
         auto pcfg = read_mod_table("PersonCfg");
+        // 工作区没有 PersonCfg 时按 base 数据 -> 随包官方表兜底。网页/托管环境
+        // 常常没有本地 mod：缺这层会让 /api/roles 的立绘键（portrait*）全空，
+        // 人物资源库因此显示不出任何立绘。
+        if (!pcfg || !pcfg->is_object() || pcfg->empty()) {
+            if (auto store = base_store(); store && store->available()) {
+                auto t = store->table("PersonCfg");
+                if (t && t->is_object() && !t->empty()) pcfg = *t;
+            }
+        }
+        if (!pcfg || !pcfg->is_object() || pcfg->empty()) {
+            const json& bundled = p1::person_cfg();
+            if (bundled.is_object() && !bundled.empty()) pcfg = bundled;
+        }
         if (pcfg && pcfg->is_object()) {
             auto first_str = [](const json& v) -> std::string {
                 if (v.is_array() && !v.empty() && v[0].is_string()) return v[0].get<std::string>();
@@ -878,11 +895,16 @@ void register_semantic_routes(Router& r) {
                 if (!slot.is_object()) slot = json::object();
                 if (!slot.contains("id")) slot["id"] = it.key();
                 if (!slot.contains("name")) slot["name"] = "";
+                if (!slot.contains("portrait")) slot["portrait"] = "";
+                if (!slot.contains("portrait1")) slot["portrait1"] = "";
+                if (!slot.contains("portrait2")) slot["portrait2"] = "";
                 if (row.contains("name") && py_truthy(row["name"]))
                     slot["name"] = py_str_or_empty(row["name"]);
                 if (row.contains("gender") && row["gender"].is_number()) slot["gender"] = row["gender"];
                 std::string p2 = row.contains("url2") ? first_str(row["url2"]) : "";
                 std::string p1 = row.contains("url") ? first_str(row["url"]) : "";
+                slot["portrait1"] = p1;
+                slot["portrait2"] = p2;
                 std::string portrait = !p2.empty() ? p2 : p1;
                 if (!portrait.empty()) slot["portrait"] = portrait;
                 if (!slot.contains("portrait")) slot["portrait"] = "";

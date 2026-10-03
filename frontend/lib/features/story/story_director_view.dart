@@ -18,11 +18,12 @@ import '../editor/field_utils.dart';
 import '../editor/id_ref_picker.dart' show showIdBrowseDialog;
 import '../editor/suggestion_text_field.dart';
 import '../nocode/entity_picker.dart'
-    show EntityKindMeta, entityKindForRule, showEntityPicker;
+    show EntityKind, EntityKindMeta, entityKindForRule, showEntityPicker;
 import '../nocode/no_code_exit.dart';
 import '../nocode/no_code_ref_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
+import '../resources/image_asset_picker.dart' show TexThumb;
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
 
@@ -175,6 +176,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Map<String, int> _talkDerivedPrefixCounts = {};
   Map<String, dynamic> _optCfg = {};
   Map<String, dynamic> _personCfg = {};
+
+  /// 角色目录（/api/roles）：id → 立绘 key（与否），供经典剧情处理器的舞台立绘
+  /// 展示。与「人物资源库」同源，含随包 PersonCfg 兜底（工作区无 PersonCfg 时
+  /// 也有图）；拉取失败时为空，舞台退回占位图标。
+  Map<String, RoleEntry> _roleCatalog = {};
   Map<String, dynamic> _bgCfg = {};
   Map<String, dynamic> _audioCfg = {};
   Map<String, dynamic> _evtTypeCfg = {};
@@ -204,6 +210,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   void initState() {
     super.initState();
     _load();
+    // 立绘展示只服务经典剧情处理器的舞台，非经典路径无需额外拉角色目录。
+    if (widget.classic) _loadRoleCatalog();
   }
 
   KeyTranslator get translator => KeyTranslator(widget.state);
@@ -252,6 +260,15 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         _loaded = true;
       });
     }
+  }
+
+  /// 拉取角色目录（/api/roles）缓存立绘 key。失败静默：无图时舞台退回占位图标。
+  Future<void> _loadRoleCatalog() async {
+    final roles = await loadRoles('');
+    if (!mounted || roles.isEmpty) return;
+    setState(() {
+      _roleCatalog = {for (final r in roles) r.id: r};
+    });
   }
 
   Map<String, dynamic> _asMap(dynamic v) =>
@@ -466,6 +483,36 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     if (gameRoles is Map && gameRoles.containsKey(id)) {
       final n = gameRoles[id];
       if (n != null && n.toString().isNotEmpty) return n.toString();
+    }
+    return '';
+  }
+
+  /// 人物 ID → 当前阶段立绘 key（人物图片展示：经典剧情处理器的舞台站位框）。
+  ///
+  /// 与「人物资源库」同源：PersonCfg `url` = 小学立绘、`url2` = 中学立绘；
+  /// 角色目录不可达（后端离线 / 旧后端）时退回宿主已载入的 PersonCfg 原始记录。
+  /// 查不到返回空串，调用方退回占位图标。
+  String _portraitKeyFor(String roleId) {
+    final id = cln(roleId);
+    if (id.isEmpty) return '';
+    final r = _roleCatalog[id];
+    if (r != null) {
+      final p1 = r.portrait1.trim();
+      final p2 = r.portrait2.trim();
+      if (_stageIndex == 0) return p1.isNotEmpty ? p1 : p2;
+      return p2.isNotEmpty ? p2 : p1;
+    }
+    final p = _personCfg[id];
+    if (p is Map) {
+      String firstOf(dynamic v) {
+        if (v is List && v.isNotEmpty) return cln(v.first);
+        return cln(v);
+      }
+
+      final p1 = firstOf(p['url']);
+      final p2 = firstOf(p['url2']);
+      if (_stageIndex == 0) return p1.isNotEmpty ? p1 : p2;
+      return p2.isNotEmpty ? p2 : p1;
     }
     return '';
   }
@@ -987,7 +1034,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   }
 
   int _stageIndex = 0;
-  static const _stages = ['小学立绘比例', '初中立绘比例', '高中立绘比例', '默认立绘比例'];
+  // 舞台立绘阶段：与「人物资源库」一致，PersonCfg 只有 url(小学)/url2(中学) 两套。
+  static const _stages = ['小学立绘', '中学立绘'];
 
   /// 经典剧情处理器（三栏式类友商工作流）：
   /// 左栏事件对话线 | 中间顶部配置 + 可视化舞台站位/表情/动作交互区 + 底部对白 | 右栏流程操作 + 场景控制 + 玩家选项 + 保存。
@@ -1904,6 +1952,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
 
     final roleName = _roleName(role.roleId);
     final emotionName = _getEmotionName(role.actionCode);
+    final portraitKey = _portraitKeyFor(role.roleId);
 
     return Container(
       decoration: BoxDecoration(
@@ -1959,7 +2008,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             ],
           ),
           const SizedBox(height: 4),
-          // 立绘头像框
+          // 立绘头像框：优先展示角色立绘（人物图片展示），无立绘时退回占位图标。
           Expanded(
             child: Container(
               width: double.infinity,
@@ -1967,25 +2016,37 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 color: palette.bgAlt,
                 borderRadius: BorderRadius.circular(4),
               ),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      FluentIcons.person_24_filled,
-                      size: 36,
-                      color: role.isHighlight
-                          ? palette.accentLight
-                          : palette.textHint,
+              clipBehavior: Clip.antiAlias,
+              child: portraitKey.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            FluentIcons.person_24_filled,
+                            size: 36,
+                            color: role.isHighlight
+                                ? palette.accentLight
+                                : palette.textHint,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            slotNames[slotIdx],
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              color: palette.textHint,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : TexThumb(
+                      key: ValueKey('stage_portrait_${role.roleId}_$portraitKey'),
+                      keyName: portraitKey,
+                      width: double.infinity,
+                      height: double.infinity,
+                      fit: BoxFit.contain,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      slotNames[slotIdx],
-                      style: TextStyle(fontSize: 9.5, color: palette.textHint),
-                    ),
-                  ],
-                ),
-              ),
             ),
           ),
           const SizedBox(height: 6),
@@ -3596,6 +3657,38 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     widget.onChanged();
   }
 
+  /// 无代码模式的只读字段与提示直接读控制器文本；选择类写入（[_pickDict] /
+  /// [_pickRoles] / [_pickTalkIds]）改了 `widget.talk` 后必须同步对应控制器，
+  /// 否则会出现「选了新值、界面仍显示旧值」的失联（切换背景 bg 不生效即此）。
+  void _syncPickCtrl(String key) {
+    switch (key) {
+      case 'roleIds':
+        _roleIdsCtrl.text = ensureList(widget.talk['roleIds']).join(', ');
+        break;
+      case 'highlights':
+        _highlightsCtrl.text = ensureList(widget.talk['highlights']).join(', ');
+        break;
+      case 'nextTalk':
+        _nextTalkCtrl.text = ValueCodec.encode(widget.talk['nextTalk']);
+        break;
+      case 'nextTalk2':
+        _nextTalk2Ctrl.text = ValueCodec.encode(widget.talk['nextTalk2']);
+        break;
+      case 'roles':
+        _rolesCtrl.text = ValueCodec.encode(widget.talk['roles']);
+        break;
+      case 'screenEffect':
+        _screenEffectCtrl.text = ValueCodec.encode(widget.talk['screenEffect']);
+        break;
+      case 'bg':
+        _bgCtrl.text = cln(widget.talk['bg']);
+        break;
+      case 'audio':
+        _audioCtrl.text = cln(widget.talk['audio']);
+        break;
+    }
+  }
+
   /// 打开配音面板：带入当前编辑中的对白内容与键名前缀（默认 `talk_{id}`）。
   Future<void> _openTtsPanel() async {
     final content =
@@ -3641,6 +3734,54 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     return names.isEmpty ? '旁白' : names.join('、');
   }
 
+  /// 人物 ID → 名称（PersonCfg 优先，回退原版字典），查不到返回空串。
+  String _roleName(String id) {
+    final p = widget.personCfg[cln(id)];
+    final n = p is Map ? p['name'] : null;
+    if (n is String && n.isNotEmpty) return n;
+    final roles = widget.translator.state.gameDicts['roles'];
+    if (roles is Map) {
+      final v = roles[cln(id)];
+      if (v != null && v.toString().isNotEmpty) return v.toString();
+    }
+    return '';
+  }
+
+  /// 无代码模式引用字段的名称回显：把裸 ID 翻成「ID · 名称」。
+  ///
+  /// bg/audio 用合并后的候选表（含 MOD，见 `_allBgs`/`_allAudios`，由宿主注入
+  /// `widget.bgOptions`/`audioOptions`），人物用 [_roleName]，跳转用当前事件
+  /// 的对白预览；查不到返回 null，回退裸 ID。
+  String? _noCodeRefName(String key, String id) {
+    switch (key) {
+      case 'bg':
+        return switch (id) {
+          '0' => '继承上文',
+          '-1' => '清空人物',
+          '-2' => '仅特效转场',
+          _ => widget.bgOptions[id],
+        };
+      case 'audio':
+        return id == '0' ? '停止' : widget.audioOptions[id];
+      case 'roleIds':
+      case 'highlights':
+        final n = _roleName(id);
+        return n.isEmpty ? null : n;
+      case 'nextTalk':
+      case 'nextTalk2':
+        return _talkPreviewName(id);
+    }
+    return null;
+  }
+
+  /// 当前事件内对白 ID → 内容预览（跳转字段的名称回显）。
+  String? _talkPreviewName(String id) {
+    for (final e in widget.talkOptions) {
+      if (e.$1 == id) return e.$2.isEmpty ? null : e.$2;
+    }
+    return null;
+  }
+
   // ---------- 无代码模式：只选不敲 ----------
 
   bool get _noCode => widget.noCodeMode;
@@ -3654,13 +3795,19 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
       initialSelected: ensureList(widget.talk[key]).map(cln).toList(),
     );
     if (ids == null) return;
-    setState(() => _setField(key, ids));
+    setState(() {
+      _setField(key, ids);
+      _syncPickCtrl(key);
+    });
   }
 
   Future<void> _pickRoles(String key, {bool multi = true}) async {
     final ids = await showRolePickerDialog(context, multi: multi, title: '选择人物');
     if (ids == null) return;
-    setState(() => _setField(key, ids));
+    setState(() {
+      _setField(key, ids);
+      _syncPickCtrl(key);
+    });
   }
 
   Future<void> _pickDict(
@@ -3676,7 +3823,10 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
       initialSelected: const [],
     );
     if (ids == null || ids.isEmpty) return;
-    setState(() => _setField(key, num.tryParse(ids.first) ?? ids.first));
+    setState(() {
+      _setField(key, num.tryParse(ids.first) ?? ids.first);
+      _syncPickCtrl(key);
+    });
   }
 
   /// 无代码模式下的「标签 + 只读/选择控件」：与 [_labelField] 同款头部，
@@ -3777,12 +3927,9 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                       NoCodeRefField(
                         value: _roleIdsCtrl.text,
                         pickLabel: '选人物…',
+                        nameOf: (id) => _noCodeRefName('roleIds', id),
                         onPick: () => _pickRoles('roleIds'),
                         onDisableNoCode: () => exitNoCodeMode(context),
-                      ),
-                      trailing: Text(
-                        _roleNamesPreview(),
-                        style: TextStyle(fontSize: 11, color: palette.textHint),
                       ),
                     )
                   else
@@ -3811,6 +3958,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                       NoCodeRefField(
                         value: _highlightsCtrl.text,
                         pickLabel: '选人物…',
+                        nameOf: (id) => _noCodeRefName('highlights', id),
                         onPick: () => _pickRoles('highlights'),
                         onDisableNoCode: () => exitNoCodeMode(context),
                       ),
@@ -3832,10 +3980,10 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                       NoCodeRefField(
                         value: _bgCtrl.text,
                         pickLabel: '选背景…',
+                        nameOf: (id) => _noCodeRefName('bg', id),
                         onPick: () => _pickDict('bg', widget.bgOptions, '选择背景'),
                         onDisableNoCode: () => exitNoCodeMode(context),
                       ),
-                      trailing: _bgHint(),
                     )
                   else
                     _labelField(
@@ -3853,10 +4001,10 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                       NoCodeRefField(
                         value: _audioCtrl.text,
                         pickLabel: '选音频…',
+                        nameOf: (id) => _noCodeRefName('audio', id),
                         onPick: () => _pickDict('audio', widget.audioOptions, '选择音频'),
                         onDisableNoCode: () => exitNoCodeMode(context),
                       ),
-                      trailing: _audioHint(),
                     )
                   else
                     _labelField(
@@ -3990,6 +4138,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                         value: _nextTalkCtrl.text,
                         pickLabel: '选跳转…',
                         emptyText: '（空 = 对话结束）',
+                        nameOf: (id) => _noCodeRefName('nextTalk', id),
                         onPick: () => _pickTalkIds('nextTalk'),
                         onDisableNoCode: () => exitNoCodeMode(context),
                       ),
@@ -4010,6 +4159,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                         value: _nextTalk2Ctrl.text,
                         pickLabel: '选跳转…',
                         emptyText: '（空 = 不跳转）',
+                        nameOf: (id) => _noCodeRefName('nextTalk2', id),
                         onPick: () => _pickTalkIds('nextTalk2'),
                         onDisableNoCode: () => exitNoCodeMode(context),
                       ),
@@ -4389,6 +4539,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     return NoCodeRefField(
       value: ValueCodec.encode(widget.talk[key]),
       pickLabel: kind == null ? '选择…' : '选${kind.label}…',
+      nameOf: kind == null ? null : (id) => _entityName(kind, id),
       onDisableNoCode: () => exitNoCodeMode(context),
       onPick: kind == null
           ? null
@@ -4400,6 +4551,19 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                   () => _setField(key, num.tryParse(ids.first) ?? ids.first));
             },
     );
+  }
+
+  /// 实体种类 → 名称（无代码模式属性表引用字段的回显，零请求）。
+  ///
+  /// 只读 [AppState.gameDicts]；字典值可能是 List（首元素才是中文名）。
+  String? _entityName(EntityKind kind, String id) {
+    final dict = widget.translator.state.gameDicts[kind.dictName];
+    if (dict is Map) {
+      final v = dict[id] ?? dict[cln(id)];
+      if (v is List && v.isNotEmpty) return v.first.toString();
+      if (v != null && v.toString().isNotEmpty) return v.toString();
+    }
+    return null;
   }
 
   dynamic _decodeByType(String key, String text) {
@@ -4510,6 +4674,14 @@ class _OptionRowState extends State<_OptionRow> {
     }
   }
 
+  /// 选项跳转目标 ID → 对白内容预览（无代码模式的名称回显）。
+  String? _talkPreviewName(String id) {
+    for (final e in widget.talkOptions) {
+      if (e.$1 == id) return e.$2.isEmpty ? null : e.$2;
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final opt = widget.opt;
@@ -4581,6 +4753,7 @@ class _OptionRowState extends State<_OptionRow> {
             NoCodeRefField(
               value: _targetCtrl.text,
               pickLabel: '选跳转…',
+              nameOf: _talkPreviewName,
               onPick: () async {
                 final ids = await showIdBrowseDialog(
                   context,

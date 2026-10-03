@@ -139,6 +139,8 @@ bool ParsePage(const std::string& name, p8::Page& out) {
     else if (name == "plugins" || name == "plugin") out = p8::Page::Plugins;
     else if (name == "cloud") out = p8::Page::Cloud;
     else if (name == "update") out = p8::Page::Update;
+    else if (name == "tts") out = p8::Page::Tts;
+    else if (name == "oobe") out = p8::Page::Oobe;
     else return false;
     return true;
 }
@@ -240,7 +242,7 @@ int main(int argc, char** argv) {
     if (!render_page.empty()) {
         if (render_page == "all") {
             for (const char* p :
-                 {"main", "bugfix", "agent", "plugins", "cloud", "update"}) {
+                 {"main", "bugfix", "agent", "plugins", "cloud", "update", "tts", "oobe"}) {
                 p8::Page page;
                 if (!ParsePage(p, page)) continue;
                 std::cout << "==== render-check: " << p << " ====\n";

@@ -234,7 +234,11 @@ catalog。**bundle 内容变而顶层清单不变的情形 backend 本就检测�
 `tools/resource_scan/decoded_export.py`（W5-3 起零 `backend/editor` 依赖；其参数集
 `--out/--tier/--max-side/--quality/--limit/--no-audios/--no-zip`，索引覆盖
 `--index/--aa-dir/--cache-dir`，`decoded-pack --show-help` 查看）。
-`packaging/export_decoded_pack.py` 保留为同实现薄壳入口（历史脚本引用）。
+`--tier` 取值：`preview`（背景+立绘纹理，默认）、`portraits`（仅人物立绘，
+供「人物图片资源扩展包」：跳过音频与配置表、manifest 带 `"kind":"portraits"`）、
+`full`（全部纹理）。
+`packaging/export_decoded_pack.py` 保留为同实现薄壳入口（历史脚本引用）；
+`packaging/export_portrait_pack.py` 是 `--tier portraits` 的薄壳入口。
 产物 zip 布局：
 `manifest.json`、`aa_index.json`（**另一形态的 v3**：
 `{"v":3,"decoded":true,"tex":[…],"aud":[…],"txt":[…]}`——键列表而非 bundle 引用，

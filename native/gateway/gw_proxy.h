@@ -3,11 +3,13 @@
 //
 // Endpoint ownership (all registered BEFORE the /api/* proxy catch-all so the
 // ordered Router picks them first):
-//   POST /api/auth/login    — verify credentials, mint a Bearer session.
+//   POST /api/auth/login    — verify credentials, mint a Bearer session
+//                             (+ long-lived refresh token when remember).
 //   POST /api/auth/register — self-service signup (admin-gated), mint a session.
+//   POST /api/auth/refresh  — rotate a refresh token -> new access + refresh.
 //   GET  /api/auth/registration — public signup policy (enabled/invite).
 //   GET  /api/auth/whoami   — Bearer -> {name}.
-//   POST /api/auth/logout   — Bearer -> drop the token.
+//   POST /api/auth/logout   — Bearer (+ optional refresh_token) -> revoke both.
 //   GET  /api/ai/policy     — Bearer; supply policy from gateway.json ai_relay.
 //   POST /api/ai/relay/chat — Bearer; whitelist + per-day quota; ai_relay relay.
 //   <anything else /api/*>  — Bearer gate, then banned-path filter, then
@@ -26,6 +28,7 @@
 
 #include "gw_accounts.h"
 #include "gw_config.h"
+#include "gw_refresh.h"
 #include "gw_sessions.h"
 #include "gw_usage.h"
 
@@ -60,6 +63,9 @@ struct LoginRateLimiter {
 struct Gateway {
     Config cfg;
     std::unique_ptr<Sessions> sessions;
+    // 长期鉴权（记住我）的 refresh token 表。可能为空（测试/未启用），
+    // 为空时 login/register 不签发 refresh token，refresh 端点返回 401。
+    std::unique_ptr<RefreshTokens> refresh;
     std::unique_ptr<UsageStore> usage;
     // 自助注册账号的持久化存储（<state_dir>/accounts.json）。可能为空
     // （测试/未启用注册的部署），注册路由对此防御。

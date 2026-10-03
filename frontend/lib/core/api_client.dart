@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -32,8 +33,56 @@ class ApiClient {
   /// `Authorization: Bearer <token>` 头；桌面端恒 null，行为不变。
   String? accessToken;
 
+  /// 长期鉴权刷新令牌（网页端「记住我」）。access token 过期时由
+  /// [onRefresh] 换新；未勾选「记住我」时不持久化、仅内存。
+  String? refreshToken;
+
   /// 收到 401 时回调（登录态失效钩子，M2.4 登录 UI 接入）。
   void Function()? onUnauthorized;
+
+  /// access token 过期时的刷新回调：返回 true 表示已换到新 token（请求可
+  /// 重试一次）。由 AuthState 注入（refreshSession）。并发 401 只触发一次。
+  Future<bool> Function()? onRefresh;
+
+  Future<bool>? _refreshInFlight;
+
+  /// 单飞刷新：并发 401 共享同一次刷新，避免刷新风暴与令牌竞态。
+  Future<bool> _ensureRefreshed() {
+    final existing = _refreshInFlight;
+    if (existing != null) return existing;
+    final cb = onRefresh;
+    if (cb == null) return Future<bool>.value(false);
+    final fut = cb().then((ok) => ok, onError: (_) => false);
+    _refreshInFlight = fut;
+    unawaited(fut.whenComplete(() {
+      if (identical(_refreshInFlight, fut)) _refreshInFlight = null;
+    }));
+    return fut;
+  }
+
+  /// 发送请求；遇 401 且配置了 [onRefresh] 时刷新令牌并重试一次
+  /// （业务请求在鉴权失败时对后端无副作用，重试安全）。
+  Future<http.Response> _sendWithRefresh(
+      Future<http.Response> Function() send) async {
+    var resp = await send();
+    if (resp.statusCode == 401 && onRefresh != null) {
+      final ok = await _ensureRefreshed();
+      if (ok) resp = await send();
+    }
+    return resp;
+  }
+
+  /// 刷新/登出专用 POST：不参与 401 自动重试（避免刷新失败时递归），
+  /// 其余与 [post] 一致。
+  Future<dynamic> postRefresh(String path,
+      {Object? body, Duration timeout = const Duration(seconds: 15)}) async {
+    final resp = await client
+        .post(_uri(path),
+            headers: _authHeaders({'Content-Type': 'application/json'}),
+            body: jsonEncode(body ?? {}))
+        .timeout(timeout);
+    return _decode(resp);
+  }
 
   Map<String, String> _authHeaders([Map<String, String>? base]) {
     final h = <String, String>{...?base};
@@ -76,29 +125,29 @@ class ApiClient {
   }
 
   Future<dynamic> get(String path, {Map<String, String>? query}) async {
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .get(_uri(path, query), headers: _authHeaders())
-        .timeout(const Duration(seconds: 60));
+        .timeout(const Duration(seconds: 60)));
     return _decode(resp);
   }
 
   Future<dynamic> post(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .post(_uri(path),
             headers: _authHeaders({'Content-Type': 'application/json'}),
             body: jsonEncode(body ?? {}))
-        .timeout(timeout);
+        .timeout(timeout));
     return _decode(resp);
   }
 
   Future<dynamic> put(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .put(_uri(path),
             headers: _authHeaders({'Content-Type': 'application/json'}),
             body: jsonEncode(body ?? {}))
-        .timeout(timeout);
+        .timeout(timeout));
     return _decode(resp);
   }
 
@@ -147,11 +196,11 @@ class ApiClient {
   Future<dynamic> postRaw(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
     final encoded = await _encodeBody(body);
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .post(_uri(path),
             headers: _authHeaders({'Content-Type': 'application/json'}),
             body: encoded)
-        .timeout(timeout);
+        .timeout(timeout));
     return _decode(resp);
   }
 
@@ -159,11 +208,11 @@ class ApiClient {
   Future<dynamic> putRaw(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
     final encoded = await _encodeBody(body);
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .put(_uri(path),
             headers: _authHeaders({'Content-Type': 'application/json'}),
             body: encoded)
-        .timeout(timeout);
+        .timeout(timeout));
     return _decode(resp);
   }
 
@@ -190,11 +239,11 @@ class ApiClient {
       Duration timeout = const Duration(seconds: 120),
       Duration pollInterval = const Duration(milliseconds: 400),
       Duration? maxWait}) async {
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .post(_longTaskUri(path),
             headers: _authHeaders({'Content-Type': 'application/json'}),
             body: jsonEncode(body ?? {}))
-        .timeout(timeout);
+        .timeout(timeout));
     if (resp.statusCode != 202) return _decode(resp);
     final payload = _tryJsonDecode(utf8.decode(resp.bodyBytes));
     final jobId = payload is Map ? payload['job_id']?.toString() : null;
@@ -221,14 +270,14 @@ class ApiClient {
 
   Future<dynamic> delete(String path,
       {Map<String, String>? query, Object? body}) async {
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .delete(
             _uri(path, query),
             headers: body == null
                 ? (_authHeaders().isEmpty ? null : _authHeaders())
                 : _authHeaders({'Content-Type': 'application/json'}),
             body: body == null ? null : jsonEncode(body))
-        .timeout(const Duration(seconds: 120));
+        .timeout(const Duration(seconds: 120)));
     return _decode(resp);
   }
 
@@ -318,9 +367,9 @@ class ApiClient {
   /// `compute` 把 9.8 万条对象图整体序列化送回 UI 的总工作量反而更高。
   Future<Map<String, dynamic>> getBig(String path,
       {Map<String, String>? query}) async {
-    final resp = await client
+    final resp = await _sendWithRefresh(() => client
         .get(_uri(path, query), headers: _authHeaders())
-        .timeout(const Duration(seconds: 120));
+        .timeout(const Duration(seconds: 120)));
     if (resp.statusCode >= 400) {
       _notifyUnauthorized(resp.statusCode);
       // 与 _decode 一致：错误体可能不是 JSON，用原文兜底而不是抛 FormatException。

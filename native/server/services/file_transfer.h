@@ -52,6 +52,11 @@ bool status_from_name(const std::string& name, Status* out);
 //   EDITOR_FILE_COS_PUBLIC_ENDPOINT           默认 https://cos.<region>.myqcloud.com
 //   EDITOR_FILE_COS_INTERNAL_ENDPOINT         默认同公网；自托管填内网域名/IP
 //   EDITOR_FILE_COS_CDN_DOMAIN                可选，下载直链优先用它
+//   EDITOR_FILE_COS_CDN_AUTH_TYPE             可选，CDN URL 鉴权类型 A/B/C/D
+//   EDITOR_FILE_COS_CDN_AUTH_KEY              可选，CDN 鉴权密钥 pkey
+//   EDITOR_FILE_COS_CDN_AUTH_PARAM            签名参数名，默认 sign
+//   EDITOR_FILE_COS_CDN_AUTH_TS_PARAM         TypeD 时间戳参数名，默认 t
+//   EDITOR_FILE_COS_CDN_AUTH_TTL              鉴权有效期秒数（仅回报 expires_in）
 //   EDITOR_FILE_COS_PREFIX                    默认 editor-files
 //   EDITOR_FILE_LOCAL_ROOT                    本地落盘根目录（大容量盘）
 //   EDITOR_FILE_MAX_BYTES                     单文件上限（默认 100 GiB）
@@ -69,6 +74,15 @@ struct CosConfig {
     std::string public_endpoint;    // 客户端直传 / 下载直链
     std::string internal_endpoint;  // Worker 落盘 / 预热（内网）
     std::string cdn_domain;         // 可选
+    // CDN URL 鉴权（腾讯云 CDN TypeA/B/C/D）：私有 COS + CDN 加速时，由后端按
+    // CDN 规则生成带签名的 CDN 直链。type 为空 = 不签名（要求 CDN 侧对该资源
+    // 公开读）。鉴权密钥 pkey 与有效期在 CDN 控制台配置；URL 本身不含时长，
+    // 只有 TypeA/B/C 把 timestamp 编进签名串，TypeD 另带时间戳参数。
+    std::string cdn_auth_type;             // "A"/"B"/"C"/"D"（大小写不敏感）
+    std::string cdn_auth_key;              // pkey（鉴权主密钥）
+    std::string cdn_auth_param = "sign";   // 签名参数名（TypeD 可自定义）
+    std::string cdn_auth_ts_param = "t";   // TypeD 时间戳参数名
+    long long cdn_auth_ttl_seconds = 0;    // 仅回报 expires_in；0 = 未知
     std::string prefix = "editor-files";
     long long upload_ttl_seconds = 1800;    // 30 分钟
     long long download_ttl_seconds = 600;
@@ -96,6 +110,11 @@ std::string warm_key(const CosConfig& cfg, const std::string& id, const std::str
 std::string presign_url(const CosConfig& cfg, const std::string& method,
                         const std::string& key, long long expires_seconds,
                         long long now_unix = 0);
+
+// 下载直链：配置了 cdn_domain 时走 CDN（按需附腾讯云 CDN URL 鉴权签名，
+// 私有 COS + CDN 加速场景），否则回退 COS 预签名 GET。now_unix=0 取当前时间。
+std::string download_url(const CosConfig& cfg, const std::string& key,
+                         long long now_unix = 0);
 
 // ---------------------------------------------------------------------------
 // 内网传输（真实实现走 sa_core::http；测试经 CosOps 注入）

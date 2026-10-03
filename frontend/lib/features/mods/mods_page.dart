@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+import 'package:file_selector/file_selector.dart';
+import 'dart:convert';
 
 import '../../core/api_client.dart';
+import '../../core/file_save.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
+import '../../core/zip_staging.dart';
 import '../editor/editor_controller.dart';
 import '../../core/app_theme.dart';
 
@@ -89,6 +93,82 @@ class _ModsPageState extends State<ModsPage> {
     }
   }
 
+  /// 上传本地模组 zip 导入为工作区新模组（桌面=本机路径，web=base64 上传）。
+  Future<void> _importMod() async {
+    const typeGroup = XTypeGroup(label: '模组包', extensions: ['zip']);
+    final file = await openFile(acceptedTypeGroups: const [typeGroup]);
+    if (file == null) return;
+    StagedZip? staged;
+    try {
+      staged = await stageZipForInstall(
+        file,
+        const ZipStageOptions(
+          pathEndpoint: '/api/mods/import_path',
+          uploadEndpoint: '/api/mods/import_upload',
+          tempPrefix: 'mod_import_',
+        ),
+      );
+      final r = await ApiClient.instance.post(staged.endpoint,
+          body: staged.body, timeout: const Duration(minutes: 30));
+      final map = r is Map ? r.cast<String, dynamic>() : <String, dynamic>{};
+      final mod = map['mod'];
+      if (mod is Map) {
+        final m = mod.cast<String, dynamic>();
+        widget.state.setMod(m['name'] as String, m['root'] as String);
+      }
+      await _refresh();
+      if (mounted) {
+        fluent.displayInfoBar(
+            context,
+            builder: (ctx, close) => const fluent.InfoBar(
+                title: Text('导入成功'),
+                content: Text('模组已导入并选中'),
+                severity: fluent.InfoBarSeverity.success));
+      }
+    } catch (e) {
+      if (mounted) _showError('导入失败：$e');
+    } finally {
+      try {
+        await staged?.cleanup();
+      } catch (_) {}
+    }
+  }
+
+  /// 把当前选中的模组打包成 zip 下载（web 走浏览器下载，桌面弹保存位置）。
+  Future<void> _exportCurrent() async {
+    final name = widget.state.modName;
+    if (name.isEmpty) {
+      if (mounted) _showError('请先选择要导出的模组');
+      return;
+    }
+    try {
+      final r =
+          await ApiClient.instance.post('/api/mods/export',
+              body: {'name': name}, timeout: const Duration(minutes: 30));
+      final map = r is Map ? r.cast<String, dynamic>() : <String, dynamic>{};
+      final enc = (map['data_base64'] ?? '').toString();
+      final filename = (map['filename'] ?? '$name.zip').toString();
+      if (enc.isEmpty) {
+        if (mounted) _showError('导出失败：后端返回空数据');
+        return;
+      }
+      final saved = await saveBytesToFile(
+          filename: filename,
+          bytes: base64Decode(enc),
+          mimeType: 'application/zip');
+      if (mounted && saved != null) {
+        fluent.displayInfoBar(
+            context,
+            builder: (ctx, close) => fluent.InfoBar(
+                title: const Text('导出完成'),
+                content: Text('已保存 $filename'),
+                severity: fluent.InfoBarSeverity.success));
+      }
+    } catch (e) {
+      if (mounted) _showError('导出失败：$e');
+    }
+  }
+
   Future<void> _delete(ModInfo mod) async {
     if (_isWorkshop(mod)) {
       if (!mounted) return;
@@ -156,6 +236,8 @@ class _ModsPageState extends State<ModsPage> {
         _Header(
           onRefresh: _refresh,
           onCreate: _create,
+          onImport: _importMod,
+          onExport: _exportCurrent,
         ),
         Divider(height: 1, color: palette.border),
         Expanded(
@@ -231,9 +313,16 @@ class _ModsPageState extends State<ModsPage> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.onRefresh, required this.onCreate});
+  const _Header({
+    required this.onRefresh,
+    required this.onCreate,
+    required this.onImport,
+    required this.onExport,
+  });
   final VoidCallback onRefresh;
   final VoidCallback onCreate;
+  final VoidCallback onImport;
+  final VoidCallback onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -246,6 +335,20 @@ class _Header extends StatelessWidget {
           Text('模组',
               style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
           const Spacer(),
+          _HeaderIcon(
+            icon: FluentIcons.arrow_download_24_regular,
+            tip: '导入模组 zip',
+            onTap: onImport,
+            mob: mob,
+          ),
+          const SizedBox(width: 4),
+          _HeaderIcon(
+            icon: FluentIcons.arrow_upload_24_regular,
+            tip: '导出当前模组 zip',
+            onTap: onExport,
+            mob: mob,
+          ),
+          const SizedBox(width: 4),
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
@@ -276,6 +379,41 @@ class _Header extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 模组页头部的小动作按钮（导入/导出共用；refresh/add 是历史内联写法，保持原样）。
+class _HeaderIcon extends StatelessWidget {
+  const _HeaderIcon({
+    required this.icon,
+    required this.tip,
+    required this.onTap,
+    required this.mob,
+  });
+  final IconData icon;
+  final String tip;
+  final VoidCallback onTap;
+  final bool mob;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tip,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: SizedBox(
+            width: mob ? 44 : 32,
+            height: mob ? 44 : 32,
+            child: Center(
+              child: Icon(icon, size: 15, color: palette.textMuted),
+            ),
+          ),
+        ),
       ),
     );
   }

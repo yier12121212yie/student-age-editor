@@ -459,8 +459,20 @@ void register_domain_tools_routes(Router& r) {
         }
     });
 
-    // POST /api/resource_packs/active — api.py:2666-2676.
+    // POST /api/resource_packs/active — 多 base：body 可给 {"ids":[...]}（按序
+    // 启用多个）；兼容旧的 {"id":"..."}（单值）。返回 {"active","active_ids","packs"}。
     r.post(R"(/api/resource_packs/active)", [](const Req& req) -> Resp {
+        json ids_json = b_get(req, "ids");
+        if (ids_json.is_array()) {
+            std::vector<std::string> ids;
+            ids.reserve(ids_json.size());
+            for (const auto& v : ids_json) ids.push_back(json_str(v));
+            try {
+                return Resp::Json(200, rp::set_active_ids(ids));
+            } catch (const p3b::PyValueError& e) {
+                return Resp::Json(400, json{{"error", e.what()}});
+            }
+        }
         json pid = b_get(req, "id");
         if (!json_truthy(pid)) pid = b_get(req, "pack_id");
         const std::string id = json_truthy(pid) ? json_str(pid) : std::string();

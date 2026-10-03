@@ -36,6 +36,16 @@
   #define OfficialPackDir "..\..\build\release\installer_official_pack"
 #endif
 
+#ifndef PortraitPackDir
+  #define PortraitPackDir "..\..\build\release\installer_portrait_pack"
+#endif
+
+; HasPortraitPack=1 时才注入「人物图片资源扩展包」可选组件（构建期未成功
+; 导出该包时由 build_release.py 传 /DHasPortraitPack=0 隐藏）。
+#ifndef HasPortraitPack
+  #define HasPortraitPack 1
+#endif
+
 #ifndef OutputDir
   #define OutputDir "..\..\dist"
 #endif
@@ -73,6 +83,9 @@ Name: "gui"; Description: "图形用户界面 (GUI) - 桌面主程序"; Types: f
 Name: "tui"; Description: "终端用户界面 (TUI) - 终端字符交互界面"; Types: full custom
 Name: "cli"; Description: "命令行接口 (CLI) - 自动化与脚本工具"; Types: full custom
 Name: "officialpack"; Description: "官方资源扩展包（适用于未安装游戏的创作者）"; Types: full custom
+#if HasPortraitPack
+Name: "portraitpack"; Description: "人物图片资源扩展包（角色立绘，适用于未安装游戏的创作者）"; Types: full custom
+#endif
 
 [Files]
 ; 核心组件 (core)
@@ -96,6 +109,11 @@ Source: "{#BackendDist}\backend_cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; 官方资源扩展包
 Source: "{#OfficialPackDir}\*"; DestDir: "{app}\_cache\resource_packs\official-bundled"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: officialpack
+
+; 人物图片资源扩展包（可选组件；构建期未导出时整段由预处理器去掉）
+#if HasPortraitPack
+Source: "{#PortraitPackDir}\*"; DestDir: "{app}\_cache\resource_packs\portraits"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: portraitpack
+#endif
 
 [Tasks]
 Name: "startmenu"; Description: "创建开始菜单快捷方式"; GroupDescription: "快捷方式:"; Flags: checkedonce
@@ -305,10 +323,11 @@ begin
   end;
 end;
 
-procedure EnsurePacksJson(const AppPath: String);
+procedure EnsurePacksJson(const AppPath: String; ActivateOfficial, ActivatePortraits: Boolean);
 var
   PacksDir: String;
   PacksFile: String;
+  Active: String;
   JsonContent: String;
 begin
   PacksDir := AppPath + '\_cache\resource_packs';
@@ -316,7 +335,15 @@ begin
   if not FileExists(PacksFile) then
   begin
     ForceDirectories(PacksDir);
-    JsonContent := '{"active":"official-bundled","packs":[]}';
+    // 资源包「单一 active」语义：官方资源包优先；仅装人物图片包时激活
+    // portraits；两者都未装则留空（首次扫描若恰有一个包会自动激活）。
+    if ActivateOfficial then
+      Active := 'official-bundled'
+    else if ActivatePortraits then
+      Active := 'portraits'
+    else
+      Active := '';
+    JsonContent := '{"active":"' + Active + '","packs":[]}';
     SaveStringToFile(PacksFile, JsonContent, False);
   end;
 end;
@@ -483,10 +510,13 @@ begin
     // 1. 写入 editor_env.json（升级不覆盖）
     WriteEditorEnvJson(AppDir, WorkspaceDir, WorkshopDir);
 
-    // 2. 若安装了 officialpack，写入 packs.json
-    if WizardIsComponentSelected('officialpack') then
+    // 2. 若安装了任一可选资源扩展包，写入 packs.json（官方包优先为 active）
+    if WizardIsComponentSelected('officialpack') or
+       WizardIsComponentSelected('portraitpack') then
     begin
-      EnsurePacksJson(AppDir);
+      EnsurePacksJson(AppDir,
+                      WizardIsComponentSelected('officialpack'),
+                      WizardIsComponentSelected('portraitpack'));
     end;
 
     // 3. 处理 PATH 命令

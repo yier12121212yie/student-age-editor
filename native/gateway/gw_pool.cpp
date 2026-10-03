@@ -197,10 +197,10 @@ int InstancePool::start_locked(std::shared_ptr<Instance>& in, std::string* err) 
     // 托管模式 SSRF 护栏（安全批次 A）：云同步等出站请求只允许公网地址，
     // 阻断账号配置里塞私网/环回 URL 的内网横移（gw_config 默认开启）。
     if (opts_.cloud_public_only) argv.emplace_back("--cloud-public-only");
-    // 性能 P1：请求体上限 32 MiB——网关可见的合法上传（base64 插件/资源包
-    // 解码上限 100 MB 的场景不走网关直传）远小于桌面直连的 256 MiB 默认。
+    // 性能 P1：请求体上限——按 gateway.json 的 max_body_bytes 传给实例
+    // （默认 32 MiB；管理员可调大以支持大模组/资源包上传）。
     argv.emplace_back("--max-body");
-    argv.emplace_back("33554432");
+    argv.emplace_back(std::to_string(opts_.max_body_bytes));
     std::vector<char*> argvp;
     for (auto& s : argv) argvp.push_back(s.data());
     argvp.push_back(nullptr);
@@ -219,6 +219,15 @@ int InstancePool::start_locked(std::shared_ptr<Instance>& in, std::string* err) 
     };
     put_env("EDITOR_DATA_ROOT=" + acct);
     put_env("EDITOR_DISABLE_STEAM_DETECT=1");
+    // 人物图片资源扩展（服务器端「2 种安装方式」）：网关配置 → 每个实例环境。
+    if (!opts_.portrait_dir.empty())
+        put_env("EDITOR_PORTRAIT_DIR=" + opts_.portrait_dir);
+    if (!opts_.portrait_base_url.empty())
+        put_env("EDITOR_PORTRAIT_BASE_URL=" + opts_.portrait_base_url);
+    // 大体积上传：实例的解码上限按 wire 上限的 3/4 派生（base64 膨胀 4/3），
+    // 使「网关 body 上限 / 实例 --max-body」与 upload_staging 的上限一致。
+    put_env("EDITOR_MAX_UPLOAD_BYTES=" +
+            std::to_string(opts_.max_body_bytes / 4 * 3));
     std::vector<char*> envp;
     for (auto& s : envv) envp.push_back(s.data());
     envp.push_back(nullptr);
@@ -238,7 +247,11 @@ int InstancePool::start_locked(std::shared_ptr<Instance>& in, std::string* err) 
             if (logfd != 2) ::dup2(logfd, 2);
         }
         if (logfd > 2) ::close(logfd);
-        ::execv(argv.front().c_str(), argvp.data());
+        // execve（而非 execv）：上面 put_env 注入的 EDITOR_PORTRAIT_*、
+        // EDITOR_MAX_UPLOAD_BYTES 等只存在于 envp，必须显式传给子进程。
+        // 用 execv 会继承网关自身环境，注入项全部丢失（人物立绘 400、
+        // 上传解码上限退回默认值）。
+        ::execve(argv.front().c_str(), argvp.data(), envp.data());
         _exit(127);
     }
     if (logfd >= 0) ::close(logfd);

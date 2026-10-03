@@ -57,6 +57,14 @@ struct UpdateResult {
     std::vector<UpdateAsset> assets;
 };
 
+// GET /api/mods?with_counts=1 — the mod list plus the per-mod cfg record
+// counts (for the tree) and the resolved workspace root (header sub-title).
+struct ModsListing {
+    std::vector<ModEntry> mods;
+    std::string workspace;
+    std::map<std::string, std::map<std::string, long long>> cfg_counts;
+};
+
 class BackendApi {
 public:
     explicit BackendApi(std::string base_url) : base_(std::move(base_url)) {}
@@ -65,6 +73,8 @@ public:
     // ---- pure request/response transforms (unit-tested) -----------------
     static std::string JoinUrl(const std::string& base, const std::string& path);
     static std::vector<ModEntry> ParseMods(const Json& body);
+    // /api/mods body -> mods + workspace + cfg_counts (with_counts shape).
+    static ModsListing ParseModsFull(const Json& body);
     static std::vector<std::string> ParseTables(const Json& body);
     // GET /api/cfg/<name>?keys=1 -> (rows, mtime, exists).
     static void ParseTable(const Json& body, std::vector<TableRow>& rows, long long& mtime_ns,
@@ -158,6 +168,30 @@ public:
     void ReportUsage(const std::string& kind, const std::string& key);
     // POST /api/shutdown — best-effort; used to reap a backend we spawned.
     void Shutdown();
+
+    // ---- v0.3 界面恢复：schema/字典标签/OOBE/TTS -------------------------
+    // GET /api/mods?with_counts=1 (tree 记录数 + workspace 路径).
+    ModsListing ListModsWithCounts(std::string* err);
+    // GET /api/schema -> game_schema 对象（cfg -> 字段 -> 类型，有序）。
+    Json GetSchema(std::string* err);
+    // GET /api/dicts -> key_maps（cfg -> 字段 -> 中文名）。
+    Json GetKeyMaps(std::string* err);
+    // POST /api/workspace {root} -> 解析后的根；root 为空则保持默认。
+    std::string SetWorkspace(const std::string& root, std::string* err);
+    // GET /api/oobe/status -> done；POST /api/oobe/complete。
+    bool OobeDone(std::string* err);
+    bool OobeComplete(std::string* err);
+    // GET /api/tts/settings -> settings 对象（含 ttsProvider/ttsApiKey/...）。
+    Json TtsSettings(std::string* err);
+    // PUT /api/tts/settings（body 原样；服务端只收 tts* 键）。
+    bool TtsSaveSettings(const Json& settings, std::string* err);
+    // POST /api/tts/test -> {ok, detail|error}。
+    Json TtsTest(std::string* err);
+    // POST /api/tts/synthesize {text, voice} -> {audio(b64), ext, bytes}。
+    Json TtsSynthesize(const std::string& text, const std::string& voice, std::string* err);
+    // POST /api/tts/save {audio, ext, title, writeCfg} -> 保存结果。
+    Json TtsSave(const std::string& audio_b64, const std::string& ext,
+                 const std::string& title, bool write_cfg, std::string* err);
 
 private:
     Json Call(const std::string& method, const std::string& path, const Json* body,

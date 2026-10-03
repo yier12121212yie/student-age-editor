@@ -118,6 +118,24 @@ backend_cli mods select MyMod               # 选中（--root 可显式指定目
 backend_cli mods remove MyMod               # 删除
 ```
 
+`mods`（含 REPL 里的裸 `/mods`、无子命令形式）默认等价于 `mods list`。列表按
+Alpha-v0.3 的 rich Table 样式输出（HEAVY_HEAD 框线、CJK 按显示宽对齐、Root 列
+超 46 列折行）：
+
+```
+                      Mods @ D:\MyMods  (2 found)
+┏━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┓
+┃ Name      ┃ Title    ┃ Cfgs             ┃ Root                             ┃ 当前 ┃
+┡━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━┩
+│ DemoMod   │ 示例模组 │ ItemCfg, TalkCfg │ D:\MyMods\DemoMod                │ ●    │
+│ StoryPack │ 剧情包   │ EvtCfg           │ D:\MyMods\StoryPack              │      │
+└───────────┴──────────┴──────────────────┴──────────────────────────────────┴──────┘
+```
+
+Name 粗绿、Title 青、Cfgs/Root 暗色、选中模组在「当前」列打黄色 `●`；Cfgs 列
+超过 6 项折叠为 `前6项 +N`。`--no-color` / 非 TTY 时退化为同样的框线表格
+（只是不带颜色），`--json` 原样输出后端响应。
+
 ### 配置表 CRUD
 
 `Cfgs/zh-cn/*.json` 为 `{ id: record }` 字典。`cfg` 命令自动做 `Cfgs/zh-cn/` 前缀与
@@ -308,18 +326,24 @@ backend_cli cfg set EvtCfg --mod test --data "{""1"":{""title"":""hello""}}"
 ### 交互模式（REPL，「类 Claude Code」）
 
 **无参数启动 `backend_cli`**（或显式 `backend_cli repl`）进入交互模式，复刻
-Alpha-v0.3 Python CLI 的 REPL：cyan 边框欢迎面板、` {当前模组}› ` 提示符、
-slash 命令、Tab 候选菜单、↑↓ 历史（持久化于 `editor_root/.editor_cli_history`）、
-空回车重复上一条（回显 `↻`）、`Ctrl+C` 取消当前行、`Ctrl+D` / `exit` 退出。
-子命令用法不变（`backend_cli mods list` 仍是一次性执行）。
+Alpha-v0.3 Python CLI 的 REPL：cyan 面板横幅（标题嵌上边框、副标题嵌下边框，
+框内 Workspace / Mods / Schema / 当前 Mod 信息栏）、` [当前模组]› ` 提示符、
+slash 命令、**输入即弹的实时候选**、Tab 候选菜单、↑↓ 历史（持久化于
+`editor_root/.editor_cli_history`）、空回车重复上一条（回显 `↻`）、`Ctrl+C`
+取消当前行、`Ctrl+D` / `exit` 退出。子命令用法不变（`backend_cli mods list`
+仍是一次性执行）。
 
 ```
-╭ 学生时代 · Editor CLI — 类 Claude Code ──────────────╮
-  Workspace: D:\MyMods        Mods: 3 (test, ...)
-  Cfgs: 7  当前模组: test
-  无代码模式: 关（/settings no-code on|off 切换）
-────────────────────────────────────────────────────────
-[test]› /mods list
+╭────────── 学生时代 · Editor CLI — 类 Claude Code ──────────╮
+│ Workspace  D:\MyMods                                      │
+│ Mods       2  (DemoMod, StoryPack)                        │
+│ Schema     22 cfgs                                        │
+│ 当前 Mod   DemoMod                                        │
+╰───── 输入 /help 查看命令 · Tab 补全 · @提及 · !shell ─────╯
+提示: 直接输入 /mods list 或 @EvtCfg 试试；Tab 弹出候选菜单，空行重复上一条。
+无代码模式: 关（/settings no-code on|off 切换）
+────────────────────────────────────────────────────────────
+[DemoMod]› /mods list
 ```
 
 | 命令 | 作用 |
@@ -340,7 +364,18 @@ slash 命令、Tab 候选菜单、↑↓ 历史（持久化于 `editor_root/.edi
 执行 `cfg get PersonCfg --id <id>`。上下文记忆：`/use test` 之后，`cfg get EvtCfg`
 等命令自动作用于当前模组，与 Python REPL 的体验一致。
 
-#### Tab 候选菜单（M3）
+#### 实时候选与 Tab 候选菜单
+
+对齐 Alpha-v0.3 的 `prompt_toolkit` 实时补全：**缓冲以 `/` 或 `@` 开头时，输入
+即弹候选菜单**（无需先按 Tab），两列布局——左列候选词、右列一句话描述（描述
+与候选同文时省略），最多 12 行，`»` 标记当前高亮。交互：
+
+- `↑↓` 在菜单里移动高亮（菜单关闭时 `↑↓` 仍是历史）；`Tab` 接受高亮项并保持
+  菜单开启（可连续补全）；`Esc` 收起菜单继续编辑；`Enter` 按已输入内容直接执行
+  （与 v0.3 一致，不隐式追加候选）。
+- 其余槽位仍按 Tab 手动触发（见下）。
+
+#### Tab 按槽位补全（M3）
 
 Tab 不再是一次性罗列，而是按**词法槽**选池、模糊匹配后弹出可交互候选菜单：
 
@@ -396,31 +431,51 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 ### 布局（Alpha-v0.3 复刻）
 
 主界面即 Alpha-v0.3 Python/textual 版的三栏编辑器（VS Code Dark+ 观感：蓝色
-`#007acc` 面板标题条 + 分层灰阶底色），没有页签栏：
+`#007acc` 面板标题条、浅色边框随焦点变亮、橙色分组标题），没有页签栏。
+`--render-check main --width 100` 的真实输出（左侧树 / 中间列头表格 / 右侧分组
+表单，顶栏 + 两行底栏 + 琥珀色状态行）：
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────┐
-│ Header: 学生时代 · 模组编辑器 — TUI  终端版 · 直接读写 Cfgs 文件               │
-├────────────┬─────────────────────────────┬─────────────────────────────────────┤
-│ 📦 Mods /  │ 📋 Records — <当前表>       │ 📝 Detail / JSON                    │
-│ Cfgs       │  行数 / 未保存计数 / 过滤   │  [JSON] ⇄ [表单]（m 切换）          │
-│ 📁 模组    │  n 新增 / y 复制 / d 删除   │  Enter 编辑 / Ctrl-S 保存           │
-│ └ ◦ Cfgs   │  斑马纹行 + 选中高亮        │  [s 保存][v 校验][y][d]             │
-│            │                             │  （脏状态标题条变红）               │
-├────────────┴─────────────────────────────┴─────────────────────────────────────┤
-│ a AI 助手  c 云同步  p 插件  b Bug 扫描  Ctrl-K 搜索  Ctrl-M 权限 Ctrl-N 无代码│
-│ 状态栏（蓝底：Workspace · 表 · 权限 · 无代码 · 未保存数；错误时变红）          │
-└────────────────────────────────────────────────────────────────────────────────┘
+ ○                       学生时代 · 模组编辑器 — TUI — DemoMod  权限 confirm
+┌───────────────────────┐┌──────────────────────────────────────┐┌───────────────────────────────┐
+│ 📦 DemoMod            ││ 📋 Records — TalkCfg                 ││ 📝 TalkCfg[1]  表单  ●        │
+│   ▼ 📦 DemoMod  示例模││  行数: 2  未保存: 1                  ││  m 切换 JSON/表单  Enter 编辑字│
+│      ● 📄 TalkCfg     ││ID          effect      预览          ││ ▸ 台词内容                    │
+│      ◦ 📄 ItemCfg     ││  1           4015        id=1, effec ││  台词内容  content            │
+│      ◦ 📄 PersonCfg   ││ *2           4017        id=2, effec ││    输入对白内容，支持 <color=.│
+│      ◦ 📄 EvtCfg      ││                                      ││ ┃ 你好，同学                  │
+│   ▶ 📦 Another (空)   ││                                      ││ ▸ 高级属性 2 项               │
+│ ↑↓ 选择  Enter 打开   ││ n 新建  y 复制  d 删除  f 格式化  / 过││ 保存（s）   校验   格式化  复制│
+│ → 展开  N 新建Mod     ││ Enter 编辑  s/Ctrl-S 保存            ││                               │
+└───────────────────────┘└──────────────────────────────────────┘└───────────────────────────────┘
+ N 新建Mod  y 复制  d 删除  e 编辑  f 格式化  s 保存  v 校验  / 过滤  ^k 全局搜索  c 云同步  a AI 助手
+ u 检查更新  ^p palette  p 插件  b Bug 扫描  ^M 权限  ^N 无代码  ? 帮助  q 退出
+ 示例数据（--render-check）                                                   有未保存改动 · s 保存
 ```
 
-左栏是 **模组 → Cfgs 两级树**（`Enter` 选中并展开模组，`Enter` Cfg 打开表，
-`→`/`←` 展开/收起，`N` 新建模组）。首次进入右栏显示欢迎引导，打开表后变为
-详情视图。
+- **左栏（模组 → Cfgs 两级树）**：标题条即当前选中模组；根行 `📦 <模组> <标题>`
+  带展开箭头 `▶`/`▼`（`Enter` 选中并展开、`→`/`←` 展开/收起，多模组可同时展开），
+  Cfg 子行 `📄 <表名> <记录数>`；`●` 标当前打开的表、`◦` 其他。
+- **中栏（记录表格）**：标题条 `📋 Records — <表>` + 行数 / 未保存计数；表头按
+  Alpha 的 `_choose_columns` 规则取 `ID + 最多 3 个关键字段`（TalkCfg → ID /
+  effect / 预览），蓝底白字表头、按显示宽定宽对齐；脏行以 `*` 前缀显示**编辑后**
+  的值（上例第 2 行的 `4017`），预览列沿用 v0.3 的 `k=v, k=v` 摘要。
+- **右栏（分组表单，默认）**：标题条 `📝 <表>[选中记录键]  表单  ●`（脏时标题条
+  变红并带 `●`），
+  TalkCfg 按 `台词内容 / 高级属性 …` 分组（橙色组标题、字段中文名 + 键名、暗色
+  帮助行、值框），`m` 切 JSON；底部按钮行 `保存（s） 校验 格式化 复制`。
+  首次进入右栏显示欢迎引导。
+- **顶栏**：蓝底居中 `学生时代 · 模组编辑器 — TUI — <模组> @ <工作区>`，右挂
+  `权限 <模式> · 无代码` 标记。**底栏**为 v0.3 原顺序的两行按键提示（native 新增
+  键融入其中）。**状态行**琥珀色单行（success 绿 / error 红），右侧提示未保存时
+  `s 保存`。
 
 其余界面都是**居中蓝色粗边框弹窗**（Alpha-v0.3 的模态样式）：`a` 🤖 AI 助手、
 `c` ☁️ 云同步（Provider 轨 + 本地/远端双栏对比）、`p` 🧩 插件管理、
-`b` 🐞 Bug 扫描/修复、`u` ⬆️ 检查更新，以及 `Ctrl-K` 🔍 全局搜索、`v` ● 校验结果、
-`?` ⌨️ 帮助、`confirm` 权限模式下的 ⚠ 审批框。
+`b` 🐞 Bug 扫描/修复、`t` 🎙 配音 TTS、`u` ⬆️ 检查更新，以及 `^P` 命令面板、
+`Ctrl-K` 🔍 全局搜索、`v` ● 校验结果、`?` ⌨️ 帮助、`confirm` 权限模式下的 ⚠
+审批框。首次启动若 OOBE 未完成，会先弹 🚀 分步向导（① 设置工作区 → ② 可选新建
+Mod → 完成，每步 `Esc` / 留空可跳过）。
 
 ### 快捷键
 
@@ -431,18 +486,23 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 | `u` | 呼出检查更新弹窗（`r` / `Enter` 查询 GitHub 最新发行版，`Esc` 关闭） |
 | `Ctrl-M` | 切换权限模式 `confirm`（变更前确认）⇄ `full`（直接执行） |
 | `Ctrl-N` | 切换无代码模式（编辑字段时选效果/人物，不写代码；与 GUI/CLI 同一开关） |
+| `^P` | 命令面板（模糊搜索全部动作：切换模组 / 打开表 / 保存 / 校验 / 格式化 / 全局搜索 / AI / 云同步 / 插件 / Bug 扫描 / TTS / 检查更新 / 权限 / 无代码 / 新建模组 / 帮助 / 刷新 / 退出，`Enter` 执行、`Esc` 关闭） |
 | `?` | 开关帮助弹窗（任意键先行关闭） |
 | `Tab` / `Shift+Tab` | 三栏焦点循环：树 → 记录 → 详情 → 树（反向用 Shift） |
 | `↑↓` | 树 / 行 / 表单字段移动 |
-| `Enter` | 树上选中模组或打开表 / 行进入 JSON 编辑 / 表单模式编辑字段 / 弹窗内执行 |
+| `Enter` | 树上选中模组或打开表 / 行选中记录 / 表单模式编辑字段 / 弹窗内执行 |
 | `→` / `←` | 树节点展开 / 收起 |
 | `N` | 新建模组（输入标题，`Enter` 创建） |
-| `m` | 详情面板 JSON ⇄ 表单 切换（详情焦点时） |
-| `n` / `y` | 新增行 / 复制当前行（自动分配键，Ctrl-S 保存落盘） |
+| `e` | 在表单里聚焦并编辑当前字段（原生新增键） |
+| `f` | 格式化当前记录的 JSON（2 空格重排进编辑缓冲） |
+| `s` | 保存（同 `Ctrl-S`，`confirm` 模式下先弹审批框） |
+| `m` | 详情面板 表单 ⇄ JSON 切换（详情焦点时；默认表单） |
+| `n` / `y` | 新增行 / 复制当前行（自动分配键，`s`/`Ctrl-S` 保存落盘） |
 | `d` | 标记删除当前行（再按一次取消） |
 | `/` | 过滤当前面板（`Enter` 保留并退出，`Esc` 清空；过滤中所有按键进过滤器） |
 | `Ctrl-K` | 全局搜索对白（跨 TalkCfg/EvtCfg，含本体） |
 | `v` | 校验当前打开的表（issues + counts 弹窗） |
+| `t` | 配音 TTS 页（音色/引擎设置、测试连接、文本合成、素材列表） |
 | `r` | 刷新（树 / 当前表 / 弹窗数据） |
 | `Ctrl-S` | 保存（表页补丁、Bug 弹窗应用修复） |
 
@@ -476,10 +536,10 @@ upload / download / sync 方向、`y` 切 DryRun、`x` 切「清理远端多余�
 `no_code_mode` 存 `editor_env.json` 的 `no_code_mode` 键（默认 off），与 GUI 设置页的
 「无代码模式」、CLI 的 `settings no-code on|off` 是**同一个开关**：启动时
 `GET /api/settings/editor` 读入，`Ctrl-N` 切换后 `PUT /api/settings/editor` 写回。
-开启时状态栏出现 `· 无代码` chip，底部提示行常显 `Ctrl-N 无代码`，`?` 帮助里也有两行说明。
+开启时顶栏出现 `· 无代码` 标记，底栏常显 `^N 无代码`，`?` 帮助里也有两行说明。
 
-开启后，详情面板**表单模式**（`m` 切过去）里编辑效果 / 条件 / 人物类字段不再手写
-代码 DSL，而是从候选里选：
+开启后，详情面板**表单模式**（`m` 切过去；表单是默认模式）里编辑效果 / 条件 /
+人物类字段不再手写代码 DSL，而是从候选里选：
 
 | 字段名（大小写不敏感） | 候选池 |
 |------|--------|
@@ -508,10 +568,12 @@ TUI **不做逐键网络请求**：候选只在进入编辑（或 `Tab`）时拉
 ### 操作流
 
 1. 启动即进三栏主界面；左栏 `↑↓` 选择模组，`Enter` 选中并展开其 Cfgs。
-2. `Enter` 打开一张表（或 `Tab` 切换面板）；记录栏 `↑↓` 选行，右侧详情实时显示
-   该行 JSON；`m` 切表单模式后 `Enter` 可逐字段编辑（非法 JSON 自动按字符串落值）。
-3. `Enter` 编辑整行 JSON；`n` 新增 / `y` 复制 / `d` 标记删除（再按取消）；
-   `Ctrl-S` 保存（增量补丁，冲突 / lossy 会在状态栏给出后端错误，再按强制覆盖）。
+2. `Enter` 打开一张表（或 `Tab` 切换面板）；记录栏 `↑↓` 选行，右侧详情默认**分组
+   表单**并实时显示该行字段；`Enter` 逐字段编辑（非法 JSON 自动按字符串落值），
+   `m` 切 JSON 模式。
+3. `Enter` 在 JSON 模式编辑整行；`f` 格式化 JSON；`e` 聚焦字段编辑；
+   `n` 新增 / `y` 复制 / `d` 标记删除（再按取消）；
+   `s` / `Ctrl-S` 保存（增量补丁，冲突 / lossy 会在状态栏给出后端错误，再按强制覆盖）。
 4. `v` 校验当前表，`Ctrl-K` 全局搜索对白（`↑↓` 选结果，`Esc` 关闭）。
 5. `b` 呼出 Bug 扫描弹窗，`r` 扫描，`f` 应用修复（confirm 模式先审批）。
 6. `a` 呼出 AI 助手弹窗，直接输入后 `Enter` 发送；`Esc` 关闭。
@@ -519,9 +581,11 @@ TUI **不做逐键网络请求**：候选只在进入编辑（或 `Tab`）时拉
    `R` 重载全部。
 8. `c` 呼出云同步弹窗，`↑↓` 选 Provider，`Enter` 读本地/远端对比；`u`/`d`/`b` 选方向、
    `y`/`x` 切 DryRun / 清理远端，`s` 执行（先 `y` 打开 DryRun 可安全预览）。
-9. `Ctrl-N` 开无代码模式，`m` 切表单后 `Enter` 进字段编辑即出候选：选效果（带参的走
-   二级槽列表）、选人物，不用记代码。
-10. `/` 过滤当前面板；`q` 退出（脏数据先确认）。
+9. `t` 打开配音 TTS 页（音色/引擎设置、测试连接、文本合成、素材列表）。
+10. `^P` 命令面板可直达上述任意动作（模糊搜索，`Enter` 执行）。
+11. `Ctrl-N` 开无代码模式，`Enter` 进字段编辑即出候选：选效果（带参的走
+    二级槽列表）、选人物，不用记代码。
+12. `/` 过滤当前面板；`q` 退出（脏数据先确认）。
 
 数据安全：保存通过后端写管线（原子替换 + 快照），TUI 不直接写文件；与图形版同时
 编辑同一 cfg 可能互相覆盖，保存前 `r` 刷新。`confirm` 权限模式下所有写操作先弹审批框。
@@ -617,20 +681,24 @@ python build_release.py --target macos   --version Alpha-v0.1
 
 - **CLI 有完整 `cloud` 子命令**（`providers` / `add` / `update` / `remove` / `test` /
   `sync` / `status` / `drivers` / `local` / `remote`），见 §2「云同步」。
-- **TUI 有云同步页**（`Ctrl-L`）：Provider 轨 + 本地/远端双栏对比 + 方向/DryRun/
+- **TUI 有云同步页**（`c`）：Provider 轨 + 本地/远端双栏对比 + 方向/DryRun/
   清理远端 开关 + 同步与连接测试，对齐 GUI 云同步页的布局与语义。
-- 后端 `/api/cloud/*` 路由与同步引擎为三端共用（11 种驱动别名：local / webdav /
-  openlist / alist / 百度 / 123 / Google Drive / OneDrive 等；配置存
-  `<workspace>/.editor_cloud.json`）。**实时自动同步仍为 GUI 专属**（CLI/TUI 未移植
-  `/api/cloud/realtime/*` 的交互）。
+- 后端 `/api/cloud/*` 路由与同步引擎为三端共用（11 种规范驱动：local / webdav /
+  openlist / baidu_netdisk / 123 / google_drive / onedrive / aliyun_oss / tencent_cos /
+  aws_s3 / cloudflare_r2；历史别名 alist / baidu / 123pan / gdrive 仍可解析旧配置，但不再
+  出现在候选列表；配置存 `<workspace>/.editor_cloud.json`）。**实时自动同步仍为 GUI
+  专属**（CLI/TUI 未移植 `/api/cloud/realtime/*` 的交互）。
 
 ---
 
 ## 9. 配音（TTS）
 
-- **CLI / TUI 未移植 TTS 命令**（旧 Python 版的 `tts config/voices/test/synthesize/list/delete`
+- **TUI 有配音页**（`t`）：字段为 提供商 / API Key / Base URL / 模型 / 音色 / 文本，
+  `↑↓` 选字段、`Enter` 编辑、`t` 测试连接（`POST /api/tts/test`）、`s` 合成并保存到
+  模组（`confirm` 权限模式先弹审批框），读写 `/api/tts/settings`。
+- **CLI 未移植 TTS 子命令**（旧 Python 版的 `tts config/voices/test/synthesize/list/delete`
   不存在）。
-- 后端 `/api/tts/*` 路由仍在，由 GUI 设置页 / 领声功能消费；配置沿用
+- 后端 `/api/tts/*` 路由由 GUI 设置页 / 领声功能与 TUI 配音页消费；配置沿用
   `.editor_ai.json` 的 `tts*` 字段（三端共享）。
 
 ---
@@ -638,7 +706,7 @@ python build_release.py --target macos   --version Alpha-v0.1
 ## 10. 插件管理
 
 - **CLI 有 `plugin` 子命令**（`list` / `install` / `uninstall` / `reload` / `tools`），
-  **TUI 有插件页**（`Ctrl-P`：清单 + `i` 安装 / `u` 卸载 / `R` 重载），与 GUI 插件页
+  **TUI 有插件页**（`p`：清单 + `i` 安装 / `u` 卸载 / `R` 重载），与 GUI 插件页
   对齐，见 §2「插件管理」。
 - 插件系统为**声明型**（目录 + `manifest.json`，不执行代码、无启用/停用态），因此
   三端都**没有** `enable` / `disable`（后端返回 410），也不存在旧版的「启用高危确认」

@@ -23,9 +23,12 @@ enum AuthMode {
 /// - 404 `{"error":"no route: ..."}` → [AuthMode.local]，现状体验零变化；
 /// - 401 `{"error":"unauthorized"}` → [AuthMode.hosted]，需要登录；
 /// - 200 → hosted 且缓存 token 有效，直进。
-/// 登录 `POST /api/auth/login` {name,password} → 200 {token,name,expires_in}；
+/// 登录 `POST /api/auth/login` {name,password,remember} →
+/// 200 {token,name,expires_in,refresh_token,refresh_expires_in}；
 /// 401 时账号不存在与密码错同形（后端防枚举）。
-/// 会话过期由 [ApiClient.onUnauthorized] 统一回调 [logout] 清态回登录页。
+/// access token 过期由 [ApiClient.onRefresh]（本类 [refreshSession]）静默
+/// 换新并重试；刷新失败才回退 [ApiClient.onUnauthorized] → [logout] 回登录页。
+/// 「记住我」勾选时 refresh token 落本地存储，冷启动免登；未勾选仅内存。
 ///
 /// 桌面端 [_isWeb] 为 false 时 [probe] 恒判 local（不发请求）；测试可注入
 /// [isWebOverride] 走 hosted 探测路径。
@@ -39,10 +42,14 @@ class AuthState extends ChangeNotifier {
 
   static const String _tokenKey = 'auth_token_v1';
   static const String _nameKey = 'auth_name_v1';
+  static const String _refreshKey = 'auth_refresh_v1';
+  static const String _rememberKey = 'auth_remember_v1';
 
   AuthMode _mode = AuthMode.unknown;
   String? _token;
+  String? _refreshToken;
   String? _name;
+  bool _remember = false;
   bool _busy = false;
   String? _error;
 
@@ -75,6 +82,9 @@ class AuthState extends ChangeNotifier {
   @override
   void dispose() {
     if (current == this) current = null;
+    if (ApiClient.instance.onRefresh == refreshSession) {
+      ApiClient.instance.onRefresh = null;
+    }
     super.dispose();
   }
 
@@ -86,6 +96,8 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    // access token 过期时由 ApiClient 自动调用 refreshSession 换新并重试。
+    ApiClient.instance.onRefresh = refreshSession;
     await _restore();
     try {
       final resp = await ApiClient.instance
@@ -139,8 +151,9 @@ class AuthState extends ChangeNotifier {
   }
 
   /// 登录。成功返回 true（token 已注入 [ApiClient] 并持久化），
-  /// 失败仅记录 [error]，不抛。
-  Future<bool> login(String name, String password) async {
+  /// 失败仅记录 [error]，不抛。[remember] 勾选「记住我」：网关签发长期
+  /// refresh token，前端落本地存储，冷启动可免登；未勾选则仅内存。
+  Future<bool> login(String name, String password, {bool remember = false}) async {
     if (_busy) return false;
     final trimmed = name.trim();
     if (trimmed.isEmpty) {
@@ -157,7 +170,11 @@ class AuthState extends ChangeNotifier {
     try {
       final resp = await ApiClient.instance
           .post('/api/auth/login',
-              body: {'name': trimmed, 'password': password})
+              body: {
+                'name': trimmed,
+                'password': password,
+                'remember': remember,
+              })
           .timeout(const Duration(seconds: 15));
       final token = resp is Map ? resp['token'] : null;
       if (token is! String || token.isEmpty) {
@@ -167,7 +184,11 @@ class AuthState extends ChangeNotifier {
       final n = resp['name'] is String && (resp['name'] as String).isNotEmpty
           ? resp['name'] as String
           : trimmed;
-      await _adoptSession(token, n);
+      await _adoptSession(token, n,
+          refreshToken: resp['refresh_token'] is String
+              ? resp['refresh_token'] as String
+              : null,
+          remember: remember);
       return true;
     } on ApiException catch (e) {
       // 后端对账号不存在与密码错误返回同一形态（防枚举）。
@@ -191,7 +212,7 @@ class AuthState extends ChangeNotifier {
   /// registration_disabled / invalid_name / weak_password / invalid_invite /
   /// name_taken / account_limit / rate_limited。
   Future<bool> register(String name, String password,
-      {String inviteCode = ''}) async {
+      {String inviteCode = '', bool remember = false}) async {
     if (_busy) return false;
     final trimmed = name.trim();
     if (trimmed.isEmpty) {
@@ -214,6 +235,7 @@ class AuthState extends ChangeNotifier {
         'name': trimmed,
         'password': password,
         'invite_code': inviteCode.trim(),
+        'remember': remember,
       }).timeout(const Duration(seconds: 30));
       final token = resp is Map ? resp['token'] : null;
       if (token is! String || token.isEmpty) {
@@ -223,7 +245,11 @@ class AuthState extends ChangeNotifier {
       final n = resp['name'] is String && (resp['name'] as String).isNotEmpty
           ? resp['name'] as String
           : trimmed;
-      await _adoptSession(token, n);
+      await _adoptSession(token, n,
+          refreshToken: resp['refresh_token'] is String
+              ? resp['refresh_token'] as String
+              : null,
+          remember: remember);
       return true;
     } on ApiException catch (e) {
       _fail(_registerError(e));
@@ -257,27 +283,71 @@ class AuthState extends ChangeNotifier {
     return '注册失败（HTTP ${e.statusCode}）';
   }
 
-  /// 建立会话：写入内存态 + 注入 [ApiClient] + 持久化（供冷启动免登）。
-  Future<void> _adoptSession(String token, String name) async {
+  /// 建立会话：写入内存态 + 注入 [ApiClient]；[remember] 为真时落本地存储
+  /// （供冷启动免登），否则仅内存（关闭标签页即需重登）。
+  Future<void> _adoptSession(String token, String name,
+      {String? refreshToken, bool remember = false}) async {
     _token = token;
     _name = name;
+    _refreshToken = refreshToken;
+    _remember = remember;
     _mode = AuthMode.hosted;
     ApiClient.instance.accessToken = token;
+    ApiClient.instance.refreshToken = refreshToken;
+    if (remember) {
+      await _persist();
+    } else {
+      await _clearPrefs();  // 清掉可能残留的上一次「记住我」令牌
+    }
+  }
+
+  /// 长期鉴权核心：用 refresh token 换新 access（+ 旋转后的新 refresh）。
+  /// 由 [ApiClient.onRefresh] 在 401 时自动调用；成功返回 true（请求层会
+  /// 重试一次）。无 refresh token、请求失败或令牌已失效时返回 false。
+  Future<bool> refreshSession() async {
+    final rt = _refreshToken;
+    if (rt == null || rt.isEmpty) return false;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_tokenKey, token);
-      await prefs.setString(_nameKey, name);
+      final resp = await ApiClient.instance
+          .postRefresh('/api/auth/refresh', body: {'refresh_token': rt})
+          .timeout(const Duration(seconds: 15));
+      if (resp is! Map) return false;
+      final token = resp['token'];
+      if (token is! String || token.isEmpty) return false;
+      _token = token;
+      ApiClient.instance.accessToken = token;
+      final newRefresh = resp['refresh_token'];
+      if (newRefresh is String && newRefresh.isNotEmpty) {
+        _refreshToken = newRefresh;
+        ApiClient.instance.refreshToken = newRefresh;
+      }
+      final n = resp['name'];
+      if (n is String && n.isNotEmpty) _name = n;
+      if (_remember) await _persist();
+      notifyListeners();
+      return true;
     } catch (_) {
-      // prefs 写失败仅影响下次冷启动免登，本次会话照常。
+      return false;
     }
   }
 
   /// 清会话回登录页：手动登出与 [ApiClient.onUnauthorized]（401 过期）共用。
+  /// 手动登出会尽力通知服务端吊销 refresh token（access 已过期时也有效）。
   void logout() {
+    final rt = _refreshToken;
+    if (rt != null && rt.isNotEmpty) {
+      // 先发（携带当前 access），再清内存态；失败不阻塞本地登出。
+      unawaited(ApiClient.instance
+          .postRefresh('/api/auth/logout', body: {'refresh_token': rt})
+          .then<void>((_) {}, onError: (_) {}));
+    }
     _token = null;
+    _refreshToken = null;
     _name = null;
+    _remember = false;
     _error = null;
     ApiClient.instance.accessToken = null;
+    ApiClient.instance.refreshToken = null;
     unawaited(_clearPrefs());
     notifyListeners();
   }
@@ -294,24 +364,56 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 冷启动恢复缓存会话（whoami 验证前先行注入 Bearer）。
+  /// 冷启动恢复缓存会话。未勾选「记住我」时 prefs 为空，等于不恢复。
   Future<void> _restore() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final t = prefs.getString(_tokenKey);
+      final rt = prefs.getString(_refreshKey);
+      final n = prefs.getString(_nameKey);
+      _remember = prefs.getBool(_rememberKey) ?? false;
       if (t != null && t.isNotEmpty) {
         _token = t;
-        _name = prefs.getString(_nameKey);
         ApiClient.instance.accessToken = t;
       }
+      if (rt != null && rt.isNotEmpty) {
+        _refreshToken = rt;
+        ApiClient.instance.refreshToken = rt;
+      }
+      if (n != null && n.isNotEmpty) _name = n;
     } catch (_) {}
   }
 
+  /// 把当前会话写入本地存储（仅「记住我」）。
+  Future<void> _persist() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = _token;
+      if (token != null && token.isNotEmpty) {
+        await prefs.setString(_tokenKey, token);
+      }
+      final rt = _refreshToken;
+      if (rt != null && rt.isNotEmpty) {
+        await prefs.setString(_refreshKey, rt);
+      }
+      final name = _name;
+      if (name != null && name.isNotEmpty) {
+        await prefs.setString(_nameKey, name);
+      }
+      await prefs.setBool(_rememberKey, _remember);
+    } catch (_) {
+      // prefs 写失败仅影响下次冷启动免登，本次会话照常。
+    }
+  }
+
   Future<void> _clearSession() async {
-    if (_token == null && _name == null) return;
+    if (_token == null && _name == null && _refreshToken == null) return;
     _token = null;
+    _refreshToken = null;
     _name = null;
+    _remember = false;
     ApiClient.instance.accessToken = null;
+    ApiClient.instance.refreshToken = null;
     await _clearPrefs();
   }
 
@@ -320,6 +422,8 @@ class AuthState extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_tokenKey);
       await prefs.remove(_nameKey);
+      await prefs.remove(_refreshKey);
+      await prefs.remove(_rememberKey);
     } catch (_) {}
   }
 }

@@ -335,9 +335,18 @@ class _StageShakeState extends State<StageShake> with SingleTickerProviderStateM
 const Key fxCgKey = ValueKey<String>('fx-cg');
 
 class StageCgLayer extends StatelessWidget {
-  const StageCgLayer({super.key, required this.bytes, required this.onDismiss});
+  const StageCgLayer({
+    super.key,
+    required this.bytes,
+    required this.onDismiss,
+    this.cacheWidth,
+  });
   final Uint8List? bytes;
   final VoidCallback onDismiss;
+
+  /// 解码宽度上限（物理像素，由宿主按画布宽 × DPR 算好），null = 原尺寸。
+  /// CG 常是 1080p/4K 大图，全尺寸解码 + 纹理上传是预览里最大的单笔开销。
+  final int? cacheWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -352,7 +361,10 @@ class StageCgLayer extends StatelessWidget {
             child: bytes == null
                 ? Text('CG 加载中…',
                     style: TextStyle(fontSize: 13, color: palette.textSecondary))
-                : Image.memory(bytes!, fit: BoxFit.contain, gaplessPlayback: true),
+                : Image.memory(bytes!,
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                    cacheWidth: cacheWidth),
           ),
         ),
       ),

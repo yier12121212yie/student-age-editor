@@ -398,3 +398,60 @@ TEST_CASE("file_transfer: CDN domain wins over presigned GET for downloads",
     REQUIRE(dl.json_payload.value("url", std::string())
                 .rfind("https://cdn.example.com/", 0) == 0);
 }
+
+TEST_CASE("file_transfer: virtual-hosted COS endpoint omits bucket from path",
+          "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosConfig cfg;
+    cfg.secret_id = "AKIDTEST";
+    cfg.secret_key = "SECRETKEY";
+    cfg.bucket = "testbucket-1250000000";
+    cfg.region = "ap-guangzhou";
+    cfg.public_endpoint = "https://testbucket-1250000000.cos.ap-guangzhou.myqcloud.com";
+
+    const std::string key = "editor-files/staging/abc/file.bin";
+    const std::string url = presign_url(cfg, "PUT", key, 1800, 1700000000);
+    REQUIRE(url.rfind("https://testbucket-1250000000.cos.ap-guangzhou.myqcloud.com/" + key +
+                          "?",
+                      0) == 0);
+    // 虚拟主机风格下不得再出现 /<bucket>/ 路径前缀（PathStyleDomainForbidden 根因）。
+    REQUIRE(url.find("/testbucket-1250000000/editor-files") == std::string::npos);
+}
+
+TEST_CASE("file_transfer: CDN TypeD URL auth signs download link", "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosConfig cfg;
+    cfg.cdn_domain = "https://cos.editor.liveint.cloud";
+    cfg.cdn_auth_type = "D";
+    cfg.cdn_auth_key = "0123456789abcdef0123456789abcdef";
+
+    const std::string key = "editor-files/warm/abc/file.bin";
+    const std::string url = download_url(cfg, key, 1700000000);
+    // md5(pkey + /path + 1700000000)，见 CDN TypeD 规则。
+    REQUIRE(url == "https://cos.editor.liveint.cloud/editor-files/warm/abc/file.bin"
+                    "?sign=e7f37383dd4643f8070887238ab1acb5&t=1700000000");
+}
+
+TEST_CASE("file_transfer: CDN TypeC URL auth embeds hex timestamp in sign",
+          "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosConfig cfg;
+    cfg.cdn_domain = "https://cdn.example.com";
+    cfg.cdn_auth_type = "C";
+    cfg.cdn_auth_key = "0123456789abcdef0123456789abcdef";
+
+    const std::string key = "editor-files/warm/abc/file.bin";
+    const std::string url = download_url(cfg, key, 1700000000);
+    REQUIRE(url.rfind("https://cdn.example.com/editor-files/warm/abc/file.bin?sign=6553f100-",
+                      0) == 0);
+    REQUIRE(url.find("-0-deb7af458256552c2ccc552784637839") != std::string::npos);
+}
+
+TEST_CASE("file_transfer: CDN without auth key stays unsigned", "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosConfig cfg;
+    cfg.cdn_domain = "https://cdn.example.com/";
+    const std::string key = "editor-files/warm/abc/file.bin";
+    REQUIRE(download_url(cfg, key, 1700000000) ==
+            "https://cdn.example.com/editor-files/warm/abc/file.bin");
+}

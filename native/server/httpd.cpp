@@ -552,7 +552,7 @@ bool token_ok(const std::string& require, const Req& req) {
 
 void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<bool>& quit_flag,
                       const CorsConfig* cors, const std::string* require_token,
-                      long long max_body_bytes) {
+                      long long max_body_bytes, long long raw_body_keep_max) {
     set_recv_timeout(sock, kKeepAliveIdleMs);
     LineReader reader(sock);
     // Errors raised before the origin verdict still need the tier's header
@@ -673,7 +673,6 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                 if (want > 0 && !reader.read_exact(body_raw, static_cast<size_t>(want))) {
                     break;  // truncated body: connection is no longer framed
                 }
-                if (body_raw.size() <= kRawBodyKeepMax) req.raw_body = body_raw;
                 if (!body_raw.empty()) {
                     // httpd.py:143-147: strict decode + json.loads; failure -> {"_raw":...}
                     auto strict = sa_core::decode_utf8_sig_strict(body_raw);
@@ -689,6 +688,10 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                         req.body = json{{"_raw", sa_core::decode_utf8_sig_replace(body_raw)}};
                     }
                 }
+                // 大体积上传：解析完再「移动」走 wire 字节（而非解析前复制），
+                // 峰值少一份整包副本（自定义 max_body_bytes 时尤其要紧）。
+                if (static_cast<long long>(body_raw.size()) <= raw_body_keep_max)
+                    req.raw_body = std::move(body_raw);
 
                 std::string reason;
                 bool origin_ok = check_origin(req, cors, &reason);
@@ -840,6 +843,9 @@ struct Httpd::Impl {
     CorsConfig cors;      // set before start(); read-only afterwards
     std::string auth_token;               // 安全批次 B：空串 = 不启用
     long long max_body = kDefaultMaxBodyBytes;
+    // Req::raw_body 保留上限（§4 代理重放 + 网关转发用）。可经
+    // set_raw_body_keep_max 抬高（网关按 gateway.json 的 max_body_bytes 设置）。
+    long long raw_body_keep = static_cast<long long>(kRawBodyKeepMax);
 
     explicit Impl(Router* r) : router(r) {}
 
@@ -976,9 +982,10 @@ struct Httpd::Impl {
                 } release{this, conn, slots};
                 const std::string impl_auth_token = auth_token;        // 快照，线程安全读
                 const long long impl_max_body = max_body;
+                const long long impl_raw_keep = raw_body_keep;
                 serve_connection(conn, *router, quit, &cors,
                                  impl_auth_token.empty() ? nullptr : &impl_auth_token,
-                                 impl_max_body);
+                                 impl_max_body, impl_raw_keep);
                 if (g_shutdown_after.exchange(false)) {
                     // api.py:777-782 /api/shutdown semantics: respond first, then
                     // the process dies (Python: os._exit(0) on a daemon thread).
@@ -1081,6 +1088,10 @@ void Httpd::set_auth_token(std::string token) { impl_->auth_token = std::move(to
 
 void Httpd::set_max_body_bytes(long long n) {
     if (n > 0) impl_->max_body = n;
+}
+
+void Httpd::set_raw_body_keep_max(long long n) {
+    if (n > 0) impl_->raw_body_keep = n;
 }
 
 void Httpd::start() {
