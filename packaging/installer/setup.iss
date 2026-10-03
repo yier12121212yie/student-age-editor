@@ -40,11 +40,11 @@
   #define PortraitPackDir "..\..\build\release\installer_portrait_pack"
 #endif
 
-; HasPortraitPack=1 时才注入「人物图片资源扩展包」可选组件（构建期未成功
-; 导出该包时由 build_release.py 传 /DHasPortraitPack=0 隐藏）。
-#ifndef HasPortraitPack
-  #define HasPortraitPack 1
-#endif
+; 「人物图片资源扩展包」可选组件只在构建期成功导出该包时注入：build_release.py
+; 成功导出时传 /DHasPortraitPack，下面的 #ifdef 生效；未导出时不传该开关，整段
+; 由预处理器去掉。注意不能用 /DHasPortraitPack=0 表达“关闭”——ISPP 会把命令行
+; 的值当字符串，符号依然算“已定义”，反而会保留本段并因源目录为空而编译失败。
+; （另加 skipifsourcedoesntexist 兜底：开关存在但目录为空时也不中止。）
 
 #ifndef OutputDir
   #define OutputDir "..\..\dist"
@@ -83,7 +83,7 @@ Name: "gui"; Description: "图形用户界面 (GUI) - 桌面主程序"; Types: f
 Name: "tui"; Description: "终端用户界面 (TUI) - 终端字符交互界面"; Types: full custom
 Name: "cli"; Description: "命令行接口 (CLI) - 自动化与脚本工具"; Types: full custom
 Name: "officialpack"; Description: "官方资源扩展包（适用于未安装游戏的创作者）"; Types: full custom
-#if HasPortraitPack
+#ifdef HasPortraitPack
 Name: "portraitpack"; Description: "人物图片资源扩展包（角色立绘，适用于未安装游戏的创作者）"; Types: full custom
 #endif
 
@@ -111,8 +111,8 @@ Source: "{#BackendDist}\backend_cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#OfficialPackDir}\*"; DestDir: "{app}\_cache\resource_packs\official-bundled"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: officialpack
 
 ; 人物图片资源扩展包（可选组件；构建期未导出时整段由预处理器去掉）
-#if HasPortraitPack
-Source: "{#PortraitPackDir}\*"; DestDir: "{app}\_cache\resource_packs\portraits"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: portraitpack
+#ifdef HasPortraitPack
+Source: "{#PortraitPackDir}\*"; DestDir: "{app}\_cache\resource_packs\portraits"; Flags: ignoreversion skipifsourcedoesntexist recursesubdirs createallsubdirs; Components: portraitpack
 #endif
 
 [Tasks]

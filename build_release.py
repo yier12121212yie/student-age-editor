@@ -320,10 +320,15 @@ def build_installer(version, source_dir):
         "/DOfficialPackId=official-bundled",
         "/DOfficialPackName=%s" % pack_name,
         "/DPortraitPackDir=%s" % PORTRAIT_PACK_DIR,
-        "/DHasPortraitPack=%s" % ("1" if has_portraits else "0"),
         "/DOutputDir=%s" % DIST_ROOT,
-        SETUP_ISS,
     ]
+    # 人物图片包可用时才定义 HasPortraitPack（setup.iss 以 #ifdef 判断）。ISPP 的
+    # 命令行 /Dname=0 会把值当字符串，符号仍算“已定义”，不能用来表达“关闭”；
+    # 因此不可用时直接不传该开关，而不是传 =0（那会让安装器保留空目录源而
+    # 编译失败：No files found matching ...installer_portrait_pack\*）。
+    if has_portraits:
+        cmd.append("/DHasPortraitPack")
+    cmd.append(SETUP_ISS)
     subprocess.run(cmd, cwd=ROOT, check=True)
     out = os.path.join(DIST_ROOT, "%s-setup-%s.exe" % (APP_FILE_BASE, version))
     assert os.path.isfile(out), "安装包未生成：%s" % out
