@@ -7,7 +7,10 @@
 //
 // 落盘规则：
 //   * 归类目录：图片 png/jpg/jpeg/webp/bmp -> Textures；音频 wav/mp3/ogg/m4a ->
-//     Audios；其余扩展名且未显式给 dir -> 该文件进 errors（需显式 dir）。
+//     Audios；视频 mp4/webm/mov/mkv -> Videos；其余扩展名且未显式给 dir -> 该
+//     文件进 errors（需显式 dir）。
+//     注：网页版上超过 48 MiB 的贴图/配乐/视频不走本端点，改由
+//     POST /api/mods/add_ref（mod_refs_routes.cpp）留 COS 只存引用。
 //   * 文件名净化：只取 basename（去 '/' '\\'），剥离 Windows 非法字符
 //     <>:"|?* 与控制符、去首尾空白、去尾部点号；净化后为空 -> errors。
 //   * dir：显式给出时必须是单层目录名（不含 '/' '\\' ':'、非 '.'/'..'），否则
@@ -45,6 +48,12 @@ bool is_image_ext(const std::string& ext) {
 }
 bool is_audio_ext(const std::string& ext) {
     static const std::vector<std::string> kExts = {"wav", "mp3", "ogg", "m4a"};
+    for (const auto& e : kExts)
+        if (e == ext) return true;
+    return false;
+}
+bool is_video_ext(const std::string& ext) {
+    static const std::vector<std::string> kExts = {"mp4", "webm", "mov", "mkv"};
     for (const auto& e : kExts)
         if (e == ext) return true;
     return false;
@@ -182,6 +191,8 @@ void register_mod_files_routes(Router& r) {
                 dir = "Textures";
             } else if (audio) {
                 dir = "Audios";
+            } else if (is_video_ext(ext)) {
+                dir = "Videos";
             } else {
                 push_err("未知扩展名，需显式 dir");
                 continue;

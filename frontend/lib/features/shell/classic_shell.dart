@@ -292,6 +292,7 @@ class _ClassicShellState extends State<ClassicShell> {
                               state: state,
                               page: currentPageDef,
                               cfgName: _activeCfgName,
+                              onOpenPage: _selectPage,
                               onPreview: (evtId) {
                                 shell.controller.open(
                                   OpenDoc.preview(eventId: evtId),

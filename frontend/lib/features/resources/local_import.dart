@@ -39,6 +39,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../core/api_client.dart';
+import '../../core/file_upload_client.dart';
+import '../../core/mod_resource_ref.dart';
 import 'image_asset_picker.dart' show TexBytesCache;
 
 // ---------------- 扩展名白名单 ----------------
@@ -49,6 +51,9 @@ const List<String> kLocalImageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'bmp']
 
 /// 音频白名单，与后端目录推断口径一致（wav/mp3/ogg/m4a → Audios）。
 const List<String> kLocalAudioExtensions = ['wav', 'mp3', 'ogg', 'm4a'];
+
+/// 视频白名单，与后端目录推断口径一致（mp4/webm/mov/mkv → Videos）。
+const List<String> kLocalVideoExtensions = ['mp4', 'webm', 'mov', 'mkv'];
 
 // ---------------- 可注入的文件读取 ----------------
 
@@ -71,10 +76,15 @@ LocalFilePicker? debugLocalFilePicker;
 /// 用扩展名白名单过滤，web 用 `webWildCards`。
 Future<List<PickedLocalFile>> pickLocalFilesByKind(String kind) async {
   final audio = kind == 'audio';
+  final video = kind == 'video';
   final group = XTypeGroup(
-    label: audio ? '音频文件' : '图片文件',
-    extensions: audio ? kLocalAudioExtensions : kLocalImageExtensions,
-    webWildCards: audio ? const ['audio/*'] : const ['image/*'],
+    label: video ? '视频文件' : (audio ? '音频文件' : '图片文件'),
+    extensions: video
+        ? kLocalVideoExtensions
+        : (audio ? kLocalAudioExtensions : kLocalImageExtensions),
+    webWildCards: video
+        ? const ['video/*']
+        : (audio ? const ['audio/*'] : const ['image/*']),
   );
   final picked = await openFiles(acceptedTypeGroups: [group]);
   final out = <PickedLocalFile>[];
@@ -165,7 +175,7 @@ Future<List<Map<String, dynamic>>> importLocalAssets(
   bool registerAudio = false,
   LocalFilePicker? picker,
 }) async {
-  final isImage = kind != 'audio';
+  final isImage = kind == 'image';
   final pick = picker ?? debugLocalFilePicker ?? pickLocalFilesByKind;
 
   List<PickedLocalFile> picked;
@@ -191,29 +201,58 @@ Future<List<Map<String, dynamic>>> importLocalAssets(
     return const [];
   }
 
-  ImportFilesResult result;
-  try {
-    result = await importFiles(picked, registerAudio: registerAudio);
-  } catch (e) {
-    if (context.mounted) {
-      _bar(context,
-          title: '导入失败',
-          lines: [_detailOf(e)],
-          severity: fluent.InfoBarSeverity.error);
+  // web 上超过阈值的单文件改走「留 COS 只存引用」（不落盘）：贴图/配乐/视频
+  // 动辄几百 MB，base64 通道必被网关请求体上限拒杀。小文件仍走 import_files
+  // 落盘，游戏/预览照常读盘；导出时两类来源由服务端合并拼包。
+  final refs = <Map<String, dynamic>>[];
+  final refProblems = <String>[];
+  final toUpload = <PickedLocalFile>[];
+  for (final f in picked) {
+    if (kIsWeb && f.bytes.length > StagedResourceRef.refThresholdBytes) {
+      try {
+        refs.add(await StagedResourceRef.uploadAsRef(
+          f.name,
+          f.bytes,
+          registerAudio: registerAudio && kind == 'audio',
+        ));
+      } catch (e) {
+        refProblems.add('${f.name}：${_detailOf(e)}');
+      }
+    } else {
+      toUpload.add(f);
     }
-    return const [];
   }
 
-  // 逐条收集需要露出的问题：整体失败项 + 音频登记失败项。
+  ImportFilesResult result;
+  if (toUpload.isEmpty) {
+    result = const ImportFilesResult(saved: [], errors: []);
+  } else {
+    try {
+      result = await importFiles(toUpload, registerAudio: registerAudio);
+    } catch (e) {
+      if (context.mounted) {
+        _bar(context,
+            title: '导入失败',
+            lines: [_detailOf(e)],
+            severity: fluent.InfoBarSeverity.error);
+      }
+      return const [];
+    }
+  }
+
+  final savedAll = <Map<String, dynamic>>[...result.saved, ...refs];
+
+  // 逐条收集需要露出的问题：整体失败项 + 音频登记失败项 + 引用上传失败项。
   final problems = <String>[
+    ...refProblems,
     for (final e in result.errors)
       '${e['name'] ?? '?'}：${e['error'] ?? '未知错误'}',
-    for (final s in result.saved)
+    for (final s in savedAll)
       if (s['audio_error'] != null)
         '${s['name'] ?? '?'}：已存盘但音频登记失败（${s['audio_error']}）',
   ];
 
-  if (result.saved.isEmpty) {
+  if (savedAll.isEmpty) {
     if (context.mounted) {
       _bar(context,
           title: '导入失败',
@@ -229,10 +268,11 @@ Future<List<Map<String, dynamic>>> importLocalAssets(
   if (context.mounted) {
     _bar(
       context,
-      title: '已导入 ${result.saved.length} 个文件'
+      title: '已导入 ${savedAll.length} 个文件'
           '${problems.isNotEmpty ? '（${problems.length} 项有问题）' : ''}',
       lines: [
-        for (final s in result.saved) s['path']?.toString() ?? '',
+        for (final s in savedAll)
+          '${s['path']?.toString() ?? ''}${s['cos'] == true ? '（存于对象存储）' : ''}',
         ...problems,
       ].where((l) => l.isNotEmpty).toList(),
       severity: problems.isEmpty
@@ -240,7 +280,7 @@ Future<List<Map<String, dynamic>>> importLocalAssets(
           : fluent.InfoBarSeverity.warning,
     );
   }
-  return result.saved;
+  return savedAll;
 }
 
 /// 后端信封里的 `detail` 常带可执行修复指引，优先展示它（与资源面板一致）。
@@ -275,4 +315,118 @@ void _bar(
       action: fluent.Button(onPressed: close, child: const Text('关闭')),
     ),
   );
+}
+
+// ---------------- S3 直传支持（可选） ----------------
+
+/// 从本地导入资源（S3 直传优化版），返回后端 `saved` 列表。
+/// 
+/// - 使用 [FileUploadClient] 智能选择上传方式：
+///   - > threshold: S3 直传（PUT 到预签名 URL）
+///   - <= threshold: 服务器上传（base64 POST）
+/// - [storyId] 可选，用于将文件归类到特定故事
+Future<List<Map<String, dynamic>>> importLocalAssetsWithS3Support(
+  BuildContext context, {
+  required String kind,
+  bool registerAudio = false,
+  LocalFilePicker? picker,
+  String? storyId,
+}) async {
+  final isImage = kind == 'image';
+  final pick = picker ?? debugLocalFilePicker ?? pickLocalFilesByKind;
+
+  List<PickedLocalFile> picked;
+  try {
+    picked = await pick(kind);
+  } catch (e) {
+    if (context.mounted) {
+      _bar(context,
+          title: '打开文件选择器失败',
+          lines: [_detailOf(e)],
+          severity: fluent.InfoBarSeverity.error);
+    }
+    return const [];
+  }
+  if (picked.isEmpty) {
+    if (context.mounted) {
+      _bar(context,
+          title: '未选择文件',
+          lines: const ['已取消导入，未改动任何资源。'],
+          severity: fluent.InfoBarSeverity.warning);
+    }
+    return const [];
+  }
+
+  // 使用 FileUploadClient 进行智能上传
+  final uploader = FileUploadClient(ApiClient.instance);
+  final savedResults = <Map<String, dynamic>>[];
+  final errors = <Map<String, dynamic>>[];
+
+  for (final file in picked) {
+    try {
+      final uploadPath = await uploader.uploadFile(
+        name: file.name,
+        data: file.bytes,
+        kind: kind,
+        storyId: storyId,
+        onProgress: null, // 可在 UI 层实现进度回调
+      );
+
+      if (uploadPath != null) {
+        // 根据模式构建结果
+        savedResults.add({
+          'name': file.name,
+          'path': uploadPath,
+          'size': file.bytes.length,
+          if (kind == 'audio') ...{
+            'audio_id': null, // TODO: 需要时调用 registerAudio 逻辑
+            'audio_error': null,
+          },
+        });
+      } else {
+        throw Exception('上传成功但未返回路径');
+      }
+    } catch (e) {
+      errors.add({
+        'name': file.name,
+        'error': _detailOf(e),
+      });
+    }
+  }
+
+  // 清理图片缓存
+  if (isImage && savedResults.isNotEmpty) {
+    TexBytesCache.clear();
+  }
+
+  // 收集问题信息
+  final problems = <String>[
+    for (final e in errors) '${e['name'] ?? '?'}：${e['error']}',
+  ];
+
+  if (savedResults.isEmpty && errors.isEmpty) {
+    if (context.mounted) {
+      _bar(context,
+          title: '导入失败',
+          lines: ['无有效操作。'],
+          severity: fluent.InfoBarSeverity.error);
+    }
+    return const [];
+  }
+
+  if (context.mounted) {
+    _bar(
+      context,
+      title: '已导入 ${savedResults.length} 个文件${problems.isNotEmpty ? '（${errors.length} 项有问题）' : ''}',
+      lines: [
+        for (final s in savedResults) s['path']?.toString() ?? '',
+        ...problems,
+      ].where((l) => l.isNotEmpty).toList(),
+      severity: problems.isEmpty
+          ? fluent.InfoBarSeverity.success
+          : fluent.InfoBarSeverity.warning,
+    );
+  }
+
+  return savedResults;
 }

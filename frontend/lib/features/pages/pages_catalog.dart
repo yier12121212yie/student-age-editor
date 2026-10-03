@@ -29,6 +29,13 @@ const editorPages = <EditorPageDef>[
     primaryCfg: 'TalkCfg',
   ),
   EditorPageDef(
+    id: 'story_competitor',
+    title: '故事 (友商风格)',
+    description: '类友商产品#2「拾光舞台」剧情编辑：对话夹树 · 游戏画面即写台词 · 人物与表情',
+    cfgNames: ['TalkCfg', 'OptionCfg', 'EvtCfg', 'EvtTypeCfg', 'BgCfg', 'CGCfg'],
+    primaryCfg: 'TalkCfg',
+  ),
+  EditorPageDef(
     id: 'person',
     title: '人物',
     description: '角色与成长：PersonCfg 人物 / PersonGrowCfg 成长曲线',

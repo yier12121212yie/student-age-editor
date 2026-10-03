@@ -267,6 +267,16 @@ bool body_i64(const json& b, const char* k, long long* out) {
     return false;
 }
 
+// 可选字符串字段：命中且非空返回 true 并写出值（initiate 的 story_id/kind）。
+bool str_field(const json& o, const char* k, std::string& out) {
+    auto it = o.find(k);
+    if (it != o.end() && it->is_string()) {
+        out = it->get<std::string>();
+        return !out.empty();
+    }
+    return false;
+}
+
 Resp err_json(int status, const std::string& msg) {
     return Resp::Json(status, json{{"error", msg}});
 }
@@ -485,6 +495,8 @@ const char* status_name(Status s) {
         case Status::Archived: return "archived";
         case Status::WarmingUp: return "warming_up";
         case Status::Ready: return "ready";
+        case Status::S3Uploaded: return "s3_uploaded";
+        case Status::Linked: return "linked";
         case Status::Failed: return "failed";
     }
     return "failed";
@@ -495,6 +507,8 @@ bool status_from_name(const std::string& name, Status* out) {
     if (name == "archiving") { *out = Status::Archiving; return true; }
     if (name == "archived") { *out = Status::Archived; return true; }
     if (name == "warming_up") { *out = Status::WarmingUp; return true; }
+    if (name == "s3_uploaded") { *out = Status::S3Uploaded; return true; }
+    if (name == "linked") { *out = Status::Linked; return true; }
     if (name == "ready") { *out = Status::Ready; return true; }
     if (name == "failed") { *out = Status::Failed; return true; }
     return false;
@@ -558,6 +572,8 @@ CosConfig load_config() {
     cfg.max_bytes = env_i64("EDITOR_FILE_MAX_BYTES", 100LL * 1024 * 1024 * 1024);
     cfg.reclaim_ttl_seconds = env_i64("EDITOR_FILE_RECLAIM_TTL", 2 * 3600);
     cfg.reclaim_interval_seconds = env_i64("EDITOR_FILE_RECLAIM_INTERVAL", 60);
+    cfg.s3_direct_enabled = spath::getenv_utf8("EDITOR_FILE_S3_ENABLED") == "1";
+    cfg.s3_threshold_bytes = env_i64("EDITOR_FILE_S3_THRESHOLD_BYTES", 50LL * 1024 * 1024);
     return cfg;
 }
 
@@ -807,6 +823,8 @@ json public_record(const json& record) {
     }
     std::string err = j_str(record, "error");
     if (!err.empty()) out["error"] = err;
+    out["storage_type"] = j_str(record, "storage_type");
+    if (!j_str(record, "s3_key").empty()) out["s3_key"] = j_str(record, "s3_key");
     std::string st = j_str(record, "status");
     if (st == "archiving" || st == "warming_up") out["retry_after"] = 5;
     return out;
@@ -935,6 +953,127 @@ bool warm_now(const std::string& data_root, const std::string& id, std::string* 
         r["error"] = "";
     });
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// 大资源引用 / 导出产物（模组线集成）
+// ---------------------------------------------------------------------------
+
+// linked 记录的对象键：优先已固化的 key，其次 s3_key / staging_key，最后按
+// staging 规则重算（upload/request 与 initiate-s3 两条来路都能覆盖）。
+static std::string record_cos_key(const CosConfig& cfg, const json& rec) {
+    std::string key = j_str(rec, "key");
+    if (key.empty()) key = j_str(rec, "s3_key");
+    if (key.empty()) key = j_str(rec, "staging_key");
+    if (key.empty())
+        key = staging_key(cfg, j_str(rec, "id"), j_str(rec, "safe_name"));
+    return key;
+}
+
+bool mark_linked(const std::string& data_root, const std::string& id, std::string* err) {
+    json rec = find_record(data_root, id);
+    if (!rec.is_object()) {
+        if (err) *err = "no such file: " + id;
+        return false;
+    }
+    Status st = Status::Failed;
+    status_from_name(j_str(rec, "status"), &st);
+    if (st != Status::PendingUpload && st != Status::S3Uploaded && st != Status::Linked) {
+        if (err) *err = "status not linkable: " + j_str(rec, "status");
+        return false;
+    }
+    const CosConfig cfg = load_config();
+    const std::string key = record_cos_key(cfg, rec);
+    patch_and_get(data_root, id, [&](json& r) {
+        r["status"] = "linked";
+        r["key"] = key;
+        r["updated_at"] = sa_core::now_ms();
+        r["error"] = "";
+    });
+    return true;
+}
+
+bool materialize(const std::string& data_root, const std::string& id,
+                 const std::string& dst_path, std::string* err) {
+    json rec = find_record(data_root, id);
+    if (!rec.is_object()) {
+        if (err) *err = "no such file: " + id;
+        return false;
+    }
+    Status st = Status::Failed;
+    status_from_name(j_str(rec, "status"), &st);
+    spath::create_dirs(spath::dirname(dst_path));
+    std::error_code ec;
+    switch (st) {
+        case Status::Archived:
+        case Status::Ready:
+        case Status::WarmingUp: {
+            const std::string local = j_str(rec, "local_path");
+            if (local.empty() || !spath::is_file(local)) {
+                if (err) *err = "local archive missing: " + local;
+                return false;
+            }
+            std::filesystem::copy_file(spath::to_path(local), spath::to_path(dst_path),
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) {
+                if (err) *err = "copy failed: " + ec.message();
+                return false;
+            }
+            return true;
+        }
+        case Status::Linked:
+        case Status::S3Uploaded: {
+            const CosConfig cfg = load_config();
+            if (!cfg.ready()) {
+                if (err) *err = "file transfer not configured";
+                return false;
+            }
+            CosOps ops = active_ops();
+            if (!ops.download) {
+                if (err) *err = "no COS download op";
+                return false;
+            }
+            return ops.download(cfg, record_cos_key(cfg, rec), dst_path, err);
+        }
+        default:
+            if (err) *err = "status not materializable: " + j_str(rec, "status");
+            return false;
+    }
+}
+
+std::string register_local_artifact(const std::string& data_root, const std::string& name,
+                                    const std::string& src_path, long long size) {
+    const std::string id = new_id();
+    const std::string safe = sanitize_name(name);
+    const long long now = sa_core::now_ms();
+    spath::create_dirs(local_objects_dir(data_root));
+    const std::string dst = spath::join(local_objects_dir(data_root), id);
+    std::error_code ec;
+    std::filesystem::rename(spath::to_path(src_path), spath::to_path(dst), ec);
+    if (ec) {
+        std::error_code ec2;
+        std::filesystem::copy_file(spath::to_path(src_path), spath::to_path(dst),
+                                   std::filesystem::copy_options::overwrite_existing, ec2);
+        if (ec2) return {};
+        std::filesystem::remove(spath::to_path(src_path), ec);
+    }
+
+    json rec = json::object();
+    rec["id"] = id;
+    rec["name"] = name;
+    rec["safe_name"] = safe;
+    rec["size"] = size;
+    rec["status"] = status_name(Status::Archived);
+    rec["storage_type"] = "server";
+    rec["local_path"] = dst;
+    rec["created_at"] = now;
+    rec["updated_at"] = now;
+    rec["archived_at"] = now;
+    std::lock_guard<std::mutex> lk(g_store_mu);
+    json doc = read_store_unlocked(data_root);
+    doc["files"].push_back(rec);
+    if (!write_store_unlocked(data_root, doc)) return {};
+    return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,6 +1222,157 @@ void register_file_transfer_routes(Router& r) {
         return Resp::Json(200, out);
     });
 
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/files/upload/initiate - 初始化上传请求（支持 S3 直传）
+// ---------------------------------------------------------------------------
+r.post(R"(/api/v1/files/upload/initiate)", [](const Req& req) -> Resp {
+    const json* body = nullptr;
+    if (!get_body_object(req, &body) || !body->is_object())
+        return err_json(400, "invalid JSON body");
+    
+    CosConfig cfg = load_config();
+    if (!cfg.ready())
+        return err_json(500, "file transfer not configured: set EDITOR_FILE_COS_SECRET_ID, EDITOR_FILE_COS_SECRET_KEY and EDITOR_FILE_COS_BUCKET");
+
+    std::string name = body_str(*body, "name");
+    if (name.empty()) name = body_str(*body, "filename");
+    if (name.empty()) return err_json(400, "name or filename required");
+    
+    name = sanitize_name(name);
+    long long size = 0;
+    if (!body_i64(*body, "size", &size)) return err_json(400, "size required");
+    if (size <= 0) return err_json(400, "size must be positive");
+    if (cfg.max_bytes > 0 && size > cfg.max_bytes)
+        return err_json(413, "file too large (max " + std::to_string(cfg.max_bytes) + " bytes)");
+    
+    // 可选参数
+    std::string story_id;
+    bool has_story_id = str_field(*body, "story_id", story_id);
+    std::string kind;
+    bool has_kind = str_field(*body, "kind", kind);
+    
+    const std::string id = new_id();
+    const std::string safe = sanitize_name(name);
+    const long long now = sa_core::now_ms();
+    
+    // 判断是否需要 S3 直传
+    bool use_s3 = cfg.s3_direct_enabled && size > cfg.s3_threshold_bytes;
+    std::string mode = use_s3 ? "s3_direct" : "server_upload";
+    
+    // 创建记录
+    json rec = json::object();
+    rec["id"] = id;
+    rec["name"] = name;
+    rec["safe_name"] = safe;
+    rec["size"] = size;
+    rec["status"] = status_name(Status::PendingUpload);
+    rec["storage_type"] = use_s3 ? "s3" : "server";
+    rec["created_at"] = now;
+    rec["updated_at"] = now;
+    rec["upload_ttl_seconds"] = cfg.upload_ttl_seconds;
+    rec["threshold_bytes"] = cfg.s3_threshold_bytes;
+    if (has_kind && !kind.empty()) rec["kind"] = kind;
+    
+    // 保存记录
+    {
+        std::lock_guard<std::mutex> lk(g_store_mu);
+        json doc = read_store_unlocked(sa::editor_root());
+        doc["files"].push_back(rec);
+        if (!write_store_unlocked(sa::editor_root(), doc))
+            return err_json(500, "cannot persist file record");
+    }
+    
+    json out = json::object();
+    out["file_id"] = id;
+    out["upload_mode"] = mode;
+    out["threshold_bytes"] = cfg.s3_threshold_bytes;
+    
+    if (use_s3) {
+        // 生成 S3 PUT 预签名 URL
+        std::string key;
+        if (has_story_id && !story_id.empty()) {
+            key = cfg.prefix + "/stories/" + story_id + "/" + safe;
+        } else {
+            key = cfg.prefix + "/staging/" + id + "/" + safe;
+        }
+        out["s3_key"] = key;
+        out["method"] = "PUT";
+        out["upload_url"] = presign_url(cfg, "PUT", key, cfg.upload_ttl_seconds);
+        out["expires_in"] = cfg.upload_ttl_seconds;
+        rec["s3_key"] = key;
+        rec["updated_at"] = now;
+        {
+            std::lock_guard<std::mutex> lk(g_store_mu);
+            json doc = read_store_unlocked(sa::editor_root());
+            for (auto& r : doc["files"]) {
+                if (j_str(r, "id") == id) {
+                    r = rec;
+                    break;
+                }
+            }
+            write_store_unlocked(sa::editor_root(), doc);
+        }
+    } else {
+        // 服务器上传模式：使用原有的 staging_key
+        std::string key = staging_key(cfg, id, safe);
+        out["method"] = "POST";
+        out["upload_url"] = "/api/v1/files/upload/request";  // 提示客户端使用旧接口或 base64
+        rec["staging_key"] = key;
+        rec["updated_at"] = now;
+        {
+            std::lock_guard<std::mutex> lk(g_store_mu);
+            json doc = read_store_unlocked(sa::editor_root());
+            for (auto& r : doc["files"]) {
+                if (j_str(r, "id") == id) {
+                    r = rec;
+                    break;
+                }
+            }
+            write_store_unlocked(sa::editor_root(), doc);
+        }
+    }
+    
+    return Resp::Json(200, std::move(out));
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/files/upload/s3-complete - 通知 S3 上传完成
+// ---------------------------------------------------------------------------
+r.post("/api/v1/files/upload/s3-complete", [](const Req& req) -> Resp {
+    const json* body = nullptr;
+    if (!get_body_object(req, &body) || !body->is_object())
+        return err_json(400, "invalid JSON body");
+    
+    std::string id = j_str(*body, "file_id");
+    if (id.empty()) return err_json(400, "file_id required");
+    
+    json rec = find_record(sa::editor_root(), id);
+    if (!rec.is_object()) return err_json(404, "no such file: " + id);
+    
+    Status st = Status::Failed;
+    status_from_name(j_str(rec, "status"), &st);
+    
+    // 只允许 PendingUpload 状态转为 S3Uploaded
+    if (st != Status::PendingUpload) {
+        json public_rec = public_record(rec);
+        public_rec["retry_after"] = 5;
+        return Resp::Json(409, std::move(public_rec));
+    }
+    
+    // 更新为 s3_uploaded
+    patch_and_get(sa::editor_root(), id, [&](json& r) {
+        r["status"] = "s3_uploaded";
+        r["uploaded_at"] = sa_core::now_ms();
+        r["error"] = "";
+        if (body->contains("etag")) {
+            r["etag"] = j_str(*body, "etag");
+        }
+    });
+    
+    json public_rec = public_record(find_record(sa::editor_root(), id));
+    return Resp::Json(200, std::move(public_rec));
+});
     // POST /api/v1/files/upload/complete — 入后台队列，内网拉回本地落盘。
     r.post("/api/v1/files/upload/complete", [](const Req& req) -> Resp {
         const json* body = nullptr;
@@ -1154,6 +1444,25 @@ void register_file_transfer_routes(Router& r) {
                 return Resp::Json(202, json{{"file_id", id},
                                             {"status", "warming_up"},
                                             {"retry_after", 3}});
+            }
+            case Status::S3Uploaded:
+            case Status::Linked: {
+                // 直传/引用文件：字节在 COS，直接回 GET 预签名（或 CDN）直链，
+                // 不落盘不预热；linked 记录永不被 pending 清理器回收。
+                std::string key = record_cos_key(cfg, rec);
+                if (key.empty()) return err_json(500, "no object key in record");
+                const std::string url = download_url(cfg, key);
+                if (url.empty()) return err_json(500, "cannot sign download url");
+                long long expires = 0;
+                if (cfg.cdn_domain.empty())
+                    expires = cfg.download_ttl_seconds;
+                else if (!cfg.cdn_auth_type.empty() && !cfg.cdn_auth_key.empty())
+                    expires = cfg.cdn_auth_ttl_seconds;
+                return Resp::Json(200, json{{"file_id", id},
+                                            {"status", j_str(rec, "status")},
+                                            {"url", url},
+                                            {"method", "GET"},
+                                            {"expires_in", expires}});
             }
             case Status::Ready: {
                 std::string key = j_str(rec, "warm_key");

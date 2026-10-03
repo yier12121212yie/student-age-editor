@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show ValueNotifier, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
@@ -6,6 +7,8 @@ import 'dart:convert';
 
 import '../../core/api_client.dart';
 import '../../core/file_save.dart';
+import '../../core/mod_staged_export.dart';
+import '../../core/mod_staged_import.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../../core/zip_staging.dart';
@@ -93,11 +96,36 @@ class _ModsPageState extends State<ModsPage> {
     }
   }
 
-  /// 上传本地模组 zip 导入为工作区新模组（桌面=本机路径，web=base64 上传）。
+  /// 上传本地模组 zip 导入为工作区新模组。
+  ///
+  /// 分三条通道：
+  /// - 桌面/Android：本机路径直发 `import_path`（zip_staging io 实现）；
+  /// - 网页小包：base64 `import_upload`（既有行为）；
+  /// - 网页大包（>48MiB，典型是带贴图/配乐资源的模组）：走 `/api/v1/files`
+  ///   直传落盘 + `import_staged`。base64 通道受网关 `max_body_bytes`
+  ///   （默认 256 MiB）与浏览器内存双重压制，资源包一旦超阈值必失败，
+  ///   这正是「模组里有资源就无法导入自托管」的根因。
   Future<void> _importMod() async {
     const typeGroup = XTypeGroup(label: '模组包', extensions: ['zip']);
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
     if (file == null) return;
+    if (kIsWeb && await file.length() > StagedModImport.directUploadThresholdBytes) {
+      try {
+        await _importModStaged(file);
+        return;
+      } on ApiException catch (e) {
+        // 服务器没配 COS 文件流转（upload/request/complete 的 500）：回退
+        // 旧 base64 通道，让小包照常可用，大包拿到服务端明确的上限报错。
+        final notConfigured = e.statusCode == 500 &&
+            e.message.toLowerCase().contains('file transfer not configured');
+        if (!notConfigured) rethrow;
+      }
+    }
+    await _importModViaZip(file);
+  }
+
+  /// 既有 zip 通道：桌面 = 本机路径端点，web = base64 上传端点。
+  Future<void> _importModViaZip(XFile file) async {
     StagedZip? staged;
     try {
       staged = await stageZipForInstall(
@@ -111,20 +139,7 @@ class _ModsPageState extends State<ModsPage> {
       final r = await ApiClient.instance.post(staged.endpoint,
           body: staged.body, timeout: const Duration(minutes: 30));
       final map = r is Map ? r.cast<String, dynamic>() : <String, dynamic>{};
-      final mod = map['mod'];
-      if (mod is Map) {
-        final m = mod.cast<String, dynamic>();
-        widget.state.setMod(m['name'] as String, m['root'] as String);
-      }
-      await _refresh();
-      if (mounted) {
-        fluent.displayInfoBar(
-            context,
-            builder: (ctx, close) => const fluent.InfoBar(
-                title: Text('导入成功'),
-                content: Text('模组已导入并选中'),
-                severity: fluent.InfoBarSeverity.success));
-      }
+      await _applyImportResult(map);
     } catch (e) {
       if (mounted) _showError('导入失败：$e');
     } finally {
@@ -134,13 +149,118 @@ class _ModsPageState extends State<ModsPage> {
     }
   }
 
-  /// 把当前选中的模组打包成 zip 下载（web 走浏览器下载，桌面弹保存位置）。
+  /// 自托管大模组包：直传对象存储 -> 服务器落盘 -> import_staged，
+  /// 全程带进度对话框。抛出的异常由 [._importMod] 决定回退或展示。
+  Future<void> _importModStaged(XFile file) async {
+    final stage =
+        ValueNotifier<_ModImportStage>(const _ModImportStage('申请直传', null));
+    final dialogShown = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _ModImportProgressDialog(stage: stage),
+    );
+    try {
+      final map = await StagedModImport.run(
+        file,
+        onStage: (label, frac) => stage.value = _ModImportStage(label, frac),
+      );
+      stage.value = const _ModImportStage('导入完成', 1, done: true);
+      await dialogShown;
+      await _applyImportResult(map);
+    } catch (e) {
+      stage.value = const _ModImportStage('导入失败', null, done: true);
+      await dialogShown;
+      rethrow;
+    } finally {
+      stage.dispose();
+    }
+  }
+
+  /// 导入成功后的统一收尾：选中模组、刷新列表、提示。
+  Future<void> _applyImportResult(Map<String, dynamic> map) async {
+    final mod = map['mod'];
+    if (mod is Map) {
+      final m = mod.cast<String, dynamic>();
+      widget.state.setMod(m['name'] as String, m['root'] as String);
+    }
+    await _refresh();
+    if (mounted) {
+      fluent.displayInfoBar(
+          context,
+          builder: (ctx, close) => const fluent.InfoBar(
+              title: Text('导入成功'),
+              content: Text('模组已导入并选中'),
+              severity: fluent.InfoBarSeverity.success));
+    }
+  }
+
+  /// 把当前选中的模组打包成 zip 下载（web 走服务端拼包 + 直链，桌面弹保存位置）。
+  ///
+  /// 网页版优先 `/api/mods/export_staged`：服务端把本地盘文件与 COS 引用资源
+  /// 流式拼成 zip（产物登记进文件流转），浏览器经预签名直链带进度下载；带资源
+  /// 的大模组走 base64 导出必爆。未配置对象存储时回退旧 base64 通道（小模组）。
   Future<void> _exportCurrent() async {
     final name = widget.state.modName;
     if (name.isEmpty) {
       if (mounted) _showError('请先选择要导出的模组');
       return;
     }
+    if (kIsWeb) {
+      try {
+        await _exportStaged(name);
+        return;
+      } on ApiException catch (e) {
+        final notConfigured = e.statusCode == 500 &&
+            e.message.toLowerCase().contains('file transfer not configured');
+        if (!notConfigured) {
+          if (mounted) _showError('导出失败：$e');
+          return;
+        }
+        // 未配置对象存储：回退 base64 通道，让小模组照常导出。
+      }
+    }
+    await _exportViaBase64(name);
+  }
+
+  /// 服务端拼包导出（web）：打包 -> 等待预热 -> 直链带进度下载 -> 保存。
+  Future<void> _exportStaged(String name) async {
+    final stage =
+        ValueNotifier<_ModImportStage>(const _ModImportStage('服务端打包', null));
+    final dialogShown = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _ModImportProgressDialog(stage: stage, title: '导出模组包'),
+    );
+    try {
+      final out = await StagedModExport.run(
+        name,
+        onStage: (label, frac) => stage.value = _ModImportStage(label, frac),
+      );
+      stage.value = const _ModImportStage('保存中', 1, done: true);
+      await dialogShown;
+      final saved = await saveBytesToFile(
+          filename: out.filename,
+          bytes: out.bytes,
+          mimeType: 'application/zip');
+      if (mounted && saved != null) {
+        fluent.displayInfoBar(
+            context,
+            builder: (ctx, close) => fluent.InfoBar(
+                title: const Text('导出完成'),
+                content: Text('已保存 ${out.filename}'),
+                severity: fluent.InfoBarSeverity.success));
+      }
+    } catch (e) {
+      stage.value = const _ModImportStage('导出失败', null, done: true);
+      await dialogShown;
+      rethrow;
+    } finally {
+      stage.dispose();
+    }
+  }
+
+  /// 旧 base64 导出通道（桌面；web 未配对象存储时的小模组回退）。
+  Future<void> _exportViaBase64(String name) async {
     try {
       final r =
           await ApiClient.instance.post('/api/mods/export',
@@ -415,6 +535,78 @@ class _HeaderIcon extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 大模组包直传导入的阶段快照（标签 + 可选进度 0..1 + 是否结束）。
+class _ModImportStage {
+  const _ModImportStage(this.label, this.frac, {this.done = false});
+  final String label;
+  final double? frac;
+  final bool done;
+}
+
+/// 直传导入/导出进度对话框：监听 [stage]，`done` 置位后自动关闭（无论完成还是
+/// 失败；调用方通过它持有的 Future 汇合，避免竞态 pop）。
+class _ModImportProgressDialog extends StatefulWidget {
+  const _ModImportProgressDialog({required this.stage, this.title = '导入模组包'});
+  final ValueNotifier<_ModImportStage> stage;
+  final String title;
+
+  @override
+  State<_ModImportProgressDialog> createState() =>
+      _ModImportProgressDialogState();
+}
+
+class _ModImportProgressDialogState extends State<_ModImportProgressDialog> {
+  @override
+  void initState() {
+    super.initState();
+    widget.stage.addListener(_maybeClose);
+    // 对话框可能在导入已结束后才真正弹出（showDialog 排队）：首帧即检查。
+    if (widget.stage.value.done) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _maybeClose());
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.stage.removeListener(_maybeClose);
+    super.dispose();
+  }
+
+  void _maybeClose() {
+    if (widget.stage.value.done && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_ModImportStage>(
+      valueListenable: widget.stage,
+      builder: (context, stage, _) {
+        final pct = stage.frac == null ? null : (stage.frac! * 100).clamp(0.0, 100.0);
+        return fluent.ContentDialog(
+          title: Text(widget.title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                pct == null
+                    ? '${stage.label} …'
+                    : '${stage.label} ${pct.toStringAsFixed(1)}%',
+                style: const TextStyle(fontSize: 12.5),
+              ),
+              const SizedBox(height: 10),
+              fluent.ProgressBar(value: pct),
+            ],
+          ),
+          actions: const [],
+        );
+      },
     );
   }
 }

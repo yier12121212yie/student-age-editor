@@ -15,6 +15,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/motion.dart';
 import 'ai_models.dart';
 
 // ---------------- 历史会话条目 ----------------
@@ -686,11 +687,20 @@ class TypingDots extends StatefulWidget {
 }
 
 class _TypingDotsState extends State<TypingDots>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat();
+    with SingleTickerProviderStateMixin, DecorativeLoopMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    // 失焦/最小化/系统减少动画时停表：思考中三点是「有活在跑」的提示，
+    // 窗口不在前台时没人看，不必为此每帧出帧。
+    attachLoop(_c);
+  }
 
   @override
   void dispose() {

@@ -14,8 +14,6 @@ import '../editor/editor_controller.dart';
 import '../editor/schema_editor_view.dart';
 import '../files/file_tree_page.dart';
 import '../files/file_viewer.dart';
-import '../graph/relation_graph_view.dart';
-import '../graph/timeline_view.dart';
 import '../mods/mods_page.dart';
 import '../pages/pages_catalog.dart';
 import '../pages/page_view.dart';
@@ -257,20 +255,6 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
           state: widget.state,
           controller: widget.shell.controller,
           onPreview: _openDocWithPreview,
-        );
-      case StoryFlowView.relationGraph:
-        return RelationGraphView(
-          key: const ValueKey('view-relation-graph'),
-          // TODO(来源精确定位): 现仅切到对应 cfg 文档；后续可带 sourceId 定位行。
-          onOpenSource: (cfg, id) => _openDoc(OpenDoc.cfg(cfgName: cfg)),
-        );
-      case StoryFlowView.timeline:
-        return TimelineView(
-          key: const ValueKey('view-timeline'),
-          // EvtCfg 直接开场景预览，其余按 cfg 表文档打开。
-          onOpenSource: (cfg, id) => cfg == 'EvtCfg'
-              ? _openDoc(OpenDoc.preview(eventId: id))
-              : _openDoc(OpenDoc.cfg(cfgName: cfg)),
         );
     }
   }

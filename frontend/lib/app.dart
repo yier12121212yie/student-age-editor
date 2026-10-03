@@ -381,7 +381,9 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
           // 覆盖成不透明调色板色（包在 Navigator 之上，弹窗/菜单也在覆盖范围内）。
           builder: (context, child) => Theme(
             data: opaqueMaterialSurfaces(Theme.of(context), palette),
-            child: child ?? const SizedBox.shrink(),
+            // 闸门放在 Navigator/Overlay 之上：弹窗、信息条里的转圈与装饰动画
+            // 同样受窗口生命周期管制（只包 home 会漏掉 overlay 那一层）。
+            child: MotionGate(child: child ?? const SizedBox.shrink()),
           ),
           home: Material(
             // 壳基于 Fluent UI，但部分控件（InkWell/PopupMenuButton 等）来自 Material，

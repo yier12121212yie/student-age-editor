@@ -15,6 +15,7 @@ class PagesList extends StatelessWidget {
 
   static const _icons = <String, IconData>{
     'story': FluentIcons.chat_24_regular,
+    'story_competitor': FluentIcons.script_24_regular,
     'person': FluentIcons.person_24_regular,
     'evt': FluentIcons.calendar_24_regular,
     'social': FluentIcons.people_community_24_regular,

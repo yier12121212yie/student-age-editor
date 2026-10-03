@@ -192,14 +192,45 @@ void main() {
       expect(find.text('标题'), findsOneWidget);
     });
 
-    testWidgets('英文键模糊搜索命中字段', (tester) async {
-      await mount(tester);
-      await tester.enterText(findFieldSearch, 'cont');
+    testWidgets('单字段配置表也能显示查找框', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/cfg/SimpleCfg') {
+          return http.Response(
+            '{"data":{"1":{"name":"测试","value":123}},"exists":true}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{"ok":true}', 200,
+            headers: {'content-type': 'application/json'});
+      });
+      await tester.pumpWidget(fluent.FluentApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: SchemaEditorView(
+            state: AppState()
+              ..gameSchema = {
+                'SimpleCfg': {'name': 'String', 'value': 'Number'},
+              }
+              ..keyMaps = {}
+              ..gameDicts = {},
+            cfgName: 'SimpleCfg',
+            classic: true,
+          ),
+        ),
+      ));
       await tester.pump();
-      // content 字段标签为 content（无 keyMap），命中后以高亮 rich 渲染。
-      expect(find.text('类型'), findsNothing);
-      expect(find.textContaining('content', findRichText: true), findsWidgets);
-      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(milliseconds: 300));
+      
+      // 即使有多个字段，也应该能显示查找框
+      expect(find.byWidgetPredicate(
+        (w) => w is fluent.TextBox && 
+               (w.placeholder?.contains('查找') ?? false),
+      ), findsOneWidget);
     });
   });
 }

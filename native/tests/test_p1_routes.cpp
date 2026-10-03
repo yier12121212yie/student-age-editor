@@ -850,6 +850,32 @@ TEST_CASE("p1 routes: /api/roles catalog (dict + PersonCfg merge)", "[p1][routes
     CHECK(fid.json_payload.at("roles")[0].at("name") == "旁白");
 }
 
+// 工作区 PersonCfg 只含少数行（角色线 mod 常态）时，未被覆盖的官方角色必须
+// 保留立绘键；否则 /api/roles 的 portrait* 全空，人物选择器整片占位、且因 key
+// 为空根本不发 /api/aa/preview 取图。
+TEST_CASE("p1 routes: partial workspace PersonCfg keeps official portraits",
+          "[p1][routes][nocode]") {
+    P1Fixture fx;
+    fx.write_cfg_file("PersonCfg",
+                      R"({"105": {"id": 105, "name": "肖清雅MOD", "url": ["role_mod105"]}})");
+    auto r = fx.call("GET", "/api/roles");
+    REQUIRE(r.status == 200);
+    const json& roles = r.json_payload.at("roles");
+    auto find = [&](const std::string& id) -> const json* {
+        for (const auto& x : roles)
+            if (x.at("id") == id) return &x;
+        return nullptr;
+    };
+    const json* m = find("105");
+    REQUIRE(m != nullptr);
+    CHECK(m->at("name") == "肖清雅MOD");
+    CHECK(m->at("portrait1") == "role_mod105");
+    // 未被 mod 覆盖的官方角色（102 = 薛诗蕾，随包表带 role_xiaolei）仍带立绘键。
+    const json* official = find("102");
+    REQUIRE(official != nullptr);
+    CHECK(!official->at("portrait").get<std::string>().empty());
+}
+
 // 工作区没有 PersonCfg 时（网页/托管环境的常态），/api/roles 必须回落到随包
 // 官方人物表，否则 portrait* 全空、人物资源库显示不出立绘。
 TEST_CASE("p1 routes: /api/roles falls back to bundled PersonCfg",

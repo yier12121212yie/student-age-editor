@@ -223,6 +223,20 @@ TEST_CASE("import_files: 未知扩展名无 dir -> errors；显式 dir 可导入
     CHECK(std::filesystem::exists(fx.mod_root() / "Docs" / "notes.txt"));
 }
 
+TEST_CASE("import_files: 视频按扩展名落 Videos", "[modfiles]") {
+    ModFilesFixture fx;
+    auto& r = fx.router();
+    auto resp = import_files(r, json::array({file_obj("片头.mp4", b64("ftypmp42"))}));
+    REQUIRE(resp.status == 200);
+    REQUIRE(resp.json_payload["saved"].size() == 1);
+    CHECK(resp.json_payload["saved"][0]["path"] == "Videos/片头.mp4");
+    CHECK(std::filesystem::exists(fx.mod_root() / std::filesystem::u8path("Videos/片头.mp4")));
+    // 显式 dir 依旧优先（视频想进别的目录时）。
+    auto ok = import_files(r, json::array({file_obj("b.webm", b64("webm"), "Docs")}));
+    REQUIRE(ok.json_payload["saved"].size() == 1);
+    CHECK(ok.json_payload["saved"][0]["path"] == "Docs/b.webm");
+}
+
 TEST_CASE("import_files: register_audio=false 时音频不登记", "[modfiles]") {
     ModFilesFixture fx;
     auto& r = fx.router();

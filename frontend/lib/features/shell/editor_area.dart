@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
@@ -469,18 +471,28 @@ class _WelcomeView extends StatefulWidget {
 class _WelcomeViewState extends State<_WelcomeView>
     with SingleTickerProviderStateMixin {
   late final AnimationController _c;
-  late final Animation<double> _float;
+  bool _firstDeps = true;
+
   @override
   void initState() {
     super.initState();
+    // 有限次呼吸：进场时上下浮两拍后停在静止位。原先是 `..repeat(reverse: true)`
+    // 的永久动画——欢迎页/空编辑区没人动它，永久 60fps 出帧等于白烧 GPU。
     _c = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2200),
-    )..repeat(reverse: true);
-    _float = Tween<double>(
-      begin: -6,
-      end: 6,
-    ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
+    );
+  }
+
+  /// 阻尼位移：6px 幅度做 1.5 个周期往复，v→1 时精确收敛到 0（终点静止）。
+  static double _breath(double v) => -6 * math.sin(v * 3 * math.pi) * (1 - v);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_firstDeps) return;
+    _firstDeps = false;
+    if (MotionScope.focusedOf(context)) _c.forward();
   }
 
   @override
@@ -491,19 +503,21 @@ class _WelcomeViewState extends State<_WelcomeView>
 
   @override
   Widget build(BuildContext context) {
+    // 闸门关闭（失焦/最小化/系统减少动画）= 静止终态，位移直接归零。
+    final animate = MotionScope.focusedOf(context);
     return Center(
       child: ScaleFade(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             AnimatedBuilder(
-              animation: _float,
+              animation: _c,
               builder: (context, child) => Transform.translate(
-                offset: Offset(0, _float.value),
+                offset: Offset(0, animate ? _breath(_c.value) : 0),
                 child: child,
               ),
-              // 边界包住带 blurRadius:24 阴影的方块：浮动只做纯合成位移，
-              // 阴影光栅跨帧复用（否则这个永久动画每帧重画一次阴影）。
+              // 边界包住带 blurRadius:24 阴影的方块：位移只做纯合成变换，
+              // 阴影光栅跨帧复用（否则呼吸期间每帧重画一次 24px 阴影）。
               child: RepaintBoundary(
                 child: Container(
                   width: 72,

@@ -629,10 +629,32 @@ void register_semantic_routes(Router& r) {
         if (it != req.query.end()) name = it->second;
         std::string cfg_name = cfg_name_of(name);
         json items = json::array();
-        auto data = read_mod_table(cfg_name);
-        if (data && data->is_object()) {
+        
+        // P7 FIX: 模组有了自己的 cfg 后要合并游戏原版 cfg，让无代码模式能选原版数据
+        // 1. 先读模组表
+        auto mod_data = read_mod_table(cfg_name);
+        // 2. 再读本体表（base_store），未加载则空指针，语义同 Python STATE.base is None
+        auto store = base_store();
+        std::shared_ptr<const json> base_data;
+        if (store && store->available()) {
+            auto t = store->table(cfg_name);
+            if (t && t->is_object()) base_data = t;
+        }
+        // 3. 合并：base 在前，mod 在后覆盖（mod 新增或修改的记录优先）
+        std::map<std::string, const json*> merged_map;
+        if (base_data && base_data->is_object()) {
+            for (auto it_base = base_data->begin(); it_base != base_data->end(); ++it_base)
+                merged_map[it_base.key()] = &it_base.value();
+        }
+        if (mod_data && mod_data->is_object()) {
+            for (auto it_mod = mod_data->begin(); it_mod != mod_data->end(); ++it_mod)
+                merged_map[it_mod.key()] = &it_mod.value();  // mod 覆盖 base
+        }
+        
+        if (!merged_map.empty()) {
             std::vector<std::string> keys;
-            for (auto k = data->begin(); k != data->end(); ++k) keys.push_back(k.key());
+            keys.reserve(merged_map.size());
+            for (const auto& kv : merged_map) keys.push_back(kv.first);
             auto sk = [](const std::string& a, const std::string& b) {
                 auto ia = sa_core::py_int(a), ib = sa_core::py_int(b);
                 // Python key: (0,int(k),"") for numeric, (1,0,str(k)) otherwise.
@@ -647,11 +669,11 @@ void register_semantic_routes(Router& r) {
             if (keys.size() > 500) keys.resize(500);
             for (auto& k : keys) {
                 std::string preview;
-                const json& rec = (*data)[k];
-                if (rec.is_object()) {
+                const json* rec = merged_map[k];
+                if (rec && rec->is_object()) {
                     for (const char* fld : {"title", "content", "showTxt", "desc"}) {
-                        if (!rec.contains(fld) || rec[fld].is_null()) continue;
-                        std::string sv = sa_core::py_str(rec[fld]);
+                        if (!rec->contains(fld) || rec->at(fld).is_null()) continue;
+                        std::string sv = sa_core::py_str(rec->at(fld));
                         std::string cleaned;
                         for (char c : sv) if (c != '\r' && c != '\n') cleaned += c;
                         if (!str::trim(cleaned).empty()) {
@@ -869,31 +891,36 @@ void register_semantic_routes(Router& r) {
             r["portrait2"] = "";
             by_id[it.key()] = std::move(r);
         }
-        auto pcfg = read_mod_table("PersonCfg");
-        // 工作区没有 PersonCfg 时按 base 数据 -> 随包官方表兜底。网页/托管环境
-        // 常常没有本地 mod：缺这层会让 /api/roles 的立绘键（portrait*）全空，
-        // 人物资源库因此显示不出任何立绘。
-        if (!pcfg || !pcfg->is_object() || pcfg->empty()) {
-            if (auto store = base_store(); store && store->available()) {
-                auto t = store->table("PersonCfg");
-                if (t && t->is_object() && !t->empty()) pcfg = *t;
+        // PersonCfg 分层合并：随包官方表（最低）→ base 抽取表 → 工作区 mod 行
+        // （最高），按 id 覆盖整行。网页/托管环境常没有本地 mod；而角色线 mod
+        // 往往只带自己改动的少数人物（如「雾起回廊」只含 105 等）。旧实现
+        // 「首个非空表整表胜出」会让其余角色的立绘键（portrait*）全空，人物
+        // 选择器/人物资源库因此整片显示占位图，且因 key 为空根本不发
+        // /api/aa/preview 取图。
+        std::map<std::string, json> merged;
+        auto add_person_layer = [&](const json& table) {
+            if (!table.is_object()) return;
+            for (auto it = table.begin(); it != table.end(); ++it) {
+                if (it.value().is_object()) merged[it.key()] = it.value();
             }
+        };
+        add_person_layer(p1::person_cfg());
+        if (auto store = base_store(); store && store->available()) {
+            auto t = store->table("PersonCfg");
+            if (t && t->is_object()) add_person_layer(*t);
         }
-        if (!pcfg || !pcfg->is_object() || pcfg->empty()) {
-            const json& bundled = p1::person_cfg();
-            if (bundled.is_object() && !bundled.empty()) pcfg = bundled;
-        }
-        if (pcfg && pcfg->is_object()) {
+        if (auto mod = read_mod_table("PersonCfg"); mod && mod->is_object())
+            add_person_layer(*mod);
+        {
             auto first_str = [](const json& v) -> std::string {
                 if (v.is_array() && !v.empty() && v[0].is_string()) return v[0].get<std::string>();
                 return "";
             };
-            for (auto it = pcfg->begin(); it != pcfg->end(); ++it) {
-                const json& row = it.value();
-                if (!row.is_object()) continue;
-                json& slot = by_id[it.key()];
+            for (auto& kv : merged) {
+                const json& row = kv.second;
+                json& slot = by_id[kv.first];
                 if (!slot.is_object()) slot = json::object();
-                if (!slot.contains("id")) slot["id"] = it.key();
+                if (!slot.contains("id")) slot["id"] = kv.first;
                 if (!slot.contains("name")) slot["name"] = "";
                 if (!slot.contains("portrait")) slot["portrait"] = "";
                 if (!slot.contains("portrait1")) slot["portrait1"] = "";

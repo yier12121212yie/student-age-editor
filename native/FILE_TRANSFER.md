@@ -42,6 +42,32 @@
 | `GET` | `/api/v1/files/:id/download` | 文件在 COS → 返回 `{status:"ready", url}`（CDN 或预签名 GET）；已在本地 → 触发预热并返回 `202 {status:"warming_up", retry_after}`；归档中返回 `202 {status:"archiving"}`。 |
 | `GET` | `/api/v1/files/:id` | 状态查询（供客户端轮询）。 |
 
+消费者：
+
+- **大模组包导入**（`POST /api/mods/import_staged {file_id}`，见
+  `server/services/mods_routes.cpp`）：网页端选择 >48 MiB 的模组 zip 时，前端
+  自动走 申请 → PUT 直传 → complete 落盘 → 轮询 `archived` → import_staged
+  的链路，对落盘文件跑与 `import_path` 同款导入管线。该端点只认本账号数据根
+  里的已归档记录，**从不接受调用方提供的路径**（`import_path` 在托管模式下
+  依旧被网关封禁）。
+- **单资源大文件「留 COS 只存引用」**（`POST /api/mods/add_ref {file_id,name,dir?}`，
+  见 `server/services/mod_refs_routes.cpp`）：贴图/配乐/视频超过 48 MiB 时，
+  浏览器同样直传，但不 `complete` 落盘——add_ref 把记录钉成 `linked`（永久
+  引用，免遭 pending 清理），模组目录只写一条 `cos_resources.json` 索引；
+  `GET /api/v1/files/:id/download` 直接回预签名直链（不落盘不预热），可给
+  `<img>`/播放器用。
+- **模组导出拼包**（`POST /api/mods/export_staged`，支持 `?async=1`）：服务端把
+  本地盘文件（cfg 表 + 已落盘资源）与上述 COS 引用资源经**内网拉回**后流式拼成
+  store-only zip，产物用 `register_local_artifact` 登记为 `archived` 记录；
+  客户端轮询 `/api/v1/files/:id/download` 拿直链，带进度下载。导出包内不含
+  `cos_resources.json` 与 `.editor_history/`——分发的 zip 永远是自包含实体文件。
+- 人物立绘/资源图等走各自的扩展通道（`PORTRAITS.md`），与本模块共用 COS 配置。
+
+> **浏览器直传的 CORS**：预签名 PUT（上传）与直链 GET（导出下载带进度）由浏览
+> 器直接发往 `EDITOR_FILE_COS_PUBLIC_ENDPOINT`，桶必须为站点来源放行 `PUT`/`GET`
+> （AllowedHeader 建议 `*`）；未配置时前端会报「HTTP 0（多为对象存储未配置
+> CORS）」，可退回浏览器原生下载（无页内进度条）。
+
 客户端直传示例（`upload_url` 为 PUT 预签名地址，直接送文件流即可）：
 
 ```bash

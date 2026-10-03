@@ -8,9 +8,10 @@
 //               "errors":[{"name":"原名","error":"原因"}]}
 //          400 {"error":"未选择模组"}；files 缺失/空数组/非对象/非数组 -> 400。
 //
-// 落盘规则（详见 .cpp 顶部）：按扩展名归类目录（图片->Textures、音频->Audios，
-// 或显式 dir 单层目录名）、名字净化去目录穿越、重名不覆盖自动加后缀、经
-// p3b_fs_tools 沙箱写入、可选把音频登记进 AudioCfg。前端已按此契约开发。
+// 落盘规则（详见 .cpp 顶部）：按扩展名归类目录（图片->Textures、音频->Audios、
+// 视频->Videos，或显式 dir 单层目录名）、名字净化去目录穿越、重名不覆盖自动加
+// 后缀、经 p3b_fs_tools 沙箱写入、可选把音频登记进 AudioCfg。前端已按此契约开发。
+// 大资源（>48 MiB，贴图/配乐/视频）改走 POST /api/mods/add_ref 留 COS 存引用。
 #pragma once
 
 #include "server/httpd.h"

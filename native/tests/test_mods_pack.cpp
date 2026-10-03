@@ -2,20 +2,26 @@
 //   POST /api/mods/export       当前/指定模组 -> store-only zip（base64）
 //   POST /api/mods/import_path  本机 zip 路径导入
 //   POST /api/mods/import_upload 网页版 {filename, data_base64} 导入
+//   POST /api/mods/import_staged 自托管大包：文件流转直传落盘后按 id 导入
 // 覆盖：打包往返、顶层目录剥离、manifest 回填、非法条目/缺内容/缺体拒绝、导入后
 // 自动选中。
 #include <catch_amalgamated.hpp>
 
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
+#include "server/services/file_transfer.h"
 #include "server/services/p3b_support.h"
 #include "server/services/zip_store_writer.h"
+#include "test_ft_env.h"
 #include "test_support.h"
 
 using json = sa::json;
@@ -189,4 +195,76 @@ TEST_CASE("mods import/export: 非 cfg 资源（含非 ASCII 文件名）原样�
     auto ztex = z->read("Textures/贴图.png");
     REQUIRE(ztex.has_value());
     CHECK(*ztex == png);
+}
+
+// 回归：带资源（贴图/配乐）的模组包在自托管网页版曾完全导不进来——base64
+// 的 import_upload 通道受网关 max_body_bytes（默认 256 MiB）与浏览器内存双
+// 重上限，资源一多必挂。修复走文件流转（模块 A）：浏览器直传 COS 暂存 →
+// Worker 内网落盘（archived）→ POST /api/mods/import_staged 以 file_id 对
+// 落盘文件跑与 import_path 同款管线。这里用内存 COS seam 覆盖全链路，以及
+// 缺 file_id/未知 id/未归档的拒绝信封与归档记录的重复导入。
+TEST_CASE("mods import_staged: 直传落盘后按 id 导入（含资源）", "[modspack]") {
+    ModsPackFixture fx;
+    satft::FtEnv env;
+    auto mem = std::make_shared<satft::MemCos>();
+    sa::file_transfer::set_cos_ops_for_test(satft::mem_ops(mem));
+    satft::OpsReset reset;
+
+    const std::string png = std::string("\x89PNG\r\n\x1a\n", 8) + std::string(4096, '\x02');
+    const std::string zip = make_zip({
+        {"manifest.json", R"({"title":"大资源模组"})"},
+        {"Cfgs/zh-cn/EvtCfg.json", R"({"1":{"id":1}})"},
+        {"Textures/贴图.png", png},
+    });
+
+    // 1) 申请直传。
+    auto req = call_router(fx.router(), "POST", "/api/v1/files/upload/request", {},
+                           json{{"name", "big_mod.zip"},
+                                {"size", static_cast<long long>(zip.size())}});
+    REQUIRE(req.status == 200);
+    const std::string id = req.json_payload.value("file_id", std::string());
+    const std::string key = req.json_payload.value("cos_key", std::string());
+    REQUIRE_FALSE(id.empty());
+
+    // 2) 未归档就喊导入：拒绝；且本端点从不接受调用方路径，只认 file_id。
+    auto too_early = call_router(fx.router(), "POST", "/api/mods/import_staged", {},
+                                 json{{"file_id", id}});
+    CHECK(too_early.status == 409);
+    CHECK(too_early.json_payload.value("status", std::string()) == "pending_upload");
+    CHECK(call_router(fx.router(), "POST", "/api/mods/import_staged", {}, json::object())
+              .status == 400);
+    CHECK(call_router(fx.router(), "POST", "/api/mods/import_staged", {},
+                      json{{"file_id", "0000000000000000000000000000dead"}})
+              .status == 404);
+
+    // 3) 模拟浏览器 PUT 暂存对象 -> complete -> Worker 内网落盘归档。
+    {
+        std::lock_guard<std::mutex> lk(mem->mu);
+        mem->objects[key] = zip;
+    }
+    auto done = call_router(fx.router(), "POST", "/api/v1/files/upload/complete", {},
+                            json{{"file_id", id}});
+    CHECK(done.status == 202);
+    std::string err;
+    REQUIRE(sa::file_transfer::archive_now(env.root(), id, &err));
+
+    // 4) 按 id 导入：cfg 与贴图资源原样落地、自动选中（与 import_path 同管线）。
+    auto imp = call_router(fx.router(), "POST", "/api/mods/import_staged", {},
+                           json{{"file_id", id}});
+    REQUIRE(imp.status == 200);
+    const std::string name = imp.json_payload["mod"].value("name", std::string());
+    CHECK(name == "大资源模组");
+    const auto dir = fx.root() / std::filesystem::u8path(name);
+    CHECK(std::filesystem::exists(dir / "Cfgs" / "zh-cn" / "EvtCfg.json"));
+    auto tex = sa_core::paths::read_bytes(
+        sa_core::paths::path_to_utf8(dir / std::filesystem::u8path("Textures/贴图.png")));
+    REQUIRE(tex.has_value());
+    CHECK(*tex == png);
+    CHECK(sa::STATE().mod_name == name);
+
+    // 5) 归档记录可重复导入（第二次得到 _1 编号目录）。
+    auto imp2 = call_router(fx.router(), "POST", "/api/mods/import_staged", {},
+                            json{{"file_id", id}});
+    REQUIRE(imp2.status == 200);
+    CHECK(imp2.json_payload["mod"].value("name", std::string()) == "大资源模组_1");
 }

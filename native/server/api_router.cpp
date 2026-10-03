@@ -16,6 +16,7 @@
 #include "server/services/deleted_routes.h"
 #include "server/services/file_transfer.h"
 #include "server/services/mod_files_routes.h"
+#include "server/services/mod_refs_routes.h"
 #include "server/services/mods_routes.h"
 #include "server/services/p3b_domain_tools_routes.h"
 #include "server/services/plugins_routes.h"
@@ -73,6 +74,9 @@ Router build_router() {
     // 网页版计划 M3：本地资源文件导入 POST /api/mod/import_files（图片/音频落盘
     // + 可选 AudioCfg 登记）。注册在 tts 之后，复用其 register_audio_cfg_url。
     register_mod_files_routes(r);
+    // 自托管大资源「COS 引用 + 导出拼接」：POST /api/mods/add_ref、
+    // POST /api/mods/export_staged（贴图/配乐/视频留 COS，导出时与本地盘合包）。
+    register_mod_refs_routes(r);
     register_ai_image_routes(r);
     // 网页版计划 M1.3：平台 key 的中继对话 + 供给策略。注册在各 /api/ai/* 家族
     // 之后，避免任何 /api/ai 通配把它前面的具体路由遮蔽（这两个路径本就唯一）。

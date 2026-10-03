@@ -20,7 +20,6 @@ import 'package:student_age_editor/core/motion.dart';
 import 'package:student_age_editor/core/plugin_state.dart';
 import 'package:student_age_editor/core/ui_mode.dart';
 import 'package:student_age_editor/features/ai/ai_chat_widgets.dart';
-import 'package:student_age_editor/features/graph/timeline_view.dart';
 import 'package:student_age_editor/features/shell/editor_shell.dart';
 import 'package:student_age_editor/features/shell/shell_state.dart';
 import 'package:student_age_editor/features/shell/story_flow_shell.dart';
@@ -148,26 +147,21 @@ void main() {
 
     // 保活栈里被隐藏的视图是 Offstage：finder 必须 skipOffstage: false 才看得到。
     final ws = find.byType(StoryFlowWorkspace, skipOffstage: false);
-    final tl = find.byType(TimelineView, skipOffstage: false);
     expect(find.byType(StoryFlowWorkspace), findsOneWidget);
     expect(TickerMode.valuesOf(tester.element(ws)).enabled, isTrue, reason: '当前视图的 ticker 必须是开的');
 
-    // 切到时间轴：画布进保活栈但隐藏 → ticker 必须停。
-    await tester.tap(find.text(StoryFlowView.timeline.label));
+    // 切到基础库：画布进保活栈但隐藏 → ticker 必须停。
+    await tester.tap(find.text(StoryFlowView.base.label));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.byType(TimelineView), findsOneWidget);
-    expect(TickerMode.valuesOf(tester.element(tl)).enabled, isTrue,
-        reason: '当前视图（时间轴）的 ticker 必须是开的');
     expect(TickerMode.valuesOf(tester.element(ws)).enabled, isFalse,
         reason: '隐藏的剧情图画布 ticker 没停：保活视图仍在持续出帧');
 
-    // 切回剧情图：角色对调。
+    // 切回剧情图：恢复。
     await tester.tap(find.text(StoryFlowView.graph.label));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(TickerMode.valuesOf(tester.element(ws)).enabled, isTrue);
-    expect(TickerMode.valuesOf(tester.element(tl)).enabled, isFalse);
     expect(tester.takeException(), isNull);
   });
 }

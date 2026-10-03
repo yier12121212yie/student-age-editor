@@ -205,7 +205,7 @@ void main() {
       final state = AppState();
       // 含 default 分支的通用经典布局页（新增玩法页均走该分支）。
       final pagesToTest = [
-        'person', 'resource', 'function', 'story', 'social', 'love', 'official',
+        'person', 'resource', 'function', 'story', 'story_competitor', 'social', 'love', 'official',
         'evt', 'gift', 'news', 'fishing', 'travel', 'anime', 'expo', 'club',
         'crafts', 'birthday', 'negotiation',
       ];

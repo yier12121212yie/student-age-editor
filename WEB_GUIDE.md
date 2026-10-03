@@ -70,10 +70,21 @@ AI 与桌面同源：读本机 `.editor_ai` 配置文件。平台模式走本机
 > 上传类接口的可解码字节上限自动派生为它的 3/4（base64 膨胀 4/3）。直连运行
 > `backend` 时默认 256 MiB，可用 `--max-body` 调整。管理员无需手工配置以上任何一项。
 
-> **大文件上传**：`max_body_bytes` 决定模组/插件/资源包 zip 的实际上限，请与
-> 容器内存（`docker-compose.yml` 的 `mem_limit`）配套调大——一次上传在网关与
+> **大文件上传**：`max_body_bytes` 决定 base64 通道（`*_upload` 端点）的实际上限，
+> 请与容器内存（`docker-compose.yml` 的 `mem_limit`）配套调大——一次上传在网关与
 > 实例中各有约 2~3 份整包副本，建议内存 ≥ `max_body_bytes × 8`。台式直连时
 > 可用环境变量 `EDITOR_MAX_UPLOAD_BYTES` 单独覆盖实例侧的解码上限。
+>
+> **带资源的大模组包（贴图/配乐/视频，数百 MB~GB）**：base64 通道必然超限（正是
+> 「模组里有资源就无法导入自托管」的根因）。网页端以下三类操作超过 48 MiB 时自动
+> 改走**对象存储直传**，全程不占网关/实例内存，也不进 base64：
+> 1. **整包导入**：浏览器 PUT 预签名 URL → 服务端内网落盘 → `POST /api/mods/import_staged {file_id}` 解压导入；
+> 2. **单资源上传**（贴图/配乐/视频导入）：直传后 `POST /api/mods/add_ref {file_id,name,dir?}`——字节**留在 COS 只存引用**（`<mod>/cos_resources.json` 索引），小文件仍落盘；
+> 3. **模组导出/下载**：`POST /api/mods/export_staged` 由服务端把**本地盘文件 + COS 引用资源**流式拼成 zip 并登记周转，浏览器经预签名直链**带进度条**下载（页面弹进度对话框）。
+>
+> 前提是给 backend/网关进程注入 `EDITOR_FILE_COS_*` 凭据（见
+> [`native/FILE_TRANSFER.md`](native/FILE_TRANSFER.md)），并在桶的 CORS 里允许
+> 站点来源的 `PUT` 与 `GET`；未配置时自动回退 base64 通道（大包会得到明确的上限报错）。
 
 ### 2.1 gateway.json 字段
 

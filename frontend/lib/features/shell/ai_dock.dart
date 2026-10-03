@@ -469,11 +469,18 @@ class _AttentionDot extends StatefulWidget {
 }
 
 class _AttentionDotState extends State<_AttentionDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat(reverse: true);
+    with SingleTickerProviderStateMixin, DecorativeLoopMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    attachLoop(_c, reverse: true);
+  }
 
   @override
   void dispose() {

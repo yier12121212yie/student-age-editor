@@ -1775,8 +1775,8 @@ class _FieldFormState extends State<_FieldForm> {
     final fieldKeys = widget.fieldKeys;
     final record = widget.record;
     final gameDicts = widget.gameDicts;
-    // 只有一个字段时查找框纯属噪声（也避免占据首个 EditableText 焦点位）。
-    final searchEnabled = fieldKeys.length > 1;
+    // 只要有字段就启用查找框（之前 condition > 1 会导致单字段配置表无法显示搜索框）。
+    final searchEnabled = fieldKeys.isNotEmpty;
     final visibleKeys =
         searchEnabled ? _visibleFieldKeys(fieldKeys) : fieldKeys;
     final searching = searchEnabled && _searchQuery.trim().isNotEmpty;

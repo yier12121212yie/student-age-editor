@@ -22,8 +22,6 @@ enum StoryFlowView {
   bugfix,
   doc,
   // 新增视图一律追加在枚举尾部：prefs/既有索引兼容。
-  relationGraph, // 人物关系图（GET /api/graph/relations）
-  timeline, // 事件时间轴（GET /api/graph/timeline）
 }
 
 extension StoryFlowViewMeta on StoryFlowView {
@@ -51,10 +49,6 @@ extension StoryFlowViewMeta on StoryFlowView {
         return '错误修复';
       case StoryFlowView.doc:
         return '文档';
-      case StoryFlowView.relationGraph:
-        return '人物关系';
-      case StoryFlowView.timeline:
-        return '时间轴';
     }
   }
 
@@ -82,10 +76,6 @@ extension StoryFlowViewMeta on StoryFlowView {
         return Icons.build_outlined;
       case StoryFlowView.doc:
         return Icons.description_outlined;
-      case StoryFlowView.relationGraph:
-        return Icons.family_restroom_outlined;
-      case StoryFlowView.timeline:
-        return Icons.timeline;
     }
   }
 }
@@ -114,7 +104,6 @@ class StoryFlowTopTabs extends StatefulWidget {
 
 class _StoryFlowTopTabsState extends State<StoryFlowTopTabs> {
   /// 固定标签（设置/插件在画布侧栏工具栏；溢出菜单里的 mods/bugfix 除外）。
-  /// 关系图/时间轴是桌面高频分析视图，独立成标签（不收进 ⋯ 溢出）。
   static const _fixedTabs = [
     StoryFlowView.graph,
     StoryFlowView.pages,
@@ -122,8 +111,6 @@ class _StoryFlowTopTabsState extends State<StoryFlowTopTabs> {
     StoryFlowView.resources,
     StoryFlowView.base,
     StoryFlowView.cloud,
-    StoryFlowView.relationGraph,
-    StoryFlowView.timeline,
   ];
 
   @override

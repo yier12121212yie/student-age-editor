@@ -763,6 +763,14 @@ json redo(const std::string& abs_path) {
     }
 
     std::optional<std::string> cur_text = current_text(abs);
+    // The undo step a redo leaves behind must be snapshot-backed to survive a
+    // process boundary: journal_snapshot_of truncates the undo stack at any
+    // text-only entry (a 40MB table never enters the journal as text), so a
+    // text-only push would strand every older snapshot behind it too (bug #6).
+    // Snapshot the content being replaced exactly like commit() step (4).
+    std::optional<std::string> cur_raw = read_raw(abs);
+    std::optional<std::string> snap_name;
+    if (cur_raw) snap_name = write_snapshot(abs, *cur_raw);
     std::optional<long long> mtime_ns;
     try {
         mtime_ns = restore(abs, restore_bytes);
@@ -778,15 +786,16 @@ json redo(const std::string& abs_path) {
             StackPair& entry = it->second;
             entry.redo.pop_back();
             StackEntry pushed;
-            pushed.snap = std::nullopt;
-            pushed.text = cur_text;
+            pushed.snap = snap_name;
+            if (!snap_name) pushed.text = cur_text;  // in-memory fallback (A8)
             pushed.existed = true;
-            pushed.had_bom = restore_bytes && sa_core::starts_with_bom(*restore_bytes);
+            pushed.had_bom = cur_raw && sa_core::starts_with_bom(*cur_raw);
             pushed.lossy = false;
             entry.undo.push_back(std::move(pushed));
             trim_keep_last(entry.undo, static_cast<size_t>(kHistoryLimit));
         }
     }
+    if (snap_name) prune_history(abs);
     // Cross-process durability: reflect the pop/push in the journal (bug #6).
     journal_persist(abs, key);
     return result_with_data(abs, mtime_ns);

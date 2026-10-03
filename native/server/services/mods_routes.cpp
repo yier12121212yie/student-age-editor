@@ -20,6 +20,7 @@
 #include "server/perf.h"
 #include "server/services/p3b_resource_pack.h"  // p3b::PyValueError（400 信封）
 #include "server/services/p3b_support.h"        // p3b::ZipReader / b64_encode
+#include "server/services/file_transfer.h"      // 自托管大模组包：直传落盘记录
 #include "server/services/upload_staging.h"     // 网页版 base64 zip 上传暂存
 #include "server/services/zip_store_writer.h"   // store-only zip 打包
 #include "server/state.h"
@@ -487,6 +488,41 @@ void register_mods_routes(Router& r) {
                     return import_mod_zip(path, filename);
                 },
                 "mod.zip");
+        } catch (const p3b::PyValueError& e) {
+            return Resp::Json(400, json{{"error", e.what()}});
+        }
+    });
+
+    // POST /api/mods/import_staged — 自托管网页版**大模组包**（带贴图/配乐等
+    // 资源，动辄数百 MB）导入：base64 的 *_upload 通道受传输层请求体上限
+    // （网关 max_body_bytes，默认 256 MiB）与浏览器内存双重压制，资源一多必
+    // 失败。改走文件流转模块（模块 A）：浏览器把 zip 直传 COS 暂存区
+    // （/api/v1/files/upload/request + PUT），/upload/complete 触发 Worker
+    // 内网落盘（archived），最后拿 {file_id} 调本端点，对落盘文件跑与
+    // import_path 完全相同的导入管线。本端点不接受调用方提供的本机路径
+    // （import_path 被网关封禁的老原因），只认本账号数据根里已归档的流转
+    // 记录，路径取自服务端自己写入的 local_path。
+    r.post(R"(/api/mods/import_staged)", [](const Req& req) -> Resp {
+        const std::string id = body_str(req.body, "file_id");
+        if (id.empty()) return Resp::Json(400, json{{"error", "file_id required"}});
+        const json rec = file_transfer::find_record(editor_root(), id);
+        if (!rec.is_object())
+            return Resp::Json(404, json{{"error", "no such file: " + id}});
+        const std::string st = rec.value("status", std::string());
+        if (st != "archived" && st != "ready") {
+            json out = {{"error", "file not archived yet"}, {"status", st}};
+            if (st == "archiving" || st == "warming_up") out["retry_after"] = 5;
+            return Resp::Json(409, std::move(out));
+        }
+        // local_path 由归档 Worker 生成（<data_root>/_cache/file_transfer/
+        // objects/<id>），非调用方可控输入；记录里的 name 也经 sanitize_name。
+        const std::string local = rec.value("local_path", std::string());
+        if (local.empty() || !cs::is_file(local))
+            return Resp::Json(409, json{{"error", "staged file missing on server: " + id}});
+        std::string filename = rec.value("name", std::string());
+        if (filename.empty()) filename = "mod.zip";
+        try {
+            return Resp::Json(200, import_mod_zip(local, filename));
         } catch (const p3b::PyValueError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }

@@ -36,7 +36,7 @@ namespace file_transfer {
 // ---------------------------------------------------------------------------
 // 状态机
 // ---------------------------------------------------------------------------
-enum class Status { PendingUpload, Archiving, Archived, WarmingUp, Ready, Failed };
+enum class Status { PendingUpload, Archiving, Archived, WarmingUp, Ready, Failed, S3Uploaded, Linked };
 
 const char* status_name(Status s);
 bool status_from_name(const std::string& name, Status* out);
@@ -63,6 +63,8 @@ bool status_from_name(const std::string& name, Status* out);
 //   EDITOR_FILE_UPLOAD_TTL / DOWNLOAD_TTL     预签名有效期秒数
 //   EDITOR_FILE_RECLAIM_TTL                   预热对象回收阈值（默认 7200s）
 //   EDITOR_FILE_RECLAIM_INTERVAL              后台回收扫描间隔（默认 60s）
+//   EDITOR_FILE_S3_ENABLED                    是否启用 S3 直传开关（默认 false）
+//   EDITOR_FILE_S3_THRESHOLD_BYTES            S3 直传阈值（默认 50 MiB）
 // ---------------------------------------------------------------------------
 struct CosConfig {
     std::string secret_id;
@@ -89,10 +91,11 @@ struct CosConfig {
     long long max_bytes = 100LL * 1024 * 1024 * 1024;
     long long reclaim_ttl_seconds = 2 * 3600;  // 2 小时
     long long reclaim_interval_seconds = 60;
+    bool s3_direct_enabled = false;
+    long long s3_threshold_bytes = 50LL * 1024 * 1024;  // 50 MiB
 
     bool ready() const;
 };
-
 CosConfig load_config();
 
 // ---------------------------------------------------------------------------
@@ -150,6 +153,23 @@ json public_record(const json& record);
 // ---------------------------------------------------------------------------
 bool archive_now(const std::string& data_root, const std::string& id, std::string* err);
 bool warm_now(const std::string& data_root, const std::string& id, std::string* err);
+
+// ---------------------------------------------------------------------------
+// 大资源引用与导出产物（模组线集成）：
+//   mark_linked   —— 浏览器直传完成后把暂存记录钉成持久引用（status=linked）：
+//                    字节永远留在 COS，不再被 pending 上传清理器回收，也不落盘。
+//                    对象键固化进 rec["key"]（s3_key / staging_key / 重算）。
+//   materialize   —— 把记录字节取回到本机路径：linked/s3_uploaded 走内网 GET，
+//                    archived/ready 直接拷贝 local_path。导出拼接 zip 时用。
+//   register_local_artifact —— 把服务端自产的成品文件（如模组导出 zip）登记为
+//                    archived 记录（文件移入 objects/<id>），返回 id；客户端拿
+//                    GET /api/v1/files/:id/download 触发预热换下载直链。
+// ---------------------------------------------------------------------------
+bool mark_linked(const std::string& data_root, const std::string& id, std::string* err);
+bool materialize(const std::string& data_root, const std::string& id,
+                 const std::string& dst_path, std::string* err);
+std::string register_local_artifact(const std::string& data_root, const std::string& name,
+                                    const std::string& src_path, long long size);
 
 // 生命周期回收：删除 now_unix_ms 起超过 ttl_ms 未被下载的 ready 预热对象。
 // 返回处理的条数。

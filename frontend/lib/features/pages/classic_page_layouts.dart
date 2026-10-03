@@ -12,6 +12,7 @@ import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
 import '../resources/image_asset_picker.dart' show TexBytesCache, TexThumb;
 import '../resources/pack_manager_page.dart';
 import '../story/story_director_view.dart';
+import '../story/story_studio_editor.dart';
 import '../story/story_transfer_dialogs.dart';
 import 'pages_catalog.dart';
 import '../../core/app_theme.dart';
@@ -25,6 +26,7 @@ class ClassicPageLayouts extends StatefulWidget {
     required this.cfgName,
     this.onPreview,
     this.onOpenSearch,
+    this.onOpenPage,
   });
 
   final AppState state;
@@ -32,6 +34,10 @@ class ClassicPageLayouts extends StatefulWidget {
   final String cfgName;
   final ValueChanged<String>? onPreview;
   final VoidCallback? onOpenSearch;
+
+  /// 页面内跳转：从当前经典页切到另一个编辑页（如「故事」→「剧情编辑（友商风格）」）。
+  /// 为空时各页面退回自身的内嵌视图。
+  final ValueChanged<String>? onOpenPage;
 
   @override
   State<ClassicPageLayouts> createState() => _ClassicPageLayoutsState();
@@ -62,6 +68,14 @@ class _ClassicPageLayoutsState extends State<ClassicPageLayouts> {
           state: widget.state,
           onPreview: widget.onPreview,
           onOpenSearch: widget.onOpenSearch,
+          onOpenPage: widget.onOpenPage,
+        );
+      case 'story_competitor':
+        return _StoryCompetitorLayout(
+          state: widget.state,
+          onPreview: widget.onPreview,
+          onOpenSearch: widget.onOpenSearch,
+          onOpenPage: widget.onOpenPage,
         );
       case 'social':
         return _SpaceEndingLayout(
@@ -906,10 +920,14 @@ class _StoryLayout extends StatefulWidget {
     required this.state,
     this.onPreview,
     this.onOpenSearch,
+    this.onOpenPage,
   });
   final AppState state;
   final ValueChanged<String>? onPreview;
   final VoidCallback? onOpenSearch;
+
+  /// 跳转到独立的「剧情编辑（友商风格）」页；为空时退回页内 tab 视图。
+  final ValueChanged<String>? onOpenPage;
 
   @override
   State<_StoryLayout> createState() => _StoryLayoutState();
@@ -1133,7 +1151,15 @@ class _StoryLayoutState extends State<_StoryLayout> {
                   emoji: '🪄',
                   label: '开始处理剧情 (TalkCfg_Option)',
                   primary: true,
-                  onPressed: () => setState(() => _tabIndex = 1),
+                  // 接入独立的「剧情编辑（友商风格）」页；无跳转回调时退回内嵌 tab。
+                  onPressed: () {
+                    final openPage = widget.onOpenPage;
+                    if (openPage != null) {
+                      openPage('story_competitor');
+                    } else {
+                      setState(() => _tabIndex = 1);
+                    }
+                  },
                 ),
                 const SizedBox(height: 6),
                 _ToolActionButton(
@@ -1540,6 +1566,190 @@ class _OfficialLayout extends StatelessWidget {
         embedInCard: true,
         onOpenSearch: onOpenSearch,
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. 剧情编辑（友商风格）— 类友商产品#2 的三栏剧情编辑页
+// ---------------------------------------------------------------------------
+class _StoryCompetitorLayout extends StatefulWidget {
+  const _StoryCompetitorLayout({
+    required this.state,
+    this.onPreview,
+    this.onOpenSearch,
+    this.onOpenPage,
+  });
+  final AppState state;
+  final ValueChanged<String>? onPreview;
+  final VoidCallback? onOpenSearch;
+
+  /// 返回「故事」事件列表页。
+  final ValueChanged<String>? onOpenPage;
+
+  @override
+  State<_StoryCompetitorLayout> createState() => _StoryCompetitorLayoutState();
+}
+
+class _StoryCompetitorLayoutState extends State<_StoryCompetitorLayout> {
+  /// 三栏编辑器的最小可用宽度：低于此宽度改为横向滚动，
+  /// 避免「对话线树 + 舞台 + 人物与表情」固定宽度栏互相挤压导致溢出。
+  static const double _minEditorWidth = 1060;
+
+  /// 页面形态：true = 类友商#2「拾光舞台」；false = 经典三栏处理器（友商#1）。
+  bool _studioStyle = true;
+
+  /// 打开「提取原版剧情 / 检索剧情库」弹窗（从经典故事页迁移至此）。
+  void _showExtractModal() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: palette.panel,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(color: palette.surface),
+        ),
+        child: Container(
+          width: dialogWidth(context, desktopWidth: 760),
+          height: dialogHeight(context, desktopHeight: 620),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    '📖 提取原版剧情 / 检索剧情库',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: palette.textHigh,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: Icon(
+                      FluentIcons.dismiss_24_regular,
+                      size: 16,
+                      color: palette.textSecondary,
+                    ),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+              Divider(color: palette.surface, height: 18),
+              Expanded(child: BaseSearchPage(state: widget.state)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 顶部：页面标题 / 说明 + 快捷工具（窄屏整体横向滚动，避免溢出）
+        Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: palette.panel,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: palette.surface),
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                if (widget.onOpenPage != null) ...[
+                  _ActionPill(
+                    label: '⬅️ 返回事件列表',
+                    onPressed: () => widget.onOpenPage!('story'),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                Icon(FluentIcons.script_24_regular, size: 18, color: accentColor),
+                const SizedBox(width: 10),
+                Text(
+                  '🎬 剧情编辑（友商风格）',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.bold,
+                    color: palette.textHigh,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  _studioStyle
+                      ? '对话夹树 · 游戏画面即写台词 · 人物与表情（类友商#2 拾光舞台）'
+                      : '事件 / 对白列表 · 行编辑 + 舞台 · 场景与选项（类友商#1 三栏处理器）',
+                  style: TextStyle(fontSize: 11.5, color: palette.textMid),
+                ),
+                const SizedBox(width: 16),
+                _ActionPill(
+                  label: '🎭 拾光舞台',
+                  primary: _studioStyle,
+                  onPressed: () => setState(() => _studioStyle = true),
+                ),
+                const SizedBox(width: 4),
+                _ActionPill(
+                  label: '🎬 三栏处理器',
+                  primary: !_studioStyle,
+                  onPressed: () => setState(() => _studioStyle = false),
+                ),
+                const SizedBox(width: 16),
+                _ActionPill(
+                  label: '📥 导入文本剧本',
+                  onPressed: () => showStoryImportDialog(context, widget.state),
+                ),
+                const SizedBox(width: 6),
+                _ActionPill(
+                  label: '📤 导出选中剧情',
+                  onPressed: () => showStoryExportDialog(context, widget.state),
+                ),
+                const SizedBox(width: 6),
+                _ActionPill(
+                  label: '📖 提取原版剧情 / 检索',
+                  onPressed: widget.onOpenSearch ?? _showExtractModal,
+                ),
+              ],
+            ),
+          ),
+        ),
+        // 主体：默认类友商#2「拾光舞台」剧情编辑器（对话夹树 + 游戏画面
+        // WYSIWYG + 人物表情速涂）；可切回类友商#1 的三栏剧情处理器。
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final editor = SizedBox(
+                width: constraints.maxWidth < _minEditorWidth
+                    ? _minEditorWidth
+                    : constraints.maxWidth,
+                child: _studioStyle
+                    ? StoryStudioEditor(
+                        key: const ValueKey('story-studio'),
+                        state: widget.state,
+                        onPreview: widget.onPreview,
+                      )
+                    : StoryDirectorView(
+                        key: const ValueKey('story-director'),
+                        state: widget.state,
+                        onPreview: widget.onPreview,
+                        classic: true,
+                      ),
+              );
+              if (constraints.maxWidth >= _minEditorWidth) return editor;
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: editor,
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

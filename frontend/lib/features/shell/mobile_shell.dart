@@ -10,8 +10,6 @@ import '../ai/ai_panel.dart';
 import '../base/base_search_page.dart';
 import '../bugfix/bugfix_panel.dart';
 import '../cloud/cloud_page.dart';
-import '../graph/relation_graph_view.dart';
-import '../graph/timeline_view.dart';
 import '../plugins/plugin_pane.dart';
 import '../plugins/plugins_page.dart';
 import '../resources/pack_manager_page.dart';
@@ -731,26 +729,6 @@ class _MobileMorePage extends StatelessWidget {
           title: '剧情库',
           subtitle: '原版检索 / 提取',
           onTap: () => _push(context, '剧情库', BaseSearchPage(state: state)),
-        ),
-        _moreCard(
-          icon: Icons.family_restroom,
-          title: '人物关系图',
-          subtitle: '所选人物的关联网络（只读）',
-          onTap: () => _push(
-            context,
-            '人物关系图',
-            RelationGraphView(),
-          ),
-        ),
-        _moreCard(
-          icon: Icons.timeline,
-          title: '事件时间轴',
-          subtitle: '全年 62 回合事件分布（只读）',
-          onTap: () => _push(
-            context,
-            '事件时间轴',
-            TimelineView(),
-          ),
         ),
         _moreCard(
           icon: FluentIcons.folder_zip_24_regular,
