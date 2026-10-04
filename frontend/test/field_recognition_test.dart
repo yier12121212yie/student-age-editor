@@ -111,7 +111,7 @@ void main() {
     }
   });
 
-  test('码字段总数快照：182（扩表或加家族时同步改这里）', () {
+  test('码字段总数快照：186（扩表或加家族时同步改这里）', () {
     var code = 0;
     for (final e in schema.entries) {
       final table = e.value as Map<String, dynamic>;
@@ -119,7 +119,7 @@ void main() {
         if (isEffectLikeField(e.key, f.key, f.value.toString())) code++;
       }
     }
-    expect(code, 182);
+    expect(code, 186);
   });
 
   test('effectSuggestMode 分流：cond/unlock/demand/impossible 走条件目录', () {
@@ -160,14 +160,27 @@ void main() {
     );
   });
 
-  test('noCodeShapeFor：数组一律积木化（不靠 key 猜中，规则字段除外）', () {
+  test('noCodeShapeFor：码字段积木化，普通数组走列表编辑器', () {
     expect(noCodeShapeFor('TalkCfg', 'effect', '2D Array', null),
         NoCodeShape.blocks);
-    // 未被任何家族/规则命中的数组字段也进积木（mode 回退 effect）。
+    // 未被任何码家族/规则命中的数组字段 = 普通数据数组（如 PersonCfg:birthday /
+    // bubbleParm），无代码模式下是行级列表编辑器，不能再铺效果码积木。
     expect(noCodeShapeFor('SomeCfg', 'unknownTable', '2D Array', null),
-        NoCodeShape.blocks);
+        NoCodeShape.list);
     expect(noCodeShapeFor('TalkCfg', 'highlights', '1D Array', null),
-        NoCodeShape.blocks);
+        NoCodeShape.list);
+    // 实参带规则时仍按规则走引用/视觉形态。
+    expect(noCodeShapeFor('PersonCfg', 'birthday', '1D Array', null),
+        NoCodeShape.list);
+    expect(noCodeShapeFor('PersonCfg', 'bubbleParm', '1D Array', null),
+        NoCodeShape.list);
+  });
+
+  test('noCodeShapeFor：PersonCfg 性别走固定枚举起重', () {
+    final rule = fieldRuleFor('PersonCfg', 'gender');
+    expect(rule, isNotNull, reason: 'PersonCfg:gender 应有固定枚举规则');
+    expect(rule!.fixed?['1'], '男');
+    expect(rule.fixed?['2'], '女');
   });
 
   test('noCodeShapeFor：效果格式字段不被误判为引用（IntentCfg:reward）', () {

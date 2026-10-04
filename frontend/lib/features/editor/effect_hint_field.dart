@@ -48,7 +48,7 @@ String? _illegalCharHint(String text) {
 /// 光标位置钳制（保持范围内）。
 int _clampCursor(int v, int max) => v < 0 ? 0 : (v > max ? max : v);
 
-/// 对标友商 SmartTemplateEditor 的效果/条件/消耗提示输入框
+/// 效果/条件/消耗提示输入框
 /// - 输入关键字或代码片段时弹出候选（desc -> code）
 /// - 底部状态栏实时翻译/校验，中文可读
 ///

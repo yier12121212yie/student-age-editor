@@ -22,8 +22,8 @@ import 'shell_state.dart';
 import 'status_bar.dart';
 import '../../core/app_theme.dart';
 
-/// 经典布局（类友商风格 + 暗黑主题）：
-/// 顶部大标题 + 横向工具栏 | 左侧三大类宽分组导航 | 中央类友商卡片工作流 | 底部状态栏。
+/// 经典布局（暗黑主题）：
+/// 顶部大标题 + 横向工具栏 | 左侧三大类宽分组导航 | 中央卡片工作流 | 底部状态栏。
 class ClassicShell extends StatefulWidget {
   const ClassicShell({
     super.key,
@@ -193,7 +193,7 @@ class _ClassicShellState extends State<ClassicShell> {
                 uiMode: widget.uiMode,
                 modName: state.modName.isEmpty ? '(未加载/空白)' : state.modName,
                 onGlobalSearch: () =>
-                    _showToolModal('🔍 全局搜索', BaseSearchPage(state: state)),
+                    _showToolModal('🔍 全局功能搜索', BaseSearchPage(state: state)),
                 onModPreview: () {
                   shell.controller.open(OpenDoc.preview(eventId: '8000'));
                 },
@@ -305,7 +305,7 @@ class _ClassicShellState extends State<ClassicShell> {
                               },
                               onOpenSearch: () {
                                 _showToolModal(
-                                  '🔍 全局搜索',
+                                  '🔍 全局功能搜索',
                                   BaseSearchPage(state: state),
                                 );
                               },
@@ -363,11 +363,12 @@ class _ClassicHeader extends StatelessWidget {
   /// 当前 UI 模式（循环切换按钮显示"下一模式"）。
   final UiMode uiMode;
 
-  /// 循环切换按钮的目标模式图标：创作=画笔，经典=列表，剧情图=流程图。
+  /// 循环切换按钮的目标模式图标：创作=画笔，经典=列表，剧情图=流程图，导演=场记板。
   IconData _nextModeIcon(UiMode m) => switch (m) {
     UiMode.creation => FluentIcons.paint_brush_24_regular,
     UiMode.classic => FluentIcons.list_24_regular,
     UiMode.storyFlow => FluentIcons.flow_24_regular,
+    UiMode.director => FluentIcons.movies_and_tv_24_regular,
   };
 
   @override
@@ -375,7 +376,7 @@ class _ClassicHeader extends StatelessWidget {
     final buttons = <Widget>[
       _ToolbarButton(
         emoji: '🔍',
-        label: '全局搜索 (Ctrl+F)',
+        label: '全局功能搜索 (Ctrl+F)',
         onPressed: onGlobalSearch,
         delay: 0,
       ),
@@ -468,7 +469,7 @@ class _ClassicHeader extends StatelessWidget {
                   const SizedBox(width: 16),
                   _HoverScale(
                     child: Tooltip(
-                      message: '切换到${uiMode.nextCycle().label}布局 (循环切换三种布局)',
+                      message: '切换到${uiMode.nextCycle().label}布局 (循环切换四种布局)',
                       child: MouseRegion(
                         cursor: SystemMouseCursors.click,
                         child: GestureDetector(

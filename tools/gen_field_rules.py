@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """从参考资料生成字段引用目标数据（无代码模式的「只选不敲」依据）。
 
-数据源：`参考资料/友商产品#2/standalone/catalog-schema.json`
+数据源：参考资料中的第三方工坊编辑器 schema（catalog-schema.json）
 （同款游戏的第三方工坊编辑器 schema，字段的 `range.table` 即该字段值引用的
 目标配置表；`editorType` 为 Effect/Condition 的字段是效果/条件码）。
 
@@ -80,7 +80,7 @@ def main() -> int:
     lines = [
         "// GENERATED FILE - DO NOT EDIT BY HAND.",
         "// 由 tools/gen_field_rules.py 从",
-        "// 参考资料/友商产品#2/standalone/catalog-schema.json 生成。",
+        "// 参考资料中的第三方工坊编辑器 schema 生成。",
         "//",
         "// 同款游戏第三方工坊编辑器 schema 的 `range.table`：字段值是目标配置表",
         "// 记录的 ID。无代码模式据此把这类字段判为「只选不敲」的 reference。",

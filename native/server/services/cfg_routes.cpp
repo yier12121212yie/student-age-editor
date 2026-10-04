@@ -572,7 +572,7 @@ void register_cfg_routes(Router& r) {
         // P8 Tombstone: calculate new IDs for redirect (if TalkCfg, may replace with multiple new IDs)
         std::vector<std::string> replacement_ids;
         
-        // Smart ID allocation strategy (similar to competitor #2):
+        // Smart ID allocation strategy:
         // - Generate new IDs based on existing pattern (incrementing or hash-based)
         // - Support multiple replacements for complex reference trees
         // - For TalkCfg, allocate at most N replacements where N is the number of dependent talks

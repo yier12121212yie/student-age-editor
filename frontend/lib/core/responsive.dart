@@ -21,7 +21,8 @@ bool isMobile(BuildContext context) => isMobileWidth(context);
 
 bool isDesktop(BuildContext context) => !isMobile(context);
 
-/// 宽度 < 1100 视为紧凑布局（桌面壳内 AI 侧栏浮层化）。
+/// 宽度 < 1100 视为紧凑布局（整窗判定；AI 停靠区请优先用 `AiDockHost`
+/// 自身的约束宽度判定——它位于活动栏 / 侧边栏之右，整窗宽度并不等于可用宽度）。
 bool isCompactWidth(BuildContext context) =>
     MediaQuery.sizeOf(context).width < Breakpoints.compact;
 

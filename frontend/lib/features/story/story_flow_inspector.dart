@@ -41,6 +41,7 @@ import '../editor/suggestion_text_field.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../nocode/entity_picker.dart';
 import '../nocode/no_code_exit.dart';
+import '../nocode/no_code_list_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../resources/image_asset_picker.dart';
 import 'story_flow_field_codec.dart';
@@ -430,6 +431,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
     // 编辑器，引用/枚举字段只给选择入口——两者都不出现可编辑文本控件。
     final shape = noCodeShapeFor(meta.cfg, meta.key, meta.type, meta.rule);
     final noCodeBlocks = widget.noCodeMode && shape == NoCodeShape.blocks;
+    final noCodeList = widget.noCodeMode && shape == NoCodeShape.list;
     final noCodePickOnly = widget.noCodeMode &&
         (shape == NoCodeShape.visual || shape == NoCodeShape.reference);
     Widget editor;
@@ -441,6 +443,18 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
         fieldKey: meta.key,
         mode: meta.suggestMode,
         gameDicts: widget.gameDicts,
+        onChanged: (v) {
+          final text = ValueCodec.encode(v);
+          ctl.text = text;
+          widget.onFieldChanged(widget.nodeId, meta.key, text);
+        },
+        onDisableNoCode: () => exitNoCodeMode(context),
+      );
+    } else if (noCodeList) {
+      // 普通数据数组：行级列表编辑，不铺效果码候选。
+      editor = NoCodeListField(
+        value: ValueCodec.decode(ctl.text, meta.type),
+        type: meta.type,
         onChanged: (v) {
           final text = ValueCodec.encode(v);
           ctl.text = text;

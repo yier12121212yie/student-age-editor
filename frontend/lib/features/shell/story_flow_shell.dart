@@ -403,9 +403,9 @@ class _StoryFlowPagesViewState extends State<_StoryFlowPagesView> {
           ),
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: editorPages.length,
+            itemCount: visibleEditorPages.length,
             itemBuilder: (context, i) {
-              final p = editorPages[i];
+              final p = visibleEditorPages[i];
               final sel = p.id == _pageId;
               return InkWell(
                 onTap: () => setState(() => _pageId = p.id),

@@ -18,7 +18,7 @@ C++ 后端不再 import Python 模块，而是直接加载本目录的静态 JSO
 多候选路径）读取 ROLE/ATTR/ITEM/BG/MAP/STATE/TEXT/GAME/KZONE_*/PHONE_MSG/
 CONDITION_TYPE/EFFECT_TYPE/…_SECONDARY/SECONDARY_CODE_ALL 等 CSV 并合并进字典。
 本仓库当前 checkout 中不存在任何 `csv_dicts/` 目录（仅发行包
-`参考资料/友商产品/_internal/csv_dicts` 内有原版，运行时不参与开发态解析），
+参考资料里的第三方发行包 `_internal/csv_dicts` 内有原版，运行时不参与开发态解析），
 因此导出结果 = 硬编码字典 + 空 CSV 合并，与开发环境 `GET /api/dicts` 实测完全一致。
 导出走「真实起服务→请求端点」路径，动态读取结果已烘进 JSON；C++ 侧只需读
 `dicts.json`，不需要（也不应）再实现 CSV 目录扫描。`dicts.json` 已冻结入库，

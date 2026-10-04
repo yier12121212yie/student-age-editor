@@ -28,8 +28,10 @@ import 'package:student_age_editor/core/models.dart';
 import 'package:student_age_editor/core/motion.dart';
 import 'package:student_age_editor/core/plugin_state.dart';
 import 'package:student_age_editor/core/ui_mode.dart';
+import 'package:student_age_editor/features/shell/classic_shell.dart';
 import 'package:student_age_editor/features/shell/editor_shell.dart';
 import 'package:student_age_editor/features/shell/shell_state.dart';
+import 'package:student_age_editor/features/shell/story_flow_shell.dart';
 
 /// 引擎→App 的生命周期通知走 `flutter/lifecycle` 通道，测试里照该通道喂。
 Future<void> _setLifecycle(WidgetTester tester, AppLifecycleState state) async {
@@ -56,6 +58,36 @@ Future<void> _settleAfterStop(WidgetTester tester) async {
   for (var i = 0; i < 3; i++) {
     await tester.pump(const Duration(milliseconds: 16));
   }
+}
+
+/// 挂载一个桌面壳（真壳层 + Mock 后端），settle 后断言不再排帧。
+///
+/// 三种桌面壳都在默认态（AI 面板展开，`ShellState.aiOpen` 默认 true）下挂载：
+/// 状态栏那颗 PulseDot 与 AI 面板同在画面里，正是「发行版默认停留」的样子。
+/// 旧测试用 `..toggleAi()` 反而把 AI 收起了，默认展开态一直没被钉住。
+Future<void> _expectShellIdle(
+  WidgetTester tester,
+  Widget Function() build,
+) async {
+  SharedPreferences.setMockInitialValues({});
+  tester.view.physicalSize = const Size(1600, 1000);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+  ApiClient.instance.client = MockClient((req) async =>
+      http.Response('{"ok":true,"data":[]}', 200,
+          headers: {'content-type': 'application/json'}));
+  addTearDown(() => ApiClient.instance.client = http.Client());
+
+  await tester.pumpWidget(fluent.FluentApp(
+    debugShowCheckedModeBanner: false,
+    home: build(),
+  ));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await _pumpIdleFrames(tester);
+  expect(SchedulerBinding.instance.hasScheduledFrame, isFalse,
+      reason: '壳层空闲仍在排帧：又有常驻动画漏进来了');
+  expect(tester.takeException(), isNull);
 }
 
 /// 取 ShimmerBox 里渐变的起点 x，用来证明动画推不推进。
@@ -223,6 +255,46 @@ void main() {
     expect(SchedulerBinding.instance.hasScheduledFrame, isFalse,
         reason: '欢迎页空闲仍在出帧：又有常驻动画漏进来了');
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('CreationShell（AI 展开默认态）空闲零排帧', (tester) async {
+    await _expectShellIdle(
+      tester,
+      () => CreationShell(
+        state: AppState()..setBackendOnline(true),
+        // 默认 aiOpen=true：AI 面板展开才是发行版默认停留的样子。
+        shell: ShellState(),
+        pluginState: PluginState(),
+        uiMode: UiMode.creation,
+        onUiModeChanged: (_) {},
+      ),
+    );
+  });
+
+  testWidgets('ClassicShell 空闲零排帧', (tester) async {
+    await _expectShellIdle(
+      tester,
+      () => ClassicShell(
+        state: AppState()..setBackendOnline(true),
+        shell: ShellState(),
+        pluginState: PluginState(),
+        uiMode: UiMode.classic,
+        onUiModeChanged: (_) {},
+      ),
+    );
+  });
+
+  testWidgets('StoryFlowShell 空闲零排帧', (tester) async {
+    await _expectShellIdle(
+      tester,
+      () => StoryFlowShell(
+        state: AppState()..setBackendOnline(true),
+        shell: ShellState(),
+        pluginState: PluginState(),
+        uiMode: UiMode.storyFlow,
+        onUiModeChanged: (_) {},
+      ),
+    );
   });
 
   testWidgets('MotionScope 缺省=放行：不挂闸门时动画照旧跑（阶段 3 行为不变）',

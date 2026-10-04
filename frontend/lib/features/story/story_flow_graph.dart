@@ -25,6 +25,7 @@ import '../editor/field_meta.dart';
 import '../editor/field_utils.dart';
 import '../editor/suggestion_text_field.dart';
 import '../nocode/entity_picker.dart';
+import '../nocode/no_code_list_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import 'story_flow_models.dart';
 import 'story_flow_snap.dart';
@@ -2142,9 +2143,9 @@ class _FieldInputState extends State<_FieldInput> {
     // 引用/枚举字段只显示现值 + 去 Inspector 选择的入口，两者都不给文本输入。
     final shape = noCodeShapeFor(meta.cfg, meta.key, meta.type, meta.rule);
     final noCodeBlocks = widget.noCodeMode && shape == NoCodeShape.blocks;
+    final noCodeList = widget.noCodeMode && shape == NoCodeShape.list;
     final noCodeReadOnly = widget.noCodeMode &&
-        shape != NoCodeShape.untouched &&
-        shape != NoCodeShape.blocks;
+        (shape == NoCodeShape.visual || shape == NoCodeShape.reference);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -2158,6 +2159,14 @@ class _FieldInputState extends State<_FieldInput> {
             fieldKey: meta.key,
             mode: meta.suggestMode,
             gameDicts: widget.gameDicts,
+            dense: true,
+            onChanged: (v) => widget.onChanged(
+                widget.nodeId, meta.key, ValueCodec.encode(v)),
+          )
+        else if (noCodeList)
+          NoCodeListField(
+            value: ValueCodec.decode(widget.controller.text, meta.type),
+            type: meta.type,
             dense: true,
             onChanged: (v) => widget.onChanged(
                 widget.nodeId, meta.key, ValueCodec.encode(v)),

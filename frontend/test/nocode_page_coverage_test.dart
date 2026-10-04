@@ -5,7 +5,7 @@
 // 两层断言：
 //   1) 纯函数层：第三方权威 schema 声明的引用目标（field_ref_data 的
 //      kFieldRefTargets）在字段分类里一律不是 untouched——即一定会被收敛为
-//      下拉/浏览/积木，而不是裸文本框。
+//      下拉/浏览/积木/列表，而不是裸文本框。
 //   2) 组件层：逐张页面表挂载经典 SchemaEditorView（无代码开启），断言不抛异常，
 //      且效果补全框（EffectHintField）与代码补全框（SuggestionTextField）一律不出现。
 import 'dart:convert';
@@ -122,7 +122,7 @@ void main() {
       }
     });
 
-    test('页面表里所有 1D/2D Array 字段都不是 untouched（积分木/引用）', () {
+    test('页面表里所有 1D/2D Array 字段都不是 untouched（积分木/列表/引用）', () {
       for (final cfg in _pageTables()) {
         final table = schema[cfg];
         if (table is! Map) continue;

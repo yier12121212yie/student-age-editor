@@ -12,8 +12,8 @@ import '../settings/settings_page.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../nocode/entity_picker.dart';
 import '../nocode/no_code_exit.dart';
+import '../nocode/no_code_list_field.dart';
 import '../nocode/nocode_effect_field.dart';
-import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart';
 import 'cfg_display_names.dart';
 import 'effect_hint_field.dart';
@@ -2697,7 +2697,7 @@ class _FieldInputState extends State<_FieldInput> {
 
   @override
   Widget build(BuildContext context) {
-    // 2D Array 优先走友商同款效果提示（候选+校验），与友商 SmartTemplateEditor 对齐
+    // 2D Array 优先走效果提示（候选+校验）
     final hasDictOptions = _options().isNotEmpty;
     final rawKey = widget.fieldKey ?? '';
     final k = rawKey.toLowerCase();
@@ -2724,6 +2724,17 @@ class _FieldInputState extends State<_FieldInput> {
         fieldKey: fieldKey,
         mode: effectSuggestMode(widget.cfgName, fieldKey),
         gameDicts: widget.gameDicts,
+        onChanged: widget.onChanged,
+        onDisableNoCode: _leaveNoCodeMode,
+      );
+    }
+
+    // 无代码模式 + 普通数据数组（非效果码、无引用规则）：行级列表编辑器，
+    // 只做增删/编辑数值或文本，不铺效果码候选。
+    if (widget.noCodeMode && noCodeShape == NoCodeShape.list) {
+      return NoCodeListField(
+        value: widget.value,
+        type: widget.type,
         onChanged: widget.onChanged,
         onDisableNoCode: _leaveNoCodeMode,
       );
@@ -2769,6 +2780,16 @@ class _FieldInputState extends State<_FieldInput> {
       // 仍然能直接敲 ID（那正是"输入代码的地方"）。Number 步进框同理去掉：
       // 对引用字段来说那个数字就是 id。
       final hideTextInput = widget.noCodeMode && widget.rule != null;
+      // 无代码模式：引用字段的实体浏览面板（人物是立绘网格、背景带缩略图）。
+      // 但这里的下拉框已把该实体的候选完整列出，若面板再给不出下拉没有的东西
+      // （事件类型/地图/属性等小字典没有缩略图、候选也没多到被 [_kMaxComboItems]
+      // 截断），再挂一个「选 X」按钮就是同一份选项的第二个入口——保留下拉、
+      // 去掉按钮，消除冗余。人物/背景（有缩略图）或候选超出下拉上限（需要面板
+      // 的搜索）时才额外保留。TalkCfg.bg 已自带「选背景图」，无需第二个背景入口。
+      final showEntityPick = widget.noCodeMode &&
+          _entityKind != null &&
+          !_isTalkBg &&
+          (_entityKind!.hasThumb || opts.length > _kMaxComboItems);
       return Row(
         children: [
           // 窄屏加固（H）：下拉用 Flexible 包裹——宽屏仍 ≤220，窄屏先收缩让位
@@ -2892,9 +2913,7 @@ class _FieldInputState extends State<_FieldInput> {
                     ),
                   ),
                 ],
-                // 无代码模式：引用字段（人物/道具/背景/地图/属性/职业/关系/回合/
-                // 事件类型）走实体浏览面板——人物是立绘网格、背景带缩略图。
-                if (widget.noCodeMode && _entityKind != null)
+                if (showEntityPick)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
                     child: fluent.Button(

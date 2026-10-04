@@ -175,6 +175,24 @@ std::optional<long long> stat_mtime_ns(const std::string& abs_path) {
     return st->mtime_ns;
 }
 
+// mtime_ns is a 64-bit nanosecond epoch (~1.8e18), far beyond 2^53. A web
+// (dart2js/dart2wasm) client parses JSON numbers as IEEE-754 doubles, so the
+// value it echoes back as expect_mtime_ns is the nearest representable double
+// (an integer rounded to a 256 ns grid), never the exact stat value. Comparing
+// for byte equality then rejects every save on web (the "save always conflicts"
+// regression). Accept exactly that double round-trip: only the value the JS
+// number would have degenerated to matches, so a genuine external edit — which
+// moves mtime by at least one filesystem tick and, in practice, milliseconds —
+// still conflicts. Values within the safe range stay exact.
+bool mtime_matches(long long current, long long expected) {
+    if (current == expected) return true;
+    constexpr long long kMaxSafeInteger = 9007199254740992LL;  // 2^53
+    if (current > kMaxSafeInteger || current < -kMaxSafeInteger) {
+        return expected == static_cast<long long>(static_cast<double>(current));
+    }
+    return false;
+}
+
 // cfg_store.py:232-242 _serialize + _encode_with_bom
 std::string encode_with_bom(const std::string& text, bool had_bom) {
     std::string out;
@@ -373,7 +391,7 @@ json commit(const std::string& abs_path, const json& data, const std::optional<s
         if (expect_digest != nullptr) {
             if (sa_core::sha1_hex(*raw) != *expect_digest) reason = "digest";
         } else if (expect_mtime_ns.has_value() && cur_mtime.has_value() &&
-                   *cur_mtime != *expect_mtime_ns) {
+                   !mtime_matches(*cur_mtime, *expect_mtime_ns)) {
             reason = "mtime";
         }
         if (reason) {

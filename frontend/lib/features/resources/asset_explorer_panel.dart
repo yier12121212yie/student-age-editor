@@ -7,6 +7,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/responsive.dart';
 import 'local_import.dart' show importLocalAssets;
 
 /// Asset Explorer Panel - Resource browser for Live2D characters, CGs, and audio assets.
@@ -461,6 +462,81 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
     }
   }
 
+  /// 搜索 + 类型筛选 + 导入/重扫操作条。
+  ///
+  /// 桌面单行：搜索自适应 + 120 宽类型下拉 + 两个文字按钮。手机上这四件套
+  /// 的固定最小宽（约 430）超过屏宽会 RenderFlex 溢出，故窄屏改为两行：
+  /// 搜索独占一行，类型下拉与两个按钮一行；下拉用 Expanded 吸收剩余宽度，
+  /// 保证 320 宽机型也不溢出。
+  Widget _buildFilterBar() {
+    final mobile = isMobileWidth(context);
+
+    final searchField = TextField(
+      decoration: const InputDecoration(
+        hintText: '搜索资源...',
+        prefixIcon: Icon(FluentIcons.search_24_regular),
+        isDense: true,
+      ),
+      onChanged: _onSearchChanged,
+    );
+
+    final kindDropdown = DropdownButton<String>(
+      value: _selectedKind,
+      isExpanded: true,
+      hint: const Text('类型'),
+      items: _kindOptions
+          .map((opt) => DropdownMenuItem<String>(
+                value: opt['value'],
+                child: Text(opt['label']!),
+              ))
+          .toList(),
+      onChanged: (v) {
+        if (v != null) _selectKind(v);
+      },
+    );
+
+    final importButton = fluent.Button(
+      onPressed: (_isImporting || _isScanning) ? null : _importLocal,
+      child: Text(_isImporting ? '导入中…' : '导入本地…'),
+    );
+
+    final scanButton = fluent.Button(
+      onPressed: _isScanning ? null : _scanBundles,
+      child: const Text('重新读取索引'),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child: !mobile
+          ? Row(
+              children: [
+                Expanded(child: searchField),
+                const SizedBox(width: 8),
+                SizedBox(width: 120, child: kindDropdown),
+                const SizedBox(width: 8),
+                importButton,
+                const SizedBox(width: 8),
+                scanButton,
+              ],
+            )
+          : Column(
+              children: [
+                searchField,
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: kindDropdown),
+                    const SizedBox(width: 8),
+                    importButton,
+                    const SizedBox(width: 8),
+                    scanButton,
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+
   Widget _buildTagBar() {
     if (_allTags.isEmpty) return const SizedBox.shrink();
     return Column(
@@ -601,53 +677,7 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
             child: Column(
               children: [
                 // Search and filter bar
-                Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          decoration: const InputDecoration(
-                            hintText: '搜索资源...',
-                            prefixIcon: Icon(FluentIcons.search_24_regular),
-                            isDense: true,
-                          ),
-                          onChanged: _onSearchChanged,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 120,
-                        child: DropdownButton<String>(
-                          value: _selectedKind,
-                          isExpanded: true,
-                          hint: const Text('类型'),
-                          items: _kindOptions
-                              .map((opt) => DropdownMenuItem<String>(
-                                    value: opt['value'],
-                                    child: Text(opt['label']!),
-                                  ))
-                              .toList(),
-                          onChanged: (v) {
-                            if (v != null) _selectKind(v);
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      fluent.Button(
-                        onPressed: (_isImporting || _isScanning)
-                            ? null
-                            : _importLocal,
-                        child: Text(_isImporting ? '导入中…' : '导入本地…'),
-                      ),
-                      const SizedBox(width: 8),
-                      fluent.Button(
-                        onPressed: _isScanning ? null : _scanBundles,
-                        child: const Text('重新读取索引'),
-                      ),
-                    ],
-                  ),
-                ),
+                _buildFilterBar(),
 
                 // 智能标签过滤器（横向滚动）
                 _buildTagBar(),

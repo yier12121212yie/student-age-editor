@@ -64,4 +64,15 @@ void main() {
     expect(missing, isEmpty, reason: '以下表在 schema.json 缺失或为空：$missing');
   });
 
+  test('隐藏页不出现在入口列表，但仍可由 id 解析（跳转目标）', () {
+    final hidden = editorPages.where((p) => p.hidden).map((p) => p.id).toList();
+    expect(hidden, contains('story_studio'),
+        reason: '剧情工作台应作为隐藏页，不再占列表入口');
+    expect(
+      visibleEditorPages.map((p) => p.id),
+      isNot(contains('story_studio')),
+    );
+    // 隐藏页仍须能被 pageById 解析，否则「故事」页的跳转按钮会落到兜底页。
+    expect(pageById('story_studio'), isNotNull);
+  });
 }

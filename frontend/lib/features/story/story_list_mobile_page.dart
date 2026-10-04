@@ -56,10 +56,13 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
     super.dispose();
   }
 
-  Future<void> _loadData() async {
+  Future<void> _loadData({bool refresh = false}) async {
     setState(() {
-      _loading = true;
-      _events = [];
+      // 下拉刷新时不隐藏已有列表（否则刷新过程中列表被整页 spinner 顶掉）。
+      if (!refresh) {
+        _loading = true;
+        _events = [];
+      }
     });
 
     try {
@@ -136,7 +139,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
         backgroundColor: AppTheme.palette.bg,
         elevation: 0,
         leading: IconButton(
-          icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
+          icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.textHigh),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
@@ -159,13 +162,13 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
         actions: [
           // 搜索按钮
           IconButton(
-            icon: Icon(FluentIcons.search_24_regular, color: palette.onAccent),
+            icon: Icon(FluentIcons.search_24_regular, color: palette.textSecondary),
             onPressed: _toggleSearch,
           ),
           // 刷新按钮
           IconButton(
-            icon: Icon(FluentIcons.arrow_sync_24_regular, color: palette.onAccent),
-            onPressed: _loadData,
+            icon: Icon(FluentIcons.arrow_sync_24_regular, color: palette.textSecondary),
+            onPressed: () => _loadData(),
             tooltip: '刷新',
           ),
         ],
@@ -251,13 +254,17 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
                   )
                 : _events.isEmpty
                     ? _buildEmptyState()
-                    : ListView.builder(
-                        itemCount: _filteredEvents.length,
-                        physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                        itemBuilder: (context, index) {
-                          final event = _filteredEvents[index];
-                          return _buildEventCard(event);
-                        },
+                    : RefreshIndicator(
+                        onRefresh: () => _loadData(refresh: true),
+                        child: ListView.builder(
+                          itemCount: _filteredEvents.length,
+                          physics: const AlwaysScrollableScrollPhysics(
+                              parent: BouncingScrollPhysics()),
+                          itemBuilder: (context, index) {
+                            final event = _filteredEvents[index];
+                            return _buildEventCard(event);
+                          },
+                        ),
                       ),
           ),
         ],

@@ -49,6 +49,8 @@ const kRuleByCfgField = <String, FieldRule>{
   'ExploreCfg:lv': FieldRule(fixed: {'1': '一级探索', '2': '二级探索', '3': '三级探索'}),
   // PersonStateCfg 状态可见性
   'PersonStateCfg:hide': FieldRule(fixed: {'0': '状态', '1': '不可见', '2': '性格'}),
+  // PersonCfg 性别（GenderDefine：0 未知 / 1 男 / 2 女）
+  'PersonCfg:gender': FieldRule(fixed: {'0': '未知', '1': '男', '2': '女'}),
   // PersonAttrCfg 属性
   'PersonAttrCfg:tag': FieldRule(fixed: {'10': '普通属性', '13': '性格关联属性'}),
   'PersonAttrCfg:consume': FieldRule(
@@ -403,8 +405,19 @@ const kCodeFieldByCfg = <String>{
   // 成长码
   'PersonGrowCfg:grow',
   // 目标奖励：帮助文档明确是「效果」格式（第三方 schema 亦标 Effect）；
-  // key 不含任何码家族词，必须显式登记，否则会被误当物品引用而无法积木化。
+  // 无代码模式下 key 不含任何码家族词，必须显式登记，否则会被误当物品引用而
+  // 无法积木化。
   'IntentCfg:reward',
+  // 以下 key 不含码家族词、第三方 schema 也未标 Effect/Condition，但
+  // GameSources 里确实按效果/条件消费（GenEffector / RunEffector /
+  // IsMatchCondition 的第一个实参）——审计 `CommonEvtMgr` 调用点补登：
+  //   ActionCfg.expReward  → ActionCfg 执行完成奖励效果；
+  //   ActivityCfg.buff     → 活动增益效果；
+  //   ActivityCfg.debuff   → 活动减益效果；
+  //   IntentCfg.fail       → 目标失败结算效果。
+  'ActionCfg:expReward',
+  'ActivityCfg:buff', 'ActivityCfg:debuff',
+  'IntentCfg:fail',
 };
 
 /// 显式排除：key 命中码家族、但语义不是码的数组字段。
@@ -607,13 +620,18 @@ enum NoCodeShape {
 
   /// 效果/条件/指令类：内联积木编辑器，**没有任何文本输入**。
   blocks,
+
+  /// 普通数据数组（1D/2D，既非效果码、也无引用规则）：行级列表编辑器，
+  /// 每行可增删/编辑数值或文本。积木编辑器的效果码候选对 birthday /
+  /// bubbleParm 这类数据毫无意义，必须与真正的码字段区分开。
+  list,
 }
 
 /// 按优先级表派生渲染形态：
 ///   1. 有专用视觉控件 → [NoCodeShape.visual]
 ///   2. 效果/条件/指令类 → [NoCodeShape.blocks]
 ///   3. 有下拉/引用规则 → [NoCodeShape.reference]
-///   4. 其余 1D/2D 数组 → [NoCodeShape.blocks]
+///   4. 其余 1D/2D 数组 → [NoCodeShape.list]
 ///   5. 其余 → [NoCodeShape.untouched]
 ///
 /// 第 2 步压过第 3 步：[kCodeFieldByCfg] 显式登记的效果码是唯一真源，即使它
@@ -636,7 +654,7 @@ NoCodeShape noCodeShapeFor(
   }
   if (isEffectLikeField(cfg, key, type)) return NoCodeShape.blocks;
   if (rule != null) return NoCodeShape.reference;
-  if (type == '1D Array' || type == '2D Array') return NoCodeShape.blocks;
+  if (type == '1D Array' || type == '2D Array') return NoCodeShape.list;
   return NoCodeShape.untouched;
 }
 
@@ -816,6 +834,26 @@ const kGameFriendlyHints = <String, Map<String, String>>{
     'level': '品质等级\n（3 为神作，可看 3 次；其余看 2 次）',
     'time': '上映年份\n（游戏年份到达此年份后才可能被搜到）',
     'weight': '发现权重\n（搜索时按权重随机抽中，越大越容易被搜到）',
+  },
+
+  // PersonCfg - NPC / 主角基础资料
+  // 语义经 GameSources/Assembly-CSharp 校验：
+  //   birthday 为 [出生年, 月, 日]（CreateRoleView.cs:731 / Role.Age 取 [0][1]）；
+  //   gender 为 GenderDefine（0 未知 / 1 男 / 2 女，Role.Load）；
+  //   bubbleParm/urlParm/l2dParm 都是立绘排版参数，不是效果码。
+  'PersonCfg': {
+    'birthday': '出生日期\n按 [年, 月, 日] 填写，如 1995,3,15',
+    'gender': '性别\n（0 未知 / 1 男 / 2 女）',
+    'init': '初始登场标记\n（空或 1 不登场；2 通用；3 男主线；4 女主线）',
+    'clickAudio': '点击该角色的音效编号（引用 AudioCfg）',
+    'bubbleParm': '立绘气泡的垂直偏移\n（像素，通常填一个数，如 1100）',
+    'bubbleParm2': '第二套立绘的气泡垂直偏移\n（像素，通常填一个数）',
+    'urlParm': '立绘排版参数\n按 [偏移X, 偏移Y, 缩放] 填写，默认 0,0,1',
+    'urlParm2': '第二套立绘的排版参数\n按 [偏移X, 偏移Y, 缩放] 填写',
+    'l2d': 'Live2D 模型名列表\n（[男, 女] 顺序，留空则用静态立绘）',
+    'l2d2': '第二套 Live2D 模型名列表\n（升年级后使用）',
+    'l2dParm': 'Live2D 参数列表\n每行 [X, Y, 缩放, 镜像(0/1)]，与 l2d 模型一一对应',
+    'l2dParm2': '第二套 Live2D 参数列表\n每行 [X, Y, 缩放, 镜像(0/1)]，与 l2d2 一一对应',
   },
 };
 

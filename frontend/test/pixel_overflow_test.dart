@@ -205,7 +205,7 @@ void main() {
       final state = AppState();
       // 含 default 分支的通用经典布局页（新增玩法页均走该分支）。
       final pagesToTest = [
-        'person', 'resource', 'function', 'story', 'story_competitor', 'social', 'love', 'official',
+        'person', 'resource', 'function', 'story', 'story_studio', 'social', 'love', 'official',
         'evt', 'gift', 'news', 'fishing', 'travel', 'anime', 'expo', 'club',
         'crafts', 'birthday', 'negotiation',
       ];
@@ -288,6 +288,52 @@ void main() {
       expect(tester.takeException(), isNull, reason: '辅助面板在 ${size.width}x${size.height} 不应溢出');
     });
   }
+
+  testWidgets('StoryDirectorView 非经典三栏在窄编辑区自适应（右栏不被裁到屏外）', (tester) async {
+    tester.view.physicalSize = const Size(950, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    // 自带一份最小数据：EvtCfg 用 talkId 指向对白，保证右栏对白编辑器会渲染。
+    ApiClient.instance.client = MockClient((req) async {
+      final m = RegExp(r'^/api/cfg/(.+)$').firstMatch(req.url.path);
+      final name = m?.group(1);
+      final data = switch (name) {
+        'EvtCfg' => {
+            '101': {'id': 101, 'title': '测试事件', 'talkId': [101001]},
+          },
+        'TalkCfg' => {
+            '101001': {'id': 101001, 'content': '你好，世界', 'roleIds': [102]},
+          },
+        'PersonCfg' => {
+            '102': {'id': 102, 'name': '小明'},
+          },
+        _ => <String, dynamic>{},
+      };
+      return http.Response.bytes(
+        utf8.encode(jsonEncode({'data': data, 'keys': data.keys.toList()})),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+
+    await tester.pumpWidget(
+      fluent.FluentApp(
+        theme: fluent.FluentThemeData(brightness: Brightness.dark),
+        home: Scaffold(body: StoryDirectorView(state: AppState())),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+
+    // 右栏对白编辑器的保存按钮（页面最右侧控件）必须落在视口内。
+    // 旧实现固定 250+330+420=1002 宽并横向滚动，950 视口下右栏被裁到屏外。
+    final saveBtn = find.text('保存全部');
+    expect(saveBtn, findsOneWidget);
+    expect(tester.getRect(saveBtn).right, lessThanOrEqualTo(950.0));
+  });
 
   // ---------- 移动端（宽 < 720） ----------
   const mobileSizes = [

@@ -336,28 +336,34 @@ Future<void> showMobileSheet(
         maxChildSize: 0.96,
         minChildSize: 0.5,
         expand: false,
-        builder: (ctx, ctrl) => Column(
-          children: [
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const SizedBox(width: 14),
-                Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: palette.borderHover,
-                    borderRadius: BorderRadius.circular(2),
+        // SafeArea(top: false)：滑出层贴屏幕底边，AI 输入栏/发送按钮不能被
+        // 手势条（Android 药丸 / iOS home indicator）压住；外层 Padding 只处理
+        // 软键盘 viewInsets，系统底部内边距在此补齐（背景仍延伸到屏幕底部）。
+        builder: (ctx, ctrl) => SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const SizedBox(width: 14),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: palette.borderHover,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
-                ),
-                const Spacer(),
-                ...?headerActions,
-                const SizedBox(width: 4),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(child: child),
-          ],
+                  const Spacer(),
+                  ...?headerActions,
+                  const SizedBox(width: 4),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(child: child),
+            ],
+          ),
         ),
       ),
     ),

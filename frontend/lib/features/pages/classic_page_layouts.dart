@@ -18,7 +18,7 @@ import 'pages_catalog.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_dialogs.dart';
 
-/// 经典布局页面体系（类友商心知版三栏/双栏工作流 + 暗黑主题）。
+/// 经典布局页面体系（三栏/双栏工作流 + 暗黑主题）。
 class ClassicPageLayouts extends StatefulWidget {
   const ClassicPageLayouts({
     super.key,
@@ -36,7 +36,7 @@ class ClassicPageLayouts extends StatefulWidget {
   final ValueChanged<String>? onPreview;
   final VoidCallback? onOpenSearch;
 
-  /// 页面内跳转：从当前经典页切到另一个编辑页（如「故事」→「剧情编辑（友商风格）」）。
+  /// 页面内跳转：从当前经典页切到另一个编辑页（如「故事」→「剧情编辑」）。
   /// 为空时各页面退回自身的内嵌视图。
   final ValueChanged<String>? onOpenPage;
 
@@ -71,8 +71,8 @@ class _ClassicPageLayoutsState extends State<ClassicPageLayouts> {
           onOpenSearch: widget.onOpenSearch,
           onOpenPage: widget.onOpenPage,
         );
-      case 'story_competitor':
-        return _StoryCompetitorLayout(
+      case 'story_studio':
+        return _StoryStudioLayout(
           state: widget.state,
           onPreview: widget.onPreview,
           onOpenSearch: widget.onOpenSearch,
@@ -930,7 +930,7 @@ class _StoryLayout extends StatefulWidget {
   final ValueChanged<String>? onPreview;
   final VoidCallback? onOpenSearch;
 
-  /// 跳转到独立的「剧情编辑（友商风格）」页；为空时退回页内 tab 视图。
+  /// 跳转到独立的「剧情编辑」页；为空时退回页内 tab 视图。
   final ValueChanged<String>? onOpenPage;
 
   @override
@@ -1158,11 +1158,11 @@ class _StoryLayoutState extends State<_StoryLayout> {
                   emoji: '🪄',
                   label: '开始处理剧情 (TalkCfg_Option)',
                   primary: true,
-                  // 接入独立的「剧情编辑（友商风格）」页；无跳转回调时退回内嵌 tab。
+                  // 接入独立的「剧情编辑」页；无跳转回调时退回内嵌 tab。
                   onPressed: () {
                     final openPage = widget.onOpenPage;
                     if (openPage != null) {
-                      openPage('story_competitor');
+                      openPage('story_studio');
                     } else {
                       setState(() => _tabIndex = 1);
                     }
@@ -1578,10 +1578,10 @@ class _OfficialLayout extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// 8. 剧情编辑（友商风格）— 类友商产品#2 的三栏剧情编辑页
+// 8. 剧情编辑 — 三栏剧情编辑页
 // ---------------------------------------------------------------------------
-class _StoryCompetitorLayout extends StatefulWidget {
-  const _StoryCompetitorLayout({
+class _StoryStudioLayout extends StatefulWidget {
+  const _StoryStudioLayout({
     required this.state,
     this.onPreview,
     this.onOpenSearch,
@@ -1595,15 +1595,15 @@ class _StoryCompetitorLayout extends StatefulWidget {
   final ValueChanged<String>? onOpenPage;
 
   @override
-  State<_StoryCompetitorLayout> createState() => _StoryCompetitorLayoutState();
+  State<_StoryStudioLayout> createState() => _StoryStudioLayoutState();
 }
 
-class _StoryCompetitorLayoutState extends State<_StoryCompetitorLayout> {
+class _StoryStudioLayoutState extends State<_StoryStudioLayout> {
   /// 三栏编辑器的最小可用宽度：低于此宽度改为横向滚动，
   /// 避免「对话线树 + 舞台 + 人物与表情」固定宽度栏互相挤压导致溢出。
   static const double _minEditorWidth = 1060;
 
-  /// 页面形态：true = 类友商#2「拾光舞台」；false = 经典三栏处理器（友商#1）。
+  /// 页面形态：true = 剧情舞台；false = 经典三栏处理器。
   bool _studioStyle = true;
 
   /// 打开「提取原版剧情 / 检索剧情库」弹窗（从经典故事页迁移至此）。
@@ -1684,7 +1684,7 @@ class _StoryCompetitorLayoutState extends State<_StoryCompetitorLayout> {
                 Icon(FluentIcons.script_24_regular, size: 18, color: accentColor),
                 const SizedBox(width: 10),
                 Text(
-                  '🎬 剧情编辑（友商风格）',
+                  '🎬 剧情编辑',
                   style: TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.bold,
@@ -1694,13 +1694,13 @@ class _StoryCompetitorLayoutState extends State<_StoryCompetitorLayout> {
                 const SizedBox(width: 10),
                 Text(
                   _studioStyle
-                      ? '对话夹树 · 游戏画面即写台词 · 人物与表情（类友商#2 拾光舞台）'
-                      : '事件 / 对白列表 · 行编辑 + 舞台 · 场景与选项（类友商#1 三栏处理器）',
+                      ? '对话夹树 · 游戏画面即写台词 · 人物与表情'
+                      : '事件 / 对白列表 · 行编辑 + 舞台 · 场景与选项',
                   style: TextStyle(fontSize: 11.5, color: palette.textMid),
                 ),
                 const SizedBox(width: 16),
                 _ActionPill(
-                  label: '🎭 拾光舞台',
+                  label: '🎭 剧情舞台',
                   primary: _studioStyle,
                   onPressed: () => setState(() => _studioStyle = true),
                 ),
@@ -1729,8 +1729,8 @@ class _StoryCompetitorLayoutState extends State<_StoryCompetitorLayout> {
             ),
           ),
         ),
-        // 主体：默认类友商#2「拾光舞台」剧情编辑器（对话夹树 + 游戏画面
-        // WYSIWYG + 人物表情速涂）；可切回类友商#1 的三栏剧情处理器。
+        // 主体：默认「剧情舞台」编辑器（对话夹树 + 游戏画面
+        // WYSIWYG + 人物表情速涂）；可切回三栏剧情处理器。
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {

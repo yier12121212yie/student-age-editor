@@ -151,11 +151,12 @@ class StatusBar extends StatelessWidget {
   Widget _text(String s) =>
       Text(s, style: TextStyle(fontSize: 12, color: palette.textSecondary));
 
-  /// 目标模式的图标（循环切换按钮用）：创作=画笔，经典=列表，剧情图=流程图。
+  /// 目标模式的图标（循环切换按钮用）：创作=画笔，经典=列表，剧情图=流程图，导演=场记板。
   IconData _nextModeIcon(UiMode m) => switch (m) {
     UiMode.creation => FluentIcons.paint_brush_24_regular,
     UiMode.classic => FluentIcons.list_24_regular,
     UiMode.storyFlow => FluentIcons.flow_24_regular,
+    UiMode.director => FluentIcons.movies_and_tv_24_regular,
   };
 }
 

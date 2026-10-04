@@ -211,6 +211,30 @@ TEST_CASE("matching mtime passes / expect none skips / force overrides", "[cfg_s
     CHECK(fx.read_direct() == json{{"1", json{{"id", 1}, {"name", "local"}}}});
 }
 
+TEST_CASE("web JS double round-trip of a >2^53 mtime still matches, real edits conflict",
+          "[cfg_store][web]") {
+    StoreFixture fx("cs_conf_web");
+    fx.write_direct(json{{"1", json{{"id", 1}}}});
+    // Pin an ns epoch far beyond 2^53, like every real mtime (~1.8e18).
+    REQUIRE(cs::set_mtime_ns(fx.p(), 1700000000123456789LL));
+    const long long actual = cs::stat(fx.p())->mtime_ns;
+    REQUIRE(actual > 9007199254740992LL);  // 2^53
+
+    // A genuinely different (1s earlier) mtime is still rejected — the lock
+    // did not get swallowed by the looser comparison.
+    auto stale = store::write_cfg(fx.p(), json{{"1", json{{"id", 1}, {"name", "stale"}}}},
+                                  actual - 1000000000LL);
+    CHECK(stale["ok"] == false);
+    CHECK(stale["reason"] == "mtime");
+    CHECK(cs::stat(fx.p())->mtime_ns == actual);  // conflict wrote nothing
+
+    // What a web client actually echoes: the nearest double, integer-encoded.
+    const long long web_echo = static_cast<long long>(static_cast<double>(actual));
+    auto r = store::write_cfg(fx.p(), json{{"1", json{{"id", 1}, {"name", "web"}}}}, web_echo);
+    CHECK(r["ok"] == true);
+    CHECK(fx.read_direct() == json{{"1", json{{"id", 1}, {"name", "web"}}}});
+}
+
 TEST_CASE("expect_mtime on missing file writes", "[cfg_store]") {
     StoreFixture fx("cs_conf3");
     auto r = store::write_cfg(fx.p(), json{{"1", json{{"id", 1}}}}, 12345LL);

@@ -1189,11 +1189,11 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  // 三种风格用 Wrap：宽度足够时单行三等分（与旧行布局一致），窄窗口自动换行避免溢出
+                  // 四种风格用 Wrap：宽度足够时单行四等分，窄窗口自动换行避免溢出
                   LayoutBuilder(
                     builder: (context, box) {
                       final w = box.maxWidth;
-                      final cardW = ((w - 20) / 3).clamp(140.0, 260.0);
+                      final cardW = ((w - 30) / 4).clamp(140.0, 260.0);
                       return Wrap(
                         spacing: 10,
                         runSpacing: 10,
@@ -1229,6 +1229,17 @@ class _SettingsPageState extends State<SettingsPage> {
                               selected: widget.uiMode == UiMode.storyFlow,
                               onTap: () =>
                                   widget.onUiModeChanged!(UiMode.storyFlow),
+                            ),
+                          ),
+                          SizedBox(
+                            width: cardW,
+                            child: _StyleCard(
+                              title: '导演',
+                              desc: '三栏舞台工作台（对话线 + 舞台编辑 + 人物表情）',
+                              icon: FluentIcons.movies_and_tv_24_regular,
+                              selected: widget.uiMode == UiMode.director,
+                              onTap: () =>
+                                  widget.onUiModeChanged!(UiMode.director),
                             ),
                           ),
                         ],

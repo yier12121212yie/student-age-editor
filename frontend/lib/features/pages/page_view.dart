@@ -73,12 +73,18 @@ class _PageViewState extends State<EditorPageView> {
                 color: accentColor,
               ),
               const SizedBox(width: 10),
-              Text(
-                widget.page.title,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: palette.textHigh,
-                  fontWeight: FontWeight.w600,
+              // 标题可伸缩：窄屏（320）或大号字体下，「标题 + 配置表 + 下拉框」
+              // 的固定宽会挤爆 Row——标题省略而不是整行溢出。
+              Flexible(
+                child: Text(
+                  widget.page.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: palette.textHigh,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
               const SizedBox(width: 12),

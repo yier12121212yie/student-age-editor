@@ -85,6 +85,51 @@ void main() {
     expect(find.byType(AiOverlayDock), findsNothing);
   });
 
+  testWidgets('创作壳：按宿主实际宽度判定，窗口够宽但编辑区不足时改浮层化', (tester) async {
+    // 整窗 1400（旧逻辑判定为"宽布局"），但把创作壳约束在 1100 宽：
+    // AI 宿主实际只有 1100 - 活动栏 - 侧边栏 ≈ 723，停靠 380px AI 后编辑区
+    // 仅剩 ~340 会被裁切。必须改悬浮抽屉，而不是继续并排。
+    final shell = ShellState(); // aiOpen 默认 true
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(fluent.FluentApp(
+      debugShowCheckedModeBanner: false,
+      home: Align(
+        alignment: Alignment.centerLeft,
+        child: SizedBox(width: 1100, height: 900, child: creation(shell)),
+      ),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(AiOverlayDock), findsOneWidget);
+    expect(find.byType(AiDock), findsNothing);
+  });
+
+  testWidgets('创作壳：收起态折叠条较窄，宿主不足时仍可并排停靠', (tester) async {
+    // 同一 1100 约束下，AI 收起只剩 36px 折叠条：编辑区实得 ~687，
+    // 仍够用，应保持并排停靠（避免不必要的浮层化）。
+    final shell = ShellState()..setAiOpen(false);
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(fluent.FluentApp(
+      debugShowCheckedModeBanner: false,
+      home: Align(
+        alignment: Alignment.centerLeft,
+        child: SizedBox(width: 1100, height: 900, child: creation(shell)),
+      ),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(AiDock), findsOneWidget);
+    expect(find.byType(AiOverlayDock), findsNothing);
+  });
+
   testWidgets('创作壳紧凑宽度：收起显示悬浮按钮，再展开可回切', (tester) async {
     final shell = ShellState();
     await pumpShell(tester, creation(shell), const Size(900, 700));

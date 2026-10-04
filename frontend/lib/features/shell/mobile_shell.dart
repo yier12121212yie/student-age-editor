@@ -337,6 +337,9 @@ class _MobileAppBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     final mod = state.modName.isEmpty ? '未加载' : state.modName;
     return AppBar(
+      // 与 preferredSize(52) 对齐：Material AppBar 默认 toolbarHeight 56，
+      // 会让两行标题在 52 高里被裁 4px。
+      toolbarHeight: 52,
       backgroundColor: palette.bg,
       elevation: 0,
       leading: IconButton(
@@ -450,13 +453,13 @@ class _MobileDrawer extends StatelessWidget {
                 FluentIcons.box_24_regular,
                 '模组',
                 currentTab == 0,
-                () => onSelectTab(0),
+                () => _select(context, 0),
               ),
               _drawerItem(
                 FluentIcons.settings_24_regular,
                 '设置',
                 currentTab == 4,
-                () => onSelectTab(4),
+                () => _select(context, 4),
               ),
             ]),
             const SizedBox(height: 16),
@@ -481,6 +484,13 @@ class _MobileDrawer extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 选中导航项：先关抽屉再切 tab。旧实现只切 tab 不关抽屉，抽屉会继续
+  /// 盖住刚切到的页面，用户必须再滑一次——不符合底部/侧边导航的默认预期。
+  void _select(BuildContext context, int tab) {
+    Navigator.of(context).pop(); // 关闭抽屉（Scaffold 的本地历史项）
+    onSelectTab(tab);
   }
 
   Widget _drawerSection(String title, List<Widget> items) => Column(

@@ -1,8 +1,8 @@
-// 剧情编辑（友商风格）页与「故事」页处理剧情入口的接线回归测试。
+// 剧情编辑页与「故事」页处理剧情入口的接线回归测试。
 //
 // 覆盖点：
-//  1. 经典「故事」页的工具按钮「开始处理剧情」经 onOpenPage 跳到 story_competitor 页；
-//  2. story_competitor 页渲染类友商#2 的三栏剧情编辑器（StoryDirectorView.classic）。
+//  1. 经典「故事」页的工具按钮「开始处理剧情」经 onOpenPage 跳到 story_studio 页；
+//  2. story_studio 页渲染三栏剧情编辑器（StoryDirectorView.classic）。
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -81,7 +81,7 @@ void main() {
     ApiClient.instance.client = http.Client();
   });
 
-  testWidgets('「故事」页「开始处理剧情」经 onOpenPage 跳转到 story_competitor', (tester) async {
+  testWidgets('「故事」页「开始处理剧情」经 onOpenPage 跳转到 story_studio', (tester) async {
     tester.view.physicalSize = const Size(1600, 1000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() => tester.view.resetPhysicalSize());
@@ -106,10 +106,10 @@ void main() {
     await tester.tap(find.text('开始处理剧情 (TalkCfg_Option)'));
     await tester.pump();
 
-    expect(opened, 'story_competitor');
+    expect(opened, 'story_studio');
   });
 
-  testWidgets('story_competitor 页渲染类友商#2 三栏剧情编辑器', (tester) async {
+  testWidgets('story_studio 页渲染三栏剧情编辑器', (tester) async {
     tester.view.physicalSize = const Size(1600, 1000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() => tester.view.resetPhysicalSize());
@@ -120,7 +120,7 @@ void main() {
         home: Scaffold(
           body: ClassicPageLayouts(
             state: state,
-            page: pageById('story_competitor')!,
+            page: pageById('story_studio')!,
             cfgName: 'TalkCfg',
           ),
         ),
@@ -129,7 +129,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('🎬 剧情编辑（友商风格）'), findsOneWidget);
+    expect(find.text('🎬 剧情编辑'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

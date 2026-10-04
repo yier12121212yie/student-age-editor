@@ -20,6 +20,7 @@ import '../editor/suggestion_text_field.dart';
 import '../nocode/entity_picker.dart'
     show EntityKind, EntityKindMeta, entityKindForRule, showEntityPicker;
 import '../nocode/no_code_exit.dart';
+import '../nocode/no_code_list_field.dart';
 import '../nocode/no_code_ref_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
@@ -1017,20 +1018,40 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         ),
       );
     }
-    // 三栏固定宽度，窄窗口（AI 面板挤占）时横向滚动，避免 Row 溢出崩溃
     if (widget.classic) return _buildClassicStory();
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildEventList(),
-          VerticalDivider(width: 1, color: palette.border),
-          _buildStoryLine(),
-          VerticalDivider(width: 1, color: palette.border),
-          SizedBox(width: 420, child: _buildTalkEditor()),
-        ],
-      ),
+    // 三栏按可用宽度自适应：宽裕时铺满，富余全给最右的对白编辑器；
+    // 不足 [minEditorWidth] 时整块横向滚动，保证最右栏仍可达。此前固定
+    // 250+330+420=1002 宽且永远横向滚动，窄编辑区（AI 侧栏挤占 / 小窗）下
+    // 最右的对白编辑器会被裁到屏幕外，看起来就像被 AI 侧栏遮挡。
+    const minEditorWidth = 900.0;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final useScroll = constraints.maxWidth.isFinite &&
+            constraints.maxWidth < minEditorWidth;
+        final width = constraints.maxWidth.isFinite && !useScroll
+            ? constraints.maxWidth
+            : minEditorWidth;
+        final row = SizedBox(
+          width: width,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildEventList(),
+              VerticalDivider(width: 1, color: palette.border),
+              // 事件列表与剧情线保持固定宽度（各自的按钮 / 树在窄栏里会溢出），
+              // 富余或压缩都交给最右的对白编辑器：宽到 1002 时正好是旧的 420。
+              _buildStoryLine(),
+              VerticalDivider(width: 1, color: palette.border),
+              Expanded(child: _buildTalkEditor()),
+            ],
+          ),
+        );
+        if (!useScroll) return row;
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: row,
+        );
+      },
     );
   }
 
@@ -1038,7 +1059,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   // 舞台立绘阶段：与「人物资源库」一致，PersonCfg 只有 url(小学)/url2(中学) 两套。
   static const _stages = ['小学立绘', '中学立绘'];
 
-  /// 经典剧情处理器（三栏式类友商工作流）：
+  /// 经典剧情处理器（三栏式工作流）：
   /// 左栏事件对话线 | 中间顶部配置 + 可视化舞台站位/表情/动作交互区 + 底部对白 | 右栏流程操作 + 场景控制 + 玩家选项 + 保存。
   Widget _buildClassicStory() {
     final curTalk = _talkId != null && _stageTalks.containsKey(_talkId)
@@ -4532,6 +4553,14 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
         fieldKey: key,
         mode: effectSuggestMode('TalkCfg', key),
         gameDicts: widget.translator.state.gameDicts,
+        onChanged: (v) => setState(() => _setField(key, v)),
+        onDisableNoCode: () => exitNoCodeMode(context),
+      );
+    }
+    if (shape == NoCodeShape.list) {
+      return NoCodeListField(
+        value: widget.talk[key],
+        type: type!,
         onChanged: (v) => setState(() => _setField(key, v)),
         onDisableNoCode: () => exitNoCodeMode(context),
       );

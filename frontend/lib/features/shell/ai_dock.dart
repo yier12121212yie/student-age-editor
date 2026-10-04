@@ -6,7 +6,6 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
-import '../../core/responsive.dart';
 import '../ai/ai_panel.dart';
 import '../settings/settings_page.dart';
 import 'shell_state.dart';
@@ -138,11 +137,13 @@ Widget _buildAiPanelBody({
 
 /// 自适应 AI 停靠宿主：宽布局并排停靠，紧凑布局改为悬浮抽屉。
 ///
-/// - 宽度 ≥ [Breakpoints.compact]：`content` 与 [AiDock] 并排，AI 占据固定
-///   宽度（历史行为，桌面大窗不受影响）；
-/// - 宽度 < 断点：AI 改为 [AiOverlayDock] 悬浮在 `content` 右缘之上，
-///   **不再占用布局宽度**，编辑区保持全宽，从根上消除「活动栏 + 侧边栏 +
-///   AI 侧栏」叠加把窄 Web 窗口编辑区压成负宽 / 溢出的问题。
+/// 判定依据是**宿主自身可用宽度**（已扣掉活动栏 / 侧边栏），而非整窗宽度：
+/// 窗口够宽不代表活动栏 + 侧边栏之右还有空间放下 AI + 一个可用的编辑区。
+///
+/// - 可用宽度足够：`content` 与 [AiDock] 并排，AI 占据固定宽度；
+/// - 不足：AI 改为 [AiOverlayDock] 悬浮在 `content` 右缘之上，**不占用布局
+///   宽度**，编辑区保持全宽，避免被停靠的 AI 压窄后内容裁切（看起来像被
+///   AI 侧栏遮挡）。
 class AiDockHost extends StatelessWidget {
   const AiDockHost({
     super.key,
@@ -159,36 +160,54 @@ class AiDockHost extends StatelessWidget {
   final VoidCallback? onOpenSettings;
   final Color? panelBackground;
 
+  /// 并排停靠后编辑区至少要留下的宽度。低于它改为悬浮抽屉，避免把编辑区
+  /// 压得过窄（内容被裁切，看起来就像被 AI 侧栏"遮挡"）。
+  static const double minDockedContentWidth = 560;
+
   @override
   Widget build(BuildContext context) {
-    // 按整窗宽度判定：低于紧凑断点（窄 Web 浏览器窗口 / 小桌面窗）才浮层化，
-    // 常规桌面大窗维持并排停靠。
-    final compact = isCompactWidth(context);
-    if (!compact) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(child: content),
-          AiDock(
-            state: state,
-            shell: shell,
-            onOpenSettings: onOpenSettings,
-            panelBackground: panelBackground,
-          ),
-        ],
-      );
-    }
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        content,
-        AiOverlayDock(
-          state: state,
-          shell: shell,
-          onOpenSettings: onOpenSettings,
-          panelBackground: panelBackground,
-        ),
-      ],
+    // 关键：按宿主**自身可用宽度**判定，而不是整窗宽度。
+    //
+    // AiDockHost 位于活动栏 / 侧边栏之右，它的可用宽度 = 窗口宽度 - 左侧栏宽
+    // - 分隔条。此前用 MediaQuery（整窗）判定，会出现「窗口 1200 > 紧凑断点
+    // 1100 → 并排停靠」，但宿主实际只有 ~800：380px 的 AI 一停靠就把编辑区
+    // 压到 ~420，宽内容（如三栏剧情编辑器）直接被裁掉，且缩小浏览器比例
+    // （CSS 宽度变大）后又能显示——正是本次要修的"AI 侧栏遮挡"。
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final dockWidth = shell.aiOpen
+            ? shell.aiWidth + AiDock.handleWidth
+            : AiDock.railWidth;
+        final available = constraints.maxWidth;
+        final docked =
+            !available.isFinite || available - dockWidth >= minDockedContentWidth;
+        if (!docked) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              content,
+              AiOverlayDock(
+                state: state,
+                shell: shell,
+                onOpenSettings: onOpenSettings,
+                panelBackground: panelBackground,
+              ),
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: content),
+            AiDock(
+              state: state,
+              shell: shell,
+              onOpenSettings: onOpenSettings,
+              panelBackground: panelBackground,
+            ),
+          ],
+        );
+      },
     );
   }
 }

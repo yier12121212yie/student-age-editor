@@ -9,7 +9,10 @@ enum UiMode {
   classic('经典', 'list', 'icon_classic'),
 
   /// 剧情图：ComfyUI 式节点画布（事件列表 + 节点连线编排 + 属性面板）。
-  storyFlow('剧情图', 'flow', 'icon_story_flow');
+  storyFlow('剧情图', 'flow', 'icon_story_flow'),
+
+  /// 导演：三栏工作台（顶部工程栏 + 左对话线 + 中舞台编辑 + 右人物表情）。
+  director('导演', 'movie', 'icon_director');
 
   const UiMode(this.label, this.iconKey, this.prefsValue);
 

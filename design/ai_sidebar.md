@@ -8,7 +8,7 @@
 
 ### 停靠区(AiDock)
 
-桌面端 AI 面板停靠在窗口右侧,由 `frontend/lib/features/shell/ai_dock.dart` 的 `AiDock` 实现,三个桌面壳共用:创作模式壳(`editor_shell.dart`)、经典模式壳(`classic_shell.dart`)、剧情图壳(`story_flow_shell.dart`)。
+桌面端 AI 面板停靠在窗口右侧,由 `frontend/lib/features/shell/ai_dock.dart` 的 `AiDock` 实现,共用壳:创作模式壳(`editor_shell.dart`)、经典模式壳(`classic_shell.dart`)、剧情图壳(`story_flow_shell.dart`);导演壳(`director_shell.dart`)为保持三栏版式不被第四列挤窄,直接使用悬浮抽屉 `AiOverlayDock`。
 
 - **开合**:`ShellState.aiOpen`(默认打开)。选左侧「设置」面板时会自动收起 AI 区,避免双开挤压编辑区。
 - **宽度**:`ShellState.aiWidth`,常量定义在 `shell/shell_state.dart`——默认 `defaultAiWidth = 380`,拖拽范围 `minAiWidth = 280` ~ `maxAiWidth = 640`。面板实际占宽 = aiWidth + 5px 拖拽条命中宽(`AiDock.handleWidth`)。
@@ -16,14 +16,14 @@
 - **收起态折叠条**:收起后右侧保留一条宽 `AiDock.railWidth = 36` 的竖排图标条(`AiCollapsedRail`),点击即展开。图标右上角有小角标:
   - **呼吸点**(accent 色,约 900ms 一次明暗脉动)= AI 正在流式回复;
   - **实心警示点**(黄色)= 有审批/提问弹窗在等你应答(`hasPendingPrompt`,优先于呼吸点显示)。
-- **窄窗自适应(含 Web)**:窗口宽度 `< Breakpoints.compact = 1100` 时,外壳经 `AiDockHost` 把 AI 由**并排停靠**切换为 `AiOverlayDock` **悬浮抽屉**——不占用布局宽度,展开时覆盖内容右缘并带遮罩(点遮罩或右下角悬浮按钮开合),因此窄浏览器窗口下「活动栏 + 侧边栏 + AI 面板」不再叠加把编辑区压成负宽 / 溢出;宽度 ≥ 断点时恢复原有并排停靠。纯判宽函数 `isCompactWidth` 在 `core/responsive.dart`,三个桌面壳(AI 停靠区)均已接入。
+- **窄窗自适应(含 Web)**:外壳经 `AiDockHost`(`ai_dock.dart`)按**宿主自身可用宽度**(窗口宽度扣掉活动栏 / 侧边栏,而非整窗宽度)判定:并排停靠后编辑区实得宽度 `< AiDockHost.minDockedContentWidth = 560` 时,AI 切换为 `AiOverlayDock` **悬浮抽屉**——不占用布局宽度,展开时覆盖内容右缘并带遮罩(点遮罩或右下角悬浮按钮开合),因此「活动栏 + 侧边栏 + AI 面板」不再叠加把编辑区压成负宽 / 裁切;实得宽度足够时恢复并排停靠。此前按整窗宽度判定,会出现「窗口 > 1100 即停靠」但宿主实际只有 ~800,380px 的 AI 一停靠就把编辑区压到 ~420、宽内容被裁——即「AI 侧栏遮挡」的根因。三个桌面壳(创作 / 经典 / 剧情图)均已接入;导演壳为保持三栏版式固定用 `AiOverlayDock`。
 - **持久化**:开合状态与 AI 宽度(连同左侧栏宽度)以 key `shell_layout_v1` 存入 SharedPreferences,冷启动 `loadLayout()` 恢复;连续拖拽在同一事件轮次内合并落盘一次。
 
 ### 应用级会话单例
 
 会话本体不在侧栏里,而在 `ShellState.chatControllerFor()` 返回的**应用级 `AiChatController` 单例**(`frontend/lib/features/ai/ai_chat_controller.dart`)。三个桌面壳、移动端的底部滑出 sheet 与 AI 全屏页(`shell/mobile_shell.dart`)挂的都是同一实例,并通过对话框宿主栈把审批弹窗委托给当前最上层的面板视图。因此:
 
-- 切换布局风格(创作/经典/剧情图)、收起/展开侧栏、移动端 sheet↔全屏,**都不会中断**在途的流式回复与工具审批;
+- 切换布局风格(创作/经典/剧情图/导演)、收起/展开侧栏、移动端 sheet↔全屏,**都不会中断**在途的流式回复与工具审批;
 - 流式回复进行中也可以切会话、换视图,在途流按对象引用继续写入其所属会话。
 
 ## 2. 会话与输入

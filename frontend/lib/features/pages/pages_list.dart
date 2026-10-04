@@ -15,7 +15,7 @@ class PagesList extends StatelessWidget {
 
   static const _icons = <String, IconData>{
     'story': FluentIcons.chat_24_regular,
-    'story_competitor': FluentIcons.script_24_regular,
+    'story_studio': FluentIcons.script_24_regular,
     'person': FluentIcons.person_24_regular,
     'evt': FluentIcons.calendar_24_regular,
     'social': FluentIcons.people_community_24_regular,
@@ -54,9 +54,9 @@ class PagesList extends StatelessWidget {
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(vertical: 4),
-            itemCount: editorPages.length,
+            itemCount: visibleEditorPages.length,
             itemBuilder: (context, i) {
-              final page = editorPages[i];
+              final page = visibleEditorPages[i];
               return MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(

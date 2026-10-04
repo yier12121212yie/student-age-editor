@@ -116,14 +116,18 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       {required bool second}) async {
     final current =
         (second ? option.talkId2 : option.talkId).map((e) => e.toString()).toSet();
+    // 固定 420×420 在手机上横向溢出、横屏时纵向溢出；按屏幕收敛。
+    final screen = MediaQuery.sizeOf(context);
+    final pickerWidth = (screen.width - 48).clamp(220.0, 420.0);
+    final pickerHeight = (screen.height * 0.6).clamp(220.0, 420.0);
     final picked = await showDialog<List<String>>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(second ? '选择失败跳转目标' : '选择跳转目标',
             style: const TextStyle(fontSize: 14)),
         content: SizedBox(
-          width: 420,
-          height: 420,
+          width: pickerWidth,
+          height: pickerHeight,
           child: _talks.isEmpty
               ? const Center(child: Text('本事件没有可选对白'))
               : ListView.builder(
@@ -170,7 +174,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           backgroundColor: AppTheme.palette.bg,
           elevation: 0,
           leading: IconButton(
-            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
+            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.textHigh),
             onPressed: () => Navigator.pop(context),
           ),
           title: Text('加载中...'),
@@ -198,7 +202,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           backgroundColor: AppTheme.palette.bg,
           elevation: 0,
           leading: IconButton(
-            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
+            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.textHigh),
             onPressed: () => Navigator.pop(context),
           ),
           title: Text('加载失败'),
@@ -235,7 +239,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           backgroundColor: AppTheme.palette.bg,
           elevation: 0,
           leading: IconButton(
-            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
+            icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.textHigh),
             onPressed: () => Navigator.pop(context),
           ),
           title: Text('事件不存在'),
@@ -334,7 +338,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       backgroundColor: AppTheme.palette.bg,
       elevation: 0,
       leading: IconButton(
-        icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.onAccent),
+        icon: Icon(FluentIcons.arrow_left_24_regular, color: palette.textHigh),
         // maybePop 走 PopScope 守卫，与系统返回同一口径。
         onPressed: () => Navigator.maybePop(context),
         tooltip: '返回',
@@ -359,7 +363,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       actions: [
         // 预览按钮 - placeholder
         IconButton(
-          icon: Icon(FluentIcons.eye_24_regular, color: palette.onAccent), // 替换为实际存在的图标
+          icon: Icon(FluentIcons.eye_24_regular, color: palette.textSecondary), // 替换为实际存在的图标
           onPressed: _previewEvent,
         ),
         SizedBox(width: 4),
@@ -443,8 +447,8 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
             ],
           ),
           SizedBox(height: 4),
-          TextField(
-            controller: TextEditingController(text: _event!.title),
+          _StableTextField(
+            value: _event!.title,
             onChanged: (value) {
               setState(() => _event!.title = value);
             },
@@ -935,7 +939,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
               
               // 选项文本输入
               Expanded(
-                child: TextField(
+                child: _StableTextField(
                   decoration: InputDecoration(
                     hintText: '选项文本（例如："我愿意！"）',
                     border: OutlineInputBorder(
@@ -948,7 +952,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                   ),
                   maxLines: null,
                   minLines: 1,
-                  controller: TextEditingController(text: option.text),
+                  value: option.text,
                   onChanged: (value) {
                     setState(() => option.text = value);
                   },
@@ -1024,7 +1028,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                     ],
                   )
                 else
-                  TextField(
+                  _StableTextField(
                     decoration: InputDecoration(
                       hintText: '选择第一句话的事件 ID（留空表示直接结束）',
                       border: OutlineInputBorder(
@@ -1035,7 +1039,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                       fillColor: AppTheme.palette.bgDeep2.withValues(alpha: 0.5),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     ),
-                    controller: TextEditingController(text: option.talkId.join(', ')),
+                    value: option.talkId.join(', '),
                     onChanged: (value) {
                       // 暂时不处理，因为 talkId 是 List
                       // TODO: 改为支持多选的 UI
@@ -1067,7 +1071,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                       ],
                     )
                   else
-                    TextField(
+                    _StableTextField(
                       decoration: InputDecoration(
                         hintText: '选择失败后的跳转 ID（可选）',
                         border: OutlineInputBorder(
@@ -1080,8 +1084,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
                         contentPadding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 6),
                       ),
-                      controller:
-                          TextEditingController(text: option.talkId2.join(', ')),
+                      value: option.talkId2.join(', '),
                       onChanged: (value) {
                         // 暂时不处理
                       },
@@ -1607,4 +1610,64 @@ List<dynamic> ensureList(dynamic v) {
   if (v == null || v == '') return [];
   if (v is List) return v.map((e) => e.toString()).toList();
   return [v.toString()];
+}
+
+/// 受控文本输入：控制器由本 State 持有，绝不在 build 里 `new TextEditingController`。
+///
+/// 旧写法 `controller: TextEditingController(text: ...)` 每次 setState 都会换一个
+/// 新控制器，导致光标/选区被重置、中文输入法的组合区（拼音候选）在每个字符后
+/// 被打断——手机上几乎无法输入中文。这里只在外部值变化且本框未聚焦时同步文本，
+/// 用户正在输入（父组件回写同值）时不动控制器。
+class _StableTextField extends StatefulWidget {
+  const _StableTextField({
+    required this.value,
+    required this.onChanged,
+    this.decoration,
+    this.maxLines = 1,
+    this.minLines,
+  });
+
+  final String value;
+  final ValueChanged<String> onChanged;
+  final InputDecoration? decoration;
+  final int? maxLines;
+  final int? minLines;
+
+  @override
+  State<_StableTextField> createState() => _StableTextFieldState();
+}
+
+class _StableTextFieldState extends State<_StableTextField> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.value);
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void didUpdateWidget(covariant _StableTextField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 外部写回（选择器/删除等）且当前未聚焦：同步到控制器。
+    // 正在输入时不覆盖，避免打断 IME 组合态与光标位置。
+    if (!_focus.hasFocus && widget.value != _controller.text) {
+      _controller.text = widget.value;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: _controller,
+      focusNode: _focus,
+      decoration: widget.decoration,
+      maxLines: widget.maxLines,
+      minLines: widget.minLines,
+      onChanged: widget.onChanged,
+    );
+  }
 }

@@ -22,6 +22,7 @@ import 'features/auth/auth_state.dart';
 import 'features/auth/login_page.dart';
 import 'features/oobe/oobe_page.dart';
 import 'features/shell/classic_shell.dart';
+import 'features/shell/director_shell.dart';
 import 'features/shell/editor_shell.dart';
 import 'features/shell/mobile_shell.dart';
 import 'features/shell/shell_state.dart';
@@ -99,10 +100,11 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
 
   Future<void> _initUiMode() async {
     final mode = await UiMode.load();
-    // 经典布局侧栏偏窄（分组导航），创作/剧情图使用相同宽度
+    // 经典布局侧栏偏窄（分组导航），创作/剧情图使用相同宽度，导演工作台更宽
     final sidebar = switch (mode) {
       UiMode.classic => 280.0,
       UiMode.creation || UiMode.storyFlow => 320.0,
+      UiMode.director => 300.0,
     };
     final shell = ShellState(defaultSidebarWidth: sidebar);
     unawaited(shell.loadSettings());
@@ -138,7 +140,10 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
     if (!mounted) return;
     setState(() {
       _uiMode = mode;
-      if (mode == UiMode.classic) _shell?.setAiOpen(false);
+      // 经典/导演进入时先收起 AI，避免停靠侧栏或悬浮层一上来就挤压/遮挡工作区。
+      if (mode == UiMode.classic || mode == UiMode.director) {
+        _shell?.setAiOpen(false);
+      }
     });
   }
 
@@ -446,6 +451,9 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
           }
           if (_uiMode == UiMode.storyFlow) {
             return StoryFlowShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
+          }
+          if (_uiMode == UiMode.director) {
+            return DirectorShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
           }
           return CreationShell(state: state, shell: shell, pluginState: pluginState, uiMode: _uiMode, onUiModeChanged: _setUiMode);
         },

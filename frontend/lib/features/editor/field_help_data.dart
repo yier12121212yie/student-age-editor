@@ -1,6 +1,6 @@
 // GENERATED FILE - DO NOT EDIT BY HAND.
 // 由 tools/gen_field_help.py 从
-// 参考资料/友商产品#2/standalone/catalog-schema.json 生成。
+// 参考资料中的第三方工坊编辑器 schema 生成。
 //
 // 同款游戏第三方工坊编辑器的 schema，其 description 为字段的权威说明；
 // 只收录非空项，其余交给 field_meta.dart 的规则/类型兜底。

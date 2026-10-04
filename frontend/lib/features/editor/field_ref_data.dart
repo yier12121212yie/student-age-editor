@@ -1,6 +1,6 @@
 // GENERATED FILE - DO NOT EDIT BY HAND.
 // 由 tools/gen_field_rules.py 从
-// 参考资料/友商产品#2/standalone/catalog-schema.json 生成。
+// 参考资料中的第三方工坊编辑器 schema 生成。
 //
 // 同款游戏第三方工坊编辑器 schema 的 `range.table`：字段值是目标配置表
 // 记录的 ID。无代码模式据此把这类字段判为「只选不敲」的 reference。

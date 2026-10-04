@@ -1,4 +1,4 @@
-/// 剧情舞台：类友商产品#2「拾光工坊」的剧情编辑页。
+/// 剧情舞台：对话夹树 + 游戏画面即写台词 + 人物与表情的剧情编辑页。
 ///
 /// 三栏信息架构：左栏对话夹树（沿跳转链递归展开，选项/条件分支在触发句下
 /// 长夹）｜中栏可编辑的游戏画面 + 本句分区（选项/接续/音频/效果/原文兜底）｜
@@ -69,8 +69,8 @@ class StudioTreeItem {
 const int _kStudioMaxDepth = 12;
 
 /// 从事件首句出发沿 nextTalk/option/check 链构建对话线条目序列（深度优先、
-/// 扁平带 depth）。同一节点第二次被触达时输出 [StudioItemKind.ref]（友商#2
-/// 的「↗ 跳转到该句」），无法从任何首句到达的对白收进「游离对白」段。
+/// 扁平带 depth）。同一节点第二次被触达时输出 [StudioItemKind.ref]
+/// （「↗ 跳转到该句」），无法从任何首句到达的对白收进「游离对白」段。
 List<StudioTreeItem> buildStudioTree({
   required String evtId,
   required Map<String, dynamic> evtCfg,
@@ -183,8 +183,8 @@ List<StudioTreeItem> buildStudioTree({
           }
         }
 
-        // 条件分支：check 有值且配置了失败跳转时长出一个紫色夹（友商#2 的
-        // conditional-folder），失败去向即夹底部接续下拉。
+        // 条件分支：check 有值且配置了失败跳转时长出一个紫色夹，
+        // 失败去向即夹底部接续下拉。
         final hasCheck = normalizeStoryIdList(talk['check']).isNotEmpty;
         final fail = _firstTarget(talk['nextTalk2']);
         if (fail.isNotEmpty) {
@@ -366,7 +366,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   bool _dirty = false;
   bool _switching = false;
 
-  // 页面级偏好（对应友商#2 工具栏上的全局开关）
+  // 页面级偏好（对应工具栏上的全局开关）
   bool _showIds = true;
   int _stageIndex = 0;
   static const _stages = ['小学立绘', '中学立绘'];
@@ -379,14 +379,31 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   @override
   void initState() {
     super.initState();
+    // 注册切模式守卫：导演壳可经顶栏切走，未保存的舞台修改必须拦住确认。
+    widget.state.leaveGuard = _confirmLeaveGuard;
     _load();
     _loadRoleCatalog();
   }
 
   @override
   void dispose() {
+    if (widget.state.leaveGuard == _confirmLeaveGuard) {
+      widget.state.leaveGuard = null;
+    }
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  /// 切界面模式的守卫：脏数据先弹「保存 / 放弃 / 取消」，
+  /// 返回 false 表示放弃切换（壳不重建）。
+  Future<bool> _confirmLeaveGuard() async {
+    if (!_dirty) return true;
+    final choice = await _confirmSaveDiscard(
+      content: '当前事件的对白/选项修改尚未保存，切换界面模式后将丢失。',
+    );
+    if (!mounted || choice == null || choice == 'cancel') return false;
+    if (choice == 'save') return await _save();
+    return true; // 放弃修改
   }
 
   Future<void> _load() async {
@@ -896,12 +913,14 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     return r ?? false;
   }
 
-  Future<String?> _confirmSaveDiscard() {
+  Future<String?> _confirmSaveDiscard({
+    String content = '当前事件的对白/选项修改尚未保存，离开当前事件后将丢失。',
+  }) {
     return fluent.showDialog<String>(
       context: context,
       builder: (ctx) => AppContentDialog(
         title: const Text('有未保存的修改'),
-        content: const Text('当前事件的对白/选项修改尚未保存，离开当前事件后将丢失。'),
+        content: Text(content),
         actions: [
           fluent.Button(
             onPressed: () => Navigator.pop(ctx, 'discard'),
@@ -1079,7 +1098,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     );
   }
 
-  /// 说话人轮换：旁白 ↔ 本句候选角色（拾光「点名字换人」）。
+  /// 说话人轮换：旁白 ↔ 本句候选角色（点名字换人）。
   void _cycleSpeaker(Map<String, dynamic> talk) {
     final candidates = <String>{
       ...ensureList(talk['roleIds']),
@@ -1230,7 +1249,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     );
   }
 
-  // ---------- 放置角色弹窗（拾光「点选后立即登场」） ----------
+  // ---------- 放置角色弹窗（点选后立即登场） ----------
 
   Future<void> _showPlaceRoleDialog(
     int? slotIdx,
@@ -1345,7 +1364,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                       action: actionCode,
                     ),
                   );
-                  // 登场即入说话人候选（友商「点选后立即登场」的顺手路径）。
+                  // 登场即入说话人候选（点选后立即登场的顺手路径）。
                   final ids = ensureList(talk['roleIds']).map(cln).toList();
                   if (!ids.contains(selected) && selected != '-1') {
                     talk['roleIds'] = [
@@ -1871,7 +1890,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 说话人圆点头像（拾光 speaker-dot）
+              // 说话人圆点头像（speaker-dot）
               Container(
                 width: 22,
                 height: 22,
@@ -3336,7 +3355,7 @@ class _StudioPill extends StatelessWidget {
   }
 }
 
-/// 分区卡片（友商#2 的 section-title + section-divider 结构）。
+/// 分区卡片（section-title + section-divider 结构）。
 class _StudioSection extends StatelessWidget {
   const _StudioSection({
     required this.icon,
@@ -3520,7 +3539,7 @@ class _StudioTextFieldState extends State<_StudioTextField> {
   }
 }
 
-/// 选项卡（友商#2 branch-card：文本 + 双去向 + 高级条件/效果折叠）。
+/// 选项卡（branch-card：文本 + 双去向 + 高级条件/效果折叠）。
 class _StudioOptionCard extends StatefulWidget {
   const _StudioOptionCard({
     super.key,

@@ -1,7 +1,7 @@
-// 剧情舞台（类友商#2「拾光工坊」剧情编辑页）测试：
+// 剧情舞台（剧情编辑页）测试：
 //  1. buildStudioTree 纯函数：跳转链展开、对话夹嵌套、环收敛为引用、
 //     缺失目标提示、游离对白收尾、折叠呈现；
-//  2. story_competitor 页冒烟：默认渲染拾光舞台（对话线树 + 舞台 + 人物与表情）。
+//  2. story_studio 页冒烟：默认渲染剧情舞台（对话线树 + 舞台 + 人物与表情）。
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -147,7 +147,7 @@ void main() {
     });
   });
 
-  group('story_competitor 页渲染拾光舞台', () {
+  group('story_studio 页渲染剧情舞台', () {
     setUp(() {
       SharedPreferences.setMockInitialValues({});
       ApiClient.instance.client = MockClient((req) async {
@@ -228,7 +228,7 @@ void main() {
           home: Scaffold(
             body: ClassicPageLayouts(
               state: state,
-              page: pageById('story_competitor')!,
+              page: pageById('story_studio')!,
               cfgName: 'TalkCfg',
             ),
           ),
@@ -237,7 +237,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('🎬 剧情编辑（友商风格）'), findsOneWidget);
+      expect(find.text('🎬 剧情编辑'), findsOneWidget);
       expect(find.text('剧情舞台'), findsOneWidget);
       expect(find.textContaining('对话线（'), findsOneWidget);
       expect(find.text('对话选项'), findsOneWidget);
@@ -260,7 +260,7 @@ void main() {
           home: Scaffold(
             body: ClassicPageLayouts(
               state: state,
-              page: pageById('story_competitor')!,
+              page: pageById('story_studio')!,
               cfgName: 'TalkCfg',
             ),
           ),

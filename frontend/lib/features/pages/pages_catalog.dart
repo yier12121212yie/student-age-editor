@@ -1,6 +1,6 @@
 /// 编辑页面的目录定义（对应原 PyQt 版 editor/ui/pages/*）。
 ///
-/// 表清单对齐友商功能面：每页 cfgNames 里的表名必须在
+/// 表清单覆盖编辑器功能面：每页 cfgNames 里的表名必须在
 /// `native/assets/schema.json` 有定义，否则编辑器只能按数据扫键渲染
 /// （由 test/pages_catalog_coverage_test.dart 断言）。
 class EditorPageDef {
@@ -10,6 +10,7 @@ class EditorPageDef {
     required this.description,
     required this.cfgNames,
     this.primaryCfg,
+    this.hidden = false,
   });
   final String id;
   final String title;
@@ -17,8 +18,16 @@ class EditorPageDef {
   final List<String> cfgNames;
   final String? primaryCfg;
 
+  /// 隐藏页：不在「编辑页面」入口列表里出现，但仍可由程序内跳转打开
+  /// （如「故事」页的「开始处理剧情」按钮经 onOpenPage 转到 story_studio）。
+  final bool hidden;
+
   String get defaultCfg => primaryCfg ?? (cfgNames.isNotEmpty ? cfgNames.first : '');
 }
+
+/// 「编辑页面」入口列表要展示的页面：过滤掉 [EditorPageDef.hidden] 的隐藏页。
+List<EditorPageDef> get visibleEditorPages =>
+    editorPages.where((p) => !p.hidden).toList();
 
 const editorPages = <EditorPageDef>[
   EditorPageDef(
@@ -29,11 +38,14 @@ const editorPages = <EditorPageDef>[
     primaryCfg: 'TalkCfg',
   ),
   EditorPageDef(
-    id: 'story_competitor',
-    title: '故事 (友商风格)',
-    description: '类友商产品#2「拾光舞台」剧情编辑：对话夹树 · 游戏画面即写台词 · 人物与表情',
+    id: 'story_studio',
+    title: '剧情工作台',
+    description: '剧情编辑：对话夹树 · 游戏画面即写台词 · 人物与表情',
     cfgNames: ['TalkCfg', 'OptionCfg', 'EvtCfg', 'EvtTypeCfg', 'BgCfg', 'CGCfg'],
     primaryCfg: 'TalkCfg',
+    // 与「故事」页同源：仅作为「开始处理剧情」的跳转目标，不在页面列表中
+    // 重复出现一个入口。
+    hidden: true,
   ),
   EditorPageDef(
     id: 'person',

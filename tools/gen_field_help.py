@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """从参考资料生成字段帮助文本数据。
 
-数据源：`参考资料/友商产品#2/standalone/catalog-schema.json`
+数据源：参考资料中的第三方工坊编辑器 schema（catalog-schema.json）
 （同款游戏的第三方工坊编辑器 schema，`description` 即官方口径的字段说明）。
 
 产物：`frontend/lib/features/editor/field_help_data.dart`
@@ -70,7 +70,7 @@ def main() -> int:
     lines = [
         "// GENERATED FILE - DO NOT EDIT BY HAND.",
         "// 由 tools/gen_field_help.py 从",
-        "// 参考资料/友商产品#2/standalone/catalog-schema.json 生成。",
+        "// 参考资料中的第三方工坊编辑器 schema 生成。",
         "//",
         "// 同款游戏第三方工坊编辑器的 schema，其 description 为字段的权威说明；",
         "// 只收录非空项，其余交给 field_meta.dart 的规则/类型兜底。",

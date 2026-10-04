@@ -355,12 +355,17 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // 固定 560×460 在手机上横向溢出、横屏时纵向溢出；按屏幕收敛，
+    // 桌面维持原尺寸。
+    final screen = MediaQuery.sizeOf(context);
+    final bodyWidth = (screen.width - 48).clamp(240.0, 560.0);
+    final bodyHeight = (screen.height * 0.62).clamp(240.0, 460.0);
     return AlertDialog(
       title: Text(widget.title + (widget.multi ? '（多选）' : ''),
           style: const TextStyle(fontSize: 14)),
       content: SizedBox(
-        width: 560,
-        height: 460,
+        width: bodyWidth,
+        height: bodyHeight,
         child: Column(
           children: [
             fluent.TextBox(

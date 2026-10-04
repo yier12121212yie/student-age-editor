@@ -238,7 +238,10 @@ void main() {
       expect(find.text('原始文本'), findsNothing);
       // 引用字段的纯选择入口（没有伴随文本框）。
       expect(find.text('选人物'), findsWidgets);
-      expect(find.text('选背景'), findsWidgets);
+      // TalkCfg.bg 自带「选背景图」（缩略图 + 单一入口），不再并发通用实体
+      // 选择按钮，避免同一字段出现两个入口。
+      expect(find.text('选背景'), findsNothing);
+      expect(find.text('选背景图'), findsWidgets);
       expect(t.takeException(), isNull);
     });
 
