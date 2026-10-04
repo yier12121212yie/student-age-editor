@@ -72,6 +72,16 @@ void main() {
     debugLocalFilePicker = null;
   });
 
+  group('texKeyOfImportedPath', () {
+    test('裁 Textures/ 前缀并去扩展名（AA 索引 tex key 无扩展名）', () {
+      expect(texKeyOfImportedPath('Textures/a.png'), 'a');
+      expect(texKeyOfImportedPath('Textures/local_x.webp'), 'local_x');
+      expect(texKeyOfImportedPath('Textures/bg/img_x.png'), 'bg/img_x');
+      expect(texKeyOfImportedPath('Audios/vo.mp3'), 'Audios/vo');
+      expect(texKeyOfImportedPath('noext'), 'noext');
+    });
+  });
+
   group('importFiles（纯网络层）', () {
     test('请求体形状：files[{name,data}] + register_audio，缺省不带 dir', () async {
       installImport();

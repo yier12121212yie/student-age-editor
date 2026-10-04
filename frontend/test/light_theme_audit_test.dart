@@ -43,6 +43,11 @@ const allowedInFiles = <String, List<String>>{
     // 全屏预览顶栏渐隐遮罩：垫在白色标题/按钮下，同上两模式同值。
     'Color(0xB3000000)',
   ],
+  'features/story/story_studio_editor.dart': [
+    // 剧情舞台「模拟游戏画面」：黑场上的条件高亮绿与判定黄，与明暗外观解耦。
+    'Color(0xFF527C63)',
+    'Color(0xFFFFD27D)',
+  ],
 };
 
 /// Colors.<x> 里仍允许的中性项。
@@ -61,6 +66,11 @@ const allowedMaterialColorsInFiles = <String, List<String>>{
     'black',
     'white',
     'white54',
+  ],
+  'features/story/story_studio_editor.dart': [
+    // 同「模拟游戏画面」：黑底 + 白字/白描边，两模式同值。
+    'black',
+    'white',
   ],
 };
 

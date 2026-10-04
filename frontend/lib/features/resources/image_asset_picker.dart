@@ -13,7 +13,6 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -24,7 +23,12 @@ import '../../core/api_client.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../../core/app_theme.dart';
 import '../../core/responsive.dart';
-import 'local_import.dart' show importLocalAssets;
+import 'local_import.dart'
+    show
+        PickedLocalFile,
+        importPickedLocalAssets,
+        pickLocalFilesResolved,
+        texKeyOfImportedPath;
 
 // ---------------- 进程级字节缓存 ----------------
 
@@ -73,8 +77,8 @@ class TexBytesCache {
   static Future<TexSource?> loadSource(String key) {
     if (key.isEmpty) return Future.value(null);
     if (_cache.containsKey(key)) {
-      // 触碰即续命：移到 LRU 尾部。
-      final cached = _cache.remove(key)!;
+      // 触碰即续命：移到 LRU 尾部。负缓存（值为 null）也走这里，不能 `!`。
+      final cached = _cache.remove(key);
       _cache[key] = cached;
       return Future.value(cached);
     }
@@ -514,17 +518,24 @@ class _HoverTexPreviewState extends State<HoverTexPreview> {
 
 /// 全屏预览一张 tex 图片（双指缩放/拖拽平移）。供选图器底部选中条与
 /// [HoverTexPreview] 的触屏分支共用。
+///
+/// [bytes] 非空时直接渲染内存字节——刚从电脑导入、索引/预览缓存尚未就绪时用。
 Future<void> openFullImagePreview(BuildContext context, String keyName,
-    {String? subtitle}) {
+    {String? subtitle, Uint8List? bytes}) {
   return Navigator.of(context).push(MaterialPageRoute<void>(
-    builder: (_) => _MobileImagePreviewPage(keyName: keyName, subtitle: subtitle),
+    builder: (_) => _MobileImagePreviewPage(
+        keyName: keyName,
+        subtitle: subtitle,
+        bytes: bytes),
   ));
 }
 
 class _MobileImagePreviewPage extends StatelessWidget {
-  const _MobileImagePreviewPage({required this.keyName, this.subtitle});
+  const _MobileImagePreviewPage(
+      {required this.keyName, this.subtitle, this.bytes});
   final String keyName;
   final String? subtitle;
+  final Uint8List? bytes;
 
   @override
   Widget build(BuildContext context) {
@@ -533,27 +544,37 @@ class _MobileImagePreviewPage extends StatelessWidget {
       child: Stack(
         children: [
           Positioned.fill(
-            child: FutureBuilder<TexSource?>(
-              future: TexBytesCache.loadSmartSource(keyName),
-              builder: (context, snap) {
-                final src = snap.data;
-                if (src == null || src.isEmpty) {
-                  return Center(
-                    child: snap.connectionState == ConnectionState.waiting
-                        ? const CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2)
-                        : const Text('图片不可用（资源缺失或未导出）',
-                            style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  );
-                }
-                return InteractiveViewer(
-                  maxScale: 6,
-                  child: Center(
-                    child: TexSourceImage(source: src, fit: BoxFit.contain),
+            child: bytes != null
+                ? InteractiveViewer(
+                    maxScale: 6,
+                    child: Center(
+                      child: Image.memory(bytes!, fit: BoxFit.contain),
+                    ),
+                  )
+                : FutureBuilder<TexSource?>(
+                    future: TexBytesCache.loadSmartSource(keyName),
+                    builder: (context, snap) {
+                      final src = snap.data;
+                      if (src == null || src.isEmpty) {
+                        return Center(
+                          child:
+                              snap.connectionState == ConnectionState.waiting
+                                  ? const CircularProgressIndicator(
+                                      color: Colors.white, strokeWidth: 2)
+                                  : const Text('图片不可用（资源缺失或未导出）',
+                                      style: TextStyle(
+                                          color: Colors.white54, fontSize: 12)),
+                        );
+                      }
+                      return InteractiveViewer(
+                        maxScale: 6,
+                        child: Center(
+                          child:
+                              TexSourceImage(source: src, fit: BoxFit.contain),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
           SafeArea(
             child: Padding(
@@ -660,6 +681,9 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   /// tile key → GlobalKey。只给需要「滚进可视区」的 tile 用：同一 key 复用
   /// 同一实例（GlobalKey 按实例比对，不能每帧新建），随对话框一起释放。
   final Map<String, GlobalKey> _tileKeys = {};
+
+  /// 本地导入 key → 原始字节：后端索引尚未刷新时也能直接渲染缩略图/大图。
+  final Map<String, Uint8List> _localPreviewBytes = {};
 
   @override
   void initState() {
@@ -795,29 +819,43 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     Navigator.of(context).pop(_selected.toList());
   }
 
-  /// 后端 `path`（`Textures/a.png`）→ 画廊用的 tex key（`a.png` 去扩展名前的
-  /// 原样 key；索引里带子目录的 key 形如 `bg/img_x`，故只裁 `Textures/` 前缀）。
-  static String _texKeyOfPath(String path) {
-    const prefix = 'Textures/';
-    return path.startsWith(prefix) ? path.substring(prefix.length) : path;
-  }
-
-  /// 从本地电脑导入图片：选中项自动预勾选 + 滚进可视区，用户确认即回传。
+  /// 从电脑选择图片：一次完成「选择 → 自动导入 → 预勾选」，不必先导入再回来选。
+  ///
+  /// 选完先落盘并重读索引，新 key 直接进画廊并选中；同时把原始字节留在内存里，
+  /// 索引/预览尚未刷新时也能直接显示缩略图与大图。
   Future<void> _importLocal() async {
     if (_importing) return;
     setState(() => _importing = true);
-    List<Map<String, dynamic>> saved;
+    List<PickedLocalFile> picked;
     try {
-      saved = await importLocalAssets(context, kind: 'image');
+      picked = await pickLocalFilesResolved('image');
+    } catch (e) {
+      if (mounted) {
+        _pickerBar('打开文件选择器失败', '$e', fluent.InfoBarSeverity.error);
+      }
+      return;
     } finally {
       if (mounted) setState(() => _importing = false);
     }
+    if (!mounted || picked.isEmpty) return;
+
+    final saved = await importPickedLocalAssets(context, picked, kind: 'image');
     if (!mounted || saved.isEmpty) return;
-    final keys = [
-      for (final s in saved)
-        _texKeyOfPath((s['path'] ?? '').toString()),
-    ].where((k) => k.isNotEmpty).toList();
-    if (keys.isEmpty) return;
+
+    final bytesByName = <String, Uint8List>{
+      for (final f in picked) f.name: f.bytes,
+    };
+    final fresh = <String>[];
+    final localBytes = <String, Uint8List>{};
+    for (final s in saved) {
+      final key = texKeyOfImportedPath((s['path'] ?? '').toString());
+      if (key.isEmpty) continue;
+      fresh.add(key);
+      final b = bytesByName[(s['name'] ?? '').toString()];
+      if (b != null) localBytes[key] = b;
+    }
+    if (fresh.isEmpty) return;
+
     // 清掉搜索词再重读索引，否则新 key 可能被当前过滤条件挡住看不见。
     _filter = '';
     _tab = _AssetTab.all;
@@ -826,22 +864,35 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     // _tex 是 cast() 视图，不能直接 add：合并成新列表再赋值。
     setState(() {
       final merged = [..._tex];
-      for (final k in keys) {
+      for (final k in fresh) {
         // 后端索引还没收进这批文件时本地补一份，保证 tile 能渲染、能确认回传。
         if (!merged.contains(k)) merged.add(k);
       }
       _tex = merged;
+      _localPreviewBytes.addAll(localBytes);
       _dataVersion++; // 本地导入的 key 进池了：过滤缓存作废
       if (widget.multiSelect) {
-        _selected.addAll(keys);
+        _selected.addAll(fresh);
       } else {
         _selected
           ..clear()
-          ..add(keys.first);
+          ..add(fresh.first);
       }
-      _previewKey = keys.first;
+      _previewKey = fresh.first;
     });
-    _revealKey(keys.first);
+    _revealKey(fresh.first);
+  }
+
+  void _pickerBar(
+      String title, String detail, fluent.InfoBarSeverity severity) {
+    fluent.displayInfoBar(
+      context,
+      builder: (ctx, close) => fluent.InfoBar(
+        title: Text(title),
+        content: Text(detail, style: const TextStyle(fontSize: 11.5)),
+        severity: severity,
+      ),
+    );
   }
 
   /// 滚到并高亮某个 key：先按比例粗定位（让 tile 进入构建范围），
@@ -901,10 +952,10 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
         child: _buildBody(),
       ),
       actions: [
-        // 从本地电脑导入：后端落盘到 Textures/，成功后自动预勾选新 key。
+        // 从电脑选择：落盘到 Textures/ 后自动预勾选，无需先导入再选。
         fluent.Button(
           onPressed: _importing ? null : _importLocal,
-          child: Text(_importing ? '导入中…' : '导入本地图片…'),
+          child: Text(_importing ? '导入中…' : '从电脑选择图片…'),
         ),
         fluent.Button(
           onPressed: () => Navigator.of(context).pop(),
@@ -936,15 +987,26 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       );
     }
     if (_tex.isEmpty) {
+      // 没扫过索引也能用：空态同时给「扫描」与「从电脑选择」两条路。
       return _buildEmpty(
         icon: FluentIcons.image_24_regular,
-        label: '尚未扫描游戏资源，无法浏览立绘 / 背景图片',
-        action: ListenableBuilder(
-          listenable: _scanning,
-          builder: (context, _) => fluent.FilledButton(
-            onPressed: _scanning.value ? null : _scan,
-            child: Text(_scanning.value ? '扫描中…' : '扫描游戏资源'),
-          ),
+        label: '尚未扫描游戏资源\n也可以直接从电脑选择图片',
+        action: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListenableBuilder(
+              listenable: _scanning,
+              builder: (context, _) => fluent.FilledButton(
+                onPressed: _scanning.value ? null : _scan,
+                child: Text(_scanning.value ? '扫描中…' : '扫描游戏资源'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            fluent.Button(
+              onPressed: _importing ? null : _importLocal,
+              child: const Text('从电脑选择图片…'),
+            ),
+          ],
         ),
       );
     }
@@ -988,11 +1050,13 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   Widget _buildMobileSelectionBar() {
     final key = _previewKey!;
     final size = _meta[key];
+    final localBytes = _localPreviewBytes[key];
     return GestureDetector(
       onTap: () => openFullImagePreview(
         context,
         key,
         subtitle: size != null ? '$key  ·  ${size[0]}×${size[1]}' : key,
+        bytes: localBytes,
       ),
       behavior: HitTestBehavior.opaque,
       child: Container(
@@ -1000,13 +1064,20 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
         padding: const EdgeInsets.symmetric(horizontal: 10),
         child: Row(
           children: [
-            TexThumb(
-              keyName: key,
-              width: 44,
-              height: 44,
-              fit: BoxFit.contain,
-              borderRadius: BorderRadius.circular(4),
-            ),
+            if (localBytes != null)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Image.memory(localBytes,
+                    width: 44, height: 44, fit: BoxFit.contain),
+              )
+            else
+              TexThumb(
+                keyName: key,
+                width: 44,
+                height: 44,
+                fit: BoxFit.contain,
+                borderRadius: BorderRadius.circular(4),
+              ),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -1191,7 +1262,17 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    TexThumb(keyName: key, fit: BoxFit.contain),
+                    if (_localPreviewBytes[key] != null)
+                      Image.memory(
+                        _localPreviewBytes[key]!,
+                        fit: BoxFit.contain,
+                        gaplessPlayback: true,
+                        // 选中文件解不出图（损坏/伪装扩展名）时回落索引缩略图。
+                        errorBuilder: (_, _, _) =>
+                            TexThumb(keyName: key, fit: BoxFit.contain),
+                      )
+                    else
+                      TexThumb(keyName: key, fit: BoxFit.contain),
                     if (selected)
                       Positioned(
                         top: 4,
@@ -1250,6 +1331,25 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
                 style: TextStyle(fontSize: 11.5, color: palette.textHint)),
           ],
         ),
+      );
+    }
+    // 刚从电脑导入、索引/预览缓存尚未就绪时，直接用内存字节渲染。
+    final localBytes = _localPreviewBytes[key];
+    if (localBytes != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(child: ImagePreview(bytes: localBytes, name: key)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+            child: Text(
+              key,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 10.5, color: palette.textHint),
+            ),
+          ),
+        ],
       );
     }
     return _PreviewPane(key: ValueKey(key), keyName: key, meta: _meta);

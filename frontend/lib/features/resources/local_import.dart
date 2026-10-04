@@ -55,6 +55,22 @@ const List<String> kLocalAudioExtensions = ['wav', 'mp3', 'ogg', 'm4a'];
 /// 视频白名单，与后端目录推断口径一致（mp4/webm/mov/mkv → Videos）。
 const List<String> kLocalVideoExtensions = ['mp4', 'webm', 'mov', 'mkv'];
 
+/// 后端 `saved.path`（`Textures/a.png`）→ 画廊/字段用的 tex key（`a`）。
+///
+/// 落盘文件名带扩展名，但 AA 索引 key 一律**不含扩展名**
+/// （`DecodedPack::refresh` 用 `split_ext` 的 root 建索引，见
+/// `native/server/services/aa.cpp`），故裁掉 `Textures/` 前缀后再去掉扩展名。
+/// 索引里带子目录的 key 形如 `bg/img_x`，不能按 basename 取。
+String texKeyOfImportedPath(String path) {
+  var p = path;
+  const prefix = 'Textures/';
+  if (p.startsWith(prefix)) p = p.substring(prefix.length);
+  final dot = p.lastIndexOf('.');
+  final slash = p.lastIndexOf('/');
+  if (dot > 0 && dot > slash) p = p.substring(0, dot);
+  return p;
+}
+
 // ---------------- 可注入的文件读取 ----------------
 
 /// 已选到手的本地文件：`name` 只含文件名（不含路径），`bytes` 是原始字节。
@@ -68,6 +84,13 @@ typedef LocalFilePicker = Future<List<PickedLocalFile>> Function(String kind);
 /// 适合「按钮在深层 widget 里、没法透传 picker」的集成测试。
 @visibleForTesting
 LocalFilePicker? debugLocalFilePicker;
+
+/// 供 GUI 选择器复用「选哪些文件」的解析：优先测试注入，其次系统选择器。
+///
+/// 与 [importLocalAssets] 共用同一解析顺序，避免调用方直接触碰
+/// `@visibleForTesting` 的 [debugLocalFilePicker]。
+Future<List<PickedLocalFile>> pickLocalFilesResolved(String kind) =>
+    (debugLocalFilePicker ?? pickLocalFilesByKind)(kind);
 
 /// 用系统多选对话框挑文件并读成字节。
 ///
@@ -175,7 +198,6 @@ Future<List<Map<String, dynamic>>> importLocalAssets(
   bool registerAudio = false,
   LocalFilePicker? picker,
 }) async {
-  final isImage = kind == 'image';
   final pick = picker ?? debugLocalFilePicker ?? pickLocalFilesByKind;
 
   List<PickedLocalFile> picked;
@@ -200,6 +222,23 @@ Future<List<Map<String, dynamic>>> importLocalAssets(
     }
     return const [];
   }
+  if (!context.mounted) return const [];
+  return importPickedLocalAssets(context, picked,
+      kind: kind, registerAudio: registerAudio);
+}
+
+/// 导入一批**已在手**的本地文件（选择器里先预览再导入时复用）。
+///
+/// 与 [importLocalAssets] 的差别只在于「不再弹系统选择器」：其余 web 大文件
+/// 引用分流、逐条错误反馈、图片缓存失效、返回 `saved` 的语义完全一致。
+Future<List<Map<String, dynamic>>> importPickedLocalAssets(
+  BuildContext context,
+  List<PickedLocalFile> picked, {
+  required String kind,
+  bool registerAudio = false,
+}) async {
+  if (picked.isEmpty) return const [];
+  final isImage = kind == 'image';
 
   // web 上超过阈值的单文件改走「留 COS 只存引用」（不落盘）：贴图/配乐/视频
   // 动辄几百 MB，base64 通道必被网关请求体上限拒杀。小文件仍走 import_files

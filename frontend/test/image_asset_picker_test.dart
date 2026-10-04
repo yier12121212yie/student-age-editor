@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/features/resources/image_asset_picker.dart';
+import 'package:student_age_editor/features/resources/local_import.dart';
 
 /// 1x1 透明 PNG（base64）。
 const _kPng1x1 =
@@ -16,6 +17,10 @@ const _kPng1x1 =
 void main() {
   setUp(() {
     TexBytesCache.clear();
+  });
+
+  tearDown(() {
+    debugLocalFilePicker = null;
   });
 
   group('TexBytesCache.keyCandidates', () {
@@ -150,6 +155,79 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('已选 1 项'), findsOneWidget);
+    });
+
+    testWidgets('从电脑选择：自动导入、预勾选，确认回传新 key', (tester) async {
+      ApiClient.instance.client = MockClient((req) async {
+        final url = req.url.toString();
+        if (url.contains('/api/aa/keys')) {
+          if (url.contains('scope=flow')) {
+            return http.Response(jsonEncode({'tex': <String>[]}), 200);
+          }
+          return http.Response(
+              jsonEncode({
+                'tex': ['bg/img_keting'],
+              }),
+              200);
+        }
+        if (url.contains('/api/aa/preview')) {
+          return http.Response(jsonEncode({'data': _kPng1x1}), 200);
+        }
+        if (req.url.path == '/api/mod/import_files') {
+          return http.Response(
+              jsonEncode({
+                'saved': [
+                  {'name': 'local.png', 'path': 'Textures/local_x.png', 'size': 4},
+                ],
+                'errors': <Object>[],
+              }),
+              200,
+              headers: {'content-type': 'application/json'});
+        }
+        return http.Response('{}', 404);
+      });
+      // 注入本地选择：返回一张 PNG，模拟从电脑选文件。
+      debugLocalFilePicker = (kind) async =>
+          [(name: 'local.png', bytes: base64Decode(_kPng1x1))];
+
+      result = null;
+      await tester.pumpWidget(fluent.FluentApp(
+        theme: fluent.FluentThemeData(brightness: Brightness.dark),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: fluent.Button(
+                child: const Text('open'),
+                onPressed: () async {
+                  result = await showImageAssetPicker(context);
+                },
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      // 直接点动作栏「从电脑选择图片…」：选文件 → 自动导入 → 预勾选。
+      await tester.tap(find.text('从电脑选择图片…'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+
+      // 新 key（去掉扩展名，与 AA 索引口径一致）直接进画廊并已选中。
+      expect(find.text('local_x'), findsWidgets);
+      expect(find.text('已选：local_x'), findsOneWidget);
+
+      // 导入成功的 InfoBar 浮层会挡住动作栏，且其 6s 自动关闭定时器不随
+      // pumpAndSettle 推进：先推过它，再点确认。
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('使用所选'));
+      await tester.pumpAndSettle();
+      expect(result, ['local_x']);
     });
   });
 }

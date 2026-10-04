@@ -21,6 +21,8 @@ import '../nocode/no_code_ref_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart' show BgIdThumb, TexThumb;
+import '../resources/local_import.dart'
+    show importLocalAssets, texKeyOfImportedPath;
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
 
@@ -346,6 +348,9 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   int? _evtMtimeNs;
   int? _talkMtimeNs;
   int? _optMtimeNs;
+  // BgCfg / PersonCfg 也要能被「从电脑选择」就地补一条并乐观锁写回。
+  int? _bgMtimeNs;
+  int? _personMtimeNs;
 
   String? _evtId;
   List<String> _prefixes = const [];
@@ -411,6 +416,8 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
         _evtMtimeNs = _asInt(results[0]['mtime_ns']);
         _talkMtimeNs = _asInt(results[1]['mtime_ns']);
         _optMtimeNs = _asInt(results[2]['mtime_ns']);
+        _personMtimeNs = _asInt(results[3]['mtime_ns']);
+        _bgMtimeNs = _asInt(results[4]['mtime_ns']);
         _loaded = true;
       });
       if (_evtId == null && _evtCfg.isNotEmpty) {
@@ -845,6 +852,14 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
               _optMtimeNs = mtime;
               _stageOpts = stageOf(_optCfg, _prefixes, isOption: true);
               _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+              break;
+            case 'BgCfg':
+              _bgCfg = disk;
+              _bgMtimeNs = mtime;
+              break;
+            case 'PersonCfg':
+              _personCfg = disk;
+              _personMtimeNs = mtime;
               break;
             default:
               _evtCfg = disk;
@@ -1306,6 +1321,14 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             ),
           ),
           actions: [
+            // 直接从电脑选图导入并写进该角色立绘，省掉先导入再配人设。
+            fluent.Button(
+              onPressed: () async {
+                await _importLocalPortrait(selected);
+                if (ctx.mounted) setDialogState(() {});
+              },
+              child: const Text('从电脑选择立绘…'),
+            ),
             fluent.Button(
               onPressed: () => Navigator.of(ctx).pop(),
               child: const Text('取消'),
@@ -1395,6 +1418,23 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             ),
           ),
           actions: [
+            // 直接从电脑选图并登记为背景：无需先到人物/背景页导入。
+            fluent.Button(
+              onPressed: () async {
+                final id = await _importLocalBg();
+                if (id != null && ctx.mounted) {
+                  setDialogState(() {
+                    current = '$id';
+                    // 下拉项在打开对话框时已快照，这里补进新背景名，免得选不中。
+                    final rec = _bgCfg['$id'];
+                    final name =
+                        (rec is Map ? rec['name'] : null)?.toString() ?? '';
+                    bgs['$id'] = name.isEmpty ? '新背景 $id' : name;
+                  });
+                }
+              },
+              child: const Text('从电脑选择图片…'),
+            ),
             fluent.Button(
               onPressed: () => Navigator.of(ctx).pop(),
               child: const Text('取消'),
@@ -1413,6 +1453,73 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
         ),
       ),
     );
+  }
+
+  /// 从电脑选一张图片导入当前 Mod，并登记为一条新的 BgCfg；返回新背景 id。
+  ///
+  /// 不需要预先导入：选中文件即自动落盘到 `Textures/` 并写 BgCfg，随后场景
+  /// 对话框可直接应用该背景。取消 / 登记失败返回 null。
+  Future<int?> _importLocalBg() async {
+    final saved = await importLocalAssets(context, kind: 'image');
+    if (!mounted || saved.isEmpty) return null;
+    final key = texKeyOfImportedPath((saved.first['path'] ?? '').toString());
+    if (key.isEmpty) return null;
+
+    var maxId = 0;
+    for (final k in _bgCfg.keys) {
+      final n = int.tryParse(k);
+      if (n != null && n > maxId) maxId = n;
+    }
+    final id = maxId + 1;
+    final name = key.split('/').last;
+    final updated = <String, dynamic>{
+      ..._bgCfg,
+      '$id': <String, dynamic>{'id': id, 'name': name, 'url': key},
+    };
+    final ok = await _putTableWithConflictCheck(
+      'BgCfg',
+      updated,
+      expect: () => _bgMtimeNs,
+      onMtime: (v) => _bgMtimeNs = v,
+    );
+    if (!ok || !mounted) return null;
+    setState(() => _bgCfg = updated);
+    return id;
+  }
+
+  /// 从电脑选一张图片导入并写进该角色的立绘（url=小学 / url2=中学）。
+  ///
+  /// 只写已有 PersonCfg 记录的角色；没有记录时不擅自新建（缺 name 等字段会
+  /// 破坏游戏数据），改为提示先在人物表建角色。返回是否写入成功。
+  Future<bool> _importLocalPortrait(String roleId) async {
+    final id = cln(roleId);
+    if (id.isEmpty) return false;
+    final existing = _personCfg[id];
+    if (existing is! Map) {
+      _showInfo('无法设置立绘', '角色 $id 还没有 PersonCfg 记录，请先在人物表中创建该角色。');
+      return false;
+    }
+    final saved = await importLocalAssets(context, kind: 'image');
+    if (!mounted || saved.isEmpty) return false;
+    final key = texKeyOfImportedPath((saved.first['path'] ?? '').toString());
+    if (key.isEmpty) return false;
+
+    final record = Map<String, dynamic>.from(existing);
+    final field = _stageIndex == 0 ? 'url' : 'url2';
+    final list =
+        ensureList(record[field]).map(cln).where((e) => e.isNotEmpty).toList();
+    if (!list.contains(key)) list.add(key);
+    record[field] = list;
+    final updated = <String, dynamic>{..._personCfg, id: record};
+    final ok = await _putTableWithConflictCheck(
+      'PersonCfg',
+      updated,
+      expect: () => _personMtimeNs,
+      onMtime: (v) => _personMtimeNs = v,
+    );
+    if (!ok || !mounted) return false;
+    setState(() => _personCfg = updated);
+    return true;
   }
 
   // ---------- UI ----------
