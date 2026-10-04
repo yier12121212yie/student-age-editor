@@ -15,6 +15,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/app_theme.dart';
 import 'visual_fields.dart';
+import '../../core/app_dialogs.dart';
 
 /// 打开浏览对话框。返回选中的 ID 列表（有序）；取消返回 null。
 Future<List<String>?> showIdBrowseDialog(
@@ -135,7 +136,7 @@ class _IdBrowseDialogState extends State<_IdBrowseDialog> {
   Widget build(BuildContext context) {
     final items = _filtered;
     final names = _nameById;
-    return fluent.ContentDialog(
+    return AppContentDialog(
       title: Text(widget.title),
       content: SizedBox(
         // 与 _IdPickerDialog 同一窄屏策略：桌面 520，窄屏贴边。

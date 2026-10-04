@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/core/models.dart';
+import 'package:student_age_editor/features/editor/cfg_display_names.dart';
 import 'package:student_age_editor/features/editor/schema_editor_view.dart';
 import 'package:student_age_editor/features/pages/page_view.dart';
 import 'package:student_age_editor/features/pages/pages_catalog.dart';
@@ -80,9 +81,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(tester.takeException(), isNull, reason: '${page.id} 渲染异常');
 
-      // 默认表应出现（配置表下拉含 primaryCfg 文本），且 schema 编辑器挂载。
+      // 默认表应出现（配置表下拉含默认表文案），且 schema 编辑器挂载。
       expect(
-        find.text(page.defaultCfg),
+        find.text(cfgDisplayName(page.defaultCfg)),
         findsWidgets,
         reason: '${page.id} 顶部下拉应含默认表',
       );

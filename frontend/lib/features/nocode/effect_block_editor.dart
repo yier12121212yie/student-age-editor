@@ -26,6 +26,7 @@ import '../../core/mobile_widgets.dart';
 import '../../core/responsive.dart';
 import '../editor/suggestion_text_field.dart';
 import 'effect_slot_form.dart';
+import '../../core/app_dialogs.dart';
 
 /// 解析端点（后端并行开发中，契约已锁定）。
 const String kEffectParsePath = '/api/effect/parse';
@@ -219,7 +220,8 @@ Future<String?> showEffectBlockEditor(
     await showDialog<void>(
       context: context,
       barrierColor: palette.scrim,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
+        preferredWidth: 600,
         title: Text(title),
         content: SizedBox(width: 560, height: 520, child: body),
       ),

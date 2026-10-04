@@ -6,6 +6,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 // 已下线的云盘类型：旧配置条目仍显示，但不可再测试/保存（后端已移除驱动）
 const Set<String> _kRemovedDrivers = {'aliyundrive','aliyun','quark','189','tianyi'};
@@ -413,7 +414,7 @@ class _CloudPageState extends State<CloudPage> {
                 final r = await ApiClient.instance.get('/api/cloud/realtime/events', query: {'limit':'30'});
                 final ev = (r['events'] as List?) ?? [];
                 if (!mounted) return;
-                fluent.showDialog(context: context, builder:(ctx)=> fluent.ContentDialog(
+                fluent.showDialog(context: context, builder:(ctx)=> AppContentDialog(
                   title: const Text('实时事件'),
                   content: SizedBox(
                     // 固定 420 宽在手机端溢出：窄屏贴边（云页经「更多」手机可达）。
@@ -513,7 +514,7 @@ class _CloudPageState extends State<CloudPage> {
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children:[Text(label, style: TextStyle(fontSize:11, color: palette.textSecondary)), SizedBox(height:3), fluent.TextBox(controller:c, placeholder:hint, obscureText:obscure), SizedBox(height:6)]);
       }
       final help = _driverHelp(type);
-      return fluent.ContentDialog(
+      return AppContentDialog(
         title: Text(isEdit ? '编辑云存储' : '新增云存储'),
         content: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
           fluent.ComboBox<String>(value: type, isExpanded:true, items: (_drivers.contains(type) ? _drivers : [type, ..._drivers]).map((d)=>fluent.ComboBoxItem(value:d, child: Text('${_driverLabel(d)} ($d)', overflow:TextOverflow.ellipsis))).toList(), onChanged:(v)=>setDlg(()=>type=v??type)),
@@ -621,7 +622,7 @@ class _CloudPageState extends State<CloudPage> {
 
   Future<void> _test(String id) async { try{ await ApiClient.instance.post('/api/cloud/test', body:{'provider_id':id}); _showInfo('连接成功'); }catch(e){ _showErr(e.toString()); } }
   Future<void> _del(String id) async {
-    final ok=await fluent.showDialog<bool>(context:context, builder:(ctx)=>fluent.ContentDialog(title:const Text('删除'), content:const Text('确认删除？此操作不可恢复。'), actions:[fluent.Button(onPressed:()=>Navigator.pop(ctx,false), child:const Text('取消')), fluent.FilledButton(onPressed:()=>Navigator.pop(ctx,true), child:const Text('删除'))]));
+    final ok=await fluent.showDialog<bool>(context:context, builder:(ctx)=>AppContentDialog(title:const Text('删除'), content:const Text('确认删除？此操作不可恢复。'), actions:[fluent.Button(onPressed:()=>Navigator.pop(ctx,false), child:const Text('取消')), fluent.FilledButton(onPressed:()=>Navigator.pop(ctx,true), child:const Text('删除'))]));
     if(ok!=true) return; try{ await ApiClient.instance.delete('/api/cloud/providers/$id'); if(!mounted) return; if(_selectedProvider==id) setState(()=>_selectedProvider=null); await _loadProviders(); }catch(e){ _showErr(e.toString()); }
   }
 

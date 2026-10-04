@@ -17,6 +17,7 @@ import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/motion.dart';
 import 'ai_models.dart';
+import '../../core/app_dialogs.dart';
 
 // ---------------- 历史会话条目 ----------------
 
@@ -1044,7 +1045,8 @@ class _ModImageThumbState extends State<ModImageThumb> {
         // 像素，全分辨率解码一次会卡 UI 且占数百 MB 内存，而这里最多只
         // 显示 640 逻辑宽。
         final cacheW = (boxW * MediaQuery.devicePixelRatioOf(ctx)).round();
-        return fluent.ContentDialog(
+        return AppContentDialog(
+          preferredWidth: 700,
           title: Text(widget.path),
           content: SizedBox(
             width: boxW,

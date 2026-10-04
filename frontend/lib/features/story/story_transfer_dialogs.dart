@@ -10,6 +10,7 @@ import '../../core/models.dart';
 import '../../core/app_theme.dart';
 import '../editor/id_ref_picker.dart' show showIdBrowseDialog;
 import 'story_logic.dart';
+import '../../core/app_dialogs.dart';
 
 /// 弹窗内容安全尺寸：宽度不超屏，高度留出标题/操作按钮的空间。
 BoxConstraints _dialogBodyConstraints(
@@ -28,7 +29,7 @@ BoxConstraints _dialogBodyConstraints(
 Future<void> showStoryImportDialog(BuildContext context, AppState state) {
   return showDialog<void>(
     context: context,
-    builder: (ctx) => fluent.ContentDialog(
+    builder: (ctx) => AppContentDialog(
       title: const Text('📥 导入剧情剧本（文本 → TalkCfg）'),
       content: _StoryImportBody(noCodeMode: state.noCodeMode),
       actions: [
@@ -262,7 +263,7 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
 Future<void> showStoryExportDialog(BuildContext context, AppState state) {
   return showDialog<void>(
     context: context,
-    builder: (ctx) => fluent.ContentDialog(
+    builder: (ctx) => AppContentDialog(
       title: const Text('📤 导出剧情文案脚本'),
       content: _StoryExportBody(),
       actions: [

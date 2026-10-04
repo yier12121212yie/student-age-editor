@@ -23,6 +23,7 @@ import '../../core/api_client.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../../core/app_theme.dart';
 import '../../core/responsive.dart';
+import '../../core/app_dialogs.dart';
 import 'local_import.dart'
     show
         PickedLocalFile,
@@ -930,7 +931,7 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     final h = mobile
         ? math.max(320.0, screen.height - 250)
         : math.min(700.0, screen.height - 150);
-    return fluent.ContentDialog(
+    return AppContentDialog(
       constraints: BoxConstraints(maxWidth: w, maxHeight: h + 140),
       title: Row(
         children: [

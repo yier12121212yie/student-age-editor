@@ -15,6 +15,7 @@ import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../../core/app_theme.dart';
 import 'update_section.dart';
+import '../../core/app_dialogs.dart';
 
 /// AI 服务配置。
 class AiSettings {
@@ -1393,7 +1394,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
   Future<void> _remove(String id) async {
     final ok = await fluent.showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('删除扩展'),
         content: Text('确认删除 $id ?'),
         actions: [

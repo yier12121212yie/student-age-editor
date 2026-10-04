@@ -7,6 +7,7 @@ import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/plugin_state.dart';
 import '../../core/zip_staging.dart';
+import '../../core/app_dialogs.dart';
 
 /// 统一的「扩展」管理页（3A）：资源包 + 插件合并为一个列表，多选启用。
 ///
@@ -141,7 +142,7 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
     final name = (e['name'] as String?) ?? id;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('卸载扩展'),
         content: Text('确定卸载扩展「$name」吗？扩展目录或资源包将被删除。'),
         actions: [

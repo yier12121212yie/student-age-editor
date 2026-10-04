@@ -18,6 +18,7 @@ import 'ai_models.dart';
 import 'ai_policy.dart';
 import 'ai_skills.dart';
 import 'event_plan_flow.dart';
+import '../../core/app_dialogs.dart';
 
 /// AI 侧栏（Cursor 风格聊天面板）。
 ///
@@ -252,7 +253,7 @@ class AiPanelState extends State<AiPanel> {
     final ctrl = TextEditingController(text: widget.settings.model);
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('指定对话模型'),
         content: SizedBox(
           width: 320,
@@ -442,7 +443,7 @@ class AiPanelState extends State<AiPanel> {
     final wasActive = session == _c.active;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('删除该历史对话？'),
         content: Text('将删除「${session.title}」的全部消息与工具调用记录，且无法恢复。'),
         actions: [
@@ -466,7 +467,7 @@ class AiPanelState extends State<AiPanel> {
     if (_c.messages.length <= 1) return; // 只有 system 提示
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('清空聊天记录？'),
         content: const Text('将删除当前会话的全部消息与工具调用记录，且无法恢复。'),
         actions: [
@@ -622,12 +623,18 @@ class AiPanelState extends State<AiPanel> {
         context: context,
         barrierDismissible: false,
         builder: (ctx) {
-          final size = MediaQuery.sizeOf(ctx);
-          return fluent.ContentDialog(
+          final body = appDialogContentSize(
+            ctx,
+            preferredWidth: 720,
+            aspectRatio: 16 / 9,
+            maxHeightFraction: 0.6,
+          );
+          return AppContentDialog(
+            preferredWidth: 760,
             title: Text(title),
             content: SizedBox(
-              width: min(520, size.width - 48),
-              height: min(340, size.height * 0.6),
+              width: body.width,
+              height: body.height,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -753,7 +760,7 @@ class AiPanelState extends State<AiPanel> {
         barrierDismissible: false,
         builder: (ctx) {
           final size = MediaQuery.sizeOf(ctx);
-          return fluent.ContentDialog(
+          return AppContentDialog(
             title: const Text('AI 向你提问'),
             content: SizedBox(
               width: min(480, size.width - 48),
@@ -836,12 +843,18 @@ class AiPanelState extends State<AiPanel> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        final size = MediaQuery.sizeOf(ctx);
-        return fluent.ContentDialog(
+        final body = appDialogContentSize(
+          ctx,
+          preferredWidth: 960,
+          aspectRatio: 16 / 9,
+          maxHeightFraction: 0.8,
+        );
+        return AppContentDialog(
+          preferredWidth: 1000,
           title: const Text('生成整段事件'),
           content: SizedBox(
-            width: min(760, size.width - 48),
-            height: min(620, size.height * 0.8),
+            width: body.width,
+            height: body.height,
             child: EventPlanFlowPage(
               modName: widget.state.modName,
               settings: widget.settings,

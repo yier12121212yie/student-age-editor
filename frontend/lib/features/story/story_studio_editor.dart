@@ -25,6 +25,7 @@ import '../resources/local_import.dart'
     show importLocalAssets, texKeyOfImportedPath;
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 // ---------------------------------------------------------------------------
 // 对话线树（纯函数，可单测）
@@ -809,7 +810,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       if (!mounted) return false;
       final action = await fluent.showDialog<String>(
         context: context,
-        builder: (ctx) => fluent.ContentDialog(
+        builder: (ctx) => AppContentDialog(
           title: const Text('文件冲突'),
           content: Text(
             '$cfg 文件已被外部修改。\n重新加载将放弃该表本地未保存的改动；'
@@ -877,7 +878,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   Future<bool> _confirm(String title, String message) async {
     final r = await fluent.showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: Text(title),
         content: Text(message),
         actions: [
@@ -898,7 +899,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   Future<String?> _confirmSaveDiscard() {
     return fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('有未保存的修改'),
         content: const Text('当前事件的对白/选项修改尚未保存，离开当前事件后将丢失。'),
         actions: [
@@ -1258,7 +1259,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     await fluent.showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => fluent.ContentDialog(
+        builder: (ctx, setDialogState) => AppContentDialog(
           title: Text(slotIdx == null ? '人物登场' : '放置角色到 站位 $slotIdx'),
           content: SingleChildScrollView(
             child: Column(
@@ -1370,7 +1371,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     await fluent.showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => fluent.ContentDialog(
+        builder: (ctx, setDialogState) => AppContentDialog(
           title: const Text('选择场景背景'),
           content: SizedBox(
             width: 420,
@@ -2970,7 +2971,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   ) async {
     await fluent.showDialog<void>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: Text('角色 [${p.roleId}] 的表情与站位'),
         content: Column(
           mainAxisSize: MainAxisSize.min,

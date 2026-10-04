@@ -4,6 +4,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/models.dart';
 import '../../core/responsive.dart';
+import '../editor/cfg_display_names.dart';
 import '../editor/schema_editor_view.dart';
 import '../story/story_director_view.dart';
 import '../story/story_list_mobile_page.dart';
@@ -113,7 +114,7 @@ class _PageViewState extends State<EditorPageView> {
                       fluent.ComboBoxItem(
                         value: name,
                         child: Text(
-                          name,
+                          cfgDisplayName(name),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),

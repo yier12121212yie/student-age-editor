@@ -45,6 +45,7 @@ import '../nocode/nocode_effect_field.dart';
 import '../resources/image_asset_picker.dart';
 import 'story_flow_field_codec.dart';
 import 'story_logic.dart';
+import '../../core/app_dialogs.dart';
 
 /// 面板宽度：与 [FlowAssetPanel] 同一档，宿主按此值给 `Positioned` 宽度。
 const double kFlowInspectorWidth = 340;
@@ -707,7 +708,8 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
     final screen = MediaQuery.sizeOf(context);
     await fluent.showDialog<void>(
       context: context,
-      builder: (_) => fluent.ContentDialog(
+      builder: (_) => AppContentDialog(
+        preferredWidth: 900,
         title: Text(key,
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
         content: SizedBox(

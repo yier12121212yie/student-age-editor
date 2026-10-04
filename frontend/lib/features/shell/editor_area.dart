@@ -15,6 +15,7 @@ import '../pages/page_view.dart';
 import '../pages/pages_catalog.dart';
 import '../preview/event_preview_view.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 class EditorArea extends StatefulWidget {
   const EditorArea({
@@ -181,7 +182,7 @@ class _TabBar extends StatelessWidget {
   ) async {
     final ok = await fluent.showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: Text('$action${doc.title}'),
         content: const Text(
           '该页签有未保存修改，继续将丢失这些改动。',

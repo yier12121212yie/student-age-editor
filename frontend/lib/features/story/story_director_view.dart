@@ -26,6 +26,7 @@ import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart' show TexThumb;
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// 故事页：事件 → 剧情线 → 对白节点 的三栏编排视图。
 ///
@@ -909,7 +910,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Future<String?> _showConflictDialog(String cfg) {
     return fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('文件冲突'),
         content: Text(
           '$cfg 文件已被外部修改（可能被游戏或其他端改写）。\n'
@@ -941,7 +942,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Future<bool> _confirm(String title, String message) async {
     final r = await fluent.showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: Text(title),
         content: Text(message),
         actions: [
@@ -963,7 +964,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Future<String?> _confirmSaveDiscard() async {
     return fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('有未保存的修改'),
         content: const Text('当前事件的对白/选项修改尚未保存，离开当前事件后将丢失。'),
         actions: [
@@ -2228,7 +2229,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => fluent.ContentDialog(
+        builder: (ctx, setDialogState) => AppContentDialog(
           title: Text('放置角色到 站位 $slotIdx'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -2359,7 +2360,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     var actionCode = role.actionCode;
     await showDialog(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: Text('修改 角色 [${role.roleId}] 动作与表情'),
         content: Column(
           mainAxisSize: MainAxisSize.min,

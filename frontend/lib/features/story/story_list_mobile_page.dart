@@ -6,6 +6,7 @@ import '../../core/app_theme.dart';
 import '../../core/mobile_widgets.dart';
 import 'story_editor_mobile.dart';
 import 'story_detail_mobile_page.dart';
+import '../../core/app_dialogs.dart';
 
 /// 移动版事件列表页 - 单栏卡片式浏览
 class StoryListMobilePage extends StatefulWidget {
@@ -96,7 +97,7 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
       if (mounted) {
         fluent.showDialog(
           context: context,
-          builder: (ctx) => fluent.ContentDialog(
+          builder: (ctx) => AppContentDialog(
             title: const Text('加载失败'),
             content: Text(e.toString()),
             actions: [

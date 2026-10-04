@@ -21,6 +21,7 @@ import 'preview_audio.dart';
 import 'preview_models.dart';
 import 'stage_effects.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// 事件场景预览视图：把当前事件（EvtCfg + TalkCfg + OptionCfg）渲染成
 /// 视觉小说式游戏场景（背景 + 立绘 + 对白 + 选项），支持对白导航、
@@ -1506,7 +1507,7 @@ class _BrushResultDialog extends StatelessWidget {
     // 桌面端放宽到 480；窄屏跟随弹窗默认宽度（ContentDialog 上限 368），
     // 固定 480 会超出弹窗约束导致横向溢出
     final wide = MediaQuery.sizeOf(context).width >= 560;
-    return fluent.ContentDialog(
+    return AppContentDialog(
       title: Text(title),
       content: Container(
         width: wide ? 480 : null,

@@ -14,6 +14,7 @@ import '../../core/responsive.dart';
 import '../../core/zip_staging.dart';
 import '../editor/editor_controller.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// 创意工坊 AppID，与 native 的 sa_core::steam_paths::kGameAppid 同源。
 const String _kWorkshopAppid = '1991040';
@@ -44,7 +45,7 @@ class _ModsPageState extends State<ModsPage> {
     try {
       await showDialog<void>(
         context: context,
-        builder: (ctx) => fluent.ContentDialog(
+        builder: (ctx) => AppContentDialog(
           title: const Text('创建新模组'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -301,7 +302,7 @@ class _ModsPageState extends State<ModsPage> {
     }
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('删除模组'),
         content: Text('确定删除模组「${mod.name}」吗？此操作不可恢复。'),
         actions: [
@@ -588,7 +589,7 @@ class _ModImportProgressDialogState extends State<_ModImportProgressDialog> {
       valueListenable: widget.stage,
       builder: (context, stage, _) {
         final pct = stage.frac == null ? null : (stage.frac! * 100).clamp(0.0, 100.0);
-        return fluent.ContentDialog(
+        return AppContentDialog(
           title: Text(widget.title),
           content: Column(
             mainAxisSize: MainAxisSize.min,

@@ -10,6 +10,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/material.dart';
 
 import '../../core/no_code_mode.dart';
+import '../../core/app_dialogs.dart';
 
 /// 关闭无代码模式（写穿 editor_env.json）；写穿失败时提示并说明已回滚。
 Future<void> exitNoCodeMode(BuildContext context) async {
@@ -17,7 +18,7 @@ Future<void> exitNoCodeMode(BuildContext context) async {
   if (ok || !context.mounted) return;
   await fluent.showDialog<void>(
     context: context,
-    builder: (ctx) => fluent.ContentDialog(
+    builder: (ctx) => AppContentDialog(
       title: const Text('关闭失败'),
       content: const Text('无法写穿后端共享设置，开关已回滚。请确认后端在线后重试。'),
       actions: [

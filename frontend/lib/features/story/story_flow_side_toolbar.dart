@@ -10,6 +10,7 @@ import '../../core/motion.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../resources/image_asset_picker.dart';
 import 'story_flow_drop.dart';
+import '../../core/app_dialogs.dart';
 import 'story_flow_templates.dart'
     show FlowSceneTemplate, kBuiltinSceneTemplates, templateNodeSummaries;
 
@@ -718,7 +719,8 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
     final screen = MediaQuery.sizeOf(context);
     await fluent.showDialog<void>(
       context: context,
-      builder: (_) => fluent.ContentDialog(
+      builder: (_) => AppContentDialog(
+        preferredWidth: 900,
         title: Text(key,
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
         content: SizedBox(

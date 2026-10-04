@@ -13,6 +13,7 @@ import 'asset_explorer_panel.dart';
 import 'image_asset_picker.dart' show HoverTexPreview;
 import 'live2d_preview_panel.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// Unity 资源侧边栏：AA bundle 索引状态、资源列表（tex/aud/txt）。
 class ResourcesPage extends StatefulWidget {
@@ -524,7 +525,7 @@ class _AaPreviewDialogState extends State<_AaPreviewDialog> {
     final kindLabel =
         widget.kind == 'tex' ? '贴图' : (widget.kind == 'aud' ? '音频' : '文本');
     final size = MediaQuery.sizeOf(context);
-    return fluent.ContentDialog(
+    return AppContentDialog(
       constraints: BoxConstraints(
         minWidth: math.min(480, size.width - 48),
         maxWidth: math.min(880, size.width - 48),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
+import '../../core/app_dialogs.dart';
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
@@ -90,50 +91,54 @@ class _ClassicShellState extends State<ClassicShell> {
       barrierLabel: title,
       barrierColor: palette.scrim,
       transitionDuration: AppMotion.normal,
-      pageBuilder: (ctx, a1, a2) => Dialog(
-        backgroundColor: palette.panel,
-        insetPadding: EdgeInsets.symmetric(
-          horizontal: isMob ? 12 : 40,
-          vertical: isMob ? 24 : 40,
-        ),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: palette.surface),
-        ),
-        child: Container(
-          width: dialogWidth(context, desktopWidth: 760),
-          height: dialogHeight(context, desktopHeight: 620),
-          padding: EdgeInsets.all(isMob ? 12 : 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: palette.textHigh,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: Icon(
-                      FluentIcons.dismiss_24_regular,
-                      size: 16,
-                      color: palette.textSecondary,
-                    ),
-                    onPressed: () => Navigator.of(ctx).pop(),
-                  ),
-                ],
-              ),
-              Divider(color: palette.surface, height: 18),
-              Expanded(child: content),
-            ],
+      pageBuilder: (ctx, a1, a2) {
+        // 统一尺寸：桌面按 16:9（放不下退 4:3），移动端近全屏。
+        final size = appDialogSize(ctx, preferredWidth: 1000);
+        return Dialog(
+          backgroundColor: palette.panel,
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: isMob ? 12 : 40,
+            vertical: isMob ? 24 : 40,
           ),
-        ),
-      ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: palette.surface),
+          ),
+          child: Container(
+            width: size.width,
+            height: size.height,
+            padding: EdgeInsets.all(isMob ? 12 : 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: palette.textHigh,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(
+                        FluentIcons.dismiss_24_regular,
+                        size: 16,
+                        color: palette.textSecondary,
+                      ),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+                Divider(color: palette.surface, height: 18),
+                Expanded(child: content),
+              ],
+            ),
+          ),
+        );
+      },
       transitionBuilder: (ctx, anim, secAnim, child) {
         final curved = CurvedAnimation(parent: anim, curve: AppMotion.easeOut);
         return FadeTransition(

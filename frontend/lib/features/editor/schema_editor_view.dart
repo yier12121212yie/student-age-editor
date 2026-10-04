@@ -15,6 +15,7 @@ import '../nocode/no_code_exit.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
 import '../resources/image_asset_picker.dart';
+import 'cfg_display_names.dart';
 import 'effect_hint_field.dart';
 import 'field_meta.dart';
 import 'field_search.dart';
@@ -25,6 +26,7 @@ import 'section_card.dart';
 import 'suggestion_text_field.dart';
 import 'visual_fields.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// Schema 驱动数据编辑器：左侧条目列表 + 右侧字段表单。
 class SchemaEditorView extends StatefulWidget {
@@ -169,7 +171,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     if (_dirty) {
       final action = await fluent.showDialog<String>(
         context: context,
-        builder: (ctx) => fluent.ContentDialog(
+        builder: (ctx) => AppContentDialog(
           title: const Text('Mod 已被外部切换'),
           content: const Text(
             '当前视图仍显示旧 Mod 的未保存修改，但保存目标已随 Mod 切换变更，'
@@ -329,7 +331,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   Future<void> _confirmReloadFromDisk() async {
     final action = await fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('磁盘内容已变化'),
         content: Text(
           '撤销/重做等操作已改写磁盘上的 ${widget.cfgName}，'
@@ -523,7 +525,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   Future<String?> _showConflictDialog(String cfgName) {
     return fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('文件冲突'),
         content: Text(
           '$cfgName 文件已被外部修改（可能被游戏或其他端改写）。\n'
@@ -569,7 +571,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
         : '#$id';
     final ok = await fluent.showDialog<bool>(
           context: context,
-          builder: (ctx) => fluent.ContentDialog(
+          builder: (ctx) => AppContentDialog(
             title: const Text('删除条目'),
             content: Text(
               '确定删除 $name（ID: $id）？保存后该条目将从磁盘移除。',
@@ -739,7 +741,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
   ) async {
     final result = await fluent.showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('指南校验未通过'),
         content: SizedBox(
           // 固定 480 宽在手机屏直接横向溢出（保存校验在手机端可达），
@@ -880,7 +882,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                   children: [
                     Flexible(
                       child: Text(
-                        '${widget.cfgName}（${_data.length}）',
+                        '${cfgDisplayName(widget.cfgName)}（${_data.length}）',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -1206,7 +1208,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           Expanded(
             flex: 2,
             child: SectionCard(
-              title: '📚 ${widget.cfgName} 条目列表',
+              title: '📚 ${cfgDisplayName(widget.cfgName)} 条目列表',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -1328,7 +1330,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
                           width: double.infinity,
                           child: fluent.FilledButton(
                             onPressed: _saving ? null : () => _save(),
-                            child: Text('💾 保存修改至 ${widget.cfgName}'),
+                            child: Text('💾 保存修改至 ${cfgDisplayName(widget.cfgName)}'),
                           ),
                         ),
                       ],
@@ -1404,7 +1406,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
             style: fluent.ButtonStyle(
               backgroundColor: WidgetStatePropertyAll(accentColor),
             ),
-            child: Text('💾 保存修改至 ${widget.cfgName}'),
+            child: Text('💾 保存修改至 ${cfgDisplayName(widget.cfgName)}'),
           ),
         ),
       ],
@@ -2535,7 +2537,7 @@ class _FieldInputState extends State<_FieldInput> {
     if (id == null) {
       await fluent.showDialog<void>(
         context: context,
-        builder: (ctx) => fluent.ContentDialog(
+        builder: (ctx) => AppContentDialog(
           title: const Text('音频已写入，登记失败'),
           content: Text(
               '文件已存为 ${saved.first['path'] ?? '（未知路径）'}，但自动登记 AudioCfg 未成功，请手动补一条 AudioCfg 并填入该路径。'),
@@ -2668,7 +2670,8 @@ class _FieldInputState extends State<_FieldInput> {
     final screen = MediaQuery.sizeOf(context);
     await fluent.showDialog<void>(
       context: context,
-      builder: (_) => fluent.ContentDialog(
+      builder: (_) => AppContentDialog(
+        preferredWidth: 900,
         title: Text(raw,
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
         content: SizedBox(
@@ -3210,7 +3213,7 @@ class _IdPickerDialogState extends State<_IdPickerDialog> {
   @override
   Widget build(BuildContext context) {
     final items = _filtered;
-    return fluent.ContentDialog(
+    return AppContentDialog(
       title: Text(widget.title),
       content: SizedBox(
         // 候选多选弹窗（编辑器「从列表选择」在手机端可达）：固定 460 宽

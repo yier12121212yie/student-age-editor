@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import 'ai_policy.dart';
+import '../../core/app_dialogs.dart';
 
 /// 配音（TTS）面板。
 ///
@@ -312,7 +313,7 @@ class _TtsPanelState extends State<TtsPanel> {
     final path = item['path']?.toString() ?? '';
     final ok = await fluent.showDialog<bool>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('删除配音素材'),
         content: Text('确认删除 $path ？'),
         actions: [

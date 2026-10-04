@@ -30,6 +30,7 @@ import 'story_flow_suggest.dart';
 import 'story_flow_templates.dart';
 import 'story_logic.dart';
 import 'tombstone_node_widget.dart';
+import '../../core/app_dialogs.dart';
 
 /// C7 观测计数：evtTitles 派生扫描过的 EvtCfg 行数（kDebugMode 才累加）。
 /// 准出：跨多次 _bumpGraph 保持不变（标题只随 EvtCfg 重载重算）。
@@ -307,7 +308,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         // 服务端根已切走，此时保存必写进别的 Mod，只能放弃舞台
         final action = await fluent.showDialog<String>(
           context: context,
-          builder: (ctx) => fluent.ContentDialog(
+          builder: (ctx) => AppContentDialog(
             title: const Text('Mod 已被外部切换'),
             content: Text(
               '当前画布仍显示旧 Mod 的未保存修改，但保存目标已随 Mod 切换变更，'
@@ -1137,7 +1138,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     final ctl = TextEditingController(text: '新模板');
     return fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('存为场景模板'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1210,7 +1211,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   Future<String?> _confirmDirtyDiscard({String what = '切换事件'}) {
     return fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('未保存的修改'),
         content: Text(
           '当前事件的修改尚未保存，$what前要保存吗？',
@@ -1426,7 +1427,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     }
     final action = await fluent.showDialog<String>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
         title: const Text('保存冲突'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1947,7 +1948,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     fluent
         .showDialog<String>(
           context: context,
-          builder: (ctx) => fluent.ContentDialog(
+          builder: (ctx) => AppContentDialog(
             title: const Text('新建事件'),
             content: Column(
               mainAxisSize: MainAxisSize.min,
@@ -2055,7 +2056,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     fluent
         .showDialog<bool>(
           context: context,
-          builder: (ctx) => fluent.ContentDialog(
+          builder: (ctx) => AppContentDialog(
             title: const Text('删除事件'),
             content: Text(
               '删除事件 $evt${_eventTitle(evt) == null ? '' : '（${_eventTitle(evt)}）'}？'
@@ -2721,7 +2722,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   ) {
     return fluent.showDialog<(String, Map<String, dynamic>)>(
       context: context,
-      builder: (ctx) => fluent.ContentDialog(
+      builder: (ctx) => AppContentDialog(
+        preferredWidth: 660,
         title: Text('$tableName 匹配到 ${matches.length} 条记录，请选择'),
         content: SizedBox(
           width: 620,

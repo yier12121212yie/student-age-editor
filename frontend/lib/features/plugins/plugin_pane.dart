@@ -5,6 +5,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// 插件声明式面板渲染器：拉 GET /api/plugins/`pluginId`/panel/`panelId`，
 /// 渲染 {"title", "blocks"}。支持 markdown / stats / table / form / actions 五种块。
@@ -653,7 +654,7 @@ class _PluginPaneState extends State<PluginPane> {
     if (confirm.isNotEmpty) {
       final ok = await showDialog<bool>(
         context: context,
-        builder: (ctx) => fluent.ContentDialog(
+        builder: (ctx) => AppContentDialog(
           title: Text('确认操作'),
           content: Text(confirm),
           actions: [

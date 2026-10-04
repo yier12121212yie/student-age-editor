@@ -24,6 +24,7 @@ import '../../core/app_theme.dart';
 import 'story_flow_clipboard.dart';
 import 'story_flow_models.dart';
 import 'story_logic.dart';
+import '../../core/app_dialogs.dart';
 
 // ============================ 数据模型 ============================
 
@@ -934,7 +935,7 @@ class _FlowTemplateGalleryState extends State<_FlowTemplateGallery> {
   Widget build(BuildContext context) {
     final cats = _categories;
     if (_category == null && cats.isNotEmpty) _category = cats.first;
-    return fluent.ContentDialog(
+    return AppContentDialog(
       title: Text('场景模板', style: TextStyle(fontSize: AppType.title)),
       constraints: const BoxConstraints(maxWidth: 720, maxHeight: 520),
       content: Row(

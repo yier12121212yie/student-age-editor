@@ -4,8 +4,8 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
-import '../../core/responsive.dart';
 import '../base/base_search_page.dart';
+import '../editor/cfg_display_names.dart';
 import '../editor/page_card.dart';
 import '../editor/schema_editor_view.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
@@ -16,6 +16,7 @@ import '../story/story_studio_editor.dart';
 import '../story/story_transfer_dialogs.dart';
 import 'pages_catalog.dart';
 import '../../core/app_theme.dart';
+import '../../core/app_dialogs.dart';
 
 /// 经典布局页面体系（类友商心知版三栏/双栏工作流 + 暗黑主题）。
 class ClassicPageLayouts extends StatefulWidget {
@@ -139,11 +140,11 @@ class _PersonLayoutState extends State<_PersonLayout> {
   static const _stages = ['小学立绘', '中学立绘'];
 
   final _modeOptions = const [
-    ('PersonCfg', '人物属性 (PersonCfg)'),
-    ('PersonGrowCfg', '成长曲线 (PersonGrowCfg)'),
-    ('PersonAttrCfg', '基础属性 (PersonAttrCfg)'),
-    ('PersonStateCfg', '人物状态 (PersonStateCfg)'),
-    ('TraitsCfg', '特质设定 (TraitsCfg)'),
+    'PersonCfg',
+    'PersonGrowCfg',
+    'PersonAttrCfg',
+    'PersonStateCfg',
+    'TraitsCfg',
   ];
 
   /// 选中人物：拉取其立绘 key（/api/roles 的 portrait1/portrait2）。
@@ -323,41 +324,44 @@ class _PersonLayoutState extends State<_PersonLayout> {
   void _showExtractModal() {
     showDialog(
       context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: palette.panel,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: palette.surface),
-        ),
-        child: Container(
-          width: dialogWidth(context, desktopWidth: 760),
-          height: dialogHeight(context, desktopHeight: 620),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    '📖 提取原版配置 / 检索剧情库',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: palette.textHigh),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                      setState(() => _refreshCounter++);
-                    },
-                  ),
-                ],
-              ),
-              Divider(color: palette.surface, height: 18),
-              Expanded(child: BaseSearchPage(state: widget.state)),
-            ],
+      builder: (ctx) {
+        final size = appDialogSize(ctx, preferredWidth: 1000);
+        return Dialog(
+          backgroundColor: palette.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: palette.surface),
           ),
-        ),
-      ),
+          child: Container(
+            width: size.width,
+            height: size.height,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      '📖 提取原版配置 / 检索剧情库',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: palette.textHigh),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        setState(() => _refreshCounter++);
+                      },
+                    ),
+                  ],
+                ),
+                Divider(color: palette.surface, height: 18),
+                Expanded(child: BaseSearchPage(state: widget.state)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -390,8 +394,8 @@ class _PersonLayoutState extends State<_PersonLayout> {
                     isExpanded: true,
                     items: _modeOptions.map((e) {
                       return fluent.ComboBoxItem(
-                        value: e.$1,
-                        child: Text(e.$2, style: const TextStyle(fontSize: 12)),
+                        value: e,
+                        child: Text(cfgDisplayName(e), style: const TextStyle(fontSize: 12)),
                       );
                     }).toList(),
                     onChanged: (val) {
@@ -556,13 +560,13 @@ class _ResourceLayoutState extends State<_ResourceLayout> {
   int _refreshCounter = 0;
 
   final _resourceCfgs = const [
-    ('ItemCfg', '物品 (ItemCfg)'),
-    ('AudioCfg', '音频 (AudioCfg)'),
-    ('CGCfg', 'CG相册 (CGCfg)'),
-    ('ShopCfg', '商店 (ShopCfg)'),
-    ('BookCfg', '书籍 (BookCfg)'),
-    ('MovieCfg', '影视 (MovieCfg)'),
-    ('TVCfg', '电视 (TVCfg)'),
+    'ItemCfg',
+    'AudioCfg',
+    'CGCfg',
+    'ShopCfg',
+    'BookCfg',
+    'MovieCfg',
+    'TVCfg',
   ];
 
   Future<void> _createItem() async {
@@ -612,8 +616,8 @@ class _ResourceLayoutState extends State<_ResourceLayout> {
                     isExpanded: true,
                     items: _resourceCfgs.map((e) {
                       return fluent.ComboBoxItem(
-                        value: e.$1,
-                        child: Text(e.$2, style: const TextStyle(fontSize: 12)),
+                        value: e,
+                        child: Text(cfgDisplayName(e), style: const TextStyle(fontSize: 12)),
                       );
                     }).toList(),
                     onChanged: (val) {
@@ -724,12 +728,12 @@ class _FunctionLayoutState extends State<_FunctionLayout> {
   int _refreshCounter = 0;
 
   final _functionCfgs = const [
-    ('ActionCfg', '行动 (ActionCfg)'),
-    ('ActionTypeCfg', '行动类型 (ActionTypeCfg)'),
-    ('ActionEvtCfg', '行动事件 (ActionEvtCfg)'),
-    ('MinigameCfg', '小游戏 (MinigameCfg)'),
-    ('MinigameActionCfg', '小游戏行动 (MinigameActionCfg)'),
-    ('JobCfg', '打工与社团 (JobCfg)'),
+    'ActionCfg',
+    'ActionTypeCfg',
+    'ActionEvtCfg',
+    'MinigameCfg',
+    'MinigameActionCfg',
+    'JobCfg',
   ];
 
   Future<void> _createFunctionItem() async {
@@ -779,8 +783,8 @@ class _FunctionLayoutState extends State<_FunctionLayout> {
                     isExpanded: true,
                     items: _functionCfgs.map((e) {
                       return fluent.ComboBoxItem(
-                        value: e.$1,
-                        child: Text(e.$2, style: const TextStyle(fontSize: 12)),
+                        value: e,
+                        child: Text(cfgDisplayName(e), style: const TextStyle(fontSize: 12)),
                       );
                     }).toList(),
                     onChanged: (val) {
@@ -969,41 +973,44 @@ class _StoryLayoutState extends State<_StoryLayout> {
   void _showExtractModal() {
     showDialog(
       context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: palette.panel,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: palette.surface),
-        ),
-        child: Container(
-          width: dialogWidth(context, desktopWidth: 760),
-          height: dialogHeight(context, desktopHeight: 620),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    '📖 提取原版剧情 / 检索剧情库',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: palette.textHigh),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                      setState(() => _refreshCounter++);
-                    },
-                  ),
-                ],
-              ),
-              Divider(color: palette.surface, height: 18),
-              Expanded(child: BaseSearchPage(state: widget.state)),
-            ],
+      builder: (ctx) {
+        final size = appDialogSize(ctx, preferredWidth: 1000);
+        return Dialog(
+          backgroundColor: palette.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: palette.surface),
           ),
-        ),
-      ),
+          child: Container(
+            width: size.width,
+            height: size.height,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      '📖 提取原版剧情 / 检索剧情库',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: palette.textHigh),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(FluentIcons.dismiss_24_regular, size: 16, color: palette.textSecondary),
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        setState(() => _refreshCounter++);
+                      },
+                    ),
+                  ],
+                ),
+                Divider(color: palette.surface, height: 18),
+                Expanded(child: BaseSearchPage(state: widget.state)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1213,11 +1220,11 @@ class _SpaceEndingLayoutState extends State<_SpaceEndingLayout> {
   int _refreshCounter = 0;
 
   final _modules = const [
-    ('KZoneContentCfg', '空间动态配置 (KZoneContentCfg)'),
-    ('PhoneMsgCfg', '手机短信配置 (PhoneMsgCfg)'),
-    ('EndingPartCfg', '结局部件配置 (EndingPartCfg)'),
-    ('EndingOptionCfg', '结局选项配置 (EndingOptionCfg)'),
-    ('KZoneAvatarCfg', '空间头像配置 (KZoneAvatarCfg)'),
+    'KZoneContentCfg',
+    'PhoneMsgCfg',
+    'EndingPartCfg',
+    'EndingOptionCfg',
+    'KZoneAvatarCfg',
   ];
 
   Future<void> _createSpaceItem() async {
@@ -1275,8 +1282,8 @@ class _SpaceEndingLayoutState extends State<_SpaceEndingLayout> {
                     isExpanded: true,
                     items: _modules.map((e) {
                       return fluent.ComboBoxItem(
-                        value: e.$1,
-                        child: Text(e.$2, style: const TextStyle(fontSize: 12)),
+                        value: e,
+                        child: Text(cfgDisplayName(e), style: const TextStyle(fontSize: 12)),
                       );
                     }).toList(),
                     onChanged: (val) {
@@ -1416,12 +1423,12 @@ class _LoveLayoutState extends State<_LoveLayout> {
   int _refreshCounter = 0;
 
   final _loveCfgs = const [
-    ('BadmintonModelCfg', '羽毛球小游戏 (BadmintonModelCfg)'),
-    ('LoveVindicateRateCfg', '表白概率 (LoveVindicateRateCfg)'),
-    ('LoveBadmintonCfg', '羽毛球事件 (LoveBadmintonCfg)'),
-    ('LoveRibbonCfg', '丝带玩法 (LoveRibbonCfg)'),
-    ('LoveDrawCfg', '抽奖玩法 (LoveDrawCfg)'),
-    ('LoveBreakfastCfg', '早餐事件 (LoveBreakfastCfg)'),
+    'BadmintonModelCfg',
+    'LoveVindicateRateCfg',
+    'LoveBadmintonCfg',
+    'LoveRibbonCfg',
+    'LoveDrawCfg',
+    'LoveBreakfastCfg',
   ];
 
   Future<void> _createLoveItem() async {
@@ -1471,8 +1478,8 @@ class _LoveLayoutState extends State<_LoveLayout> {
                     isExpanded: true,
                     items: _loveCfgs.map((e) {
                       return fluent.ComboBoxItem(
-                        value: e.$1,
-                        child: Text(e.$2, style: const TextStyle(fontSize: 12)),
+                        value: e,
+                        child: Text(cfgDisplayName(e), style: const TextStyle(fontSize: 12)),
                       );
                     }).toList(),
                     onChanged: (val) {
@@ -1603,46 +1610,49 @@ class _StoryCompetitorLayoutState extends State<_StoryCompetitorLayout> {
   void _showExtractModal() {
     showDialog<void>(
       context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: palette.panel,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: palette.surface),
-        ),
-        child: Container(
-          width: dialogWidth(context, desktopWidth: 760),
-          height: dialogHeight(context, desktopHeight: 620),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    '📖 提取原版剧情 / 检索剧情库',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: palette.textHigh,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: Icon(
-                      FluentIcons.dismiss_24_regular,
-                      size: 16,
-                      color: palette.textSecondary,
-                    ),
-                    onPressed: () => Navigator.of(ctx).pop(),
-                  ),
-                ],
-              ),
-              Divider(color: palette.surface, height: 18),
-              Expanded(child: BaseSearchPage(state: widget.state)),
-            ],
+      builder: (ctx) {
+        final size = appDialogSize(ctx, preferredWidth: 1000);
+        return Dialog(
+          backgroundColor: palette.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: palette.surface),
           ),
-        ),
-      ),
+          child: Container(
+            width: size.width,
+            height: size.height,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      '📖 提取原版剧情 / 检索剧情库',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: palette.textHigh,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: Icon(
+                        FluentIcons.dismiss_24_regular,
+                        size: 16,
+                        color: palette.textSecondary,
+                      ),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+                Divider(color: palette.surface, height: 18),
+                Expanded(child: BaseSearchPage(state: widget.state)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1768,8 +1778,8 @@ Future<void> _promptCreateEntry({
 
   await showDialog<void>(
     context: context,
-    builder: (ctx) => fluent.ContentDialog(
-      title: Text('➕ 新建 $cfgName 条目'),
+    builder: (ctx) => AppContentDialog(
+      title: Text('➕ 新建 ${cfgDisplayName(cfgName)} 条目'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1863,9 +1873,9 @@ Future<void> _promptDeleteEntry({
   }
   await showDialog<void>(
     context: context,
-    builder: (ctx) => fluent.ContentDialog(
+    builder: (ctx) => AppContentDialog(
       title: const Text('确认删除'),
-      content: Text('确定要删除 $cfgName 中的条目 [$selectedId] 吗？此操作不可逆。'),
+      content: Text('确定要删除 ${cfgDisplayName(cfgName)} 中的条目 [$selectedId] 吗？此操作不可逆。'),
       actions: [
         fluent.Button(
           onPressed: () => Navigator.of(ctx).pop(),
