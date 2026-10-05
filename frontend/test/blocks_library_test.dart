@@ -148,8 +148,8 @@ void main() {
     expect(tester.takeException(), isNull, reason: '积木库渲染不应异常');
     expect(find.text('积木目录'), findsOneWidget);
     expect(find.text('构建清单'), findsOneWidget);
-    // 默认效果模式：候选来自 mock。
-    expect(find.text('属性 @ATTR@ 增加 V'), findsWidgets);
+    // 默认效果模式：候选来自 mock，目录卡片只显示人话标题（无占位符/原始代码）。
+    expect(find.text('属性 增加 数值'), findsWidgets);
   });
 
   testWidgets('积木库工作台：切换条件模式并按分类入库生成代码', (tester) async {
@@ -209,6 +209,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
+    await tester.ensureVisible(find.text('积木库').first);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('积木库').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));

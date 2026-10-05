@@ -248,7 +248,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('小游戏库').first);
+    await tester.ensureVisible(find.text('小游戏').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('小游戏').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('＋ 新建小游戏'), findsOneWidget);

@@ -249,6 +249,38 @@ TEST_CASE("gateway config: portraits defaults + parse", "[gateway]") {
     CHECK(err.find("portraits") != std::string::npos);
 }
 
+TEST_CASE("gateway config: backgrounds defaults + parse", "[gateway]") {
+    sa::json base;
+    base["user_data_root"] = "/srv/data";
+    sa::json acc = sa::json::array();
+    acc.push_back({{"name", "a"}, {"salt", std::string(32, '0')},
+                   {"password_sha256", std::string(64, '0')}});
+    base["accounts"] = acc;
+
+    // 默认：关闭（dir/base_url 均空）。
+    gw::Config cfg;
+    std::string err;
+    REQUIRE(gw::parse_config(base, &cfg, &err));
+    CHECK(cfg.backgrounds.dir.empty());
+    CHECK(cfg.backgrounds.base_url.empty());
+
+    // 显式配置：base_url 尾部 '/' 归一化去掉。
+    sa::json j = base;
+    j["backgrounds"] = {{"dir", "/opt/editor/backgrounds"},
+                        {"base_url", "https://cdn.example.com/bg/"}};
+    gw::Config cfg2;
+    REQUIRE(gw::parse_config(j, &cfg2, &err));
+    CHECK(cfg2.backgrounds.dir == "/opt/editor/backgrounds");
+    CHECK(cfg2.backgrounds.base_url == "https://cdn.example.com/bg");
+
+    // 非对象 → 报错。
+    sa::json bad = base;
+    bad["backgrounds"] = "nope";
+    gw::Config cfg3;
+    CHECK_FALSE(gw::parse_config(bad, &cfg3, &err));
+    CHECK(err.find("backgrounds") != std::string::npos);
+}
+
 TEST_CASE("gateway config: web_root missing is a warning not an error", "[gateway]") {
     sa::json j;
     j["user_data_root"] = "/srv/data";

@@ -160,6 +160,39 @@ int? blockPrimary(String code) {
   return null;
 }
 
+/// 把模板 `desc` 变成**可读标题**（目录卡片主行）：
+///   * `@NAME@` 占位符 → 槽标签（`@ATTR@`→「属性」、`@STATE@`→「状态」…）；
+///   * 数字槽的裸字母（V/X/N…）→「数值」；
+///   * 去掉未识别的 `@` 标记、折叠空白与相邻重复词（desc 常已含“属性”，
+///     占位符又叫“属性”，折叠后不会出现「属性 属性」）。
+///
+/// 目录**只展示这个标题**，不再向用户暴露 `@ATTR@` 与原始代码。
+String humanizeBlockDesc(String desc, List<SuggestionSlot> slots) {
+  var out = desc;
+  for (final s in slots) {
+    if (s.kind != 'dict') continue;
+    final label =
+        s.label.isNotEmpty ? s.label : (s.dict.isNotEmpty ? s.dict : s.name);
+    out = out.replaceAll('@${s.name}@', label);
+  }
+  // 未在 slots 里覆盖的占位符：去 @ 保留内部名，绝不外露 @。
+  out = out.replaceAllMapped(RegExp(r'@([A-Za-z0-9_]+)@'), (m) => m.group(1) ?? '');
+  for (final s in slots) {
+    if (s.kind == 'dict') continue;
+    final tok =
+        RegExp('(?<![A-Za-z0-9_])${RegExp.escape(s.name)}(?![A-Za-z0-9_])');
+    out = out.replaceAll(tok, '数值');
+  }
+  out = out.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final kept = <String>[];
+  for (final p in out.split(' ')) {
+    if (p.isEmpty) continue;
+    if (kept.isNotEmpty && kept.last == p) continue; // 折叠相邻重复词
+    kept.add(p);
+  }
+  return kept.join(' ');
+}
+
 /// 分类引擎：懒加载 `ConditionTypeCfg` / `EffectTypeCfg`，并缓存成本地映射。
 class BlockCategoryEngine {
   BlockCategoryEngine._();
@@ -229,8 +262,8 @@ class BlockCategoryEngine {
 /// 拉取某 mode 的候选目录（`q` 为空时后端返回「最近使用 + 默认目录」）。
 Future<List<Suggestion>> loadBlockCatalog(String mode, String q) async {
   try {
-    final resp = await ApiClient.instance
-        .get('/api/effect_suggest', query: {'q': q, 'mode': mode});
+    final resp = await ApiClient.instance.get('/api/effect_suggest',
+        query: {'q': q, 'mode': mode, 'limit': '1000'});
     final list = (resp is Map ? resp['items'] : null) as List? ?? const [];
     return [
       for (final e in list.cast<Map>())

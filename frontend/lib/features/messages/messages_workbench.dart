@@ -12,6 +12,7 @@ import '../../core/motion.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
+import '../resources/role_visuals.dart';
 
 /// 手机消息工作台 —— 导演布局下短信对话树的专属界面。
 ///
@@ -406,7 +407,7 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
                                     horizontal: 10, vertical: 9),
                                 child: Row(
                                   children: [
-                                    _Avatar(
+                                    RoleAvatar(
                                         seed: int.tryParse(r.id) ?? 0,
                                         name: r.name),
                                     const SizedBox(width: 10),
@@ -801,7 +802,7 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
                   Icon(FluentIcons.chevron_left_24_regular,
                       size: 15, color: palette.textHint),
                   const SizedBox(width: 8),
-                  _Avatar(seed: role, name: _roleName(role), size: 28),
+                  RoleAvatar(seed: role, name: _roleName(role), size: 28),
                   const SizedBox(width: 8),
                   Text(_roleName(role),
                       style: TextStyle(
@@ -870,7 +871,7 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               if (!outgoing) ...[
-                _Avatar(
+                RoleAvatar(
                     seed: _roleOf(row), name: _roleName(_roleOf(row)), size: 26),
                 const SizedBox(width: 6),
               ],
@@ -1055,7 +1056,7 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
                   },
                   child: Row(
                     children: [
-                      _Avatar(
+                      RoleAvatar(
                           seed: _roleOf(row),
                           name: _roleName(_roleOf(row))),
                       const SizedBox(width: 8),
@@ -1127,47 +1128,6 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
 // ----------------------------------------------------------------------
 // 通用小部件
 // ----------------------------------------------------------------------
-
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.seed, required this.name, this.size = 32});
-
-  final int seed;
-  final String name;
-  final double size;
-
-  List<Color> get _swatches => [
-        accentColor,
-        palette.catTexture,
-        palette.catAudio,
-        palette.catSprite,
-        palette.statusOk,
-        palette.statusWarn,
-      ];
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _swatches[seed.abs() % _swatches.length];
-    final ch = name.trim().isEmpty ? '?' : name.trim().substring(0, 1);
-    return Container(
-      width: size,
-      height: size,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.22),
-        borderRadius: BorderRadius.circular(size * 0.28),
-        border: Border.all(color: c.withValues(alpha: 0.5)),
-      ),
-      child: Text(
-        ch,
-        style: TextStyle(
-          fontSize: size * 0.42,
-          fontWeight: FontWeight.w600,
-          color: c,
-        ),
-      ),
-    );
-  }
-}
 
 class _OptionBubble extends StatefulWidget {
   const _OptionBubble({
@@ -1288,7 +1248,7 @@ class _ConversationItemState extends State<_ConversationItem> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Avatar(seed: widget.roleId, name: widget.name, size: 36),
+              RoleAvatar(seed: widget.roleId, name: widget.name, size: 36),
               const SizedBox(width: 9),
               Expanded(
                 child: Column(

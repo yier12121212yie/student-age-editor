@@ -5,6 +5,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/backend_retry.dart';
 import '../../core/plugin_state.dart';
 import '../../core/zip_staging.dart';
 import '../../core/app_dialogs.dart';
@@ -44,7 +45,10 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final r = await ApiClient.instance.get('/api/extensions');
+      // 从源码运行时后端可能尚未就绪/中途被回收：连接级失败时自我恢复后重试。
+      final r = await withBackendRetry(
+        () => ApiClient.instance.get('/api/extensions'),
+      );
       if (!mounted) return;
       final exts = ((r is Map ? r['extensions'] : null) as List? ?? const [])
           .whereType<Map>()

@@ -160,7 +160,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('社交').first);
+    await tester.ensureVisible(find.text('企鹅动态').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('企鹅动态').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('＋ 发布动态'), findsOneWidget);

@@ -76,6 +76,14 @@ struct PortraitCfg {
     std::string base_url;
 };
 
+// 背景图片资源扩展（与人物图片资源扩展同构，供「背景展示」）：
+//   dir      本地安装：已解包的背景目录（EDITOR_BG_DIR）
+//   base_url 对象存储：公开基址（EDITOR_BG_BASE_URL）
+struct BackgroundCfg {
+    std::string dir;
+    std::string base_url;
+};
+
 struct Config {
     std::string user_data_root;    // absolute, created if missing
     std::string web_root;          // "" == no static hosting
@@ -105,6 +113,7 @@ struct Config {
     AiRelayCfg ai;
     RegistrationCfg registration;
     PortraitCfg portraits;
+    BackgroundCfg backgrounds;
     // 托管模式 SSRF 护栏（安全批次 A）：true 时网关 fork 的 backend 以
     // --cloud-public-only 启动，云同步出站 URL 强校验为公网地址。
     bool cloud_public_only = true;

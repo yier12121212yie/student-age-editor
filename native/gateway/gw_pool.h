@@ -52,6 +52,10 @@ class InstancePool {
         // 传给 fork 的 backend 实例（EDITOR_PORTRAIT_DIR / _BASE_URL）。
         std::string portrait_dir;
         std::string portrait_base_url;
+        // 背景图片资源扩展（与人物图片扩展同构）：非空时作为环境变量传给
+        // fork 的 backend 实例（EDITOR_BG_DIR / _BASE_URL）。
+        std::string background_dir;
+        std::string background_base_url;
     };
 
     explicit InstancePool(Options opts);

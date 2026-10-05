@@ -61,3 +61,4 @@
   **禁用**（`native/gateway/gw_proxy.cpp` 的 `kPathImportPrefixes`）。
 - 网页版请用 `install_upload`（字节走 body）。
 - 人物图片资源扩展见 [`gateway/PORTRAITS.md`](gateway/PORTRAITS.md)。
+- 背景图片资源扩展见 [`gateway/BACKGROUNDS.md`](gateway/BACKGROUNDS.md)。

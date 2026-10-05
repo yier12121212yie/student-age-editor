@@ -122,6 +122,11 @@ PORTRAIT_PACK_ZIP = os.path.join(ROOT, "build", "release", "portrait_pack.zip")
 PORTRAIT_PACK_DIR = os.path.join(ROOT, "build", "release", "installer_portrait_pack")
 PORTRAIT_PACK_ID = "portraits"
 PORTRAIT_PACK_EXPORT = os.path.join(ROOT, "packaging", "export_portrait_pack.py")
+# 背景图片资源扩展包（可选组件 / 服务器端两种分发方式的数据源）
+BACKGROUND_PACK_ZIP = os.path.join(ROOT, "build", "release", "background_pack.zip")
+BACKGROUND_PACK_DIR = os.path.join(ROOT, "build", "release", "installer_background_pack")
+BACKGROUND_PACK_ID = "backgrounds"
+BACKGROUND_PACK_EXPORT = os.path.join(ROOT, "packaging", "export_background_pack.py")
 ISCC_FALLBACKS = (
     r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     r"C:\Program Files\Inno Setup 6\ISCC.exe",
@@ -246,40 +251,63 @@ def _export_official_pack(zip_path):
     return manifest.get("name") or "官方资源扩展包", manifest.get("version") or ""
 
 
+def _image_pack_ready(pack_dir):
+    return (os.path.isdir(pack_dir)
+            and os.path.isfile(os.path.join(pack_dir, "manifest.json")))
+
+
+def _ensure_image_pack_dir(zip_path, pack_dir, export_script, label, hint):
+    """导出一个图片资源扩展包（可选）并解包出安装目录；不可用时返回 False。
+
+    人物图片包要从游戏 bundle 解码真实立绘，依赖装有《学生时代》的 Windows
+    机器 + UnityPy/Pillow（见 packaging/export_portrait_pack.py）；背景包可
+    直接吃 `参考资料/背景` 已解码图片（见 export_background_pack.py）。任何
+    前置缺失都只提示并返回 False，不阻塞安装包构建——安装器侧据此隐藏对应的
+    可选组件。
+    """
+    if _image_pack_ready(pack_dir):
+        return True
+    print("    导出%s %s ..." % (label, zip_path))
+    try:
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        subprocess.run([sys.executable, export_script, "--out", zip_path],
+                       cwd=ROOT, check=True)
+    except (subprocess.CalledProcessError, OSError) as e:
+        print("    提示：%s导出失败（%s），本次产物不含该可选组件。" % (label, e))
+        return False
+    if not os.path.isfile(zip_path):
+        print("    提示：未生成%s，跳过该可选组件（%s）。" % (label, hint))
+        return False
+    if os.path.isdir(pack_dir):
+        shutil.rmtree(pack_dir)
+    os.makedirs(pack_dir)
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(pack_dir)
+    print("    %s就绪：%s" % (label, pack_dir))
+    return True
+
+
 def _portrait_pack_ready():
-    return (os.path.isdir(PORTRAIT_PACK_DIR)
-            and os.path.isfile(os.path.join(PORTRAIT_PACK_DIR, "manifest.json")))
+    return _image_pack_ready(PORTRAIT_PACK_DIR)
 
 
 def _ensure_portrait_pack_dir():
-    """导出「人物图片资源扩展包」（可选）并解包出安装目录；不可用时返回 False。
+    """导出「人物图片资源扩展包」（可选组件）。"""
+    return _ensure_image_pack_dir(
+        PORTRAIT_PACK_ZIP, PORTRAIT_PACK_DIR, PORTRAIT_PACK_EXPORT,
+        "人物图片资源扩展包", "需装有游戏的机器")
 
-    与官方资源包不同，该包要从游戏 bundle 解码真实立绘，依赖装有《学生时代》
-    的 Windows 机器 + UnityPy/Pillow（见 packaging/export_portrait_pack.py）。
-    任何前置缺失都只提示并返回 False，不阻塞安装包构建——安装器侧据此隐藏
-    「人物图片资源扩展包」可选组件。
-    """
-    if _portrait_pack_ready():
-        return True
-    print("    导出人物图片资源扩展包 %s ..." % PORTRAIT_PACK_ZIP)
-    try:
-        if os.path.exists(PORTRAIT_PACK_ZIP):
-            os.remove(PORTRAIT_PACK_ZIP)
-        subprocess.run([sys.executable, PORTRAIT_PACK_EXPORT,
-                        "--out", PORTRAIT_PACK_ZIP], cwd=ROOT, check=True)
-    except (subprocess.CalledProcessError, OSError) as e:
-        print("    提示：人物图片包导出失败（%s），本次产物不含该可选组件。" % e)
-        return False
-    if not os.path.isfile(PORTRAIT_PACK_ZIP):
-        print("    提示：未生成人物图片包，跳过该可选组件（需装有游戏的机器）。")
-        return False
-    if os.path.isdir(PORTRAIT_PACK_DIR):
-        shutil.rmtree(PORTRAIT_PACK_DIR)
-    os.makedirs(PORTRAIT_PACK_DIR)
-    with zipfile.ZipFile(PORTRAIT_PACK_ZIP) as z:
-        z.extractall(PORTRAIT_PACK_DIR)
-    print("    人物图片包就绪：%s" % PORTRAIT_PACK_DIR)
-    return True
+
+def _background_pack_ready():
+    return _image_pack_ready(BACKGROUND_PACK_DIR)
+
+
+def _ensure_background_pack_dir():
+    """导出「背景图片资源扩展包」（可选组件）。"""
+    return _ensure_image_pack_dir(
+        BACKGROUND_PACK_ZIP, BACKGROUND_PACK_DIR, BACKGROUND_PACK_EXPORT,
+        "背景图片资源扩展包", "需 参考资料/背景 或装有游戏的机器")
 
 
 def build_installer(version, source_dir):
@@ -307,6 +335,7 @@ def build_installer(version, source_dir):
             "backend_tui）" % p
     pack_name, _pack_ver = _ensure_official_pack_dir()
     has_portraits = _ensure_portrait_pack_dir()
+    has_backgrounds = _ensure_background_pack_dir()
 
     _step(5, "构建 Windows 安装包（Inno Setup）...")
     cmd = [
@@ -320,6 +349,7 @@ def build_installer(version, source_dir):
         "/DOfficialPackId=official-bundled",
         "/DOfficialPackName=%s" % pack_name,
         "/DPortraitPackDir=%s" % PORTRAIT_PACK_DIR,
+        "/DBackgroundPackDir=%s" % BACKGROUND_PACK_DIR,
         "/DOutputDir=%s" % DIST_ROOT,
     ]
     # 人物图片包可用时才定义 HasPortraitPack（setup.iss 以 #ifdef 判断）。ISPP 的
@@ -328,6 +358,9 @@ def build_installer(version, source_dir):
     # 编译失败：No files found matching ...installer_portrait_pack\*）。
     if has_portraits:
         cmd.append("/DHasPortraitPack")
+    # 背景包同理：可用时才定义 HasBackgroundPack。
+    if has_backgrounds:
+        cmd.append("/DHasBackgroundPack")
     cmd.append(SETUP_ISS)
     subprocess.run(cmd, cwd=ROOT, check=True)
     out = os.path.join(DIST_ROOT, "%s-setup-%s.exe" % (APP_FILE_BASE, version))

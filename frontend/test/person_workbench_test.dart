@@ -204,6 +204,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     // 主页卡片「人物」→ 人物工作台（出现四个标签）。
+    await tester.ensureVisible(find.text('人物').first);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('人物').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));

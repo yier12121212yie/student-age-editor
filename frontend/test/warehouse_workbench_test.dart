@@ -223,6 +223,23 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('物品仓库：商店模式「上架商品」候选非空', (tester) async {
+    await pumpWorkbench(tester, const Size(1500, 950));
+
+    await tester.tap(find.text('商店'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    await tester.tap(find.text('＋ 上架商品'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 回归：旧实现在商店模式下 _allEntries 只剩 ShopCfg，过滤后候选恒为空。
+    expect(find.text('没有匹配的商品'), findsNothing);
+    expect(find.textContaining('语文书'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('物品仓库：标签页切换标签置脏', (tester) async {
     await pumpWorkbench(tester, const Size(1500, 950));
 
@@ -295,7 +312,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('物品仓库').first);
+    await tester.ensureVisible(find.text('物品').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('物品').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('＋ 新建物品'), findsOneWidget);

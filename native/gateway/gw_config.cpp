@@ -430,6 +430,22 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
         }
     }
 
+    // --- backgrounds（背景图片资源扩展，默认关闭）-----------------------------
+    // 与 portraits 同构：dir = 本地已解包目录；base_url = 对象存储公开基址。
+    if (j.contains("backgrounds")) {
+        const auto& bg = j["backgrounds"];
+        if (!bg.is_object()) {
+            *err = "'backgrounds' must be an object";
+            return false;
+        }
+        if (!get_str(bg, "dir", &out->backgrounds.dir, err)) return false;
+        if (!get_str(bg, "base_url", &out->backgrounds.base_url, err)) return false;
+        while (!out->backgrounds.base_url.empty() &&
+               out->backgrounds.base_url.back() == '/') {
+            out->backgrounds.base_url.pop_back();
+        }
+    }
+
     // --- registration（自助注册，默认关闭）-----------------------------------
     if (j.contains("registration")) {
         const auto& reg = j["registration"];

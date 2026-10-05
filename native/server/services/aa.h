@@ -142,6 +142,21 @@ std::optional<std::string> portrait_url_for(const std::string& key);
 // 在既无游戏索引也无活动包时，据此放行而非直接 400 not ready。
 bool portrait_source_configured();
 
+// 背景图片资源扩展的额外来源（与人物图片资源扩展同构，供「背景展示」）：
+//   EDITOR_BG_DIR      —— 本地已解包的背景目录（tex/<文件>.webp|png|jpg）
+//   EDITOR_BG_BASE_URL —— 对象存储公开基址（拼 <base>/tex/<safe_name>.webp）
+// 语义与人物立绘完全一致：本地直接返回文件字节，对象存储只回公开 URL。
+// 未配置或未命中返回 nullopt，调用方再回退游戏索引 / 404。
+std::optional<std::pair<std::string, std::string>> read_background_local_tex(
+    const std::string& key);
+
+// 对象存储背景的公开 URL：<base>/tex/<safe_name>.webp。未配置返回 nullopt。
+// 上传布局约定见 packaging/gateway/BACKGROUNDS.md。
+std::optional<std::string> background_url_for(const std::string& key);
+
+// 是否配置了背景图片资源扩展来源（本地目录或对象存储 URL）。
+bool background_source_configured();
+
 // Probed aa_index.json locations, first loadable wins: EDITOR_AA_INDEX_FILE →
 // <root>/_cache/aa_index → <root>/_cache/resource_packs/*/aa_index.json
 // (installer pack layout) → backend/_cache (legacy) → dist dev fallbacks.

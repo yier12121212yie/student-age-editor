@@ -245,7 +245,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('空间').first);
+    await tester.ensureVisible(find.text('人物企鹅空间').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('人物企鹅空间').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('＋ 为人物添加空间'), findsOneWidget);

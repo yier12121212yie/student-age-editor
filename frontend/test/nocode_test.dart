@@ -1,6 +1,11 @@
 // 无代码模式的纯函数：代码模板拼装、字典池解析、后端 JSON 反序列化。
-import 'package:flutter_test/flutter_test.dart';
+import 'dart:convert';
 
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/features/editor/suggestion_text_field.dart';
 import 'package:student_age_editor/features/nocode/effect_slot_form.dart';
 import 'package:student_age_editor/features/nocode/role_picker.dart';
@@ -84,6 +89,50 @@ void main() {
       const noData = SuggestionSlot(kind: 'dict', name: 'ITEM', dict: 'ITEM');
       expect(slotDictEntries(noData, dicts), isNull);
       expect(slotDictEntries(_vSlot, dicts), isNull);
+    });
+  });
+
+  group('loadSlotPoolEntries', () {
+    setUp(() {
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/cfg/PersonStateCfg') {
+          return http.Response(
+            jsonEncode({
+              'data': {
+                '10': {'id': 10, 'name': '感冒'},
+                '11': {'id': 11, 'name': '发烧'},
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          jsonEncode({'data': {}}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+    });
+
+    tearDown(() {
+      ApiClient.instance.client = http.Client();
+    });
+
+    test('game_dicts 没数据的池回退 /api/cfg/<表>（不再逼用户填 ID）', () async {
+      final entries = await loadSlotPoolEntries('STATE', const {});
+      expect(entries['10'], '感冒');
+      expect(entries['11'], '发烧');
+    });
+
+    test('game_dicts 有数据时优先用字典', () async {
+      final entries = await loadSlotPoolEntries(
+        'ATTR',
+        const {
+          'attrs': {'1': '智力'}
+        },
+      );
+      expect(entries, {'1': '智力'});
     });
   });
 

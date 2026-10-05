@@ -14,11 +14,11 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../blocks/block_catalog.dart';
+import '../blocks/catalog_visuals.dart';
 import '../editor/suggestion_text_field.dart';
 
 /// 字典池名（ATTR/ROLE/…）→ /api/dicts game_dicts 的键。
-/// 未列出的池（STATE/TEXT/NEGOTIATION_* 等 CSV 派生）在仓库运行环境里为空，
-/// 表单退化为手输 ID。
+/// 未列出的池（STATE/TEXT/NEGOTIATION_* 等）走 [kSlotPoolToTable] 读配置表。
 const Map<String, String> kSlotPoolToDictKey = {
   'ATTR': 'attrs',
   'ROLE': 'roles',
@@ -30,6 +30,28 @@ const Map<String, String> kSlotPoolToDictKey = {
   'STATE': 'states',
   'TEXT': 'texts',
   'GAME': 'games',
+};
+
+/// 字典池名 → 配置表（`GET /api/cfg/<表>`）。
+///
+/// game_dicts 没有的池（STATE/TEXT/GAME/谈判/空间/手机消息）从这里补候选，
+/// 让无代码「只选不敲」覆盖全部 `SECONDARY_PLACEHOLDER_MAP` 里的占位符。
+const Map<String, String> kSlotPoolToTable = {
+  'ATTR': 'PersonAttrCfg',
+  'ROLE': 'PersonCfg',
+  'ITEM': 'ItemCfg',
+  'RELATION': 'RelationCfg',
+  'MAP': 'MapCfg',
+  'JOB': 'JobCfg',
+  'BG': 'BgCfg',
+  'STATE': 'PersonStateCfg',
+  'TEXT': 'TextCfg',
+  'GAME': 'MinigameCfg',
+  'NEGOTIATION_SKILL': 'NegotiationSkillCfg',
+  'NEGOTIATION_BUFF': 'NegotiationBuffCfg',
+  'KZONE_POST': 'KZoneContentCfg',
+  'KZONE_MESSAGE': 'KZoneMessageBoardCfg',
+  'PHONE_MSG': 'PhoneMsgCfg',
 };
 
 /// 解析池对应的字典条目 `{id: 名称}`；无池返回 null（表单退化为输入框）。
@@ -50,6 +72,56 @@ String slotDisplayName(
   if (slot.kind != 'dict' || value.isEmpty) return value;
   final entries = slotDictEntries(slot, gameDicts);
   return entries != null ? (entries[value] ?? value) : value;
+}
+
+/// 池条目 `{id: 名称}` 的会话缓存（一次会话内稳定，避免重复请求）。
+final Map<String, Map<String, String>> _slotPoolEntriesCache = {};
+
+String _entryLabel(dynamic v) {
+  if (v is List && v.isNotEmpty) return v.first.toString().trim();
+  return v?.toString().trim() ?? '';
+}
+
+/// 一个字典池的候选条目：先查 `game_dicts`，为空再读 `/api/cfg/<表>`。
+/// 结果按池缓存；读取失败返回空表（[SlotField] 才退回手输兜底）。
+Future<Map<String, String>> loadSlotPoolEntries(
+    String pool, Map<String, dynamic> gameDicts) async {
+  final key = pool.toUpperCase();
+  final cached = _slotPoolEntriesCache[key];
+  if (cached != null) return cached;
+  final out = <String, String>{};
+  final dictKey = kSlotPoolToDictKey[key];
+  final raw = dictKey == null ? null : gameDicts[dictKey];
+  if (raw is Map) {
+    raw.forEach((k, v) => out[k.toString()] = _entryLabel(v));
+  }
+  if (out.isEmpty) {
+    final table = kSlotPoolToTable[key];
+    if (table != null) {
+      try {
+        final r = await ApiClient.instance.get('/api/cfg/$table');
+        final data = (r is Map && r['data'] is Map)
+            ? (r['data'] as Map)
+            : const {};
+        for (final e in data.entries) {
+          final row = e.value;
+          final name = row is Map
+              ? _entryLabel(row['name'] ??
+                  row['title'] ??
+                  row['content'] ??
+                  row['desc'] ??
+                  row['text'])
+              : '';
+          final id = e.key.toString();
+          out[id] = name.isEmpty ? id : name;
+        }
+      } catch (_) {
+        // 后端不可达：保持空表，由 SlotField 退回手输兜底。
+      }
+    }
+  }
+  _slotPoolEntriesCache[key] = out;
+  return out;
 }
 
 /// 代码模板 + 槽值 → 完整代码：
@@ -185,8 +257,9 @@ class _SlotFormDialogState extends State<_SlotFormDialog> {
 }
 
 /// 单个参数槽的编辑控件（「新建」与「编辑已有行」共用）：
-///   * 字典池有数据 → [fluent.ComboBox]「ID · 名称」下拉；
-///   * 否则（number 槽 / 无池 dict 槽）→ [fluent.TextBox]，按 [initialValue] 预填。
+///   * number 槽 → [fluent.TextBox] 数值输入；
+///   * 字典槽 → 先 game_dicts、再 `/api/cfg/<表>` 取候选，有则 [fluent.ComboBox]
+///     「ID · 名称」下拉（真正的「只选不敲」）；读取中/真无候选才退回手输。
 /// 用户每次改动通过 [onChanged] 回传 `(值, 人话显示名)`；输入框自带控制器，
 /// 因此编辑已有行时能显示当前值，而不是每次都从空开始。
 class SlotField extends StatefulWidget {
@@ -207,18 +280,30 @@ class SlotField extends StatefulWidget {
 }
 
 class _SlotFieldState extends State<SlotField> {
-  late final Map<String, String>? _entries;
+  Map<String, String>? _entries;
+  bool _loading = false;
   late final TextEditingController _ctrl;
   String? _sel;
 
   @override
   void initState() {
     super.initState();
-    _entries = slotDictEntries(widget.slot, widget.gameDicts);
     _ctrl = TextEditingController(text: widget.initialValue);
-    if (_entries != null && _entries.containsKey(widget.initialValue)) {
-      _sel = widget.initialValue;
+    if (widget.slot.kind == 'dict') {
+      _loading = true;
+      _loadEntries();
     }
+  }
+
+  Future<void> _loadEntries() async {
+    final entries =
+        await loadSlotPoolEntries(widget.slot.dict, widget.gameDicts);
+    if (!mounted) return;
+    setState(() {
+      _entries = entries;
+      _loading = false;
+      if (entries.containsKey(widget.initialValue)) _sel = widget.initialValue;
+    });
   }
 
   @override
@@ -231,7 +316,6 @@ class _SlotFieldState extends State<SlotField> {
   Widget build(BuildContext context) {
     final s = widget.slot;
     final label = s.label.isNotEmpty ? s.label : s.name;
-    final entries = _entries;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
@@ -241,34 +325,53 @@ class _SlotFieldState extends State<SlotField> {
             child: Text('$label（${s.name}）',
                 style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
           ),
-          Expanded(
-            child: entries != null && entries.isNotEmpty
-                ? fluent.ComboBox<String>(
-                    items: [
-                      for (final e in entries.entries)
-                        fluent.ComboBoxItem(
-                            value: e.key, child: Text('${e.key} · ${e.value}')),
-                    ],
-                    value: _sel != null && entries.containsKey(_sel) ? _sel : null,
-                    placeholder: const Text('选择…', style: TextStyle(fontSize: 12)),
-                    isExpanded: true,
-                    onChanged: (v) => setState(() {
-                      _sel = v;
-                      widget.onChanged(v ?? '', v != null ? (entries[v] ?? v) : '');
-                    }),
-                  )
-                : fluent.TextBox(
-                    controller: _ctrl,
-                    placeholder: s.kind == 'dict' ? '输入 $label 的 ID' : '输入数值',
-                    style: const TextStyle(fontSize: 12),
-                    onChanged: (v) {
-                      final t = v.trim();
-                      widget.onChanged(t, t);
-                    },
-                  ),
-          ),
+          Expanded(child: _input(s, label, _entries)),
         ],
       ),
+    );
+  }
+
+  Widget _input(SuggestionSlot s, String label, Map<String, String>? entries) {
+    if (s.kind != 'dict') {
+      return fluent.TextBox(
+        controller: _ctrl,
+        placeholder: '输入数值',
+        style: const TextStyle(fontSize: 12),
+        onChanged: (v) {
+          final t = v.trim();
+          widget.onChanged(t, t);
+        },
+      );
+    }
+    if (_loading) {
+      return Text('正在读取候选…',
+          style: TextStyle(fontSize: 12, color: palette.textHint));
+    }
+    if (entries != null && entries.isNotEmpty) {
+      return fluent.ComboBox<String>(
+        items: [
+          for (final e in entries.entries)
+            fluent.ComboBoxItem(
+                value: e.key, child: Text('${e.key} · ${e.value}')),
+        ],
+        value: _sel != null && entries.containsKey(_sel) ? _sel : null,
+        placeholder: const Text('选择…', style: TextStyle(fontSize: 12)),
+        isExpanded: true,
+        onChanged: (v) => setState(() {
+          _sel = v;
+          widget.onChanged(v ?? '', v != null ? (entries[v] ?? v) : '');
+        }),
+      );
+    }
+    // 真没读到候选（后端不可达 / 表不存在）才手输兜底。
+    return fluent.TextBox(
+      controller: _ctrl,
+      placeholder: '未读到候选，输入 $label 的 ID',
+      style: const TextStyle(fontSize: 12),
+      onChanged: (v) {
+        final t = v.trim();
+        widget.onChanged(t, t);
+      },
     );
   }
 }
@@ -500,28 +603,26 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
           children: [
             fluent.TextBox(
               controller: _q,
-              placeholder: '搜索${mode.label}（中文描述或代码片段）…',
+              placeholder: '搜索${mode.label}、属性或名称…',
               style: const TextStyle(fontSize: 12),
               onChanged: (v) => _fetch(v.trim()),
             ),
             const SizedBox(height: 8),
             if (categories.length > 1)
-              SizedBox(
-                height: 30,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [
                     for (final c in categories)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: _CatChip(
-                          label: c,
-                          selected: _category == c,
-                          onTap: () => setState(() {
-                            _category = c;
-                            _page = 0;
-                          }),
-                        ),
+                      BlockCategoryChip(
+                        label: c,
+                        selected: _category == c,
+                        onTap: () => setState(() {
+                          _category = c;
+                          _page = 0;
+                        }),
                       ),
                   ],
                 ),
@@ -535,23 +636,21 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
                           child: Text('没有匹配的候选',
                               style: TextStyle(
                                   fontSize: 12, color: palette.textHint)))
-                      : ListView.builder(
+                      : GridView.builder(
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisExtent: 84,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
                           itemCount: visible.length,
                           itemBuilder: (c, i) {
                             final s = visible[i];
-                            return ListTile(
-                              dense: true,
-                              title: Text(s.desc,
-                                  style: const TextStyle(fontSize: 12.5),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis),
-                              subtitle: Text(
-                                  '${engine.categoryFor(widget.mode, s.code)} · ${s.code}',
-                                  style: const TextStyle(
-                                      fontSize: 10.5,
-                                      fontFamily: 'Consolas'),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis),
+                            return BlockCatalogTile(
+                              title: humanizeBlockDesc(s.desc, s.slots),
+                              category:
+                                  engine.categoryFor(widget.mode, s.code),
                               onTap: () => _pick(s),
                             );
                           },
@@ -590,47 +689,6 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
       actions: [
         fluent.Button(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
       ],
-    );
-  }
-}
-
-/// 目录分类小胶囊（与积木库同一视觉，不依赖其私有组件）。
-class _CatChip extends StatelessWidget {
-  const _CatChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Container(
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          decoration: BoxDecoration(
-            color: selected ? palette.tintAccent : null,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: selected ? palette.accentLight : palette.border,
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              color: selected ? palette.textHigh : palette.textMuted,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

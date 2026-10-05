@@ -349,8 +349,9 @@ def cmd_decoded_pack(args):
         decoded_export.build_parser().print_help()
         print("\n[resource_scan decoded-pack] 进程内调用 tools/resource_scan/decoded_export.py"
               "（参数用 `-- ` 分隔或直接跟在子命令后）。常用：--out dist/bundled_preview.zip "
-              "--tier preview|full --max-side 1600 --quality 80 --limit N "
-              "--no-audios --no-zip；索引覆盖 --index/--aa-dir/--cache-dir。")
+              "--tier preview|full|portraits|backgrounds --max-side 1600 --quality 80 --limit N "
+              "--no-audios --no-zip；--from-dir <已解码图片目录> 直接转 WebP 成包；"
+              "索引覆盖 --index/--aa-dir/--cache-dir。")
         return 0
     try:
         return decoded_export.main(passthrough)

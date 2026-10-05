@@ -502,14 +502,16 @@ std::shared_ptr<DecodedPack> ensure_pack_store() {
 
 namespace {
 
-// 人物图片资源扩展（服务器端自托管）：本地目录惰性 DecodedPack（与资源包同
-// 一套扫描/取文件语义：tex/<文件>）；目录未配置时 active()==false。
-std::shared_ptr<DecodedPack> portrait_local_store() {
+// 图片资源扩展（人物立绘 / 背景，服务器端自托管）：本地目录惰性 DecodedPack
+// （与资源包同一套 tex/<文件> 扫描/取文件语义）；目录未配置时 active()==false。
+// Tag 让两类来源各持独立 static store（互不串味）。env_name 决定读哪个变量。
+template <int Tag>
+std::shared_ptr<DecodedPack> image_ext_local_store(const char* env_name) {
     static std::mutex mu;
     static std::shared_ptr<DecodedPack> store;
     static std::string dir;
     static bool tried = false;
-    const std::string d = sa_core::paths::getenv_utf8("EDITOR_PORTRAIT_DIR");
+    const std::string d = sa_core::paths::getenv_utf8(env_name);
     std::lock_guard<std::mutex> lk(mu);
     if (!store) store = std::make_shared<DecodedPack>();
     if (!tried || d != dir) {
@@ -521,8 +523,8 @@ std::shared_ptr<DecodedPack> portrait_local_store() {
 }
 
 // 对象存储公开基址（去掉尾部 '/'）；未配置返回 ""。
-std::string portrait_base_url() {
-    std::string u = sa_core::paths::getenv_utf8("EDITOR_PORTRAIT_BASE_URL");
+std::string image_ext_base_url(const char* env_name) {
+    std::string u = sa_core::paths::getenv_utf8(env_name);
     if (!u.empty()) u = p4::strip(u);
     while (!u.empty() && u.back() == '/') u.pop_back();
     return u;
@@ -541,35 +543,58 @@ std::string safe_asset_name(const std::string& key) {
     return s;
 }
 
+// 本地「图片扩展」目录取字节：原样键 + safe_asset_name 两级命中。
+std::optional<std::pair<std::string, std::string>> read_image_ext_local_tex(
+    const std::shared_ptr<DecodedPack>& store, const std::string& key) {
+    if (!store || !store->active() || key.empty()) return std::nullopt;
+    if (auto r = store->read_file(store->tex_path(key))) return r;
+    // 键含 '/' 等路径字符时，解码包文件名是 safe_asset_name（'/'→'_'）。
+    if (auto r = store->read_file(store->tex_path(safe_asset_name(key)))) return r;
+    return std::nullopt;
+}
+
+// 对象存储「图片扩展」URL：<base>/tex/<safe_name>.webp（统一转 WebP）。只回 URL，
+// 不代替浏览器下载——客户端拿到 URL 后自行 GET。
+std::optional<std::string> image_ext_url_for(const std::string& base,
+                                             const std::string& key) {
+    if (base.empty() || key.empty()) return std::nullopt;
+    const std::string name = safe_asset_name(key);
+    if (name.empty()) return std::nullopt;
+    return base + "/tex/" + sa_core::http::quote_component(name) + ".webp";
+}
+
 }  // namespace
 
 std::optional<std::pair<std::string, std::string>> read_portrait_local_tex(
     const std::string& key) {
-    if (key.empty()) return std::nullopt;
-    // 本地安装：已解包的立绘目录（DecodedPack 语义）。
-    if (auto store = portrait_local_store(); store && store->active()) {
-        if (auto r = store->read_file(store->tex_path(key))) return r;
-        // 键含 '/' 等路径字符时，解码包文件名是 safe_asset_name（'/'→'_'）。
-        if (auto r = store->read_file(store->tex_path(safe_asset_name(key))))
-            return r;
-    }
-    return std::nullopt;
+    return read_image_ext_local_tex(
+        image_ext_local_store<0>("EDITOR_PORTRAIT_DIR"), key);
 }
 
 std::optional<std::string> portrait_url_for(const std::string& key) {
-    const std::string base = portrait_base_url();
-    if (base.empty() || key.empty()) return std::nullopt;
-    const std::string name = safe_asset_name(key);
-    if (name.empty()) return std::nullopt;
-    // 上传布局：<base>/tex/<safe_name>.webp（立绘统一转 WebP）。只回 URL，
-    // 不代替浏览器下载——客户端拿到 URL 后自行 GET（见 PORTRAITS.md）。
-    return base + "/tex/" + sa_core::http::quote_component(name) + ".webp";
+    return image_ext_url_for(image_ext_base_url("EDITOR_PORTRAIT_BASE_URL"), key);
 }
 
 bool portrait_source_configured() {
     if (!p4::strip(sa_core::paths::getenv_utf8("EDITOR_PORTRAIT_DIR")).empty())
         return true;
-    return !portrait_base_url().empty();
+    return !image_ext_base_url("EDITOR_PORTRAIT_BASE_URL").empty();
+}
+
+std::optional<std::pair<std::string, std::string>> read_background_local_tex(
+    const std::string& key) {
+    return read_image_ext_local_tex(
+        image_ext_local_store<1>("EDITOR_BG_DIR"), key);
+}
+
+std::optional<std::string> background_url_for(const std::string& key) {
+    return image_ext_url_for(image_ext_base_url("EDITOR_BG_BASE_URL"), key);
+}
+
+bool background_source_configured() {
+    if (!p4::strip(sa_core::paths::getenv_utf8("EDITOR_BG_DIR")).empty())
+        return true;
+    return !image_ext_base_url("EDITOR_BG_BASE_URL").empty();
 }
 
 void reset_aa_singletons_for_test() {

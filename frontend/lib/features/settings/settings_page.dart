@@ -8,8 +8,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
+import '../../core/backend_retry.dart';
 import '../../core/no_code_mode.dart';
 import '../../core/platform_env.dart';
+import '../ai/ai_policy.dart';
 import '../ai/mcp/mcp_types.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
@@ -376,6 +378,11 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _ttsTesting = false;
   String _permissionMode = 'confirm';
 
+  /// 服务端 TTS / 生图能力（网页版策略 `tts_image_available`）。桌面端与
+  /// 本机浏览器版恒 true（不拉 policy）；自托管托管形态为 false，此时
+  /// 「配音（TTS）」「图片生成」两块设置不再展示（服务端不提供服务）。
+  bool _ttsImageAvailable = true;
+
   // ---------------- MCP 服务器编辑态 ----------------
 
   /// Android / Web 上无本机子进程能力，stdio 表单隐藏（与 backend_launcher
@@ -421,6 +428,20 @@ class _SettingsPageState extends State<SettingsPage> {
       text: widget.settings.customInstructions,
     );
     _mcpServers = List.of(widget.settings.mcpServers);
+    if (kIsWeb) _loadWebPolicy();
+  }
+
+  /// 网页版读取一次 AI 策略，决定服务端 TTS / 生图相关设置是否展示。
+  /// 拉取失败按兜底（可用）处理，与 [AiPolicy.fallback] 口径一致。
+  Future<void> _loadWebPolicy() async {
+    try {
+      await AiPolicyStore.instance.ensureLoaded();
+    } catch (_) {}
+    if (!mounted) return;
+    final available = AiPolicyStore.instance.policy.ttsImageAvailable;
+    if (available != _ttsImageAvailable) {
+      setState(() => _ttsImageAvailable = available);
+    }
   }
 
   @override
@@ -696,7 +717,8 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  /// 「MCP 服务器」区：列表 + 添加表单（Android 隐藏 stdio 相关字段）。
+  /// 「MCP 服务器」区：列表 + 添加表单。无本机子进程能力的平台（Web / Android）
+  /// 隐藏 stdio 相关字段，并隐藏列表中已存在的 stdio 服务器（在此平台永远连不上）。
   List<Widget> _buildMcpSection() {
     final muted = TextStyle(fontSize: 11, color: palette.textMuted);
     final formFields = <Widget>[
@@ -755,7 +777,7 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ] else ...[
         const SizedBox(height: 4),
-        Text('本机仅支持 HTTP 传输（Android 无法启动本地子进程）', style: muted),
+        Text('当前平台仅支持 HTTP 传输（无法启动本地子进程）', style: muted),
         const SizedBox(height: 8),
         _mcpLabel('URL'),
         const SizedBox(height: 4),
@@ -787,6 +809,19 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     ];
+    // 无本机子进程能力的平台（Web / Android）不展示 stdio 服务器：它们在此
+    // 平台永远连不上（transport 工厂直接抛「网页版不支持本地进程 MCP」），
+    // 展示只会误导。仅从渲染中过滤，_mcpServers 原样保留，保存时不丢配置。
+    final rows = <Widget>[];
+    var hiddenStdio = 0;
+    for (var i = 0; i < _mcpServers.length; i++) {
+      final cfg = _mcpServers[i];
+      if (!_stdioSupported && cfg.transport != 'http') {
+        hiddenStdio++;
+        continue;
+      }
+      rows.add(_mcpRow(cfg, i));
+    }
     return [
       const SizedBox(height: 20),
       Divider(color: palette.border),
@@ -806,16 +841,23 @@ class _SettingsPageState extends State<SettingsPage> {
         style: muted,
       ),
       const SizedBox(height: 2),
-      Text(
-        '注意：stdio 服务器会以命令拉起本机外部进程，进程以本机用户权限运行，'
-        '仅添加可信来源的服务器',
-        style: TextStyle(fontSize: 11, color: palette.warning),
-      ),
+      if (_stdioSupported)
+        Text(
+          '注意：stdio 服务器会以命令拉起本机外部进程，进程以本机用户权限运行，'
+          '仅添加可信来源的服务器',
+          style: TextStyle(fontSize: 11, color: palette.warning),
+        )
+      else if (hiddenStdio > 0)
+        Text(
+          '当前平台不支持本地子进程，已隐藏 $hiddenStdio 个 stdio 服务器'
+          '（配置仍保留，可在桌面端管理）',
+          style: TextStyle(fontSize: 11, color: palette.warning),
+        ),
       const SizedBox(height: 8),
-      if (_mcpServers.isEmpty)
+      if (rows.isEmpty)
         Text('尚未配置服务器', style: muted)
       else
-        for (var i = 0; i < _mcpServers.length; i++) _mcpRow(_mcpServers[i], i),
+        ...rows,
       const SizedBox(height: 8),
       if (_mcpAdding)
         ...formFields
@@ -989,184 +1031,188 @@ class _SettingsPageState extends State<SettingsPage> {
                   placeholder:
                       '例如：对话文案口语化、少用书面腔；新建条目命名参考已有条目的风格…',
                 ),
-                const SizedBox(height: 20),
-                Divider(color: palette.border),
-                const SizedBox(height: 8),
-                Text(
-                  '图片生成（openai-image-api）',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: palette.textHigh,
-                    fontWeight: FontWeight.w600,
+                // 自托管网页形态（policy.tts_image_available=false）服务端不提供
+                // TTS / 生图，这两块配置不再展示——填了也不会被服务端执行。
+                if (_ttsImageAvailable) ...[
+                  const SizedBox(height: 20),
+                  Divider(color: palette.border),
+                  const SizedBox(height: 8),
+                  Text(
+                    '图片生成（openai-image-api）',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: palette.textHigh,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '供 AI 侧栏的生图 / 改图工具调用，遵循 OpenAI Images API 标准（images/generations、images/edits）。'
-                  '留空时自动复用上方对话配置；使用 Anthropic 等非 OpenAI 接口时请单独填写',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted),
-                ),
-                const SizedBox(height: 12),
-                Text('图片模型', style: TextStyle(fontSize: 12, color: hintColor)),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _imageModelCtrl,
-                  placeholder: 'gpt-image-2 / gpt-image-1 / dall-e-3（留空使用对话模型）',
-                  onChanged: (_) {},
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '图片 API Key',
-                  style: TextStyle(fontSize: 12, color: hintColor),
-                ),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _imageApiKeyCtrl,
-                  obscureText: true,
-                  placeholder: 'sk-...（留空复用对话 API Key）',
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '图片 Base URL（留空使用对话地址或官方默认）',
-                  style: TextStyle(fontSize: 12, color: hintColor),
-                ),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _imageBaseUrlCtrl,
-                  placeholder: 'https://api.openai.com/v1',
-                  onChanged: (_) {},
-                ),
-                const SizedBox(height: 20),
-                Divider(color: palette.border),
-                const SizedBox(height: 8),
-                Text(
-                  '配音（TTS）',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: palette.textHigh,
-                    fontWeight: FontWeight.w600,
+                  const SizedBox(height: 4),
+                  Text(
+                    '供 AI 侧栏的生图 / 改图工具调用，遵循 OpenAI Images API 标准（images/generations、images/edits）。'
+                    '留空时自动复用上方对话配置；使用 Anthropic 等非 OpenAI 接口时请单独填写',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted),
                   ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '为剧本/文本合成语音：阿里云（DashScope 百炼，Bearer sk-*）或 MiniMax（T2A V2）。'
-                  '密钥仅保存在本机；生成内容存到当前 mod 的 audio/tts/ 目录',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted),
-                ),
-                const SizedBox(height: 12),
-                Text('服务商', style: TextStyle(fontSize: 12, color: hintColor)),
-                const SizedBox(height: 6),
-                fluent.ComboBox<String>(
-                  value: _ttsProvider,
-                  isExpanded: true,
-                  items: const [
-                    fluent.ComboBoxItem(
-                      value: '',
-                      child: Text('未配置（在配音面板中按需选择）'),
-                    ),
-                    fluent.ComboBoxItem(
-                      value: 'aliyun',
-                      child: Text('阿里云 DashScope（百炼）'),
-                    ),
-                    fluent.ComboBoxItem(
-                      value: 'minimax',
-                      child: Text('MiniMax（T2A V2）'),
-                    ),
-                  ],
-                  onChanged: (v) => setState(() => _ttsProvider = v ?? ''),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'API Key',
-                  style: TextStyle(fontSize: 12, color: hintColor),
-                ),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _ttsApiKeyCtrl,
-                  obscureText: true,
-                  placeholder: 'sk-...（阿里云）或 MiniMax API Key',
-                ),
-                if (_ttsProvider == 'minimax') ...[
+                  const SizedBox(height: 12),
+                  Text('图片模型', style: TextStyle(fontSize: 12, color: hintColor)),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _imageModelCtrl,
+                    placeholder: 'gpt-image-2 / gpt-image-1 / dall-e-3（留空使用对话模型）',
+                    onChanged: (_) {},
+                  ),
                   const SizedBox(height: 12),
                   Text(
-                    'Group ID（MiniMax 控制台获取）',
+                    '图片 API Key',
                     style: TextStyle(fontSize: 12, color: hintColor),
                   ),
                   const SizedBox(height: 6),
                   fluent.TextBox(
-                    controller: _ttsGroupIdCtrl,
-                    placeholder: '19xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+                    controller: _imageApiKeyCtrl,
+                    obscureText: true,
+                    placeholder: 'sk-...（留空复用对话 API Key）',
                   ),
-                ],
-                const SizedBox(height: 12),
-                Text(
-                  '模型（留空使用默认）',
-                  style: TextStyle(fontSize: 12, color: hintColor),
-                ),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _ttsModelCtrl,
-                  placeholder: 'qwen-tts / cosyvoice-v2 / speech-02-hd',
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '默认音色（留空使用服务商默认）',
-                  style: TextStyle(fontSize: 12, color: hintColor),
-                ),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _ttsVoiceCtrl,
-                  placeholder: 'Cherry / female-shaonv / 其他 voice id',
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Base URL（留空使用官方默认；自建代理/中转时才需修改）',
-                  style: TextStyle(fontSize: 12, color: hintColor),
-                ),
-                const SizedBox(height: 6),
-                fluent.TextBox(
-                  controller: _ttsBaseUrlCtrl,
-                  placeholder: _ttsProvider == 'minimax'
-                      ? 'https://api.minimax.io'
-                      : 'https://dashscope.aliyuncs.com/...',
-                ),
-                const SizedBox(height: 12),
-                Text('语速', style: TextStyle(fontSize: 12, color: hintColor)),
-                fluent.Slider(
-                  value: _ttsSpeed,
-                  min: 0.5,
-                  max: 2,
-                  onChanged: (v) => setState(() => _ttsSpeed = v),
-                  label: '${_ttsSpeed.toStringAsFixed(1)}x',
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    fluent.Button(
-                      onPressed: (_ttsTesting || _ttsProvider.isEmpty)
-                          ? null
-                          : _ttsTest,
-                      child: _ttsTesting
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('测试连接'),
+                  const SizedBox(height: 12),
+                  Text(
+                    '图片 Base URL（留空使用对话地址或官方默认）',
+                    style: TextStyle(fontSize: 12, color: hintColor),
+                  ),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _imageBaseUrlCtrl,
+                    placeholder: 'https://api.openai.com/v1',
+                    onChanged: (_) {},
+                  ),
+                  const SizedBox(height: 20),
+                  Divider(color: palette.border),
+                  const SizedBox(height: 8),
+                  Text(
+                    '配音（TTS）',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: palette.textHigh,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(width: 8),
-                    if (_ttsProvider.isEmpty)
-                      Expanded(
-                        child: Text(
-                          '先选择服务商并填写 API Key 再测试',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: palette.textMuted,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '为剧本/文本合成语音：阿里云（DashScope 百炼，Bearer sk-*）或 MiniMax（T2A V2）。'
+                    '密钥仅保存在本机；生成内容存到当前 mod 的 audio/tts/ 目录',
+                    style: TextStyle(fontSize: 11, color: palette.textMuted),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('服务商', style: TextStyle(fontSize: 12, color: hintColor)),
+                  const SizedBox(height: 6),
+                  fluent.ComboBox<String>(
+                    value: _ttsProvider,
+                    isExpanded: true,
+                    items: const [
+                      fluent.ComboBoxItem(
+                        value: '',
+                        child: Text('未配置（在配音面板中按需选择）'),
+                      ),
+                      fluent.ComboBoxItem(
+                        value: 'aliyun',
+                        child: Text('阿里云 DashScope（百炼）'),
+                      ),
+                      fluent.ComboBoxItem(
+                        value: 'minimax',
+                        child: Text('MiniMax（T2A V2）'),
+                      ),
+                    ],
+                    onChanged: (v) => setState(() => _ttsProvider = v ?? ''),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'API Key',
+                    style: TextStyle(fontSize: 12, color: hintColor),
+                  ),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _ttsApiKeyCtrl,
+                    obscureText: true,
+                    placeholder: 'sk-...（阿里云）或 MiniMax API Key',
+                  ),
+                  if (_ttsProvider == 'minimax') ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Group ID（MiniMax 控制台获取）',
+                      style: TextStyle(fontSize: 12, color: hintColor),
+                    ),
+                    const SizedBox(height: 6),
+                    fluent.TextBox(
+                      controller: _ttsGroupIdCtrl,
+                      placeholder: '19xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    '模型（留空使用默认）',
+                    style: TextStyle(fontSize: 12, color: hintColor),
+                  ),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _ttsModelCtrl,
+                    placeholder: 'qwen-tts / cosyvoice-v2 / speech-02-hd',
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '默认音色（留空使用服务商默认）',
+                    style: TextStyle(fontSize: 12, color: hintColor),
+                  ),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _ttsVoiceCtrl,
+                    placeholder: 'Cherry / female-shaonv / 其他 voice id',
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Base URL（留空使用官方默认；自建代理/中转时才需修改）',
+                    style: TextStyle(fontSize: 12, color: hintColor),
+                  ),
+                  const SizedBox(height: 6),
+                  fluent.TextBox(
+                    controller: _ttsBaseUrlCtrl,
+                    placeholder: _ttsProvider == 'minimax'
+                        ? 'https://api.minimax.io'
+                        : 'https://dashscope.aliyuncs.com/...',
+                  ),
+                  const SizedBox(height: 12),
+                  Text('语速', style: TextStyle(fontSize: 12, color: hintColor)),
+                  fluent.Slider(
+                    value: _ttsSpeed,
+                    min: 0.5,
+                    max: 2,
+                    onChanged: (v) => setState(() => _ttsSpeed = v),
+                    label: '${_ttsSpeed.toStringAsFixed(1)}x',
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      fluent.Button(
+                        onPressed: (_ttsTesting || _ttsProvider.isEmpty)
+                            ? null
+                            : _ttsTest,
+                        child: _ttsTesting
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Text('测试连接'),
+                      ),
+                      const SizedBox(width: 8),
+                      if (_ttsProvider.isEmpty)
+                        Expanded(
+                          child: Text(
+                            '先选择服务商并填写 API Key 再测试',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: palette.textMuted,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
-                ),
+                    ],
+                  ),
+                ],
                 ..._buildMcpSection(),
                 const SizedBox(height: 16),
                 fluent.FilledButton(
@@ -1320,11 +1366,15 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final r = await ApiClient.instance.get('/api/extensions');
+      // 从源码运行时后端可能尚未就绪/中途被回收：连接级失败时自我恢复后重试。
+      final r = await withBackendRetry(
+        () => ApiClient.instance.get('/api/extensions'),
+      );
       if (!mounted) return;
+      final rmap = r is Map ? r : const {};
       setState(() {
-        _packs = (r['extensions'] as List?) ?? [];
-        _enabled = ((r['enabled'] as List?) ?? const [])
+        _packs = (rmap['extensions'] as List?) ?? [];
+        _enabled = ((rmap['enabled'] as List?) ?? const [])
             .whereType<String>()
             .toSet();
       });

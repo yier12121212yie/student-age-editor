@@ -23,6 +23,10 @@
     "dir": "",
     "base_url": ""
   },
+  "backgrounds": {
+    "dir": "",
+    "base_url": ""
+  },
   "accounts": [
     {
       "name": "alice",

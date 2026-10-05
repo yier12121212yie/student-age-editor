@@ -154,7 +154,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('目标工作台').first);
+    await tester.ensureVisible(find.text('目标').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('目标').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('＋ 添加目标'), findsOneWidget);

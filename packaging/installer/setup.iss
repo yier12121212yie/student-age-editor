@@ -40,10 +40,15 @@
   #define PortraitPackDir "..\..\build\release\installer_portrait_pack"
 #endif
 
-; 「人物图片资源扩展包」可选组件只在构建期成功导出该包时注入：build_release.py
-; 成功导出时传 /DHasPortraitPack，下面的 #ifdef 生效；未导出时不传该开关，整段
-; 由预处理器去掉。注意不能用 /DHasPortraitPack=0 表达“关闭”——ISPP 会把命令行
-; 的值当字符串，符号依然算“已定义”，反而会保留本段并因源目录为空而编译失败。
+#ifndef BackgroundPackDir
+  #define BackgroundPackDir "..\..\build\release\installer_background_pack"
+#endif
+
+; 「人物图片资源扩展包」/「背景图片资源扩展包」可选组件只在构建期成功导出该包
+; 时注入：build_release.py 成功导出时传 /DHasPortraitPack、/DHasBackgroundPack，
+; 下面的 #ifdef 生效；未导出时不传该开关，整段由预处理器去掉。注意不能用
+; /DHasXxx=0 表达“关闭”——ISPP 会把命令行的值当字符串，符号依然算“已定义”，
+; 反而会保留本段并因源目录为空而编译失败。
 ; （另加 skipifsourcedoesntexist 兜底：开关存在但目录为空时也不中止。）
 
 #ifndef OutputDir
@@ -86,6 +91,9 @@ Name: "officialpack"; Description: "官方资源扩展包（适用于未安装�
 #ifdef HasPortraitPack
 Name: "portraitpack"; Description: "人物图片资源扩展包（角色立绘，适用于未安装游戏的创作者）"; Types: full custom
 #endif
+#ifdef HasBackgroundPack
+Name: "backgroundpack"; Description: "背景图片资源扩展包（场景背景，适用于未安装游戏的创作者）"; Types: full custom
+#endif
 
 [Files]
 ; 核心组件 (core)
@@ -113,6 +121,11 @@ Source: "{#OfficialPackDir}\*"; DestDir: "{app}\_cache\resource_packs\official-b
 ; 人物图片资源扩展包（可选组件；构建期未导出时整段由预处理器去掉）
 #ifdef HasPortraitPack
 Source: "{#PortraitPackDir}\*"; DestDir: "{app}\_cache\resource_packs\portraits"; Flags: ignoreversion skipifsourcedoesntexist recursesubdirs createallsubdirs; Components: portraitpack
+#endif
+
+; 背景图片资源扩展包（可选组件；构建期未导出时整段由预处理器去掉）
+#ifdef HasBackgroundPack
+Source: "{#BackgroundPackDir}\*"; DestDir: "{app}\_cache\resource_packs\backgrounds"; Flags: ignoreversion skipifsourcedoesntexist recursesubdirs createallsubdirs; Components: backgroundpack
 #endif
 
 [Tasks]
@@ -323,11 +336,13 @@ begin
   end;
 end;
 
-procedure EnsurePacksJson(const AppPath: String; ActivateOfficial, ActivatePortraits: Boolean);
+procedure EnsurePacksJson(const AppPath: String; ActivateOfficial, ActivatePortraits,
+                          ActivateBackgrounds: Boolean);
 var
   PacksDir: String;
   PacksFile: String;
   Active: String;
+  IdsJson: String;
   JsonContent: String;
 begin
   PacksDir := AppPath + '\_cache\resource_packs';
@@ -335,15 +350,32 @@ begin
   if not FileExists(PacksFile) then
   begin
     ForceDirectories(PacksDir);
-    // 资源包「单一 active」语义：官方资源包优先；仅装人物图片包时激活
-    // portraits；两者都未装则留空（首次扫描若恰有一个包会自动激活）。
+    // 资源包启用：官方资源包优先且独占（它已含背景+立绘）；官方包未装时，
+    // 人物/背景图片包可同时启用（active_ids 多 base，active=首项兼容旧字段）。
+    Active := '';
+    IdsJson := '';
     if ActivateOfficial then
-      Active := 'official-bundled'
-    else if ActivatePortraits then
-      Active := 'portraits'
+    begin
+      Active := 'official-bundled';
+      IdsJson := '"official-bundled"';
+    end
     else
-      Active := '';
-    JsonContent := '{"active":"' + Active + '","packs":[]}';
+    begin
+      if ActivatePortraits then
+      begin
+        Active := 'portraits';
+        IdsJson := '"portraits"';
+      end;
+      if ActivateBackgrounds then
+      begin
+        if IdsJson <> '' then
+          IdsJson := IdsJson + ',';
+        IdsJson := IdsJson + '"backgrounds"';
+        if Active = '' then
+          Active := 'backgrounds';
+      end;
+    end;
+    JsonContent := '{"active":"' + Active + '","active_ids":[' + IdsJson + '],"packs":[]}';
     SaveStringToFile(PacksFile, JsonContent, False);
   end;
 end;
@@ -487,6 +519,7 @@ var
   WorkshopDir: String;
   BinDir: String;
   NeedPath: Boolean;
+  NeedPack: Boolean;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -510,13 +543,24 @@ begin
     // 1. 写入 editor_env.json（升级不覆盖）
     WriteEditorEnvJson(AppDir, WorkspaceDir, WorkshopDir);
 
-    // 2. 若安装了任一可选资源扩展包，写入 packs.json（官方包优先为 active）
-    if WizardIsComponentSelected('officialpack') or
-       WizardIsComponentSelected('portraitpack') then
+    // 2. 若安装了任一可选资源扩展包，写入 packs.json（官方包优先为 active；
+    //    无官方包时人物/背景图片包可同时启用）
+    NeedPack := WizardIsComponentSelected('officialpack') or
+                WizardIsComponentSelected('portraitpack');
+#ifdef HasBackgroundPack
+    NeedPack := NeedPack or WizardIsComponentSelected('backgroundpack');
+#endif
+    if NeedPack then
     begin
       EnsurePacksJson(AppDir,
                       WizardIsComponentSelected('officialpack'),
-                      WizardIsComponentSelected('portraitpack'));
+                      WizardIsComponentSelected('portraitpack'),
+#ifdef HasBackgroundPack
+                      WizardIsComponentSelected('backgroundpack')
+#else
+                      False
+#endif
+                      );
     end;
 
     // 3. 处理 PATH 命令

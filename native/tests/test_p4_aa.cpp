@@ -303,3 +303,69 @@ TEST_CASE("/api/aa/preview returns a COS URL for portraits (人物图片扩展·
     reset_aa_singletons_for_test();
     sa::detail::set_editor_root("");
 }
+
+TEST_CASE("/api/aa/preview falls back to EDITOR_BG_DIR (背景图片扩展·本地)",
+          "[p4][aa][routes][backgrounds]") {
+    // 与人物图片扩展同构：仅配置背景本地目录时，preview 从 tex/<文件> 出背景字节。
+    auto root = sat::make_temp_dir("p4_aa_bg_root");
+    auto backgrounds = sat::make_temp_dir("p4_aa_bg_pack");
+    sa::detail::set_editor_root(sa_core::paths::path_to_utf8(root));
+    wfile(backgrounds / "tex" / "bg_badminton.webp", std::string("RIFFwebp-bytes"));
+    _putenv(("EDITOR_BG_DIR=" + sa_core::paths::path_to_utf8(backgrounds)).c_str());
+    _putenv("EDITOR_BG_BASE_URL=");
+    _putenv("EDITOR_PORTRAIT_DIR=");
+    _putenv("EDITOR_PORTRAIT_BASE_URL=");
+    _putenv("EDITOR_DECODED_PACK_DIR=");
+    reset_aa_singletons_for_test();
+    {
+        std::lock_guard<std::mutex> lk(STATE().mu_);
+        STATE().aa_status = "idle";
+        STATE().aa_error.clear();
+    }
+    Router r;
+    register_aa_routes(r);
+    // 键含 '/' 时走 safe_asset_name 回退：命中 bg_badminton.webp。
+    auto hit = sat::call_router(r, "POST", "/api/aa/preview", {},
+                                json{{"kind", "tex"}, {"key", "bg/badminton"}});
+    REQUIRE(hit.status == 200);
+    CHECK(hit.json_payload["kind"] == "tex");
+    CHECK(!hit.json_payload["data"].get<std::string>().empty());
+    auto miss = sat::call_router(r, "POST", "/api/aa/preview", {},
+                                 json{{"kind", "tex"}, {"key", "bg/nobody"}});
+    CHECK(miss.status == 404);
+    // 清理：避免 EDITOR_BG_DIR 泄漏到后续用例。
+    _putenv("EDITOR_BG_DIR=");
+    reset_aa_singletons_for_test();
+    sa::detail::set_editor_root("");
+}
+
+TEST_CASE("/api/aa/preview returns a COS URL for backgrounds (背景图片扩展·对象存储)",
+          "[p4][aa][routes][backgrounds]") {
+    // 配置对象存储 base_url 时：本地目录未命中，preview 返回 200 + url。
+    auto root = sat::make_temp_dir("p4_aa_bg_url_root");
+    sa::detail::set_editor_root(sa_core::paths::path_to_utf8(root));
+    _putenv("EDITOR_BG_DIR=");
+    _putenv("EDITOR_BG_BASE_URL=https://cos.example.com/backgrounds/");
+    _putenv("EDITOR_PORTRAIT_DIR=");
+    _putenv("EDITOR_PORTRAIT_BASE_URL=");
+    _putenv("EDITOR_DECODED_PACK_DIR=");
+    reset_aa_singletons_for_test();
+    {
+        std::lock_guard<std::mutex> lk(STATE().mu_);
+        STATE().aa_status = "idle";
+        STATE().aa_error.clear();
+    }
+    Router r;
+    register_aa_routes(r);
+    auto hit = sat::call_router(r, "POST", "/api/aa/preview", {},
+                                json{{"kind", "tex"}, {"key", "bg/badminton"}});
+    REQUIRE(hit.status == 200);
+    CHECK(hit.json_payload["kind"] == "tex");
+    CHECK(hit.json_payload["url"] ==
+          "https://cos.example.com/backgrounds/tex/bg_badminton.webp");
+    CHECK(!hit.json_payload.contains("data"));
+    // 清理：避免 base_url 泄漏到后续用例。
+    _putenv("EDITOR_BG_BASE_URL=");
+    reset_aa_singletons_for_test();
+    sa::detail::set_editor_root("");
+}

@@ -1137,6 +1137,22 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                             }),
                           ),
                         ),
+                        const SizedBox(width: 6),
+                        fluent.IconButton(
+                          icon: const Icon(FluentIcons.calendar_24_regular,
+                              size: 14),
+                          onPressed: () async {
+                            final picked = await showBirthdayPicker(
+                              context,
+                              year: birthday[0],
+                              month: birthday[1],
+                              day: birthday[2],
+                            );
+                            if (picked != null && mounted) {
+                              setState(() => row['birthday'] = picked);
+                            }
+                          },
+                        ),
                       ],
                     ),
                   ),
@@ -2241,6 +2257,161 @@ class _SectionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 「选择生日」日历弹窗（对标成熟方案的生日选择）：年份步进 + 月份下拉 +
+/// 日网格 + 「不设置生日」。返回 `[年, 月, 日]`；取消返回 null；
+/// 「不设置生日」返回 `[0, 0, 0]`。
+Future<List<int>?> showBirthdayPicker(
+  BuildContext context, {
+  int year = 1995,
+  int month = 1,
+  int day = 1,
+}) async {
+  var y = year <= 0 ? 1995 : year;
+  var m = (month >= 1 && month <= 12) ? month : 1;
+  var d = day >= 1 ? day : 1;
+  final yearCtrl = TextEditingController(text: '$y');
+  final result = await showDialog<List<int>>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) {
+        final daysInMonth = DateTime(y, m + 1, 0).day;
+        if (d > daysInMonth) d = daysInMonth;
+        final firstWeekday = DateTime(y, m, 1).weekday % 7; // 周日 = 0
+        final cells = <int?>[
+          for (var i = 0; i < firstWeekday; i++) null,
+          for (var i = 1; i <= daysInMonth; i++) i,
+        ];
+        return AppContentDialog(
+          title: const Text('选择生日'),
+          content: SizedBox(
+            width: 340,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    fluent.IconButton(
+                      icon: const Icon(FluentIcons.chevron_left_24_regular,
+                          size: 14),
+                      onPressed: () => setLocal(() {
+                        y -= 1;
+                        yearCtrl.text = '$y';
+                      }),
+                    ),
+                    SizedBox(
+                      width: 76,
+                      child: fluent.TextBox(
+                        controller: yearCtrl,
+                        textAlign: TextAlign.center,
+                        onChanged: (v) {
+                          final n = int.tryParse(v.trim());
+                          if (n != null && n > 0) y = n;
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: fluent.ComboBox<int>(
+                        isExpanded: true,
+                        value: m,
+                        items: [
+                          for (var i = 1; i <= 12; i++)
+                            fluent.ComboBoxItem(
+                                value: i, child: Text('$i 月')),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) setLocal(() => m = v);
+                        },
+                      ),
+                    ),
+                    fluent.IconButton(
+                      icon: const Icon(FluentIcons.chevron_right_24_regular,
+                          size: 14),
+                      onPressed: () => setLocal(() {
+                        y += 1;
+                        yearCtrl.text = '$y';
+                      }),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    for (final w in const ['日', '一', '二', '三', '四', '五', '六'])
+                      Expanded(
+                        child: Center(
+                          child: Text(w,
+                              style: TextStyle(
+                                  fontSize: 11, color: palette.textMuted)),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                GridView.count(
+                  crossAxisCount: 7,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  mainAxisSpacing: 4,
+                  crossAxisSpacing: 4,
+                  childAspectRatio: 1.5,
+                  children: [
+                    for (final c in cells)
+                      c == null
+                          ? const SizedBox.shrink()
+                          : MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => setLocal(() => d = c),
+                                child: Container(
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: c == d
+                                        ? accentColor.withValues(alpha: 0.16)
+                                        : null,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: c == d
+                                          ? accentColor.withValues(alpha: 0.5)
+                                          : palette.border,
+                                    ),
+                                  ),
+                                  child: Text('$c',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: palette.textPrimary,
+                                      )),
+                                ),
+                              ),
+                            ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () => Navigator.pop(ctx, const <int>[0, 0, 0]),
+              child: const Text('不设置生日'),
+            ),
+            fluent.Button(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            fluent.FilledButton(
+              onPressed: () => Navigator.pop(ctx, <int>[y, m, d]),
+              child: const Text('确定'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+  yearCtrl.dispose();
+  return result;
 }
 
 class _Labeled extends StatelessWidget {

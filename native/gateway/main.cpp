@@ -208,6 +208,9 @@ int main(int argc, char** argv) {
     // 人物图片资源扩展（服务器端「2 种安装方式」）透传给每个 backend 实例。
     po.portrait_dir = g.cfg.portraits.dir;
     po.portrait_base_url = g.cfg.portraits.base_url;
+    // 背景图片资源扩展（与人物图片扩展同构）透传给每个 backend 实例。
+    po.background_dir = g.cfg.backgrounds.dir;
+    po.background_base_url = g.cfg.backgrounds.base_url;
     // 上传/请求体上限：网关自身与每个实例用同一个配置值。
     po.max_body_bytes = g.cfg.max_body_bytes;
     // 读 g.cfg（而非启动时的局部副本）：自助注册会在运行时追加账号。

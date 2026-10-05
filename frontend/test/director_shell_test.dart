@@ -137,7 +137,9 @@ void main() {
     expect(tester.takeException(), isNull, reason: '导演布局在 800x600 下不应溢出');
 
     // 配置表工作台的「条目列表 / 表单 / 信息栏」三栏在窄窗下也不应溢出。
-    await tester.tap(find.text('故事').first);
+    await tester.ensureVisible(find.text('珍贵记忆'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('珍贵记忆'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull, reason: '配置表工作台在 800x600 下不应溢出');
@@ -165,12 +167,14 @@ void main() {
 
     // 首页：标题 + 功能卡片 + 模组管理工具 + 打开入口。
     expect(find.text('模组编辑功能'), findsOneWidget);
-    expect(find.text('剧情舞台'), findsWidgets);
+    expect(find.text('剧情编辑'), findsWidgets);
     expect(find.text('模组管理'), findsOneWidget);
     expect(find.text('打开 →'), findsWidgets);
 
-    // 点「故事」页面卡片进入配置表工作台。
-    await tester.tap(find.text('故事').first);
+    // 点「珍贵记忆」功能卡片进入配置表工作台（该表归在社交页）。
+    await tester.ensureVisible(find.text('珍贵记忆'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('珍贵记忆'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('可编辑配置表'), findsOneWidget);
@@ -181,6 +185,53 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('常用快捷键'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('导演主页：按参考产品的功能目录渲染卡片', (tester) async {
+    tester.view.physicalSize = const Size(1600, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+
+    await tester.pumpWidget(
+      fluent.FluentApp(
+        debugShowCheckedModeBanner: false,
+        home: DirectorShell(
+          state: AppState()..modName = '测试模组',
+          shell: ShellState()..setAiOpen(false),
+          pluginState: PluginState(),
+          uiMode: UiMode.director,
+          onUiModeChanged: (_) {},
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // 参考产品 workshop-features.json 的功能目录原样出现在主页：
+    // 常用功能、人物、结局与记忆、玩法与配置、恋爱与送礼等分组的功能卡片。
+    for (final label in [
+      '剧情编辑',
+      '人物',
+      '物品',
+      '企鹅动态',
+      '珍贵记忆',
+      '目标',
+      '看番与漫展',
+      '生日派对',
+      '表白与成功率',
+      '送礼事件',
+    ]) {
+      expect(find.text(label), findsWidgets, reason: '主页应有「$label」功能卡片');
+    }
+
+    // 点「珍贵记忆」直达该表的配置表编辑器（社交页 + 信息栏）。
+    await tester.ensureVisible(find.text('珍贵记忆'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('珍贵记忆'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('可编辑配置表'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -61,7 +61,8 @@
   store-only zip，产物用 `register_local_artifact` 登记为 `archived` 记录；
   客户端轮询 `/api/v1/files/:id/download` 拿直链，带进度下载。导出包内不含
   `cos_resources.json` 与 `.editor_history/`——分发的 zip 永远是自包含实体文件。
-- 人物立绘/资源图等走各自的扩展通道（`PORTRAITS.md`），与本模块共用 COS 配置。
+- 人物立绘/背景等资源图走各自的扩展通道（`PORTRAITS.md` / `BACKGROUNDS.md`），
+  与本模块共用 COS 配置。
 
 > **浏览器直传的 CORS**：预签名 PUT（上传）与直链 GET（导出下载带进度）由浏览
 > 器直接发往 `EDITOR_FILE_COS_PUBLIC_ENDPOINT`（CDN 配置时下载走 CDN）。桶必须

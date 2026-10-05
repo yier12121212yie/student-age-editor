@@ -12,6 +12,7 @@ import '../../core/motion.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
+import '../resources/role_visuals.dart';
 
 /// 目标工作台 —— 导演布局下「目标 / 意愿」的专属界面。
 ///
@@ -448,7 +449,7 @@ class _GoalsWorkbenchState extends State<GoalsWorkbench>
                                     horizontal: 10, vertical: 9),
                                 child: Row(
                                   children: [
-                                    _Avatar(
+                                    RoleAvatar(
                                         seed: int.tryParse(r.id) ?? 0,
                                         name: r.name),
                                     const SizedBox(width: 10),
@@ -805,7 +806,7 @@ class _GoalsWorkbenchState extends State<GoalsWorkbench>
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Avatar(seed: npc, name: _roleName(npc), size: 44),
+              RoleAvatar(seed: npc, name: _roleName(npc), size: 44),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -1228,7 +1229,7 @@ class _GoalsWorkbenchState extends State<GoalsWorkbench>
                           ),
                           child: Row(
                             children: [
-                              _Avatar(
+                              RoleAvatar(
                                   seed: _intOf(row, 'npc'),
                                   name: _roleName(_intOf(row, 'npc')),
                                   size: 24),
@@ -1382,47 +1383,6 @@ class _GoalsWorkbenchState extends State<GoalsWorkbench>
 // 通用小部件
 // ----------------------------------------------------------------------
 
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.seed, required this.name, this.size = 34});
-
-  final int seed;
-  final String name;
-  final double size;
-
-  List<Color> get _swatches => [
-        accentColor,
-        palette.catTexture,
-        palette.catAudio,
-        palette.catSprite,
-        palette.statusOk,
-        palette.statusWarn,
-      ];
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _swatches[seed.abs() % _swatches.length];
-    final ch = name.trim().isEmpty ? '?' : name.trim().substring(0, 1);
-    return Container(
-      width: size,
-      height: size,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.22),
-        borderRadius: BorderRadius.circular(size * 0.26),
-        border: Border.all(color: c.withValues(alpha: 0.5)),
-      ),
-      child: Text(
-        ch,
-        style: TextStyle(
-          fontSize: size * 0.42,
-          fontWeight: FontWeight.w600,
-          color: c,
-        ),
-      ),
-    );
-  }
-}
-
 class _Tag extends StatelessWidget {
   const _Tag({required this.text, required this.color});
   final String text;
@@ -1499,7 +1459,7 @@ class _GoalListItemState extends State<_GoalListItem> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Avatar(seed: widget.npcId, name: widget.npcName, size: 38),
+              RoleAvatar(seed: widget.npcId, name: widget.npcName, size: 38),
               const SizedBox(width: 9),
               Expanded(
                 child: Column(

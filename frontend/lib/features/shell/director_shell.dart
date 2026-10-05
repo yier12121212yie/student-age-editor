@@ -28,6 +28,7 @@ import '../json/json_workbench.dart';
 import '../external/external_dialogues_workbench.dart';
 import '../mods/mods_page.dart';
 import '../pages/pages_catalog.dart';
+import '../pages/workshop_features.dart';
 import '../person/person_workbench.dart';
 import '../plugins/plugins_page.dart';
 import '../social/social_workbench.dart';
@@ -140,6 +141,9 @@ class _DirectorShellState extends State<DirectorShell> {
   /// 主页点某个页面卡片时，指定配置表页要打开的页面。
   String? _pendingPageId;
 
+  /// 主页点某张配置表卡片时，直接定位到这张表（可跨页面）。
+  String? _pendingCfg;
+
   final Set<String> _favorites = {};
 
   bool _cornersCollapsed = false;
@@ -154,14 +158,21 @@ class _DirectorShellState extends State<DirectorShell> {
   Future<void> _loadFavorites() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList(_favoritesKey) ?? const [];
+      final saved = prefs.getStringList(_favoritesKey);
       if (!mounted) return;
       setState(() {
         _favorites
           ..clear()
-          ..addAll(saved);
+          ..addAll(saved ?? _defaultFavorites());
       });
     } catch (_) {}
+  }
+
+  /// 首次使用时按功能目录的 `defaultFavorite` 预置收藏（与参考产品一致）。
+  List<String> _defaultFavorites() {
+    final list = kWorkshopFeatures.where((f) => f.defaultFavorite).toList()
+      ..sort((a, b) => a.favoriteOrder.compareTo(b.favoriteOrder));
+    return [for (final f in list) f.id];
   }
 
   Future<void> _toggleFavorite(String id) async {
@@ -191,10 +202,19 @@ class _DirectorShellState extends State<DirectorShell> {
     });
   }
 
-  /// 打开「配置表」功能并定位到指定页面。
-  void _openPage(String pageId) {
+  /// 打开「配置表」功能并直接定位到某一张表（自动找到它所归属的页面；该表不在
+  /// 任何预设页面时只显示这张表的编辑视图）。
+  void _openTable(String cfg) {
+    String? pageId;
+    for (final p in editorPages) {
+      if (p.cfgNames.contains(cfg)) {
+        pageId = p.id;
+        break;
+      }
+    }
     setState(() {
       _pendingPageId = pageId;
+      _pendingCfg = cfg;
       _refreshTokens[_DirectorFeature.pages] =
           (_refreshTokens[_DirectorFeature.pages] ?? 0) + 1;
     });
@@ -754,7 +774,9 @@ class _DirectorShellState extends State<DirectorShell> {
       case _DirectorFeature.pages:
         return _DirectorPagesView(
           state: state,
-          initialPageId: _pendingPageId ?? 'story',
+          initialPageId: _pendingPageId ??
+              (_pendingCfg == null ? 'story' : null),
+          initialCfg: _pendingCfg,
           onHome: () => _go(_DirectorFeature.home),
           onPreview: (evtId) =>
               controller.open(OpenDoc.preview(eventId: evtId)),
@@ -807,77 +829,36 @@ class _DirectorShellState extends State<DirectorShell> {
 
   List<_HomeEntry> _homeEntries() {
     return <_HomeEntry>[
-      _HomeEntry(
-        id: 'feat:studio',
-        title: '剧情舞台',
-        description: '对话线 / 舞台画面即写台词 / 人物与表情',
-        hint: '三栏编排',
-        icon: FluentIcons.production_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.studio),
-      ),
-      _HomeEntry(
-        id: 'feat:messages',
-        title: '手机消息',
-        description: '短信对话树与白雨回复分支',
-        hint: '对话',
-        icon: FluentIcons.chat_multiple_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.messages),
-      ),
-      _HomeEntry(
-        id: 'feat:goals',
-        title: '目标工作台',
-        description: '目标列表 / 游戏内预览 / 完成要求与奖励',
-        hint: '意愿',
-        icon: FluentIcons.target_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.goals),
-      ),
+      // 参考产品「工坊主页」的功能目录：每张卡片是一组配置表 / 一个编辑器入口，
+      // 用户看到的是「功能」而不是原始表名。
+      for (final f in kWorkshopFeatures)
+        _HomeEntry(
+          id: f.id,
+          title: f.label,
+          description: f.description,
+          hint: _featureHint(f),
+          icon: _featureIcon(f),
+          category: _featureCategory(f),
+          onOpen: () => _openFeature(f),
+        ),
+      // 本编辑器独有、参考产品主页没有的扩展工具。
       _HomeEntry(
         id: 'feat:blocks',
         title: '积木库',
         description: '条件 / 效果 / 指令的目录浏览与可视化搭建',
         hint: '无代码',
         icon: FluentIcons.apps_list_24_regular,
-        category: _HomeCategory.builtin,
+        category: _HomeCategory.extension,
         onOpen: () => _go(_DirectorFeature.blocks),
       ),
       _HomeEntry(
-        id: 'feat:chats',
-        title: '闲聊',
-        description: '人物闲聊进度文字 / 地点 / 线性对白',
-        hint: '对白',
-        icon: FluentIcons.person_chat_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.chats),
-      ),
-      _HomeEntry(
-        id: 'feat:space',
-        title: '空间',
-        description: '企鹅空间主页 / 个性签名 / 留言板',
-        hint: '主页',
-        icon: FluentIcons.globe_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.space),
-      ),
-      _HomeEntry(
-        id: 'feat:warehouse',
-        title: '物品仓库',
-        description: '物品 / 书籍 / 商店与效果指令',
-        hint: '道具',
-        icon: FluentIcons.box_multiple_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.warehouse),
-      ),
-      _HomeEntry(
-        id: 'feat:minigames',
-        title: '小游戏库',
-        description: '人物社交小游戏 / 关卡与效果',
+        id: 'feat:events',
+        title: '事件',
+        description: '事件定义与触发条件 / 人物闲聊',
         hint: '玩法',
-        icon: FluentIcons.games_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.minigames),
+        icon: FluentIcons.calendar_24_regular,
+        category: _HomeCategory.extension,
+        onOpen: () => _go(_DirectorFeature.events),
       ),
       _HomeEntry(
         id: 'feat:json',
@@ -885,35 +866,9 @@ class _DirectorShellState extends State<DirectorShell> {
         description: '原始配置 JSON 查看与编辑',
         hint: '高级',
         icon: FluentIcons.code_24_regular,
-        category: _HomeCategory.builtin,
+        category: _HomeCategory.extension,
         onOpen: () => _go(_DirectorFeature.json),
       ),
-      _HomeEntry(
-        id: 'feat:external',
-        title: '外部对话',
-        description: '送礼 / 小游戏 / 闲聊的对白入口',
-        hint: '入口',
-        icon: FluentIcons.comment_multiple_24_regular,
-        category: _HomeCategory.builtin,
-        onOpen: () => _go(_DirectorFeature.external),
-      ),
-      for (final p in editorPages)
-        _HomeEntry(
-          id: 'page:${p.id}',
-          title: p.title,
-          description: p.description,
-          hint: '${p.cfgNames.length} 张表',
-          icon: FluentIcons.table_24_regular,
-          category: _HomeCategory.builtin,
-          // 人物 / 社交 / 事件已升级为专属工作台，不再走通用配置表视图。
-          onOpen: p.id == 'person'
-              ? () => _go(_DirectorFeature.person)
-              : p.id == 'social'
-                  ? () => _go(_DirectorFeature.social)
-                  : p.id == 'evt'
-                      ? () => _go(_DirectorFeature.events)
-                      : () => _openPage(p.id),
-        ),
       _HomeEntry(
         id: 'feat:plugins',
         title: '插件',
@@ -959,16 +914,116 @@ class _DirectorShellState extends State<DirectorShell> {
         category: _HomeCategory.extension,
         onOpen: () => _go(_DirectorFeature.bugfix),
       ),
-      _HomeEntry(
-        id: 'feat:resources',
-        title: '素材库',
-        description: '贴图 / 音频 / 立绘等资产',
-        hint: '素材',
-        icon: FluentIcons.box_24_regular,
-        category: _HomeCategory.resource,
-        onOpen: () => _go(_DirectorFeature.resources),
-      ),
     ];
+  }
+
+  /// 功能卡片右下角的计数：素材类显示「素材」，其余显示覆盖的配置表数量。
+  String _featureHint(WorkshopFeature f) {
+    if (f.resourceOnly) return '素材';
+    if (f.tables.isEmpty) return '入口';
+    return '${f.tables.length} 张表';
+  }
+
+  _HomeCategory _featureCategory(WorkshopFeature f) {
+    if (f.resourceOnly) return _HomeCategory.resource;
+    return f.homeCategory == 'extension'
+        ? _HomeCategory.extension
+        : _HomeCategory.builtin;
+  }
+
+  IconData _featureIcon(WorkshopFeature f) {
+    const tableIcons = <String, IconData>{
+      'PersonCfg': FluentIcons.person_24_regular,
+      'PersonGrowCfg': FluentIcons.person_24_regular,
+      'ModFaceCfg': FluentIcons.emoji_24_regular,
+      'ItemCfg': FluentIcons.box_24_regular,
+      'BookCfg': FluentIcons.book_24_regular,
+      'ShopCfg': FluentIcons.cart_24_regular,
+      'KZoneContentCfg': FluentIcons.chat_24_regular,
+      'KZoneCommentCfg': FluentIcons.comment_multiple_24_regular,
+      'KZoneAvatarCfg': FluentIcons.person_24_regular,
+      'KZoneProfileCfg': FluentIcons.globe_24_regular,
+      'PhoneMsgCfg': FluentIcons.chat_multiple_24_regular,
+      'IntentCfg': FluentIcons.target_24_regular,
+      'ActionCfg': FluentIcons.wrench_24_regular,
+      'MinigameCfg': FluentIcons.games_24_regular,
+      'ToggleCfg': FluentIcons.toggle_right_24_regular,
+      'TraitsCfg': FluentIcons.star_24_regular,
+      'EndingPartCfg': FluentIcons.book_24_regular,
+      'EndingOptionCfg': FluentIcons.branch_24_regular,
+      'BgCfg': FluentIcons.image_24_regular,
+      'CGCfg': FluentIcons.image_24_regular,
+      'AudioCfg': FluentIcons.music_note_2_24_regular,
+      'MovieCfg': FluentIcons.movies_and_tv_24_regular,
+      'NewsCfg': FluentIcons.news_24_regular,
+      'FishCfg': FluentIcons.food_fish_24_regular,
+      'TripSpotCfg': FluentIcons.globe_24_regular,
+      'AnimationCfg': FluentIcons.video_24_regular,
+      'ExpoSiteCfg': FluentIcons.building_24_regular,
+      'ClubActivityCfg': FluentIcons.search_24_regular,
+      'DIYCfg': FluentIcons.puzzle_piece_24_regular,
+      'BirthdayPaintCfg': FluentIcons.food_cake_24_regular,
+      'NegotiationPlayerCfg': FluentIcons.scales_24_regular,
+      'TextCfg': FluentIcons.document_24_regular,
+      'RenshengguanMemoryCfg': FluentIcons.book_24_regular,
+    };
+    final table = f.primaryTable ?? (f.tables.isNotEmpty ? f.tables.first : null);
+    if (table != null && tableIcons[table] != null) return tableIcons[table]!;
+    return FluentIcons.apps_list_24_regular;
+  }
+
+  /// 打开一条主页功能：有专属工作台的走工作台，其余定位到通用配置表编辑器。
+  void _openFeature(WorkshopFeature f) {
+    switch (f.entryKind) {
+      case 'story':
+        _go(_DirectorFeature.studio);
+        return;
+      case 'idle-chats':
+        _go(_DirectorFeature.chats);
+        return;
+      case 'external-dialogues':
+        _go(_DirectorFeature.external);
+        return;
+      case 'manifest':
+        _go(_DirectorFeature.mods);
+        return;
+      case 'resources':
+        _go(_DirectorFeature.resources);
+        return;
+      case 'plugins':
+        _go(_DirectorFeature.plugins);
+        return;
+    }
+    final table = f.primaryTable ?? (f.tables.isNotEmpty ? f.tables.first : null);
+    if (table == null) return;
+    switch (table) {
+      case 'PersonCfg':
+        _go(_DirectorFeature.person);
+        return;
+      case 'KZoneContentCfg':
+      case 'KZoneCommentCfg':
+        _go(_DirectorFeature.social);
+        return;
+      case 'PhoneMsgCfg':
+        _go(_DirectorFeature.messages);
+        return;
+      case 'IntentCfg':
+        _go(_DirectorFeature.goals);
+        return;
+      case 'ItemCfg':
+      case 'BookCfg':
+      case 'ShopCfg':
+        _go(_DirectorFeature.warehouse);
+        return;
+      case 'MinigameCfg':
+      case 'MinigameActionCfg':
+        _go(_DirectorFeature.minigames);
+        return;
+      case 'KZoneProfileCfg':
+        _go(_DirectorFeature.space);
+        return;
+    }
+    _openTable(table);
   }
 
   // ---------- 右下角快捷工具托盘 ----------
@@ -1164,7 +1219,8 @@ class _DirectorHomeState extends State<_DirectorHome> {
         .where(
           (e) =>
               e.title.toLowerCase().contains(q) ||
-              e.description.toLowerCase().contains(q),
+              e.description.toLowerCase().contains(q) ||
+              e.hint.toLowerCase().contains(q),
         )
         .toList();
   }
@@ -1603,18 +1659,23 @@ class _ToolButton extends StatelessWidget {
   }
 }
 
-/// 配置表工作台：页面标签 + Schema 编辑器（条目列表 / 字段表单）+ 信息栏。
+/// 配置表工作台：Schema 编辑器（条目列表 / 字段表单）+ 信息栏。
+///
+/// 顶部不再放整排页面标签：主页的「全部配置表」已给每张表一个入口，这里只显示
+/// 当前正在编辑的页面 / 表名。
 class _DirectorPagesView extends StatefulWidget {
   const _DirectorPagesView({
     required this.state,
     required this.initialPageId,
     required this.onHome,
+    this.initialCfg,
     this.onPreview,
     this.onOpenSearch,
   });
 
   final AppState state;
-  final String initialPageId;
+  final String? initialPageId;
+  final String? initialCfg;
   final VoidCallback onHome;
   final ValueChanged<String>? onPreview;
   final VoidCallback? onOpenSearch;
@@ -1624,43 +1685,34 @@ class _DirectorPagesView extends StatefulWidget {
 }
 
 class _DirectorPagesViewState extends State<_DirectorPagesView> {
-  late String _pageId = widget.initialPageId;
-  late String _cfgName = pageById(_pageId)?.defaultCfg ?? '';
+  late String? _pageId = widget.initialPageId;
+  late String _cfgName = widget.initialCfg ??
+      (pageById(widget.initialPageId ?? '')?.defaultCfg ?? '');
 
   @override
   void didUpdateWidget(covariant _DirectorPagesView old) {
     super.didUpdateWidget(old);
-    if (old.initialPageId != widget.initialPageId) {
-      final page = pageById(widget.initialPageId);
-      if (page != null) {
-        setState(() {
-          _pageId = widget.initialPageId;
-          _cfgName = page.defaultCfg;
-        });
-      }
+    if (old.initialPageId != widget.initialPageId ||
+        old.initialCfg != widget.initialCfg) {
+      final page = pageById(widget.initialPageId ?? '');
+      setState(() {
+        _pageId = widget.initialPageId;
+        _cfgName = widget.initialCfg ?? page?.defaultCfg ?? '';
+      });
     }
-  }
-
-  void _selectPage(String id) {
-    final page = pageById(id);
-    if (page == null) return;
-    setState(() {
-      _pageId = id;
-      _cfgName = page.defaultCfg;
-    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final page = pageById(_pageId);
+    final page = pageById(_pageId ?? '');
     return Container(
       color: palette.bgDeep2,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _tabs(),
+          _header(page),
           Expanded(
-            child: page == null
+            child: _cfgName.isEmpty
                 ? const SizedBox.shrink()
                 : Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1675,15 +1727,17 @@ class _DirectorPagesViewState extends State<_DirectorPagesView> {
                           onOpenSearch: widget.onOpenSearch,
                         ),
                       ),
-                      VerticalDivider(width: 1, color: palette.border),
-                      SizedBox(
-                        width: 248,
-                        child: _PageInfoRail(
-                          page: page,
-                          cfgName: _cfgName,
-                          onSelectCfg: (c) => setState(() => _cfgName = c),
+                      if (page != null) ...[
+                        VerticalDivider(width: 1, color: palette.border),
+                        SizedBox(
+                          width: 248,
+                          child: _PageInfoRail(
+                            page: page,
+                            cfgName: _cfgName,
+                            onSelectCfg: (c) => setState(() => _cfgName = c),
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
           ),
@@ -1692,81 +1746,40 @@ class _DirectorPagesViewState extends State<_DirectorPagesView> {
     );
   }
 
-  Widget _tabs() {
+  Widget _header(EditorPageDef? page) {
+    final title = page?.title ?? cfgDisplayName(_cfgName);
+    final desc = page?.description ?? '配置表：$_cfgName';
     return Container(
       height: 46,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: palette.panel,
         border: Border(bottom: BorderSide(color: palette.border)),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Row(
-          children: [
-            _HomeBackLink(onTap: widget.onHome),
-            const SizedBox(width: 8),
-            for (final p in editorPages) ...[
-              _PageTab(
-                label: p.title,
-                selected: p.id == _pageId,
-                onTap: () => _selectPage(p.id),
-              ),
-              const SizedBox(width: 2),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PageTab extends StatefulWidget {
-  const _PageTab({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  @override
-  State<_PageTab> createState() => _PageTabState();
-}
-
-class _PageTabState extends State<_PageTab> {
-  bool _hover = false;
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: widget.selected
-                ? accentColor.withValues(alpha: 0.14)
-                : _hover
-                ? palette.card
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
-          ),
-          child: Text(
-            widget.label,
+      child: Row(
+        children: [
+          _HomeBackLink(onTap: widget.onHome),
+          const SizedBox(width: 12),
+          Icon(FluentIcons.table_24_regular, size: 15, color: accentColor),
+          const SizedBox(width: 7),
+          Text(
+            title,
             style: TextStyle(
-              fontSize: 12.5,
-              fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal,
-              color: widget.selected
-                  ? palette.textHigh
-                  : _hover
-                  ? palette.textPrimary
-                  : palette.textSecondary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: palette.textHigh,
             ),
           ),
-        ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              desc,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: palette.textMuted),
+            ),
+          ),
+        ],
       ),
     );
   }

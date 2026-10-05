@@ -10,6 +10,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../files/file_viewer.dart';
 import 'asset_explorer_panel.dart';
+import 'bg_gallery_panel.dart';
 import 'image_asset_picker.dart' show HoverTexPreview;
 import 'live2d_preview_panel.dart';
 import '../../core/app_theme.dart';
@@ -233,6 +234,8 @@ class _ResourcesPageState extends State<ResourcesPage> {
                 const SizedBox(width: 4),
                 _tabBtn('txt', '文本'),
                 const SizedBox(width: 4),
+                _tabBtn('bg', '背景'),
+                const SizedBox(width: 4),
                 _tabBtn('explorer', '资源库'),
                 const SizedBox(width: 4),
                 _tabBtn('live2d', 'Live2D'),
@@ -241,13 +244,15 @@ class _ResourcesPageState extends State<ResourcesPage> {
           ),
         ),
         Divider(height: 1, color: palette.border),
-        // 「资源库」/「Live2D」页签是独立面板（插件域挂载）：不共用 AA 索引的
-        // 横幅、列表与导出栏，进入后整页交给对应面板。
-        if (_tab == 'explorer' || _tab == 'live2d') ...[
+        // 「背景」/「资源库」/「Live2D」页签是独立面板（插件域挂载）：不共用 AA
+        // 索引的横幅、列表与导出栏，进入后整页交给对应面板。
+        if (_tab == 'bg' || _tab == 'explorer' || _tab == 'live2d') ...[
           Expanded(
-            child: _tab == 'explorer'
-                ? AssetExplorerPanel()
-                : Live2DPreviewPanel(),
+            child: _tab == 'bg'
+                ? const BgGalleryPanel()
+                : _tab == 'explorer'
+                    ? AssetExplorerPanel()
+                    : Live2DPreviewPanel(),
           ),
         ] else ...[
         // 来源横幅：AA 状态变化只重建这一条（阶段 4c）

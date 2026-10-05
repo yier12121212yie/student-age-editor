@@ -293,7 +293,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('外部对话').first);
+    await tester.ensureVisible(find.text('事件外对话').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('事件外对话').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('对白链（TalkCfg）'), findsOneWidget);

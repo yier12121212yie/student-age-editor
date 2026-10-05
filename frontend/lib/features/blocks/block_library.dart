@@ -25,6 +25,7 @@ import '../editor/suggestion_text_field.dart';
 import '../nocode/effect_block_editor.dart';
 import '../nocode/effect_slot_form.dart';
 import 'block_catalog.dart';
+import 'catalog_visuals.dart';
 
 // ---------------------------------------------------------------------------
 // 草稿行控制器：由宿主持有 rows，本控制器只在变更后回调刷新。
@@ -270,7 +271,7 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
               widget.padding.right, 8),
           child: fluent.TextBox(
             controller: _searchCtrl,
-            placeholder: '搜索${blockModeFor(_mode).label}（中文描述或代码）',
+            placeholder: '搜索${blockModeFor(_mode).label}、属性或名称',
             style: const TextStyle(fontSize: 12),
             onChanged: (v) {
               _query = v.trim();
@@ -288,7 +289,7 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
                 for (final c in categories)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: _CategoryChip(
+                    child: BlockCategoryChip(
                       label: c,
                       selected: _category == c,
                       onTap: () => setState(() {
@@ -317,11 +318,13 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
                       itemCount: visible.length,
                       itemBuilder: (c, i) {
                         final s = visible[i];
-                        return _CatalogTile(
-                          desc: s.desc,
-                          code: s.code,
-                          category: engine.categoryFor(_mode, s.code),
-                          onTap: () => _pick(s),
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: BlockCatalogTile(
+                            title: humanizeBlockDesc(s.desc, s.slots),
+                            category: engine.categoryFor(_mode, s.code),
+                            onTap: () => _pick(s),
+                          ),
                         );
                       },
                     ),
@@ -940,121 +943,6 @@ class _ModeTab extends StatelessWidget {
               color: selected ? palette.textHigh : palette.textSecondary,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CategoryChip extends StatelessWidget {
-  const _CategoryChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Container(
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          decoration: BoxDecoration(
-            color: selected ? accentColor.withValues(alpha: 0.14) : null,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: selected
-                  ? accentColor.withValues(alpha: 0.4)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              color: selected ? palette.textHigh : palette.textMuted,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CatalogTile extends StatefulWidget {
-  const _CatalogTile({
-    required this.desc,
-    required this.code,
-    required this.category,
-    required this.onTap,
-  });
-  final String desc;
-  final String code;
-  final String category;
-  final VoidCallback onTap;
-
-  @override
-  State<_CatalogTile> createState() => _CatalogTileState();
-}
-
-class _CatalogTileState extends State<_CatalogTile> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 5),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: _hover ? palette.card : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: _hover ? palette.borderHover : palette.border),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.desc,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 12.5,
-                          color: palette.textPrimary,
-                          height: 1.35),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${widget.category} · ${widget.code}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 10, color: palette.textHint),
-                    ),
-                  ],
-                ),
-              ),
-              Icon(FluentIcons.add_24_regular,
-                  size: 14,
-                  color: _hover ? accentColor : palette.iconDisabled),
-            ],
           ),
         ),
       ),

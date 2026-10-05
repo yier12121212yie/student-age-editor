@@ -564,9 +564,12 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
 
   Future<void> _addShop() async {
     final taken = _tableData(_shopCfg).keys.toSet();
+    // 候选恒为「可上架的商品」= ItemCfg + BookCfg，与当前列表模式无关。
+    // 旧实现取当前模式的 _allEntries（商店模式下只剩 ShopCfg），过滤后必为空。
     final candidates = <_WhEntry>[
-      for (final e in _allEntries)
-        if (e.table != _shopCfg && !taken.contains(e.id)) e,
+      for (final t in const [_itemCfg, _bookCfg])
+        for (final id in _sortedIds(t))
+          if (!taken.contains(id)) _WhEntry(t, id, _rowIn(t, id)!, _rowIn(t, id)!),
     ];
     final picked = await _pickProduct('选择要上架的商品', candidates);
     if (picked == null || !mounted) return;
@@ -620,51 +623,76 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
                   ),
                   const SizedBox(height: 10),
                   Expanded(
-                    child: ListView.builder(
-                      itemCount: list.length,
-                      itemBuilder: (context, i) {
-                        final e = list[i];
-                        return MouseRegion(
-                          cursor: SystemMouseCursors.click,
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () => Navigator.pop(ctx, e),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 7),
-                              child: Row(
-                                children: [
-                                  _IconBox(icon: e.visual['icon']?.toString() ?? '', size: 34),
-                                  const SizedBox(width: 10),
-                                  SizedBox(
-                                    width: 56,
-                                    child: Text(e.id,
-                                        style: TextStyle(
-                                            fontSize: 10.5,
-                                            color: palette.textHint)),
-                                  ),
-                                  Expanded(
-                                    child: Text(_entryName(e),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                            fontSize: 12.5,
-                                            color: palette.textPrimary)),
-                                  ),
-                                  Text(
-                                    e.table == _bookCfg
-                                        ? '书籍'
-                                        : _typeName(_intOf(e.visual, 'type')),
-                                    style: TextStyle(
-                                        fontSize: 10.5, color: palette.textMuted),
-                                  ),
-                                ],
-                              ),
+                    child: list.isEmpty
+                        ? Center(
+                            child: Text('没有匹配的商品',
+                                style: TextStyle(
+                                    fontSize: 12, color: palette.textHint)),
+                          )
+                        : GridView.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 4,
+                              mainAxisExtent: 132,
+                              crossAxisSpacing: 8,
+                              mainAxisSpacing: 8,
                             ),
+                            itemCount: list.length,
+                            itemBuilder: (context, i) {
+                              final e = list[i];
+                              return MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => Navigator.pop(ctx, e),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: palette.bgAlt,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: palette.border),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: Center(
+                                            child: _IconBox(
+                                              icon: e.visual['icon']
+                                                      ?.toString() ??
+                                                  '',
+                                              size: 64,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          '[${e.id}] ${_entryName(e)}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: palette.textPrimary),
+                                        ),
+                                        Text(
+                                          e.table == _bookCfg
+                                              ? '书籍'
+                                              : _typeName(
+                                                  _intOf(e.visual, 'type')),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontSize: 10,
+                                              color: palette.textMuted),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
                           ),
-                        );
-                      },
-                    ),
                   ),
                 ],
               ),

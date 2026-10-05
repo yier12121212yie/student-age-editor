@@ -242,12 +242,14 @@ class TexThumb extends StatefulWidget {
     this.width,
     this.height,
     this.fit = BoxFit.cover,
+    this.alignment = Alignment.center,
     this.borderRadius,
   });
   final String keyName;
   final double? width;
   final double? height;
   final BoxFit fit;
+  final AlignmentGeometry alignment;
   final BorderRadius? borderRadius;
 
   @override
@@ -299,6 +301,7 @@ class _TexThumbState extends State<TexThumb> {
         builder: (context, box) => Image.memory(
           src!.bytes!,
           fit: widget.fit,
+          alignment: widget.alignment,
           gaplessPlayback: true,
           cacheWidth: _decodeCacheWidth(context, logicalWidth: box.maxWidth),
         ),
@@ -307,6 +310,7 @@ class _TexThumbState extends State<TexThumb> {
       child = TexSourceImage(
         source: src!,
         fit: widget.fit,
+        alignment: widget.alignment,
         errorBuilder: (_, _, _) => _placeholder(),
       );
     } else {
@@ -331,23 +335,27 @@ class TexSourceImage extends StatelessWidget {
     super.key,
     required this.source,
     this.fit = BoxFit.contain,
+    this.alignment = Alignment.center,
     this.errorBuilder,
   });
   final TexSource source;
   final BoxFit fit;
+  final AlignmentGeometry alignment;
   final Widget Function(BuildContext, Object, StackTrace?)? errorBuilder;
 
   @override
   Widget build(BuildContext context) {
     final bytes = source.bytes;
     if (bytes != null) {
-      return Image.memory(bytes, fit: fit, gaplessPlayback: true);
+      return Image.memory(bytes,
+          fit: fit, alignment: alignment, gaplessPlayback: true);
     }
     final url = source.url;
     if (url == null || url.isEmpty) return const SizedBox.shrink();
     return Image.network(
       url,
       fit: fit,
+      alignment: alignment,
       gaplessPlayback: true,
       webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
       errorBuilder: errorBuilder,

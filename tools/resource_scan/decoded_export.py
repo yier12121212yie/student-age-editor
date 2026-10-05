@@ -19,9 +19,14 @@ WebP/OGG/WAV/M4A/JSON，打成 zip 内置进 APK assets。Android 运行时由 P
 
 用法:
   py -m resource_scan decoded-pack -- [--out dist/bundled_preview.zip]
-          [--tier preview|full|portraits] [--max-side 1600] [--quality 80]
+          [--tier preview|full|portraits|backgrounds] [--max-side 1600] [--quality 80]
           [--limit N] [--no-audios] [--no-zip]
+          [--from-dir <已解码图片目录>]
           [--index aa_index.json] [--aa-dir <游戏 aa 根>] [--cache-dir <目录>]
+
+`--from-dir` 直接吃一个已解码的图片目录（如 参考资料/背景、参考资料/人物立绘），
+把其中 PNG/JPG/... 统一转 WebP 打成与 decoded_export 同布局的图片扩展包
+（tex/<key>.webp + aa_index.json + manifest.json），不依赖游戏 bundle / 索引。
 
 产物 zip 布局:
   manifest.json          # name='StudentAge Bundled Resources', 含 tier/stats
@@ -64,6 +69,12 @@ _DEFAULT_CACHE_DIR = os.path.join(ROOT, "dist", "aa_index_cache")
 _PREVIEW_BUNDLE_TOKENS = ("bg", "role")
 # portraits 档只导出「人物立绘」：bundle 文件名含 role（供「人物图片资源扩展」）
 _PORTRAIT_BUNDLE_TOKENS = ("role",)
+# backgrounds 档只导出「背景」：bundle 文件名含 bg（供「背景图片资源扩展」）
+_BACKGROUND_BUNDLE_TOKENS = ("bg",)
+
+# --from-dir 直接成包时可识别的图片扩展名（解码后素材，如 参考资料/背景）。
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".gif",
+               ".tif", ".tiff")
 
 
 def _safe_name(key):
@@ -165,13 +176,18 @@ def _locate_bundle(aa_dir, bundle_name):
 
 def select_tex_keys(idx, tier, limit):
     """按 tier 选择 tex 键：preview 只看 bundle basename 含 bg/role 的键；
-    portraits 只看含 role 的键（人物立绘）；full 全部。"""
+    portraits 只看含 role 的键（人物立绘）；backgrounds 只看含 bg 的键
+    （背景）；full 全部。"""
     keys = sorted(idx.tex_keys())
     if tier == "full":
         out = keys
     else:
-        tokens = _PORTRAIT_BUNDLE_TOKENS if tier == "portraits" \
-            else _PREVIEW_BUNDLE_TOKENS
+        if tier == "portraits":
+            tokens = _PORTRAIT_BUNDLE_TOKENS
+        elif tier == "backgrounds":
+            tokens = _BACKGROUND_BUNDLE_TOKENS
+        else:
+            tokens = _PREVIEW_BUNDLE_TOKENS
         out = []
         for k in keys:
             item = idx._tex.get(k)
@@ -393,12 +409,18 @@ def build_staging(idx, args):
             tex_bytes += os.path.getsize(path)
 
     portraits_only = args.tier == "portraits"
+    backgrounds_only = args.tier == "backgrounds"
+    image_only = portraits_only or backgrounds_only
     aud_keys = sorted(idx.aud_keys())
-    if getattr(args, "no_audios", False) or portraits_only:
+    if getattr(args, "no_audios", False) or image_only:
         # FSB 音频经 fmod_toolkit 转出的是未压缩 WAV（全量约 2.1GB），
-        # 内置 APK 时应跳过；人物图片包只含立绘纹理，同样跳过音频。
-        reason = "--no-audios" if getattr(args, "no_audios", False) \
-            else "portraits 只含立绘"
+        # 内置 APK 时应跳过；人物/背景图片包只含纹理，同样跳过音频。
+        if getattr(args, "no_audios", False):
+            reason = "--no-audios"
+        elif backgrounds_only:
+            reason = "backgrounds 只含背景"
+        else:
+            reason = "portraits 只含立绘"
         print("== 音频 已跳过（%s）==" % reason)
         aud_keys = []
     elif args.limit and args.limit > 0:
@@ -415,10 +437,10 @@ def build_staging(idx, args):
     base_data = {}
     exported_txt = []
     cfg_bytes = 0
-    if portraits_only:
-        # 人物图片包不含配置表：立绘 key 由工作区 PersonCfg 提供，包只负责
-        # 提供纹理字节，保持体积最小、不覆盖 active 包的 base_data。
-        print("== 配置表 已跳过（人物图片包只含立绘纹理）==")
+    if image_only:
+        # 人物/背景图片包不含配置表：纹理 key 由工作区 PersonCfg/BgCfg 提供，
+        # 包只负责提供纹理字节，保持体积最小、不覆盖 active 包的 base_data。
+        print("== 配置表 已跳过（%s图片包只含纹理）==" % args.tier)
     else:
         print("== 配置表 待导出 %d 键 ==" % len(idx.txt_keys()))
         exported_txt = export_cfgs(idx, cfgs_dir, base_data)
@@ -439,15 +461,17 @@ def build_staging(idx, args):
              "aud": len(exported_aud), "aud_bytes": aud_bytes,
              "txt": len(exported_txt), "cfgs_bytes": cfg_bytes,
              "max_side": args.max_side, "quality": args.quality,
+             "selected_tex": len(tex_keys),
              "keys_total": {"tex": len(idx.tex_keys()),
                             "aud": len(idx.aud_keys()),
                             "txt": len(idx.txt_keys())}}
-    if portraits_only:
+    if image_only:
+        kind, name, description = _kind_label(args.tier)
         manifest = {
-            "name": "StudentAge Portrait Pack",
+            "name": name,
             "version": time.strftime("%Y.%m.%d"),
-            "description": "人物图片资源扩展包（角色立绘，预解码 WebP）",
-            "kind": "portraits",
+            "description": description,
+            "kind": kind,
             "game_version": "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "tier": args.tier,
@@ -463,6 +487,98 @@ def build_staging(idx, args):
             "tier": args.tier,
             "stats": stats,
         }
+    with open(os.path.join(staging, "manifest.json"), "w",
+              encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return staging, stats
+
+
+# ------------------------------------------------------- 目录直接成包 ----
+# 背景/立绘等「已解码图片」目录（如 参考资料/背景）直接转 WebP 打图片扩展包：
+# 与 decoded_export 的 tex/ 布局、aa_index.json v3、manifest 完全一致，只是
+# 纹理来源从 game bundle 换成磁盘目录，供无游戏环境的机器离线成包。
+def _kind_label(tier):
+    if tier == "backgrounds":
+        return ("backgrounds", "StudentAge Background Pack",
+                "背景图片资源扩展包（场景背景，预解码 WebP）")
+    if tier == "portraits":
+        return ("portraits", "StudentAge Portrait Pack",
+                "人物图片资源扩展包（角色立绘，预解码 WebP）")
+    return ("textures", "StudentAge Image Pack", "图片资源扩展包（预解码 WebP）")
+
+
+def build_staging_from_dir(args):
+    """把一个已解码图片目录直接转 WebP 打成图片扩展包。
+
+    不读游戏 bundle / 索引：遍历 `--from-dir` 顶层图片文件，按 `_norm_key`
+    取键（去扩展名、小写）→ `tex/<safe_name>.webp`；写出 aa_index.json v3 与
+    manifest.json，与 bundle 路径产物逐字段同构，`_kind_label` 决定 kind。
+    """
+    from_dir = os.path.abspath(args.from_dir)
+    if not os.path.isdir(from_dir):
+        raise SystemExit("错误：--from-dir 目录不存在：%s" % from_dir)
+    staging = os.path.splitext(args.out)[0] if args.out.lower().endswith(".zip") \
+        else args.out
+    if os.path.isdir(staging):
+        shutil.rmtree(staging)
+    tex_dir = os.path.join(staging, "tex")
+    os.makedirs(tex_dir)
+
+    files = []
+    for fn in sorted(os.listdir(from_dir)):
+        fp = os.path.join(from_dir, fn)
+        if os.path.isfile(fp) and os.path.splitext(fn)[1].lower() in _IMAGE_EXTS:
+            files.append(fp)
+    print("== 图片 (from-dir=%s) 待导出 %d 张 ==" % (from_dir, len(files)))
+    exported = []
+    tex_bytes = 0
+    failed = 0
+    for i, fp in enumerate(files, 1):
+        if i % 100 == 0 or i == len(files):
+            print("  ... img %d/%d" % (i, len(files)))
+        key = _norm_key(os.path.basename(fp))
+        if not key:
+            continue
+        try:
+            from PIL import Image
+            with Image.open(fp) as im:
+                data = _to_webp_bytes(im, args.max_side, args.quality)
+        except Exception as e:
+            _warn("img %s 解码失败: %s" % (os.path.basename(fp), e))
+            failed += 1
+            continue
+        if not data:
+            _warn("img %s WebP 编码失败" % os.path.basename(fp))
+            failed += 1
+            continue
+        with open(os.path.join(tex_dir, _safe_name(key) + ".webp"), "wb") as f:
+            f.write(data)
+        exported.append(_norm_key(key))
+        tex_bytes += len(data)
+
+    kind, name, description = _kind_label(args.tier)
+    aa_v3 = {"v": 3, "decoded": True,
+             "tex": sorted(set(exported)), "aud": [], "txt": []}
+    with open(os.path.join(staging, "aa_index.json"), "w", encoding="utf-8") as f:
+        json.dump(aa_v3, f, ensure_ascii=False)
+    with open(os.path.join(staging, "base_data.json"), "w", encoding="utf-8") as f:
+        json.dump({}, f, ensure_ascii=False)
+
+    stats = {"tex": len(aa_v3["tex"]), "tex_bytes": tex_bytes,
+             "aud": 0, "aud_bytes": 0, "txt": 0, "cfgs_bytes": 0,
+             "max_side": args.max_side, "quality": args.quality,
+             "selected_tex": len(files), "failed": failed,
+             "keys_total": {"tex": len(files), "aud": 0, "txt": 0}}
+    manifest = {
+        "name": name,
+        "version": time.strftime("%Y.%m.%d"),
+        "description": description,
+        "kind": kind,
+        "game_version": "",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "tier": args.tier,
+        "stats": stats,
+    }
     with open(os.path.join(staging, "manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -488,10 +604,10 @@ def build_parser():
         description="导出内置解码资源包（Windows 有游戏时执行）")
     ap.add_argument("--out", default=os.path.join(ROOT, "dist", "bundled_preview.zip"),
                     help="输出 zip 路径（默认 dist/bundled_preview.zip）")
-    ap.add_argument("--tier", choices=("preview", "full", "portraits"),
+    ap.add_argument("--tier", choices=("preview", "full", "portraits", "backgrounds"),
                     default="preview",
                     help="preview 只导出背景/立绘纹理；portraits 只导出人物立绘；"
-                         "full 导出全部纹理")
+                         "backgrounds 只导出背景；full 导出全部纹理")
     ap.add_argument("--max-side", type=int, default=1600,
                     help="纹理最大边（超过则 LANCZOS 缩小）")
     ap.add_argument("--quality", type=int, default=80,
@@ -502,6 +618,9 @@ def build_parser():
                     help="跳过音频导出（FSB→WAV 体积过大，内置 APK 建议关闭）")
     ap.add_argument("--no-zip", action="store_true",
                     help="只生成目录不打包 zip（保留在 dist/ 下）")
+    ap.add_argument("--from-dir", default="",
+                    help="直接吃一个已解码图片目录（如 参考资料/背景）转 WebP 成包，"
+                         "不读游戏 bundle / 索引")
     ap.add_argument("--index", default="",
                     help="已产出的 aa_index.json 路径（默认 $SA_AA_INDEX / "
                          "--cache-dir/aa_index.json；都没有则扫描 --aa-dir）")
@@ -516,19 +635,17 @@ def main(argv=None):
     ap = build_parser()
     args = ap.parse_args(argv)
 
-    idx = load_index(args)
-    staging, stats = build_staging(idx, args)
-
-    def _dir_size(p):
-        if not os.path.isdir(p):
-            return 0
-        return sum(os.path.getsize(os.path.join(r, f))
-                   for r, _, fs in os.walk(p) for f in fs)
+    if args.from_dir:
+        staging, stats = build_staging_from_dir(args)
+    else:
+        idx = load_index(args)
+        staging, stats = build_staging(idx, args)
 
     print("== 导出统计 ==")
-    print("  tex 导出: %d / 索引 %d 键 (%d 失败可忽略)"
-          % (stats["tex"], stats["keys_total"]["tex"],
-             max(0, len(select_tex_keys(idx, args.tier, args.limit)) - stats["tex"])))
+    total_tex = stats.get("selected_tex", stats["keys_total"]["tex"])
+    failed_tex = stats.get("failed", max(0, total_tex - stats["tex"]))
+    print("  tex 导出: %d / %d 键 (%d 失败可忽略)"
+          % (stats["tex"], total_tex, failed_tex))
     print("  aud 导出: %d / 索引 %d 键"
           % (stats["aud"], stats["keys_total"]["aud"]))
     print("  txt 导出: %d / 索引 %d 键"

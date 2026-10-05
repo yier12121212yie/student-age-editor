@@ -299,7 +299,7 @@ json parse_code_slots(const std::string& code) {
     return slots;
 }
 
-json effect_suggest_body(const std::string& q_in, const std::string& mode_in) {
+json effect_suggest_body(const std::string& q_in, const std::string& mode_in, int limit_in) {
     std::string mode = str::lower(str::trim(mode_in));
     if (mode.empty()) mode = "effect";
     static const std::set<std::string> kModes = {"effect", "condition", "cost", "action", "screen"};
@@ -312,7 +312,10 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in) {
     else if (mode == "screen") db = &p1::screen_effect_db();
     else db = &p1::effect_editor_db();
 
-    const int limit = 40;
+    // 默认 40（typeahead 够用、payload 小）；目录浏览器传 limit=1000 取全量。
+    int limit = limit_in;
+    if (limit < 1) limit = 1;
+    if (limit > 1000) limit = 1000;
     std::string qn = str::trim(q_in);
     std::string qu = ascii_upper(qn);
     auto rep = [](std::string& s, const std::string& a, const std::string& b) {
@@ -722,7 +725,15 @@ void register_semantic_routes(Router& r) {
         std::string q, mode;
         if (auto it = req.query.find("q"); it != req.query.end()) q = it->second;
         if (auto it = req.query.find("mode"); it != req.query.end()) mode = it->second;
-        return Resp::Json(200, effect_suggest_body(q, mode));
+        int limit = 40;
+        if (auto it = req.query.find("limit"); it != req.query.end()) {
+            try {
+                limit = std::stoi(it->second);
+            } catch (...) {
+                limit = 40;
+            }
+        }
+        return Resp::Json(200, effect_suggest_body(q, mode, limit));
     });
 
     // ---------------- editor shared settings (no-code / appearance / accent) --

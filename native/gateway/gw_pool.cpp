@@ -224,6 +224,11 @@ int InstancePool::start_locked(std::shared_ptr<Instance>& in, std::string* err) 
         put_env("EDITOR_PORTRAIT_DIR=" + opts_.portrait_dir);
     if (!opts_.portrait_base_url.empty())
         put_env("EDITOR_PORTRAIT_BASE_URL=" + opts_.portrait_base_url);
+    // 背景图片资源扩展（与人物图片扩展同构）：网关配置 → 每个实例环境。
+    if (!opts_.background_dir.empty())
+        put_env("EDITOR_BG_DIR=" + opts_.background_dir);
+    if (!opts_.background_base_url.empty())
+        put_env("EDITOR_BG_BASE_URL=" + opts_.background_base_url);
     // 大体积上传：实例的解码上限按 wire 上限的 3/4 派生（base64 膨胀 4/3），
     // 使「网关 body 上限 / 实例 --max-body」与 upload_staging 的上限一致。
     put_env("EDITOR_MAX_UPLOAD_BYTES=" +

@@ -210,6 +210,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
+    await tester.ensureVisible(find.text('闲聊').first);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('闲聊').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));

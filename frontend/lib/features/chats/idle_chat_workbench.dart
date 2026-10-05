@@ -14,6 +14,7 @@ import '../../core/workbench_scaffold.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
+import '../resources/role_visuals.dart';
 
 /// 闲聊工作台 —— 导演布局下「闲聊」的专属界面。
 ///
@@ -1385,7 +1386,7 @@ class _ChatListItemState extends State<_ChatListItem> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Avatar(seed: widget.npcId, name: widget.npcName),
+              RoleAvatar(seed: widget.npcId, name: widget.npcName),
               const SizedBox(width: 9),
               Expanded(
                 child: Column(
@@ -1419,47 +1420,6 @@ class _ChatListItemState extends State<_ChatListItem> {
                       TextStyle(fontSize: 10, color: palette.textHint)),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.seed, required this.name});
-  final int seed;
-  final String name;
-
-  static const double size = 34;
-
-  List<Color> get _swatches => [
-        accentColor,
-        palette.catTexture,
-        palette.catAudio,
-        palette.catSprite,
-        palette.statusOk,
-        palette.statusWarn,
-      ];
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _swatches[seed.abs() % _swatches.length];
-    final ch = name.trim().isEmpty ? '?' : name.trim().substring(0, 1);
-    return Container(
-      width: size,
-      height: size,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.22),
-        borderRadius: BorderRadius.circular(size * 0.26),
-        border: Border.all(color: c.withValues(alpha: 0.5)),
-      ),
-      child: Text(
-        ch,
-        style: TextStyle(
-          fontSize: size * 0.42,
-          fontWeight: FontWeight.w600,
-          color: c,
         ),
       ),
     );

@@ -154,6 +154,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
+    await tester.ensureVisible(find.text('JSON 侧栏').first);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('JSON 侧栏').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));

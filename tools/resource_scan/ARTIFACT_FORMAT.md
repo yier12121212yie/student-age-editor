@@ -232,13 +232,19 @@ catalog。**bundle 内容变而顶层清单不变的情形 backend 本就检测�
 
 `py -m resource_scan decoded-pack -- <args...>` 进程内调用
 `tools/resource_scan/decoded_export.py`（W5-3 起零 `backend/editor` 依赖；其参数集
-`--out/--tier/--max-side/--quality/--limit/--no-audios/--no-zip`，索引覆盖
+`--out/--tier/--max-side/--quality/--limit/--no-audios/--no-zip/--from-dir`，索引覆盖
 `--index/--aa-dir/--cache-dir`，`decoded-pack --show-help` 查看）。
 `--tier` 取值：`preview`（背景+立绘纹理，默认）、`portraits`（仅人物立绘，
 供「人物图片资源扩展包」：跳过音频与配置表、manifest 带 `"kind":"portraits"`）、
+`backgrounds`（仅背景，bundle 名含 bg；供「背景图片资源扩展包」：
+同 portraits 跳过音频与配置表、manifest 带 `"kind":"backgrounds"`）、
 `full`（全部纹理）。
+`--from-dir <目录>` 不读 bundle / 索引，直接把目录内 PNG/JPG/... 转 WebP 成包
+（参考资料里已解码的图片，如 `参考资料/背景`，离线即可成包）。
 `packaging/export_decoded_pack.py` 保留为同实现薄壳入口（历史脚本引用）；
-`packaging/export_portrait_pack.py` 是 `--tier portraits` 的薄壳入口。
+`packaging/export_portrait_pack.py` 是 `--tier portraits` 的薄壳入口，
+`packaging/export_background_pack.py` 是 `--tier backgrounds`（默认自动吃
+`参考资料/背景`）的薄壳入口。
 产物 zip 布局：
 `manifest.json`、`aa_index.json`（**另一形态的 v3**：
 `{"v":3,"decoded":true,"tex":[…],"aud":[…],"txt":[…]}`——键列表而非 bundle 引用，

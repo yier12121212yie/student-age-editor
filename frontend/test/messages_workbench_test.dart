@@ -156,7 +156,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.tap(find.text('手机消息').first);
+    await tester.ensureVisible(find.text('短信').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('短信').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('＋ 创建短信'), findsOneWidget);

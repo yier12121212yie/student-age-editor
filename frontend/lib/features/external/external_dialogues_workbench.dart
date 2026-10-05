@@ -14,6 +14,7 @@ import '../../core/workbench_scaffold.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
+import '../resources/role_visuals.dart';
 
 /// 外部对话工作台 —— 导演布局下「外部对话」的专属界面。
 ///
@@ -1536,7 +1537,7 @@ class _ExternalDialoguesWorkbenchState
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _Avatar(seed: speaker, name: name, size: 20),
+              RoleAvatar(seed: speaker, name: name, size: 20, circular: true),
               const SizedBox(width: 6),
               Text(name,
                   style: TextStyle(
@@ -1713,43 +1714,6 @@ class _Tag extends StatelessWidget {
         border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
       child: Text(text, style: TextStyle(fontSize: 10.5, color: color)),
-    );
-  }
-}
-
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.seed, required this.name, this.size = 24});
-  final int seed;
-  final String name;
-  final double size;
-
-  List<Color> get _swatches => [
-        accentColor,
-        palette.catTexture,
-        palette.catAudio,
-        palette.catSprite,
-        palette.statusOk,
-        palette.statusWarn,
-      ];
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _swatches[seed.abs() % _swatches.length];
-    final ch = name.trim().isEmpty ? '?' : name.trim().substring(0, 1);
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.22),
-        shape: BoxShape.circle,
-        border: Border.all(color: c.withValues(alpha: 0.5)),
-      ),
-      alignment: Alignment.center,
-      child: Text(ch,
-          style: TextStyle(
-              fontSize: size * 0.5,
-              fontWeight: FontWeight.w600,
-              color: c)),
     );
   }
 }

@@ -366,7 +366,8 @@ void register_aa_routes(Router& r) {
         auto idx = ensure_aa_index();
         auto store = ensure_pack_store();
         bool store_active = store && store->active();
-        if (!idx && !store_active && !portrait_source_configured())
+        if (!idx && !store_active && !portrait_source_configured() &&
+            !background_source_configured())
             return Resp::Json(400, json{{"error", "index not ready"}});
         const json& body = req.body;
         std::string kind = body.is_object() && body.contains("kind") ? sa_core::py_str(body.at("kind")) : "";
@@ -390,6 +391,16 @@ void register_aa_routes(Router& r) {
                                             {"data", b64_encode(pr->first)}});
             }
             if (auto url = portrait_url_for(key))
+                return Resp::Json(200, json{{"kind", "tex"},
+                                            {"mime", "image/webp"},
+                                            {"url", *url}});
+            // 背景图片资源扩展：与人物图片扩展同构（本地出字节 / 对象存储回 URL）。
+            if (auto br = read_background_local_tex(key)) {
+                return Resp::Json(200, json{{"kind", "tex"},
+                                            {"mime", tex_mime(br->second)},
+                                            {"data", b64_encode(br->first)}});
+            }
+            if (auto url = background_url_for(key))
                 return Resp::Json(200, json{{"kind", "tex"},
                                             {"mime", "image/webp"},
                                             {"url", *url}});

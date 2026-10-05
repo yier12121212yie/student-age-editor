@@ -66,6 +66,11 @@ const allowedMaterialColorsInFiles = <String, List<String>>{
     'white',
     'white54',
   ],
+  'features/resources/bg_gallery_panel.dart': [
+    // 背景缩略图上的名称/key 压字：垫在图片底部渐变上，两模式同值。
+    'white',
+    'white70',
+  ],
   'features/story/story_studio_editor.dart': [
     // 同「模拟游戏画面」：黑底 + 白字/白描边，两模式同值。
     'black',
