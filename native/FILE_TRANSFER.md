@@ -64,9 +64,13 @@
 - 人物立绘/资源图等走各自的扩展通道（`PORTRAITS.md`），与本模块共用 COS 配置。
 
 > **浏览器直传的 CORS**：预签名 PUT（上传）与直链 GET（导出下载带进度）由浏览
-> 器直接发往 `EDITOR_FILE_COS_PUBLIC_ENDPOINT`，桶必须为站点来源放行 `PUT`/`GET`
-> （AllowedHeader 建议 `*`）；未配置时前端会报「HTTP 0（多为对象存储未配置
-> CORS）」，可退回浏览器原生下载（无页内进度条）。
+> 器直接发往 `EDITOR_FILE_COS_PUBLIC_ENDPOINT`（CDN 配置时下载走 CDN）。桶必须
+> 为站点来源放行 `PUT`/`GET`，否则浏览器报「HTTP 0（多为对象存储未配置 CORS）」。
+> 后端在首个 `upload/request` 时会**自动把桶 CORS 写成允许配置来源**（默认
+> `*`，可用 `EDITOR_FILE_COS_CORS_ORIGINS` 收紧、`EDITOR_FILE_COS_CORS_DISABLE=1`
+> 关闭，由管理员自管桶策略）；CDN 侧不继承 COS 桶的 CORS，若下载走 CDN，请在
+> CDN 域名配置响应头 `Access-Control-Allow-Origin`，否则前端会自动退回**浏览器
+> 原生下载**（无页内进度条，但不依赖 CORS）。
 
 客户端直传示例（`upload_url` 为 PUT 预签名地址，直接送文件流即可）：
 
@@ -114,6 +118,8 @@ curl http://127.0.0.1:8765/api/v1/files/<id>/download
 | `EDITOR_FILE_RECLAIM_TTL` | 否 | 预热对象回收阈值秒数，默认 7200（2 小时） |
 | `EDITOR_FILE_RECLAIM_INTERVAL` | 否 | 后台回收扫描间隔秒数，默认 60 |
 | `EDITOR_FILE_PENDING_TTL` | 否 | 未完成上传的清理阈值秒数，默认 21600（6 小时） |
+| `EDITOR_FILE_COS_CORS_ORIGINS` | 否 | 浏览器直传放行的来源，逗号分隔，默认 `*` |
+| `EDITOR_FILE_COS_CORS_DISABLE` | 否 | `=1` 关闭启动时的桶 CORS 自动写入（管理员自管桶策略时） |
 
 记录落盘在 `<data_root>/_cache/file_transfer/files.json`（原子写 + 进程内互斥）。
 

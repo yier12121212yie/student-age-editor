@@ -156,7 +156,9 @@ struct SignedHttp {
 
 SignedHttp sign_headers(const CosConfig& cfg, const std::string& endpoint,
                         const std::string& method, const std::string& key,
-                        const std::string& payload, const std::string& content_type) {
+                        const std::string& payload, const std::string& content_type,
+                        const std::string& content_md5 = std::string(),
+                        const std::vector<std::pair<std::string, std::string>>& query = {}) {
     SignedHttp out;
     sa_core::http::Url u;
     if (!sa_core::http::parse_url(endpoint, &u)) return out;
@@ -170,10 +172,19 @@ SignedHttp sign_headers(const CosConfig& cfg, const std::string& endpoint,
     const std::string payload_hash = sa_core::sha256_hex_strict(payload);
     const std::string host = host_with_port(u);
 
+    std::vector<std::pair<std::string, std::string>> sq = query;
+    std::sort(sq.begin(), sq.end());
+    std::string canonical_query;
+    for (const auto& [k, v] : sq) {
+        if (!canonical_query.empty()) canonical_query += "&";
+        canonical_query += uri_encode(k, false) + "=" + uri_encode(v, false);
+    }
+
     std::vector<std::pair<std::string, std::string>> to_sign;
     to_sign.emplace_back("host", host);
     to_sign.emplace_back("x-amz-content-sha256", payload_hash);
     to_sign.emplace_back("x-amz-date", amz_date);
+    if (!content_md5.empty()) to_sign.emplace_back("content-md5", content_md5);
     if (!cfg.session_token.empty())
         to_sign.emplace_back("x-amz-security-token", cfg.session_token);
     if (!content_type.empty()) to_sign.emplace_back("content-type", content_type);
@@ -187,9 +198,9 @@ SignedHttp sign_headers(const CosConfig& cfg, const std::string& endpoint,
         signed_headers += k;
     }
 
-    const std::string canonical_request = method + "\n" + encoded_path + "\n\n" +
-                                          canonical_headers + "\n" + signed_headers + "\n" +
-                                          payload_hash;
+    const std::string canonical_request = method + "\n" + encoded_path + "\n" +
+                                          canonical_query + "\n" + canonical_headers + "\n" +
+                                          signed_headers + "\n" + payload_hash;
     const std::string scope =
         std::string(date_stamp) + "/" + cfg.region + "/" + cfg.service + "/aws4_request";
     const std::string string_to_sign = "AWS4-HMAC-SHA256\n" + std::string(amz_date) + "\n" +
@@ -201,8 +212,10 @@ SignedHttp sign_headers(const CosConfig& cfg, const std::string& endpoint,
                                            string_to_sign));
 
     out.url = rstrip_slash(endpoint) + encoded_path;
+    if (!canonical_query.empty()) out.url += "?" + canonical_query;
     out.headers.emplace_back("x-amz-content-sha256", payload_hash);
     out.headers.emplace_back("x-amz-date", amz_date);
+    if (!content_md5.empty()) out.headers.emplace_back("Content-MD5", content_md5);
     if (!cfg.session_token.empty())
         out.headers.emplace_back("x-amz-security-token", cfg.session_token);
     if (!content_type.empty()) out.headers.emplace_back("Content-Type", content_type);
@@ -486,6 +499,151 @@ std::string download_url(const CosConfig& cfg, const std::string& key, long long
 }
 
 // ---------------------------------------------------------------------------
+// 桶 CORS（浏览器直传/直链下载的前置条件）
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string xml_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> split_origins(const std::string& csv) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : csv) {
+        if (c == ',') {
+            std::string t = sp::trim(cur);
+            if (!t.empty()) out.push_back(t);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    std::string t = sp::trim(cur);
+    if (!t.empty()) out.push_back(t);
+    if (out.empty()) out.push_back("*");
+    return out;
+}
+
+// 浏览器直传（PUT 上传 / GET 下载）所需的最小 CORS 规则。
+std::string build_cors_xml(const std::string& origins_csv) {
+    std::string xml = "<CORSConfiguration>\n  <CORSRule>\n";
+    for (const auto& o : split_origins(origins_csv))
+        xml += "    <AllowedOrigin>" + xml_escape(o) + "</AllowedOrigin>\n";
+    xml += "    <AllowedMethod>GET</AllowedMethod>\n"
+           "    <AllowedMethod>PUT</AllowedMethod>\n"
+           "    <AllowedMethod>POST</AllowedMethod>\n"
+           "    <AllowedMethod>HEAD</AllowedMethod>\n"
+           "    <AllowedHeader>*</AllowedHeader>\n"
+           "    <ExposeHeader>ETag</ExposeHeader>\n"
+           "    <MaxAgeSeconds>3600</MaxAgeSeconds>\n"
+           "  </CORSRule>\n"
+           "</CORSConfiguration>";
+    return xml;
+}
+
+}  // namespace
+
+bool default_put_cors(const CosConfig& cfg, const std::string& origins_csv, std::string* err) {
+    if (!cfg.ready()) {
+        if (err) *err = "file transfer not configured";
+        return false;
+    }
+    const std::string body = build_cors_xml(origins_csv);
+    std::string md5_raw;
+    if (!sa_core::http::hex_to_bytes(sa_core::md5_hex(body), &md5_raw)) {
+        if (err) *err = "cannot compute content-md5";
+        return false;
+    }
+    const std::string content_md5 = sa_core::http::b64_encode(md5_raw);
+
+    // 已有桶 CORS 配置则尊重管理员，不覆盖（避免把手工收紧的策略冲掉）；
+    // 仅在「无配置」时写入浏览器直传所需的最小规则。
+    {
+        SignedHttp g = sign_headers(cfg, cfg.public_endpoint, "GET", "", "", "", "",
+                                    {{"cors", ""}});
+        if (g.url.empty()) {
+            if (err) *err = "invalid public endpoint";
+            return false;
+        }
+        sa_core::http::Request greq;
+        greq.method = "GET";
+        greq.url = g.url;
+        greq.headers = g.headers;
+        greq.timeout_seconds = 30;
+        auto gresp = sa_core::http::request(greq);
+        if (gresp.transport_ok() && gresp.status == 200) return true;
+    }
+
+    SignedHttp s = sign_headers(cfg, cfg.public_endpoint, "PUT", "", body,
+                                "application/xml", content_md5, {{"cors", ""}});
+    if (s.url.empty()) {
+        if (err) *err = "invalid public endpoint";
+        return false;
+    }
+    sa_core::http::Request req;
+    req.method = "PUT";
+    req.url = s.url;
+    req.headers = s.headers;
+    req.body = body;
+    req.timeout_seconds = 60;
+    auto resp = sa_core::http::request(req);
+    if (!resp.transport_ok()) {
+        if (err) *err = "COS put-cors failed: " + resp.error_message;
+        return false;
+    }
+    if (!(resp.status == 200 || resp.status == 204)) {
+        if (err) *err = "COS put-cors -> HTTP " + std::to_string(resp.status);
+        return false;
+    }
+    return true;
+}
+
+bool put_bucket_cors(const CosConfig& cfg, std::string* err) {
+    if (!cfg.ready()) {
+        if (err) *err = "file transfer not configured";
+        return false;
+    }
+    if (!cfg.cors_enabled) return true;
+    CosOps ops = active_ops();
+    if (!ops.put_cors) {
+        if (err) *err = "no COS put-cors op";
+        return false;
+    }
+    return ops.put_cors(cfg, cfg.cors_origins, err);
+}
+
+namespace {
+std::atomic<bool> g_cors_attempted{false};
+}  // namespace
+
+void ensure_bucket_cors_once(const CosConfig& cfg) {
+    if (!cfg.cors_enabled) return;
+    bool expected = false;
+    if (!g_cors_attempted.compare_exchange_strong(expected, true)) return;
+    std::string err;
+    // best-effort：失败不影响预签名（管理员可能已手工配置，或密钥无该权限）。
+    put_bucket_cors(cfg, &err);
+}
+
+void reset_bucket_cors_once_for_test() {
+    g_cors_attempted.store(false);
+}
+
+
+// ---------------------------------------------------------------------------
 // 状态机
 // ---------------------------------------------------------------------------
 const char* status_name(Status s) {
@@ -574,6 +732,9 @@ CosConfig load_config() {
     cfg.reclaim_interval_seconds = env_i64("EDITOR_FILE_RECLAIM_INTERVAL", 60);
     cfg.s3_direct_enabled = spath::getenv_utf8("EDITOR_FILE_S3_ENABLED") == "1";
     cfg.s3_threshold_bytes = env_i64("EDITOR_FILE_S3_THRESHOLD_BYTES", 50LL * 1024 * 1024);
+    cfg.cors_enabled = spath::getenv_utf8("EDITOR_FILE_COS_CORS_DISABLE") != "1";
+    cfg.cors_origins = env_first({"EDITOR_FILE_COS_CORS_ORIGINS", "EDITOR_COS_CORS_ORIGINS"});
+    if (cfg.cors_origins.empty()) cfg.cors_origins = "*";
     return cfg;
 }
 
@@ -779,6 +940,7 @@ CosOps make_default_ops() {
     ops.download = default_download;
     ops.upload = default_upload;
     ops.remove = default_remove;
+    ops.put_cors = default_put_cors;
     return ops;
 }
 
@@ -1174,6 +1336,8 @@ void register_file_transfer_routes(Router& r) {
             return err_json(500,
                             "file transfer not configured: set EDITOR_FILE_COS_SECRET_ID, "
                             "EDITOR_FILE_COS_SECRET_KEY and EDITOR_FILE_COS_BUCKET");
+        // 浏览器直传前确保桶 CORS 放行站点来源（best-effort，一次性）。
+        ensure_bucket_cors_once(cfg);
 
         std::string name = body_str(*body, "name");
         if (name.empty()) name = body_str(*body, "filename");
@@ -1234,6 +1398,7 @@ r.post(R"(/api/v1/files/upload/initiate)", [](const Req& req) -> Resp {
     CosConfig cfg = load_config();
     if (!cfg.ready())
         return err_json(500, "file transfer not configured: set EDITOR_FILE_COS_SECRET_ID, EDITOR_FILE_COS_SECRET_KEY and EDITOR_FILE_COS_BUCKET");
+    ensure_bucket_cors_once(cfg);
 
     std::string name = body_str(*body, "name");
     if (name.empty()) name = body_str(*body, "filename");

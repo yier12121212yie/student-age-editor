@@ -737,7 +737,7 @@ void register_semantic_routes(Router& r) {
     // from a local-only choice instead of overwriting that choice with the
     // default.
     auto appearance_enum = [](const json& env, bool* explicit_out) {
-        std::string v = "dark";
+        std::string v = "light";
         bool explicit_set = false;
         if (env.contains("appearance_mode") && env["appearance_mode"].is_string()) {
             const std::string raw = env["appearance_mode"].get<std::string>();
@@ -749,9 +749,9 @@ void register_semantic_routes(Router& r) {
         if (explicit_out) *explicit_out = explicit_set;
         return v;
     };
-    // 用户主题色：#rrggbb（大小写均收，落盘统一小写）；默认品牌紫。
+    // 用户主题色：#rrggbb（大小写均收，落盘统一小写）；默认品牌蓝。
     auto theme_hex = [](const json& env, bool* explicit_out) {
-        std::string v = "#6c5ce7";
+        std::string v = "#4f6ef7";
         bool explicit_set = false;
         if (env.contains("theme_color") && env["theme_color"].is_string()) {
             const std::string raw = str::lower(env["theme_color"].get<std::string>());

@@ -19,7 +19,7 @@ void _syncNativeTitleBar(bool dark) {
   _appearanceChannel.invokeMethod('setDarkTitleBar', dark).catchError((_) {});
 }
 
-/// GUI 外观模式：跟随系统 / 亮色 / 暗色（默认暗色，与历史版本一致）。
+/// GUI 外观模式：跟随系统 / 亮色 / 暗色（默认亮色）。
 enum AppThemeMode {
   system('跟随系统', 'system'),
   light('亮色', 'light'),
@@ -35,12 +35,12 @@ enum AppThemeMode {
 
   static const prefsKey = 'app_theme_mode_v1';
 
-  /// 根据持久化值解析，默认暗色。
+  /// 根据持久化值解析，默认亮色。
   static AppThemeMode fromPrefsValue(String? v) {
     for (final m in AppThemeMode.values) {
       if (m.prefsValue == v) return m;
     }
-    return AppThemeMode.dark;
+    return AppThemeMode.light;
   }
 
   /// 从 SharedPreferences 读取。
@@ -49,7 +49,7 @@ enum AppThemeMode {
       final prefs = await SharedPreferences.getInstance();
       return AppThemeMode.fromPrefsValue(prefs.getString(prefsKey));
     } catch (_) {
-      return AppThemeMode.dark;
+      return AppThemeMode.light;
     }
   }
 
@@ -61,14 +61,13 @@ enum AppThemeMode {
   }
 }
 
-/// 默认品牌强调色：用户没有自定义主题色时的种子。
-const Color kDefaultAccent = Color(0xFF6C5CE7);
+/// 默认品牌强调色：用户没有自定义主题色时的种子（品牌蓝）。
+const Color kDefaultAccent = Color(0xFF4F6EF7);
 
 /// 当前生效的强调色种子（用户可在设置页改，随 [AppTheme.accent] 变化）。
 ///
-/// 历史约定里它是两模式同值的品牌紫 const；现在是 [AppTheme.accentSeed] 的
-/// 兼容别名——实底主色取它，「随外观变化的强调色变体」走
-/// [AppPalette.accentDeep] 等 token（两者都已随主题色联动）。
+/// 现在是 [AppTheme.accentSeed] 的兼容别名——实底主色取它，「随外观变化的
+/// 强调色变体」走 [AppPalette.accentDeep] 等 token（两者都已随主题色联动）。
 Color get accentColor => AppTheme.accentSeed;
 
 /// 近黑前景：亮强调色之上的 onAccent 替代（与 light.textHigh 同值）。
@@ -110,19 +109,19 @@ Color _shiftLightness(Color c, double dl) {
 
 /// Fluent 控件的强调色色阶（[fluent.AccentColor.swatch] 的输入）。
 ///
-/// 默认品牌紫沿用历史七档常量（逐位不变）；自定义主题色按明度阶梯派生，
-/// 与 [AppPalette.withAccent] 同源，保证 Fluent 控件与自绘 UI 一致。
+/// 默认品牌蓝沿用固定七档；自定义主题色按明度阶梯派生，与
+/// [AppPalette.withAccent] 同源，保证 Fluent 控件与自绘 UI 一致。
 Map<String, Color> accentSwatch() {
   final seed = accentColor;
   if (seed == kDefaultAccent) {
     return const <String, Color>{
-      'normal': Color(0xFF6C5CE7),
-      'dark': Color(0xFF5A4BD1),
-      'darker': Color(0xFF4A3DB8),
-      'darkest': Color(0xFF3B3096),
-      'light': Color(0xFF8B7FEF),
-      'lighter': Color(0xFFA99FF4),
-      'lightest': Color(0xFFC7C0F9),
+      'normal': Color(0xFF4F6EF7),
+      'dark': Color(0xFF3E5BE8),
+      'darker': Color(0xFF2F49C4),
+      'darkest': Color(0xFF22379E),
+      'light': Color(0xFF778EF9),
+      'lighter': Color(0xFF99ABFA),
+      'lightest': Color(0xFFBBC7FC),
     };
   }
   final deep = _fitLuminance(seed, min: 0.0, max: 0.10);
@@ -137,7 +136,7 @@ Map<String, Color> accentSwatch() {
   };
 }
 
-/// 用户主题色的本机持久化：prefs 存 `#rrggbb` 小写；非法值回退默认紫。
+/// 用户主题色的本机持久化：prefs 存 `#rrggbb` 小写；非法值回退默认品牌蓝。
 class AppAccentColor {
   AppAccentColor._();
 
@@ -449,9 +448,9 @@ class AppPalette {
     textHint: Color(0xFF7A7A84),
     textFaint: Color(0xFF6E6E76),
     iconDisabled: Color(0xFF66666F),
-    accentLight: Color(0xFF8B7FEF),
-    accentLighter: Color(0xFFA99FF4),
-    accentPale: Color(0xFFC7C0F9),
+    accentLight: Color(0xFF778EF9),
+    accentLighter: Color(0xFF99ABFA),
+    accentPale: Color(0xFFBBC7FC),
     warning: Color(0xFFE08A3C),
     danger: Color(0xFFE5484D),
     statusOk: Color(0xFF5FBE8C),
@@ -461,7 +460,7 @@ class AppPalette {
     statusInfo: Color(0xFF9DB8FF),
     statusDanger: Color(0xFFFF8A8A),
     goldText: Color(0xFFE8D5B0),
-    tintAccent: Color(0xFF2E2A45),
+    tintAccent: Color(0xFF1E2A4A),
     tintOk: Color(0xFF1E2A22),
     tintWarn: Color(0xFF2A2418),
     tintDanger: Color(0xFF2D1E1E),
@@ -477,7 +476,7 @@ class AppPalette {
     checkerA: Color(0xFFE1E1E6),
     checkerB: Color(0xFFFFFFFF),
     chipSep: Color(0xFFFFFFFF),
-    accentDeep: Color(0xFF4A3DB8),
+    accentDeep: Color(0xFF2F49C4),
     flowBg: Color(0xFF3498DB),
     flowAudio: Color(0xFF27AE60),
     flowTime: Color(0xFF95A5A6),
@@ -513,9 +512,9 @@ class AppPalette {
     textHint: Color(0xFF71717B),
     textFaint: Color(0xFF84848E),
     iconDisabled: Color(0xFF8C8C95),
-    accentLight: Color(0xFF6C5CE7),
-    accentLighter: Color(0xFF7A6CE9),
-    accentPale: Color(0xFF8B7FEF),
+    accentLight: Color(0xFF4F6EF7),
+    accentLighter: Color(0xFF637EF8),
+    accentPale: Color(0xFF6882F8),
     warning: Color(0xFFA6650F),
     danger: Color(0xFFD63A40),
     statusOk: Color(0xFF1F8A4C),
@@ -525,7 +524,7 @@ class AppPalette {
     statusInfo: Color(0xFF3A66B8),
     statusDanger: Color(0xFFC74040),
     goldText: Color(0xFF8A6A35),
-    tintAccent: Color(0xFFECE9F8),
+    tintAccent: Color(0xFFE9EEFD),
     tintOk: Color(0xFFE7F3EB),
     tintWarn: Color(0xFFF8F0DE),
     tintDanger: Color(0xFFFBEAEA),
@@ -541,7 +540,7 @@ class AppPalette {
     checkerA: Color(0xFFD8D8DE),
     checkerB: Color(0xFFF2F2F5),
     chipSep: Color(0xFFFFFFFF),
-    accentDeep: Color(0xFF4A3DB8),
+    accentDeep: Color(0xFF2F49C4),
     flowBg: Color(0xFF2471A3),
     flowAudio: Color(0xFF1E8449),
     flowTime: Color(0xFF6C7A7B),
@@ -558,7 +557,7 @@ class AppPalette {
 
   /// 换用用户主题色后的调色板：只重算强调色族 token，其余原样保留。
   ///
-  /// 默认品牌紫直接返回自身——[dark]/[light] 两张表本就是它的标定结果
+  /// 默认品牌蓝直接返回自身——[dark]/[light] 两张表本就是它的标定结果
   /// （默认态逐位不变，回归由 app_theme_test 守门）。自定义色的派生规则：
   /// - onAccent 在白/近黑间按对种子色的对比择一（数学上最差也有 ~4.3:1）；
   /// - accentDeep 反向定带：白前景时压到足够暗（对比 ≥7:1），近黑前景时
@@ -668,7 +667,8 @@ class AppPalette {
 }
 
 /// 当前生效调色板（应用启动与主题切换时由 [AppTheme] 整体替换）。
-AppPalette palette = AppPalette.dark;
+/// 默认亮色：与 [AppThemeMode] 的默认值保持一致，避免首帧闪暗。
+AppPalette palette = AppPalette.light;
 
 /// 同步顶层 [palette] 全局并回传（AppTheme 类内 `palette` 被静态 getter
 /// 遮蔽，赋值必须经这里）。
@@ -745,7 +745,7 @@ class AppShadow {
   static Color? _selectedColor;
   static List<BoxShadow>? _selectedCache;
 
-  /// 选中态外发光：随用户主题色变化（历史版本写死品牌紫 0x80 半透明）。
+  /// 选中态外发光：随用户主题色变化（历史版本写死品牌色 0x80 半透明）。
   static List<BoxShadow> selected() {
     final c = accentColor;
     if (_selectedCache == null || _selectedColor != c) {
@@ -802,9 +802,9 @@ ThemeData opaqueMaterialSurfaces([ThemeData? base, AppPalette? p]) {
 class AppTheme {
   AppTheme._();
 
-  /// 外观模式变化通知（app 根组件监听以切换 FluentTheme）。
+  /// 外观模式变化通知（app 根组件监听以切换 FluentTheme）。默认亮色。
   static final ValueNotifier<AppThemeMode> mode =
-      ValueNotifier(AppThemeMode.dark);
+      ValueNotifier(AppThemeMode.light);
 
   /// 用户主题色（强调色种子）变化通知。
   static final ValueNotifier<Color> accent = ValueNotifier(kDefaultAccent);
@@ -817,7 +817,7 @@ class AppTheme {
   /// 亮/暗两张表是不同 const，withAccent 也会按主题色产生新实例，因此
   /// 亮度或主题色任一变化都能被感知。
   static final ValueNotifier<AppPalette> _paletteNotifier =
-      ValueNotifier(AppPalette.dark);
+      ValueNotifier(AppPalette.light);
 
   // 合并监听：外观模式、主题色与生效调色板任一变化都触发根部重建。
   static final Listenable _changes =
@@ -832,7 +832,7 @@ class AppTheme {
   /// 当前生效的主题色种子。
   static Color get accentSeed => accent.value;
 
-  static AppPalette _currentPalette = AppPalette.dark;
+  static AppPalette _currentPalette = AppPalette.light;
 
   static Future<void>? _initFuture;
 

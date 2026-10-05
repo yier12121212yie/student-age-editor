@@ -9,6 +9,8 @@ import 'dart:typed_data';
 import 'package:file_selector/file_selector.dart';
 import 'package:http/http.dart' as http;
 
+import 'file_save.dart';
+
 Future<void> putXFileToUrl(
   XFile file,
   String url, {
@@ -46,4 +48,16 @@ Future<Uint8List> getBytesFromUrl(
   }
   onProgress?.call(resp.bodyBytes.length, resp.bodyBytes.length);
   return resp.bodyBytes;
+}
+
+/// IO 平台没有「浏览器原生下载」，这里 GET 全量后交给 [saveBytesToFile] 落盘。
+Future<void> downloadUrlNative(String url, {String? filename}) async {
+  final resp = await http.get(Uri.parse(url)).timeout(const Duration(minutes: 60));
+  if (resp.statusCode < 200 || resp.statusCode >= 300) {
+    throw Exception('下载失败：HTTP ${resp.statusCode}');
+  }
+  await saveBytesToFile(
+    filename: (filename == null || filename.isEmpty) ? 'download.bin' : filename,
+    bytes: resp.bodyBytes,
+  );
 }

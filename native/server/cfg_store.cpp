@@ -176,19 +176,22 @@ std::optional<long long> stat_mtime_ns(const std::string& abs_path) {
 }
 
 // mtime_ns is a 64-bit nanosecond epoch (~1.8e18), far beyond 2^53. A web
-// (dart2js/dart2wasm) client parses JSON numbers as IEEE-754 doubles, so the
-// value it echoes back as expect_mtime_ns is the nearest representable double
-// (an integer rounded to a 256 ns grid), never the exact stat value. Comparing
-// for byte equality then rejects every save on web (the "save always conflicts"
-// regression). Accept exactly that double round-trip: only the value the JS
-// number would have degenerated to matches, so a genuine external edit — which
-// moves mtime by at least one filesystem tick and, in practice, milliseconds —
-// still conflicts. Values within the safe range stay exact.
+// (dart2js/dart2wasm) client parses JSON numbers as IEEE-754 doubles and echoes
+// back the shortest decimal that round-trips to that double — not the double's
+// exact integer value. For current=1700000000123456789 the double is
+// 1700000000123456768 but JS sends the JSON integer 1700000000123456800, so
+// comparing the echoed integer for equality (or against
+// (long long)(double)current) rejects every save on web — the "save always
+// conflicts" regression. Collapse both sides to the double, the precision such
+// a client can actually represent: exactly what it may echo matches, while a
+// genuine external edit moves mtime by far more than one double ULP (256 ns at
+// this magnitude, milliseconds in practice) and still conflicts. Values within
+// the safe integer range stay exact and are unaffected.
 bool mtime_matches(long long current, long long expected) {
     if (current == expected) return true;
     constexpr long long kMaxSafeInteger = 9007199254740992LL;  // 2^53
     if (current > kMaxSafeInteger || current < -kMaxSafeInteger) {
-        return expected == static_cast<long long>(static_cast<double>(current));
+        return static_cast<double>(current) == static_cast<double>(expected);
     }
     return false;
 }

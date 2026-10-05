@@ -83,8 +83,11 @@ AI 与桌面同源：读本机 `.editor_ai` 配置文件。平台模式走本机
 > 3. **模组导出/下载**：`POST /api/mods/export_staged` 由服务端把**本地盘文件 + COS 引用资源**流式拼成 zip 并登记周转，浏览器经预签名直链**带进度条**下载（页面弹进度对话框）。
 >
 > 前提是给 backend/网关进程注入 `EDITOR_FILE_COS_*` 凭据（见
-> [`native/FILE_TRANSFER.md`](native/FILE_TRANSFER.md)），并在桶的 CORS 里允许
-> 站点来源的 `PUT` 与 `GET`；未配置时自动回退 base64 通道（大包会得到明确的上限报错）。
+> [`native/FILE_TRANSFER.md`](native/FILE_TRANSFER.md)）。后端会在首个直传请求
+> 时**自动把 COS 桶 CORS 配好**（默认放行 `*`，可用 `EDITOR_FILE_COS_CORS_ORIGINS`
+> 收紧），因此不再需要人工开桶 CORS；若下载走 CDN，CDN 域名需自行配响应头
+> `Access-Control-Allow-Origin`，否则浏览器会自动退回原生下载（无进度条）。
+> 未配置 COS 凭据时才回退 base64 通道（大包会得到明确的上限报错）。
 
 ### 2.1 gateway.json 字段
 

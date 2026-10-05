@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
@@ -11,14 +12,27 @@ import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../base/base_search_page.dart';
+import '../blocks/blocks_workbench.dart';
 import '../bugfix/bugfix_panel.dart';
 import '../cloud/cloud_page.dart';
+import '../chats/idle_chat_workbench.dart';
+import '../editor/cfg_display_names.dart';
 import '../editor/editor_controller.dart';
+import '../editor/schema_editor_view.dart';
+import '../events/event_workbench.dart';
 import '../files/file_tree_page.dart';
+import '../goals/goals_workbench.dart';
+import '../messages/messages_workbench.dart';
+import '../minigames/minigames_workbench.dart';
+import '../json/json_workbench.dart';
+import '../external/external_dialogues_workbench.dart';
 import '../mods/mods_page.dart';
-import '../pages/page_view.dart';
 import '../pages/pages_catalog.dart';
+import '../person/person_workbench.dart';
 import '../plugins/plugins_page.dart';
+import '../social/social_workbench.dart';
+import '../space/space_workbench.dart';
+import '../warehouse/warehouse_workbench.dart';
 import '../resources/resources_page.dart';
 import '../settings/settings_page.dart';
 import '../story/story_studio_editor.dart';
@@ -26,17 +40,29 @@ import 'ai_dock.dart';
 import 'shell_state.dart';
 import 'status_bar.dart';
 
-/// 导演工作台的功能模块（顶部「功能」选择器与左侧导航切换的目标）。
+/// 导演工作台的顶层功能模块。
 enum _DirectorFeature {
   home('主页', FluentIcons.home_24_regular, '功能总览与快捷入口'),
   studio('剧情舞台', FluentIcons.production_24_regular, '对话线 / 舞台编辑 / 人物与表情'),
+  person('人物工作台', FluentIcons.person_24_regular, '角色资料 / 成长喜好 / 表情服装 / 立绘大小'),
+  social('社交动态', FluentIcons.chat_24_regular, '企鹅空间动态 / 评论回复 / 点赞人物'),
+  space('空间', FluentIcons.globe_24_regular, '企鹅空间主页 / 个性签名 / 留言板'),
+  warehouse('物品仓库', FluentIcons.box_multiple_24_regular, '物品 / 书籍 / 商店与效果指令'),
+  minigames('小游戏库', FluentIcons.games_24_regular, '人物社交小游戏 / 关卡与效果'),
+  json('JSON 侧栏', FluentIcons.code_24_regular, '原始配置 JSON 查看与编辑'),
+  external('外部对话', FluentIcons.comment_multiple_24_regular, '送礼 / 小游戏 / 闲聊的对白入口'),
+  messages('手机消息', FluentIcons.chat_multiple_24_regular, '短信对话与回复分支'),
+  goals('目标工作台', FluentIcons.target_24_regular, '目标列表 / 游戏内预览 / 要求与奖励'),
+  blocks('积木库', FluentIcons.apps_list_24_regular, '条件 / 效果 / 指令的目录与搭建'),
+  events('事件工作台', FluentIcons.calendar_ltr_24_regular, '事件触发 / 对白入口 / 选项'),
+  chats('闲聊', FluentIcons.person_chat_24_regular, '人物闲聊 / 进度文字 / 线性对白'),
   pages('配置表', FluentIcons.table_24_regular, 'Schema 驱动的全部编辑页面'),
-  resources('资源', FluentIcons.box_24_regular, '贴图 / 音频 / 立绘等资产'),
+  resources('素材库', FluentIcons.box_24_regular, '贴图 / 音频 / 立绘等资产'),
   files('文件', FluentIcons.folder_24_regular, '模组文件树与文本编辑'),
   plugins('插件', FluentIcons.puzzle_piece_24_regular, '声明型插件与动态面板'),
   cloud('云同步', FluentIcons.cloud_24_regular, 'WebDAV / OpenList 等驱动'),
-  mods('模组', FluentIcons.apps_24_regular, '新建 / 切换 / 导入导出模组'),
-  search('全局功能搜索', FluentIcons.search_24_regular, '跨配置表检索字段与条目'),
+  mods('模组管理', FluentIcons.apps_24_regular, '新建 / 切换 / 导入导出模组'),
+  search('剧情库检索', FluentIcons.search_24_regular, '原版事件与台词全文检索'),
   bugfix('扫描修复', FluentIcons.wrench_24_regular, '配置体检与自动修复');
 
   const _DirectorFeature(this.label, this.icon, this.description);
@@ -46,12 +72,35 @@ enum _DirectorFeature {
   final String description;
 }
 
-/// 导演布局：面向全工作流的整壳工作台。
+/// 主页卡片的归类。
+enum _HomeCategory { builtin, extension, resource }
+
+/// 主页的一张功能卡片。
+class _HomeEntry {
+  const _HomeEntry({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.hint,
+    required this.icon,
+    required this.category,
+    required this.onOpen,
+  });
+
+  final String id;
+  final String title;
+  final String description;
+  final String hint;
+  final IconData icon;
+  final _HomeCategory category;
+  final VoidCallback onOpen;
+}
+
+/// 导演布局：功能总览为首页的整壳工作台。
 ///
 /// 顶部工程栏（品牌 + 前进后退 + 模组 + 功能选择 + 操作）｜中部功能视图
-/// （剧情舞台 / 配置表 / 资源 / 文件 / 插件 / 云同步 / 模组 / 搜索 / 修复，
-/// 懒加载保活）｜右下角快捷工具托盘｜底部状态栏。配色一律取自 [palette]，
-/// 随亮/暗外观联动。
+/// （主页 / 剧情舞台 / 配置表 / 素材库 / 文件 / 插件 / 云同步 / 模组 / 搜索 /
+/// 修复，懒加载保活）｜右下角快捷工具托盘｜底部状态栏。配色取自 [palette]。
 class DirectorShell extends StatefulWidget {
   const DirectorShell({
     super.key,
@@ -73,20 +122,57 @@ class DirectorShell extends StatefulWidget {
 }
 
 class _DirectorShellState extends State<DirectorShell> {
-  _DirectorFeature _feature = _DirectorFeature.studio;
+  static const _favoritesKey = 'director_home_favorites_v1';
+
+  /// 进入导演布局先在主页，而不是直接落到某个编辑器。
+  _DirectorFeature _feature = _DirectorFeature.home;
 
   /// 访问过的功能（懒加载保活：切走再切回不丢页面状态）。
-  final Set<_DirectorFeature> _visited = {_DirectorFeature.studio};
+  final Set<_DirectorFeature> _visited = {_DirectorFeature.home};
 
   /// 壳内视图历史（顶部前进/后退）。
-  final List<_DirectorFeature> _history = [_DirectorFeature.studio];
+  final List<_DirectorFeature> _history = [_DirectorFeature.home];
   int _historyCursor = 0;
 
   /// 每个功能的刷新计数，用于单独重挂当前视图。
   final Map<_DirectorFeature, int> _refreshTokens = {};
 
+  /// 主页点某个页面卡片时，指定配置表页要打开的页面。
+  String? _pendingPageId;
+
+  final Set<String> _favorites = {};
+
   bool _cornersCollapsed = false;
   bool _helpOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFavorites();
+  }
+
+  Future<void> _loadFavorites() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList(_favoritesKey) ?? const [];
+      if (!mounted) return;
+      setState(() {
+        _favorites
+          ..clear()
+          ..addAll(saved);
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _toggleFavorite(String id) async {
+    setState(() {
+      if (!_favorites.remove(id)) _favorites.add(id);
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_favoritesKey, _favorites.toList());
+    } catch (_) {}
+  }
 
   // ---------------- 导航 ----------------
 
@@ -103,6 +189,16 @@ class _DirectorShellState extends State<DirectorShell> {
       _historyCursor = _history.length - 1;
       _helpOpen = false;
     });
+  }
+
+  /// 打开「配置表」功能并定位到指定页面。
+  void _openPage(String pageId) {
+    setState(() {
+      _pendingPageId = pageId;
+      _refreshTokens[_DirectorFeature.pages] =
+          (_refreshTokens[_DirectorFeature.pages] ?? 0) + 1;
+    });
+    _go(_DirectorFeature.pages);
   }
 
   void _back() {
@@ -126,14 +222,9 @@ class _DirectorShellState extends State<DirectorShell> {
   }
 
   Future<void> _refresh() async {
-    // 只有剧情舞台注册了切走守卫；刷新它前先处理未保存修改，其他视图直接重挂。
-    if (_feature == _DirectorFeature.studio) {
-      final guard = widget.state.leaveGuard;
-      if (guard != null) {
-        final ok = await guard();
-        if (!ok || !mounted) return;
-      }
-    }
+    // 刷新会重挂当前视图、销毁其 State：任何未保存修改都要先确认。
+    if (!await widget.state.runLeaveGuards()) return;
+    if (!mounted) return;
     setState(() {
       _refreshTokens[_feature] = (_refreshTokens[_feature] ?? 0) + 1;
     });
@@ -141,11 +232,9 @@ class _DirectorShellState extends State<DirectorShell> {
 
   Future<void> _selectMod(String name) async {
     if (name.trim().isEmpty || name == widget.state.modName) return;
-    final guard = widget.state.leaveGuard;
-    if (guard != null) {
-      final ok = await guard();
-      if (!ok || !mounted) return;
-    }
+    // 切模组会重载所有工作台数据：脏工作台先确认（保存/放弃/取消）。
+    if (!await widget.state.runLeaveGuards()) return;
+    if (!mounted) return;
     try {
       final r = await ApiClient.instance.post(
         '/api/mods/select',
@@ -352,7 +441,7 @@ class _DirectorShellState extends State<DirectorShell> {
           ),
           const SizedBox(width: 10),
           SizedBox(
-            width: 168,
+            width: 156,
             child: fluent.ComboBox<String>(
               value: curMod.isNotEmpty ? curMod : null,
               isExpanded: true,
@@ -386,7 +475,7 @@ class _DirectorShellState extends State<DirectorShell> {
           ),
           const SizedBox(width: 8),
           SizedBox(
-            width: 140,
+            width: 132,
             child: fluent.ComboBox<_DirectorFeature>(
               value: _feature,
               isExpanded: true,
@@ -398,7 +487,14 @@ class _DirectorShellState extends State<DirectorShell> {
                       children: [
                         Icon(f.icon, size: 13, color: palette.textSecondary),
                         const SizedBox(width: 6),
-                        Text(f.label, style: const TextStyle(fontSize: 12)),
+                        Expanded(
+                          child: Text(
+                            f.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -582,34 +678,297 @@ class _DirectorShellState extends State<DirectorShell> {
     final controller = widget.shell.controller;
     switch (f) {
       case _DirectorFeature.home:
-        return _DirectorHome(onOpen: _go);
+        return _DirectorHome(
+          modName: state.modName.isEmpty ? '(未加载/空白)' : state.modName,
+          entries: _homeEntries(),
+          favorites: _favorites,
+          onToggleFavorite: _toggleFavorite,
+          onOpenMods: _openMods,
+        );
       case _DirectorFeature.studio:
         return StoryStudioEditor(
           state: state,
           onPreview: (evtId) =>
               controller.open(OpenDoc.preview(eventId: evtId)),
         );
-      case _DirectorFeature.pages:
-        return _DirectorPagesView(
+      case _DirectorFeature.person:
+        return PersonWorkbench(
           state: state,
           onPreview: (evtId) =>
               controller.open(OpenDoc.preview(eventId: evtId)),
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.social:
+        return SocialWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.space:
+        return SpaceWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.warehouse:
+        return WarehouseWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.minigames:
+        return MinigamesWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.json:
+        return JsonWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.external:
+        return ExternalDialoguesWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.messages:
+        return MessagesWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.goals:
+        return GoalsWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.blocks:
+        return BlocksWorkbench(state: state);
+      case _DirectorFeature.events:
+        return EventWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+          onOpenStudio: () => _go(_DirectorFeature.studio),
+        );
+      case _DirectorFeature.chats:
+        return IdleChatWorkbench(
+          state: state,
+          onOpenSearch: () => _go(_DirectorFeature.search),
+        );
+      case _DirectorFeature.pages:
+        return _DirectorPagesView(
+          state: state,
+          initialPageId: _pendingPageId ?? 'story',
+          onHome: () => _go(_DirectorFeature.home),
+          onPreview: (evtId) =>
+              controller.open(OpenDoc.preview(eventId: evtId)),
+          onOpenSearch: () => _go(_DirectorFeature.search),
         );
       case _DirectorFeature.resources:
-        return ResourcesPage(state: state);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: ResourcesPage(state: state),
+        );
       case _DirectorFeature.files:
-        return FileTreePage(state: state, controller: controller);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: FileTreePage(state: state, controller: controller),
+        );
       case _DirectorFeature.plugins:
-        return PluginsPage(pluginState: widget.pluginState);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: PluginsPage(pluginState: widget.pluginState),
+        );
       case _DirectorFeature.cloud:
-        return CloudPage(state: state);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: CloudPage(state: state),
+        );
       case _DirectorFeature.mods:
-        return ModsPage(state: state, controller: controller);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: ModsPage(state: state, controller: controller),
+        );
       case _DirectorFeature.search:
-        return BaseSearchPage(state: state);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: BaseSearchPage(state: state),
+        );
       case _DirectorFeature.bugfix:
-        return BugfixPanel(state: state);
+        return _DirectorFrame(
+          feature: f,
+          onHome: () => _go(_DirectorFeature.home),
+          child: BugfixPanel(state: state),
+        );
     }
+  }
+
+  List<_HomeEntry> _homeEntries() {
+    return <_HomeEntry>[
+      _HomeEntry(
+        id: 'feat:studio',
+        title: '剧情舞台',
+        description: '对话线 / 舞台画面即写台词 / 人物与表情',
+        hint: '三栏编排',
+        icon: FluentIcons.production_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.studio),
+      ),
+      _HomeEntry(
+        id: 'feat:messages',
+        title: '手机消息',
+        description: '短信对话树与白雨回复分支',
+        hint: '对话',
+        icon: FluentIcons.chat_multiple_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.messages),
+      ),
+      _HomeEntry(
+        id: 'feat:goals',
+        title: '目标工作台',
+        description: '目标列表 / 游戏内预览 / 完成要求与奖励',
+        hint: '意愿',
+        icon: FluentIcons.target_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.goals),
+      ),
+      _HomeEntry(
+        id: 'feat:blocks',
+        title: '积木库',
+        description: '条件 / 效果 / 指令的目录浏览与可视化搭建',
+        hint: '无代码',
+        icon: FluentIcons.apps_list_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.blocks),
+      ),
+      _HomeEntry(
+        id: 'feat:chats',
+        title: '闲聊',
+        description: '人物闲聊进度文字 / 地点 / 线性对白',
+        hint: '对白',
+        icon: FluentIcons.person_chat_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.chats),
+      ),
+      _HomeEntry(
+        id: 'feat:space',
+        title: '空间',
+        description: '企鹅空间主页 / 个性签名 / 留言板',
+        hint: '主页',
+        icon: FluentIcons.globe_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.space),
+      ),
+      _HomeEntry(
+        id: 'feat:warehouse',
+        title: '物品仓库',
+        description: '物品 / 书籍 / 商店与效果指令',
+        hint: '道具',
+        icon: FluentIcons.box_multiple_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.warehouse),
+      ),
+      _HomeEntry(
+        id: 'feat:minigames',
+        title: '小游戏库',
+        description: '人物社交小游戏 / 关卡与效果',
+        hint: '玩法',
+        icon: FluentIcons.games_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.minigames),
+      ),
+      _HomeEntry(
+        id: 'feat:json',
+        title: 'JSON 侧栏',
+        description: '原始配置 JSON 查看与编辑',
+        hint: '高级',
+        icon: FluentIcons.code_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.json),
+      ),
+      _HomeEntry(
+        id: 'feat:external',
+        title: '外部对话',
+        description: '送礼 / 小游戏 / 闲聊的对白入口',
+        hint: '入口',
+        icon: FluentIcons.comment_multiple_24_regular,
+        category: _HomeCategory.builtin,
+        onOpen: () => _go(_DirectorFeature.external),
+      ),
+      for (final p in editorPages)
+        _HomeEntry(
+          id: 'page:${p.id}',
+          title: p.title,
+          description: p.description,
+          hint: '${p.cfgNames.length} 张表',
+          icon: FluentIcons.table_24_regular,
+          category: _HomeCategory.builtin,
+          // 人物 / 社交 / 事件已升级为专属工作台，不再走通用配置表视图。
+          onOpen: p.id == 'person'
+              ? () => _go(_DirectorFeature.person)
+              : p.id == 'social'
+                  ? () => _go(_DirectorFeature.social)
+                  : p.id == 'evt'
+                      ? () => _go(_DirectorFeature.events)
+                      : () => _openPage(p.id),
+        ),
+      _HomeEntry(
+        id: 'feat:plugins',
+        title: '插件',
+        description: '声明型插件与动态面板',
+        hint: '扩展',
+        icon: FluentIcons.puzzle_piece_24_regular,
+        category: _HomeCategory.extension,
+        onOpen: () => _go(_DirectorFeature.plugins),
+      ),
+      _HomeEntry(
+        id: 'feat:files',
+        title: '文件',
+        description: '模组文件树与文本编辑',
+        hint: '文件树',
+        icon: FluentIcons.folder_24_regular,
+        category: _HomeCategory.extension,
+        onOpen: () => _go(_DirectorFeature.files),
+      ),
+      _HomeEntry(
+        id: 'feat:cloud',
+        title: '云同步',
+        description: 'WebDAV / OpenList 等驱动',
+        hint: '同步',
+        icon: FluentIcons.cloud_24_regular,
+        category: _HomeCategory.extension,
+        onOpen: () => _go(_DirectorFeature.cloud),
+      ),
+      _HomeEntry(
+        id: 'feat:search',
+        title: '剧情库检索',
+        description: '原版事件与台词全文检索',
+        hint: '检索',
+        icon: FluentIcons.search_24_regular,
+        category: _HomeCategory.extension,
+        onOpen: () => _go(_DirectorFeature.search),
+      ),
+      _HomeEntry(
+        id: 'feat:bugfix',
+        title: '扫描修复',
+        description: '配置体检与自动修复',
+        hint: '体检',
+        icon: FluentIcons.wrench_24_regular,
+        category: _HomeCategory.extension,
+        onOpen: () => _go(_DirectorFeature.bugfix),
+      ),
+      _HomeEntry(
+        id: 'feat:resources',
+        title: '素材库',
+        description: '贴图 / 音频 / 立绘等资产',
+        hint: '素材',
+        icon: FluentIcons.box_24_regular,
+        category: _HomeCategory.resource,
+        onOpen: () => _go(_DirectorFeature.resources),
+      ),
+    ];
   }
 
   // ---------- 右下角快捷工具托盘 ----------
@@ -632,15 +991,11 @@ class _DirectorShellState extends State<DirectorShell> {
         tooltip: '系统设置',
         onTap: _openSettings,
       ),
-      _CornerButton(
-        icon: FluentIcons.bot_24_regular,
-        tooltip: 'AI 助手',
-        active: widget.shell.aiOpen,
-        onTap: widget.shell.toggleAi,
-      ),
     ];
     return Positioned(
-      // AI 收起态的悬浮按钮停在右下角；托盘上移让位，避免两个圆形按钮重叠。
+      // AI 入口只保留右下角的悬浮按钮（[AiOverlayDock]，带待审批 / 正在回复
+      // 角标）；快捷托盘不再放 AI，避免侧栏出现两个机器人图标。AI 收起态时
+      // 悬浮按钮停在右下角，托盘上移让位。
       right: 16,
       bottom: widget.shell.aiOpen ? 16 : 72,
       child: Column(
@@ -677,142 +1032,92 @@ class _DirectorShellState extends State<DirectorShell> {
   }
 }
 
-/// 主页面：功能卡片总览与快捷入口。
-class _DirectorHome extends StatelessWidget {
-  const _DirectorHome({required this.onOpen});
-  final ValueChanged<_DirectorFeature> onOpen;
+/// 非主页功能的外框：面包屑返回 + 功能标题，正文置于工作台卡片内。
+class _DirectorFrame extends StatelessWidget {
+  const _DirectorFrame({
+    required this.feature,
+    required this.onHome,
+    required this.child,
+  });
+
+  final _DirectorFeature feature;
+  final VoidCallback onHome;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    final features = _DirectorFeature.values
-        .where((f) => f != _DirectorFeature.home)
-        .toList();
     return Container(
       color: palette.bgDeep2,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 22, 24, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          Container(
+            height: 46,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: palette.panel,
+              border: Border(bottom: BorderSide(color: palette.border)),
+            ),
+            child: Row(
               children: [
+                _HomeBackLink(onTap: onHome),
+                const SizedBox(width: 12),
+                Icon(feature.icon, size: 15, color: accentColor),
+                const SizedBox(width: 7),
                 Text(
-                  '导演工作台',
+                  feature.label,
                   style: TextStyle(
-                    fontSize: 22,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                     color: palette.textHigh,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  '选择下面的功能模块开始编辑当前模组',
-                  style: TextStyle(fontSize: 12.5, color: palette.textMuted),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    feature.description,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: palette.textMuted),
+                  ),
                 ),
               ],
             ),
           ),
-          Expanded(
-            child: GridView.builder(
-              padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-              gridDelegate:
-                  const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 300,
-                    mainAxisExtent: 108,
-                    crossAxisSpacing: 14,
-                    mainAxisSpacing: 14,
-                  ),
-              itemCount: features.length,
-              itemBuilder: (context, i) {
-                final f = features[i];
-                return _HomeCard(feature: f, onTap: () => onOpen(f));
-              },
-            ),
-          ),
+          Expanded(child: child),
         ],
       ),
     );
   }
 }
 
-class _HomeCard extends StatefulWidget {
-  const _HomeCard({required this.feature, required this.onTap});
-  final _DirectorFeature feature;
+class _HomeBackLink extends StatelessWidget {
+  const _HomeBackLink({required this.onTap});
   final VoidCallback onTap;
-  @override
-  State<_HomeCard> createState() => _HomeCardState();
-}
 
-class _HomeCardState extends State<_HomeCard> {
-  bool _hover = false;
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          curve: AppMotion.easeOut,
-          padding: const EdgeInsets.all(14),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           decoration: BoxDecoration(
-            color: _hover ? palette.card : palette.panel,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: _hover ? accentColor.withValues(alpha: 0.5) : palette.border,
-            ),
-            boxShadow: _hover
-                ? [
-                    BoxShadow(
-                      color: palette.scrimWeak,
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
-                    ),
-                  ]
-                : [],
+            borderRadius: BorderRadius.circular(7),
           ),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: accentColor.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: Icon(widget.feature.icon, size: 17, color: accentColor),
+              Icon(
+                FluentIcons.chevron_left_24_regular,
+                size: 12,
+                color: accentColor,
               ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.feature.label,
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                        color: palette.textHigh,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.feature.description,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        height: 1.5,
-                        color: palette.textMuted,
-                      ),
-                    ),
-                  ],
-                ),
+              const SizedBox(width: 3),
+              Text(
+                '全部功能',
+                style: TextStyle(fontSize: 12, color: accentColor),
               ),
             ],
           ),
@@ -822,97 +1127,775 @@ class _HomeCardState extends State<_HomeCard> {
   }
 }
 
-/// 配置表视图：左侧页面目录 + 右侧 Schema 编辑器。
+/// 主页：功能总览（标题 + 搜索 + 分组卡片 + 模组管理工具）。
+class _DirectorHome extends StatefulWidget {
+  const _DirectorHome({
+    required this.modName,
+    required this.entries,
+    required this.favorites,
+    required this.onToggleFavorite,
+    required this.onOpenMods,
+  });
+
+  final String modName;
+  final List<_HomeEntry> entries;
+  final Set<String> favorites;
+  final ValueChanged<String> onToggleFavorite;
+  final VoidCallback onOpenMods;
+
+  @override
+  State<_DirectorHome> createState() => _DirectorHomeState();
+}
+
+class _DirectorHomeState extends State<_DirectorHome> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  List<_HomeEntry> get _filtered {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.entries;
+    return widget.entries
+        .where(
+          (e) =>
+              e.title.toLowerCase().contains(q) ||
+              e.description.toLowerCase().contains(q),
+        )
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final all = _filtered;
+    final favorites = all
+        .where((e) => widget.favorites.contains(e.id))
+        .toList();
+    final builtin = all
+        .where(
+          (e) =>
+              e.category == _HomeCategory.builtin &&
+              !widget.favorites.contains(e.id),
+        )
+        .toList();
+    final extension = all
+        .where(
+          (e) =>
+              e.category == _HomeCategory.extension &&
+              !widget.favorites.contains(e.id),
+        )
+        .toList();
+    final resource = all
+        .where(
+          (e) =>
+              e.category == _HomeCategory.resource &&
+              !widget.favorites.contains(e.id),
+        )
+        .toList();
+
+    return Container(
+      color: palette.bgDeep2,
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(28, 26, 28, 48),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1360),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _heading(),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: 560,
+                    child: fluent.TextBox(
+                      controller: _searchCtrl,
+                      placeholder: '搜索功能，如人物、剧情、物品…',
+                      onChanged: (v) => setState(() => _query = v),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _section(
+                    '收藏区',
+                    favorites,
+                    empty: '点击功能卡片右上角的星星，把常用功能放到这里。',
+                  ),
+                  _section('游戏内置编辑器可编辑项', builtin),
+                  _section('编辑器拓展', extension),
+                  _tools(),
+                  _section('素材库', resource),
+                  if (all.isEmpty && _query.trim().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 20),
+                      child: Text(
+                        '没有匹配的功能。',
+                        style: TextStyle(fontSize: 12.5, color: palette.textMuted),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _heading() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '模组编辑功能',
+                style: TextStyle(
+                  fontSize: 27,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.5,
+                  color: palette.textHigh,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '选择要编辑的内容。各功能默认只显示这个模组的记录。',
+                style: TextStyle(fontSize: 13, color: palette.textMuted),
+              ),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: palette.panel,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: palette.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                FluentIcons.apps_24_regular,
+                size: 13,
+                color: palette.textHint,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '当前模组：${widget.modName}',
+                style: TextStyle(fontSize: 12, color: palette.textSecondary),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _section(String title, List<_HomeEntry> items, {String empty = ''}) {
+    if (items.isEmpty && empty.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: palette.goldText,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (items.isEmpty)
+            Text(
+              empty,
+              style: TextStyle(fontSize: 12, color: palette.textMuted),
+            )
+          else
+            LayoutBuilder(
+              builder: (context, box) {
+                final w = box.maxWidth;
+                final columns = (w / 300).floor().clamp(1, 4);
+                const gap = 14.0;
+                final cardW = (w - gap * (columns - 1)) / columns;
+                return Wrap(
+                  spacing: gap,
+                  runSpacing: gap,
+                  children: [
+                    for (final e in items)
+                      SizedBox(
+                        width: cardW,
+                        height: 172,
+                        child: _HomeCard(
+                          entry: e,
+                          favorite: widget.favorites.contains(e.id),
+                          onToggleFavorite: widget.onToggleFavorite,
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tools() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 26),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '模组管理',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: palette.goldText,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _ToolButton(
+                label: '模组信息',
+                icon: FluentIcons.apps_24_regular,
+                onTap: widget.onOpenMods,
+              ),
+              _ToolButton(
+                label: '游戏素材缓存',
+                icon: FluentIcons.box_24_regular,
+                onTap: () => widget.entries
+                    .firstWhere(
+                      (e) => e.id == 'feat:resources',
+                      orElse: () => widget.entries.first,
+                    )
+                    .onOpen(),
+              ),
+              _ToolButton(
+                label: '导出 / 导入',
+                icon: FluentIcons.arrow_sync_24_regular,
+                onTap: widget.onOpenMods,
+              ),
+              _ToolButton(
+                label: '删除模组',
+                icon: FluentIcons.dismiss_24_regular,
+                danger: true,
+                onTap: widget.onOpenMods,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomeCard extends StatefulWidget {
+  const _HomeCard({
+    required this.entry,
+    required this.favorite,
+    required this.onToggleFavorite,
+  });
+
+  final _HomeEntry entry;
+  final bool favorite;
+  final ValueChanged<String> onToggleFavorite;
+
+  @override
+  State<_HomeCard> createState() => _HomeCardState();
+}
+
+class _HomeCardState extends State<_HomeCard> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.entry.onOpen,
+              child: AnimatedContainer(
+                duration: AppMotion.fast,
+                curve: AppMotion.easeOut,
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: _hover ? palette.card : palette.panel,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: _hover
+                        ? accentColor.withValues(alpha: 0.55)
+                        : palette.border,
+                  ),
+                  boxShadow: _hover
+                      ? [
+                          BoxShadow(
+                            color: palette.scrimWeak,
+                            blurRadius: 14,
+                            offset: const Offset(0, 4),
+                          ),
+                        ]
+                      : [],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      // 给右上角星标留位
+                      padding: const EdgeInsets.only(right: 30),
+                      child: Row(
+                        children: [
+                          Icon(
+                            widget.entry.icon,
+                            size: 17,
+                            color: accentColor,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              widget.entry.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: palette.textHigh,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: Text(
+                        widget.entry.description,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.6,
+                          color: palette.textMuted,
+                        ),
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          '打开 →',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: accentColor,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          widget.entry.hint,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: palette.textHint,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 10,
+            right: 10,
+            child: Tooltip(
+              message: widget.favorite ? '取消收藏' : '收藏',
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => widget.onToggleFavorite(widget.entry.id),
+                  child: AnimatedContainer(
+                    duration: AppMotion.fast,
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: _hover
+                          ? palette.hover
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      widget.favorite
+                          ? FluentIcons.star_24_filled
+                          : FluentIcons.star_24_regular,
+                      size: 16,
+                      color: widget.favorite
+                          ? palette.goldText
+                          : palette.textHint,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolButton extends StatelessWidget {
+  const _ToolButton({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.danger = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool danger;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = danger ? palette.danger : palette.textPrimary;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: palette.panel,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: danger ? palette.danger.withValues(alpha: 0.5) : palette.border,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 7),
+              Text(label, style: TextStyle(fontSize: 12.5, color: color)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 配置表工作台：页面标签 + Schema 编辑器（条目列表 / 字段表单）+ 信息栏。
 class _DirectorPagesView extends StatefulWidget {
-  const _DirectorPagesView({required this.state, this.onPreview});
+  const _DirectorPagesView({
+    required this.state,
+    required this.initialPageId,
+    required this.onHome,
+    this.onPreview,
+    this.onOpenSearch,
+  });
+
   final AppState state;
+  final String initialPageId;
+  final VoidCallback onHome;
   final ValueChanged<String>? onPreview;
+  final VoidCallback? onOpenSearch;
+
   @override
   State<_DirectorPagesView> createState() => _DirectorPagesViewState();
 }
 
 class _DirectorPagesViewState extends State<_DirectorPagesView> {
-  String _pageId = 'story';
+  late String _pageId = widget.initialPageId;
+  late String _cfgName = pageById(_pageId)?.defaultCfg ?? '';
+
+  @override
+  void didUpdateWidget(covariant _DirectorPagesView old) {
+    super.didUpdateWidget(old);
+    if (old.initialPageId != widget.initialPageId) {
+      final page = pageById(widget.initialPageId);
+      if (page != null) {
+        setState(() {
+          _pageId = widget.initialPageId;
+          _cfgName = page.defaultCfg;
+        });
+      }
+    }
+  }
+
+  void _selectPage(String id) {
+    final page = pageById(id);
+    if (page == null) return;
+    setState(() {
+      _pageId = id;
+      _cfgName = page.defaultCfg;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final page = pageById(_pageId);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          width: 224,
-          color: palette.panel,
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: visibleEditorPages.length,
-            itemBuilder: (context, i) {
-              final p = visibleEditorPages[i];
-              final sel = p.id == _pageId;
-              return MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _pageId = p.id),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: sel
-                          ? accentColor.withValues(alpha: 0.14)
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(7),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          FluentIcons.document_24_regular,
-                          size: 14,
-                          color: sel ? accentColor : palette.textHint,
+    return Container(
+      color: palette.bgDeep2,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _tabs(),
+          Expanded(
+            child: page == null
+                ? const SizedBox.shrink()
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: SchemaEditorView(
+                          // key 按 cfg 区分：切表时 State 必须重建，否则编辑区停留在旧表。
+                          key: ValueKey('director-schema-$_cfgName'),
+                          state: widget.state,
+                          cfgName: _cfgName,
+                          onPreview: widget.onPreview,
+                          onOpenSearch: widget.onOpenSearch,
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            p.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight:
-                                  sel ? FontWeight.w600 : FontWeight.normal,
-                              color:
-                                  sel ? palette.textHigh : palette.textPrimary,
-                            ),
-                          ),
+                      ),
+                      VerticalDivider(width: 1, color: palette.border),
+                      SizedBox(
+                        width: 248,
+                        child: _PageInfoRail(
+                          page: page,
+                          cfgName: _cfgName,
+                          onSelectCfg: (c) => setState(() => _cfgName = c),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ),
-              );
-            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabs() {
+    return Container(
+      height: 46,
+      decoration: BoxDecoration(
+        color: palette.panel,
+        border: Border(bottom: BorderSide(color: palette.border)),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Row(
+          children: [
+            _HomeBackLink(onTap: widget.onHome),
+            const SizedBox(width: 8),
+            for (final p in editorPages) ...[
+              _PageTab(
+                label: p.title,
+                selected: p.id == _pageId,
+                onTap: () => _selectPage(p.id),
+              ),
+              const SizedBox(width: 2),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PageTab extends StatefulWidget {
+  const _PageTab({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  @override
+  State<_PageTab> createState() => _PageTabState();
+}
+
+class _PageTabState extends State<_PageTab> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: widget.selected
+                ? accentColor.withValues(alpha: 0.14)
+                : _hover
+                ? palette.card
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: widget.selected ? FontWeight.w600 : FontWeight.normal,
+              color: widget.selected
+                  ? palette.textHigh
+                  : _hover
+                  ? palette.textPrimary
+                  : palette.textSecondary,
+            ),
           ),
         ),
-        VerticalDivider(width: 1, color: palette.border),
-        Expanded(
-          child: page == null
-              ? const SizedBox.shrink()
-              : EditorPageView(
-                  // key 必须按页面区分：同位置同类型组件若无 key，切页时 State
-                  // 被复用，_cfg 停在首个页面的 defaultCfg。
-                  key: ValueKey(page.id),
-                  state: widget.state,
-                  page: page,
-                  onPreview: widget.onPreview,
-                ),
+      ),
+    );
+  }
+}
+
+class _PageInfoRail extends StatelessWidget {
+  const _PageInfoRail({
+    required this.page,
+    required this.cfgName,
+    required this.onSelectCfg,
+  });
+
+  final EditorPageDef page;
+  final String cfgName;
+  final ValueChanged<String> onSelectCfg;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: palette.panel,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              page.title,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: palette.textHigh,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              page.description,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.7,
+                color: palette.textMuted,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              '可编辑配置表',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: palette.goldText,
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (final cfg in page.cfgNames)
+              _CfgChip(
+                label: cfgDisplayName(cfg),
+                selected: cfg == cfgName,
+                onTap: () => onSelectCfg(cfg),
+              ),
+            const SizedBox(height: 16),
+            Text(
+              '提示：条目列表在左、字段表单在右；本栏可切换当前页面里的配置表。',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.7,
+                color: palette.textHint,
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
+    );
+  }
+}
+
+class _CfgChip extends StatefulWidget {
+  const _CfgChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  @override
+  State<_CfgChip> createState() => _CfgChipState();
+}
+
+class _CfgChipState extends State<_CfgChip> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: widget.selected
+                ? accentColor.withValues(alpha: 0.14)
+                : _hover
+                ? palette.card
+                : palette.bgDeep2,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: widget.selected
+                  ? accentColor.withValues(alpha: 0.4)
+                  : palette.border,
+            ),
+          ),
+          child: Text(
+            widget.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              color: widget.selected
+                  ? palette.textHigh
+                  : palette.textSecondary,
+              fontWeight:
+                  widget.selected ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -976,21 +1959,20 @@ class _DirectorHelp extends StatelessWidget {
                             '点右侧「刷新」可重新载入当前视图。',
                         '右侧为常用入口：主页、模组管理、云同步、操作说明、设置、AI 与界面布局切换。',
                       ]),
-                      _helpSection('功能模块', const [
-                        '主页：功能卡片总览，点卡片直接进入对应模块。',
-                        '剧情舞台：对话线 / 舞台画面即写台词 / 人物与表情的三栏编排。',
-                        '配置表：Schema 驱动的全部编辑页面，左侧切换页面。',
-                        '资源 / 文件 / 插件 / 云同步 / 模组 / 全局功能搜索 / 扫描修复：其余编辑与维护入口。',
+                      _helpSection('主页与功能模块', const [
+                        '进入导演工作台先到主页：搜索、收藏并选择要编辑的功能。',
+                        '游戏内置编辑器可编辑项：剧情舞台与各配置页面。',
+                        '编辑器拓展 / 素材库 / 模组管理：插件、云同步、文件、搜索、修复、素材与模组维护。',
+                      ]),
+                      _helpSection('配置表工作台', const [
+                        '顶部标签切换页面；中间左侧条目列表、右侧字段表单；右栏可切换本页配置表。',
                       ]),
                       _helpSection('右下角快捷工具', const [
-                        '常驻托盘提供 操作说明 / 模组管理 / 设置 / AI 的快捷入口，'
-                            '点最下方箭头可收起或展开。',
+                        '常驻托盘提供 操作说明 / 模组管理 / 设置 的快捷入口，'
+                            '点最下方箭头可收起或展开；AI 助手是右下角的圆形按钮。',
                       ]),
                       _helpSection('常用快捷键', const [
-                        'Ctrl+F：全局功能搜索',
-                        'Ctrl+P：模组预览',
                         'Ctrl+Z / Ctrl+Y：撤销 / 重做（配置表文档）',
-                        'Ctrl+S：保存当前编辑内容',
                       ]),
                       const SizedBox(height: 8),
                       Text(

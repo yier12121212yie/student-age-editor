@@ -48,7 +48,7 @@ void main() {
     expect(find.text('模组: 测试模组'), findsOneWidget);
     // 工具栏按钮（_ToolbarButton 将 emoji 与文字分成两个 Text）
     expect(find.text('加载 / 切换模组'), findsOneWidget);
-    expect(find.text('全局功能搜索 (Ctrl+F)'), findsOneWidget);
+    expect(find.text('剧情库检索'), findsOneWidget);
     expect(find.text('扫描修复'), findsOneWidget);
     // 分组导航（基础配置 / 内容创作 / 玩法主题 / 官方生态）。
     // 页面增多后导航超出视口：先断言首屏内容，再滚动验证末组。

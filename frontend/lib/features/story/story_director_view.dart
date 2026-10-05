@@ -3390,7 +3390,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           child: GestureDetector(
             onTap: () => _selectTalk(id),
             child: Container(
-              // 左侧高亮条：选中 = 主题紫，当前节点 = 橙色
+              // 左侧高亮条：选中 = 主题色，当前节点 = 橙色
               decoration: BoxDecoration(
                 color: selected
                     ? palette.hover

@@ -252,7 +252,7 @@ Element RowsPane(const AppState& s, int width, int lh) {
         out.push_back(text("  （无匹配行）") | color(th::TextDim()));
     if (s.editing) {
         out.push_back(separator());
-        out.push_back(hbox({text(" 编辑值> ") | bold | color(th::FocusPurple()),
+        out.push_back(hbox({text(" 编辑值> ") | bold | color(th::FocusAccent()),
                             text(s.edit_buffer + "▏") | inverted}));
     }
     out.push_back(filler());
@@ -381,7 +381,7 @@ Element DetailPane(const AppState& s, int width, int lh) {
                     hbox({text(" ┃ "), text(box) | color(th::TextMain()), filler()}) |
                     bgcolor(Color::RGB(0x2a, 0x2a, 0x2e));
                 if (selected && s.editing_field)
-                    value_line |= borderStyled(BorderStyle::HEAVY, th::FocusPurple());
+                    value_line |= borderStyled(BorderStyle::HEAVY, th::FocusAccent());
                 out.push_back(std::move(value_line));
             }
         }
@@ -389,7 +389,7 @@ Element DetailPane(const AppState& s, int width, int lh) {
     if (s.editing_field) {
         out.push_back(separator());
         out.push_back(hbox({text(" 编辑 " + s.field_name + "> ") | bold |
-                                color(th::FocusPurple()),
+                                color(th::FocusAccent()),
                             text(s.field_buffer + "▏") | inverted}));
         // 无代码模式：就地候选列表 / 参数槽二级选择（Tab/↑↓ 选，Enter 接受）。
         const int sug_h = std::min(6, lh);
@@ -409,7 +409,7 @@ Element DetailPane(const AppState& s, int width, int lh) {
                                         (i == s.sug.entry_sel ? "» " : "  ") + e.first +
                                         " · " + e.second;
                     Element line = text(Cut(label, static_cast<size_t>(width)));
-                    if (i == s.sug.entry_sel) line |= bgcolor(th::FocusPurple()) | color(Color::White);
+                    if (i == s.sug.entry_sel) line |= bgcolor(th::FocusAccent()) | color(Color::White);
                     out.push_back(std::move(line));
                 }
             } else {
@@ -422,7 +422,7 @@ Element DetailPane(const AppState& s, int width, int lh) {
                 std::string label = std::string("  ") + (i == s.sug.sel ? "» " : "  ") +
                                     Cut(f.desc, static_cast<size_t>(std::max(4, width - 12)));
                 Element line = text(label);
-                if (i == s.sug.sel) line |= bgcolor(th::FocusPurple()) | color(Color::White);
+                if (i == s.sug.sel) line |= bgcolor(th::FocusAccent()) | color(Color::White);
                 out.push_back(std::move(line));
             }
             out.push_back(text("  ↑↓/Tab 选 · Enter 接受 · 打字过滤 · Esc 手输") |
@@ -685,7 +685,7 @@ Element TtsBody(const AppState& s, int width, int lh) {
                         color(th::TextMain());
         if (sel && s.tts.editing_field) value |= inverted;
         out.push_back(hbox({text(std::string(" ") + kLabels[i] + " ") |
-                                (sel ? color(th::FocusPurple()) | bold : color(th::TextDim())),
+                                (sel ? color(th::FocusAccent()) | bold : color(th::TextDim())),
                             std::move(value),
                             filler()}));
     }

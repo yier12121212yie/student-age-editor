@@ -589,8 +589,8 @@ class _WelcomeViewState extends State<_WelcomeView>
                     const SizedBox(width: 6),
                     Text(
                       MediaQuery.sizeOf(context).width < 720
-                          ? '提示：点击右上角搜索图标全局功能搜索配置'
-                          : '提示：按 Ctrl+F 全局功能搜索配置',
+                          ? '提示：点击右上角搜索图标检索剧情库'
+                          : '提示：从左侧「编辑页面」选择要编辑的配置表',
                       style: TextStyle(
                         fontSize: 11,
                         color: palette.textSecondary,

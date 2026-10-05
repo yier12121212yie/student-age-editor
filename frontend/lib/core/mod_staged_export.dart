@@ -14,8 +14,12 @@ import 'blob_put.dart';
 class StagedModExport {
   StagedModExport._();
 
-  /// 返回 `(filename, bytes)`；[onStage] 的阶段与进度（0..1，null=不确定）。
-  static Future<({String filename, Uint8List bytes})> run(
+  /// 返回 `(filename, bytes, url)`；[onStage] 的阶段与进度（0..1，null=不确定）。
+  ///
+  /// 字节能取回时 `bytes` 非空（带页内进度）；对象存储/CDN 未放行 CORS 时退回
+  /// 浏览器原生下载（`bytes == null`，调用方用 [downloadUrlNative] 触发），
+  /// 不再因跨域把整个导出链路判失败。
+  static Future<({String filename, Uint8List? bytes, String url})> run(
     String? name, {
     void Function(String label, double? frac)? onStage,
   }) async {
@@ -56,9 +60,15 @@ class StagedModExport {
     }
 
     onStage?.call('下载中', 0);
-    final bytes = await getBytesFromUrl(url, onProgress: (received, total) {
-      if (total > 0) onStage?.call('下载中', received / total);
-    });
-    return (filename: filename, bytes: bytes);
+    try {
+      final bytes = await getBytesFromUrl(url, onProgress: (received, total) {
+        if (total > 0) onStage?.call('下载中', received / total);
+      });
+      return (filename: filename, bytes: bytes, url: url);
+    } catch (_) {
+      // 对象存储/CDN 未放行 CORS（或直链读取失败）：退回浏览器原生下载。
+      onStage?.call('浏览器下载', null);
+      return (filename: filename, bytes: null, url: url);
+    }
   }
 }

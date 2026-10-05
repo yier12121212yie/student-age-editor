@@ -6,6 +6,7 @@ import 'package:file_selector/file_selector.dart';
 import 'dart:convert';
 
 import '../../core/api_client.dart';
+import '../../core/blob_put.dart' show downloadUrlNative;
 import '../../core/file_save.dart';
 import '../../core/mod_staged_export.dart';
 import '../../core/mod_staged_import.dart';
@@ -239,10 +240,12 @@ class _ModsPageState extends State<ModsPage> {
       );
       stage.value = const _ModImportStage('保存中', 1, done: true);
       await dialogShown;
-      final saved = await saveBytesToFile(
-          filename: out.filename,
-          bytes: out.bytes,
-          mimeType: 'application/zip');
+      final saved = out.bytes != null
+          ? await saveBytesToFile(
+              filename: out.filename,
+              bytes: out.bytes!,
+              mimeType: 'application/zip')
+          : await _saveByNativeDownload(out.url, out.filename);
       if (mounted && saved != null) {
         fluent.displayInfoBar(
             context,
@@ -258,6 +261,12 @@ class _ModsPageState extends State<ModsPage> {
     } finally {
       stage.dispose();
     }
+  }
+
+  /// 对象存储/CDN 未放行 CORS 时，走浏览器原生下载（不读字节、必然不触发跨域）。
+  Future<String?> _saveByNativeDownload(String url, String filename) async {
+    await downloadUrlNative(url, filename: filename);
+    return filename;
   }
 
   /// 旧 base64 导出通道（桌面；web 未配对象存储时的小模组回退）。

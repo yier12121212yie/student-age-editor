@@ -13,6 +13,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../blocks/block_catalog.dart';
 import '../editor/suggestion_text_field.dart';
 
 /// 字典池名（ATTR/ROLE/…）→ /api/dicts game_dicts 的键。
@@ -427,9 +428,13 @@ class _CatalogBrowserDialog extends StatefulWidget {
 }
 
 class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
+  static const _pageSize = 24;
+
   final TextEditingController _q = TextEditingController();
   List<Suggestion> _items = const [];
-  bool _loading = false;
+  bool _loading = true;
+  String _category = '全部';
+  int _page = 0;
 
   @override
   void initState() {
@@ -445,29 +450,12 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
 
   Future<void> _fetch(String q) async {
     setState(() => _loading = true);
-    List<Suggestion> found = const [];
-    try {
-      final resp = await ApiClient.instance
-          .get('/api/effect_suggest', query: {'q': q, 'mode': widget.mode});
-      final list = (resp['items'] as List? ?? const []).cast<Map>();
-      found = [
-        for (final e in list)
-          Suggestion(
-            e['code']?.toString() ?? '',
-            e['desc']?.toString() ?? '',
-            template: e['raw_code']?.toString() ?? e['code']?.toString() ?? '',
-            slots: [
-              for (final s in (e['slots'] as List? ?? const []).cast<Map>())
-                SuggestionSlot.fromJson(s),
-            ],
-          ),
-      ];
-    } catch (_) {
-      // 后端不可达时保持空列表（对话框仍可关闭）
-    }
+    await BlockCategoryEngine.instance.ensureLoaded();
+    final found = await loadBlockCatalog(widget.mode, q);
     if (!mounted) return;
     setState(() {
       _items = found;
+      _page = 0;
       _loading = false;
     });
   }
@@ -488,48 +476,161 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final engine = BlockCategoryEngine.instance;
+    final mode = blockModeFor(widget.mode);
+    final categories = engine.categoriesFor(
+      widget.mode,
+      _items.map((e) => e.code),
+    );
+    if (!categories.contains(_category)) _category = '全部';
+    final filtered = _items
+        .where((e) =>
+            _category == '全部' ||
+            engine.categoryFor(widget.mode, e.code) == _category)
+        .toList();
+    final pages = filtered.isEmpty ? 1 : ((filtered.length - 1) ~/ _pageSize) + 1;
+    if (_page >= pages) _page = pages - 1;
+    final visible = filtered.skip(_page * _pageSize).take(_pageSize).toList();
     return AlertDialog(
       title: Text(widget.title, style: const TextStyle(fontSize: 14)),
       content: SizedBox(
-        width: 460,
-        height: 420,
+        width: 500,
+        height: 480,
         child: Column(
           children: [
             fluent.TextBox(
               controller: _q,
-              placeholder: '搜索效果（中文描述或代码片段）…',
+              placeholder: '搜索${mode.label}（中文描述或代码片段）…',
               style: const TextStyle(fontSize: 12),
               onChanged: (v) => _fetch(v.trim()),
             ),
             const SizedBox(height: 8),
+            if (categories.length > 1)
+              SizedBox(
+                height: 30,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  children: [
+                    for (final c in categories)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: _CatChip(
+                          label: c,
+                          selected: _category == c,
+                          onTap: () => setState(() {
+                            _category = c;
+                            _page = 0;
+                          }),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 4),
             Expanded(
               child: _loading && _items.isEmpty
                   ? const Center(child: fluent.ProgressRing())
-                  : ListView.builder(
-                      itemCount: _items.length,
-                      itemBuilder: (c, i) {
-                        final s = _items[i];
-                        return ListTile(
-                          dense: true,
-                          title: Text(s.desc,
-                              style: const TextStyle(fontSize: 12.5),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          subtitle: Text(s.code,
-                              style: const TextStyle(fontSize: 10.5, fontFamily: 'Consolas'),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          onTap: () => _pick(s),
-                        );
-                      },
-                    ),
+                  : visible.isEmpty
+                      ? Center(
+                          child: Text('没有匹配的候选',
+                              style: TextStyle(
+                                  fontSize: 12, color: palette.textHint)))
+                      : ListView.builder(
+                          itemCount: visible.length,
+                          itemBuilder: (c, i) {
+                            final s = visible[i];
+                            return ListTile(
+                              dense: true,
+                              title: Text(s.desc,
+                                  style: const TextStyle(fontSize: 12.5),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis),
+                              subtitle: Text(
+                                  '${engine.categoryFor(widget.mode, s.code)} · ${s.code}',
+                                  style: const TextStyle(
+                                      fontSize: 10.5,
+                                      fontFamily: 'Consolas'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis),
+                              onTap: () => _pick(s),
+                            );
+                          },
+                        ),
             ),
+            if (!_loading || _items.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    Text('${filtered.length} 项 · ${_page + 1}/$pages',
+                        style: TextStyle(
+                            fontSize: 10.5, color: palette.textHint)),
+                    const Spacer(),
+                    fluent.Button(
+                      onPressed: _page > 0
+                          ? () => setState(() => _page--)
+                          : null,
+                      child: const Text('上一页',
+                          style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 6),
+                    fluent.Button(
+                      onPressed: _page + 1 < pages
+                          ? () => setState(() => _page++)
+                          : null,
+                      child: const Text('下一页',
+                          style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),
       actions: [
         fluent.Button(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
       ],
+    );
+  }
+}
+
+/// 目录分类小胶囊（与积木库同一视觉，不依赖其私有组件）。
+class _CatChip extends StatelessWidget {
+  const _CatChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: selected ? palette.tintAccent : null,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: selected ? palette.accentLight : palette.border,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: selected ? palette.textHigh : palette.textMuted,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

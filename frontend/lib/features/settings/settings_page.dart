@@ -1658,8 +1658,7 @@ class _AppearanceSectionState extends State<_AppearanceSection> {
   /// 主题色预设色板：用户可直接点选的强调色种子。
   /// 这些字面量在 light_theme_audit_test 里按文件放行（预设清单必须写死）。
   static const _accentPresets = <(String, Color)>[
-    ('品牌紫', Color(0xFF6C5CE7)),
-    ('海蓝', Color(0xFF4F6EF7)),
+    ('品牌蓝', Color(0xFF4F6EF7)),
     ('弗蓝', Color(0xFF0078D4)),
     ('青碧', Color(0xFF00897B)),
     ('森绿', Color(0xFF43A047)),
@@ -1698,7 +1697,7 @@ class _AppearanceSectionState extends State<_AppearanceSection> {
   void _applyHex() {
     final c = AppAccentColor.parse(_hexCtrl.text);
     if (c == null) {
-      setState(() => _hint = 'HEX 格式不正确，请输入如 #6C5CE7 的颜色');
+      setState(() => _hint = 'HEX 格式不正确，请输入如 #4F6EF7 的颜色');
       return;
     }
     _pickAccent(c);
@@ -1762,7 +1761,7 @@ class _AppearanceSectionState extends State<_AppearanceSection> {
               Expanded(
                 child: _StyleCard(
                   title: '亮色',
-                  desc: '浅色界面，适合明亮环境',
+                  desc: '浅色界面（默认），适合明亮环境',
                   icon: FluentIcons.weather_sunny_24_regular,
                   selected: AppTheme.mode.value == AppThemeMode.light,
                   onTap: () => _pick(AppThemeMode.light),
@@ -1772,7 +1771,7 @@ class _AppearanceSectionState extends State<_AppearanceSection> {
               Expanded(
                 child: _StyleCard(
                   title: '暗色',
-                  desc: '深色界面（默认），适合夜间使用',
+                  desc: '深色界面，适合夜间使用',
                   icon: FluentIcons.weather_moon_24_regular,
                   selected: AppTheme.mode.value == AppThemeMode.dark,
                   onTap: () => _pick(AppThemeMode.dark),
@@ -1861,7 +1860,7 @@ class _AppearanceSectionState extends State<_AppearanceSection> {
                       width: 130,
                       child: fluent.TextBox(
                         controller: _hexCtrl,
-                        placeholder: '#6C5CE7',
+                        placeholder: '#4F6EF7',
                         onSubmitted: (_) => _applyHex(),
                       ),
                     ),

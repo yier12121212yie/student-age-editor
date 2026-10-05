@@ -10,18 +10,18 @@ void main() {
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
-    // 每个用例从暗色基线开始；主题色也清回默认紫（ValueNotifier 是静态的，
+    // 每个用例从暗色基线开始；主题色也清回默认品牌蓝（ValueNotifier 是静态的，
     // 不清会跨用例残留派生调色板，破坏 `same(AppPalette.dark)` 断言）。
     AppTheme.accent.value = kDefaultAccent;
     await AppTheme.apply(AppThemeMode.dark, save: false);
   });
 
-  test('AppThemeMode 解析：默认暗色，非法值回退暗色', () {
-    expect(AppThemeMode.fromPrefsValue(null), AppThemeMode.dark);
+  test('AppThemeMode 解析：默认亮色，非法值回退亮色', () {
+    expect(AppThemeMode.fromPrefsValue(null), AppThemeMode.light);
     expect(AppThemeMode.fromPrefsValue('light'), AppThemeMode.light);
     expect(AppThemeMode.fromPrefsValue('dark'), AppThemeMode.dark);
     expect(AppThemeMode.fromPrefsValue('system'), AppThemeMode.system);
-    expect(AppThemeMode.fromPrefsValue('bogus'), AppThemeMode.dark);
+    expect(AppThemeMode.fromPrefsValue('bogus'), AppThemeMode.light);
   });
 
   test('切亮色：调色板翻转并写入持久化', () async {
@@ -164,13 +164,13 @@ void main() {
     expect(d.checkerA.toARGB32(), 0xFFE1E1E6);
     expect(d.checkerB.toARGB32(), 0xFFFFFFFF);
     expect(d.chipSep.toARGB32(), 0xFFFFFFFF);
-    expect(d.accentDeep.toARGB32(), 0xFF4A3DB8);
+    expect(d.accentDeep.toARGB32(), 0xFF2F49C4);
     expect(d.primaryColor.toARGB32(), 0xFF4F6EF7);
     expect(d.tombstoneFill.toARGB32(), 0xFF424242);
     expect(d.catSprite.toARGB32(), 0xFF0078D4);
     expect(d.catTexture.toARGB32(), 0xFF00B294);
     expect(d.catAudio.toARGB32(), 0xFFF25460);
-    expect(accentColor.toARGB32(), 0xFF6C5CE7); // 品牌紫：两模式同值
+    expect(accentColor.toARGB32(), 0xFF4F6EF7); // 品牌蓝：两模式同值
   });
 
   test('亮色是独立一套值，且 isLight 为真', () {
@@ -197,22 +197,22 @@ void main() {
 
   // ---------- 用户主题色 ----------
 
-  test('默认品牌紫：withAccent 恒等返回，accentSwatch 沿用历史七档（逐位不变回归守门）', () {
+  test('默认品牌蓝：withAccent 恒等返回，accentSwatch 固定七档（逐位不变回归守门）', () {
     expect(AppPalette.dark.withAccent(kDefaultAccent), same(AppPalette.dark));
     expect(AppPalette.light.withAccent(kDefaultAccent), same(AppPalette.light));
     final sw = accentSwatch();
-    expect(sw['normal']!.toARGB32(), 0xFF6C5CE7);
-    expect(sw['dark']!.toARGB32(), 0xFF5A4BD1);
-    expect(sw['darker']!.toARGB32(), 0xFF4A3DB8);
-    expect(sw['darkest']!.toARGB32(), 0xFF3B3096);
-    expect(sw['light']!.toARGB32(), 0xFF8B7FEF);
-    expect(sw['lighter']!.toARGB32(), 0xFFA99FF4);
-    expect(sw['lightest']!.toARGB32(), 0xFFC7C0F9);
+    expect(sw['normal']!.toARGB32(), 0xFF4F6EF7);
+    expect(sw['dark']!.toARGB32(), 0xFF3E5BE8);
+    expect(sw['darker']!.toARGB32(), 0xFF2F49C4);
+    expect(sw['darkest']!.toARGB32(), 0xFF22379E);
+    expect(sw['light']!.toARGB32(), 0xFF778EF9);
+    expect(sw['lighter']!.toARGB32(), 0xFF99ABFA);
+    expect(sw['lightest']!.toARGB32(), 0xFFBBC7FC);
   });
 
   test('HEX 解析/序列化与非法值', () {
-    expect(AppAccentColor.parse('#6C5CE7')!.toARGB32(), 0xFF6C5CE7);
-    expect(AppAccentColor.parse('6c5ce7')!.toARGB32(), 0xFF6C5CE7);
+    expect(AppAccentColor.parse('#4F6EF7')!.toARGB32(), 0xFF4F6EF7);
+    expect(AppAccentColor.parse('4f6ef7')!.toARGB32(), 0xFF4F6EF7);
     expect(AppAccentColor.parse(' #FF0000 '), const Color(0xFFFF0000));
     expect(AppAccentColor.parse('#12345'), isNull);
     expect(AppAccentColor.parse('#1234567'), isNull);
@@ -289,7 +289,7 @@ void main() {
   });
 
   test('AppShadow.selected 随主题色', () {
-    expect(AppShadow.selected().single.color.toARGB32(), 0x806C5CE7); // 默认沿用历史值
+    expect(AppShadow.selected().single.color.toARGB32(), 0x804F6EF7); // 默认品牌蓝
     AppTheme.accent.value = const Color(0xFF0078D4);
     expect(AppShadow.selected().single.color.toARGB32(), 0x800078D4);
   });

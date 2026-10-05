@@ -1,7 +1,7 @@
 // p8_theme.h — the Alpha-v0.3 (Python Textual) look, ported to FTXUI.
 //
 // The Python TUI was a VS Code Dark+ pastiche: blue #007acc panel title bars,
-// layered gray backgrounds (#252526 / #1e1e1e / #1f1f1f), purple #6c5ce7 focus
+// layered gray backgrounds (#252526 / #1e1e1e / #1f1f1f), blue #4f6ef7 focus
 // accents and semantic status colors. Those hex values and the shared chrome
 // builders (panel title bar / modal frame / hint line) live here so the
 // renderer keeps only layout. Everything returns ftxui Elements/Decorators and
@@ -31,7 +31,7 @@ Color DirtyRed();    // #f48771 unsaved-changes title
 Color SyncGreen();   // #89d185 synced title / success text
 Color WarnColor();   // #a66a00 warning
 Color ErrorColor();  // #be1100 error
-Color FocusPurple();// #6c5ce7 focused input border (form mode)
+Color FocusAccent();// #4f6ef7 focused input border (form mode)
 Color SectionOrange();  // #ff8c00 form section headers
 
 // ---- shared chrome --------------------------------------------------------

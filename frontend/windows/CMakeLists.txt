@@ -53,9 +53,29 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 add_subdirectory("runner")
 
 
+# NuGet 临时目录兜底。
+# audioplayers_windows 在 configure 阶段会用 FetchContent 下载
+# build/.../_deps/nuget-src/nuget.exe 并执行:
+#   nuget install Microsoft.Windows.ImplementationLibrary ...
+# 某些安全/沙箱软件会限制“可执行文件位于本仓库内”的子进程写入系统临时目录
+# (%LOCALAPPDATA%\Temp\NuGetScratch)，导致报错:
+#   Unable to obtain lock file access on '...\NuGetScratch\lock' ...
+#   Failed to install nuget package Microsoft.Windows.ImplementationLibrary
+# 这里把 NuGet 使用的临时目录指向构建目录（build/ 已在 .gitignore），
+# 使位于仓库内的 nuget.exe 可写；只在生成插件工程期间生效，随后恢复。
+set(_sa_saved_TMP "$ENV{TMP}")
+set(_sa_saved_TEMP "$ENV{TEMP}")
+set(_sa_nuget_tmp "${CMAKE_BINARY_DIR}/nuget-tmp")
+file(MAKE_DIRECTORY "${_sa_nuget_tmp}")
+set(ENV{TMP} "${_sa_nuget_tmp}")
+set(ENV{TEMP} "${_sa_nuget_tmp}")
+
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
+
+set(ENV{TMP} "${_sa_saved_TMP}")
+set(ENV{TEMP} "${_sa_saved_TEMP}")
 
 
 # === Installation ===

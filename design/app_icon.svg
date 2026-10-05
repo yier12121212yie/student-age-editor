@@ -3,7 +3,7 @@
   学生时代 Mod 编辑器 (Student Age Mod Editor) 项目图标
   画布: 1024x1024,圆角方形紫色渐变底
   主体: 白色学士帽 + 金色铅笔
-  配色与应用品牌一致: #6C5CE7(主紫) / #8B7FEF(浅紫) / #F2C25C(金黄)
+  配色与应用品牌一致: #4F6EF7(主蓝) / #778EF9(浅蓝) / #F2C25C(金黄)
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <title>学生时代 Mod 编辑器</title>
@@ -12,13 +12,13 @@
   <defs>
     <!-- 背景对角渐变 -->
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#6C5CE7"/>
-      <stop offset="1" stop-color="#8B7FEF"/>
+      <stop offset="0" stop-color="#4F6EF7"/>
+      <stop offset="1" stop-color="#778EF9"/>
     </linearGradient>
     <!-- 帽筒底部轻微暗调,增加体积感 -->
     <linearGradient id="headGrad" x1="0" y1="515" x2="0" y2="645" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#E7E1FB"/>
+      <stop offset="1" stop-color="#E7ECFB"/>
     </linearGradient>
   </defs>
 
@@ -35,11 +35,11 @@
     <path d="M397 515 L627 515 L627 585 Q627 640 572 640 L452 640 Q397 640 397 585 Z"
           fill="url(#headGrad)"/>
     <!-- 帽板侧缘厚度 -->
-    <path d="M204 420 L512 550 L820 420 L820 448 L512 578 L204 448 Z" fill="#D9D2F8"/>
+    <path d="M204 420 L512 550 L820 420 L820 448 L512 578 L204 448 Z" fill="#D2DCF8"/>
     <!-- 帽板顶面 -->
     <path d="M512 290 L820 420 L512 550 L204 420 Z" fill="#FFFFFF"/>
     <!-- 帽顶纽扣 -->
-    <circle cx="512" cy="420" r="25" fill="#FFFFFF" stroke="#D9D2F8" stroke-width="7"/>
+    <circle cx="512" cy="420" r="25" fill="#FFFFFF" stroke="#D2DCF8" stroke-width="7"/>
 
     <!-- ===== 流苏(金黄) ===== -->
     <path d="M512 424 Q690 470 818 436 Q829 447 829 472 L829 552"
@@ -63,9 +63,9 @@
       <line x1="160" y1="-20" x2="510" y2="-20" stroke="#FFFFFF" stroke-opacity="0.35"
             stroke-width="6" stroke-linecap="round"/>
       <!-- 金属箍 -->
-      <rect x="520" y="-33" width="58" height="66" fill="#F5F2FF"/>
-      <line x1="536" y1="-33" x2="536" y2="33" stroke="#C9C2F0" stroke-width="4"/>
-      <line x1="556" y1="-33" x2="556" y2="33" stroke="#C9C2F0" stroke-width="4"/>
+      <rect x="520" y="-33" width="58" height="66" fill="#F2F5FF"/>
+      <line x1="536" y1="-33" x2="536" y2="33" stroke="#C2CDF0" stroke-width="4"/>
+      <line x1="556" y1="-33" x2="556" y2="33" stroke="#C2CDF0" stroke-width="4"/>
       <!-- 橡皮擦 -->
       <path d="M578 -33 L590 -33 Q630 -33 630 0 Q630 33 590 33 L578 33 Z" fill="#E0982F"/>
     </g>

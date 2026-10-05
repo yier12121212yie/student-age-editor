@@ -75,7 +75,33 @@ class AppState extends ChangeNotifier {
   /// ValueKey(uiMode) 重建整壳、销毁画布状态，注册方负责弹「未保存」
   /// 确认并返回 false 中止切换。注册/注销不经 notifyListeners
   /// （AA 状态等轮询通知频繁，避免守卫赋值触发全量重建）。
+  ///
+  /// 单槽旧接口，保留给剧情画布 / 剧情工作室（切模式时它们必然是被销毁的
+  /// 那一个）。多实例共存的工作台请用 [registerLeaveGuard]，避免互相覆盖。
   Future<bool> Function()? leaveGuard;
+
+  /// 多实例离开守卫（workbench 等会同时保活多个的组件注册）。
+  /// key 为注册者自身（State 实例），同一 owner 重复注册覆盖旧值。
+  final Map<Object, Future<bool> Function()> _leaveGuards = {};
+
+  void registerLeaveGuard(Object owner, Future<bool> Function() guard) {
+    _leaveGuards[owner] = guard;
+  }
+
+  void unregisterLeaveGuard(Object owner) {
+    _leaveGuards.remove(owner);
+  }
+
+  /// 运行所有离开守卫（旧单槽 + 注册表）。任一守卫返回 false 即中止并
+  /// 返回 false；全部通过返回 true。
+  Future<bool> runLeaveGuards() async {
+    final legacy = leaveGuard;
+    if (legacy != null && !await legacy()) return false;
+    for (final g in _leaveGuards.values.toList(growable: false)) {
+      if (!await g()) return false;
+    }
+    return true;
+  }
 
   void setAaStatus(String value) {
     if (aaStatus == value) return; // 值未变化不通知，避免轮询期间触发全量重建

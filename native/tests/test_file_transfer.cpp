@@ -455,3 +455,45 @@ TEST_CASE("file_transfer: CDN without auth key stays unsigned", "[file_transfer]
     REQUIRE(download_url(cfg, key, 1700000000) ==
             "https://cdn.example.com/editor-files/warm/abc/file.bin");
 }
+
+TEST_CASE("file_transfer: browser direct transfer configures bucket CORS once",
+          "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosConfig cfg;
+    cfg.secret_id = "AKIDTEST";
+    cfg.secret_key = "SECRETKEY";
+    cfg.bucket = "testbucket-1250000000";
+    cfg.region = "ap-guangzhou";
+    cfg.public_endpoint = "https://cos.ap-guangzhou.myqcloud.com";
+    cfg.cors_origins = "https://online.editor.liveint.cloud";
+
+    std::atomic<int> calls{0};
+    std::string seen_origins;
+    CosOps ops;
+    ops.put_cors = [&](const CosConfig&, const std::string& origins, std::string*) -> bool {
+        seen_origins = origins;
+        ++calls;
+        return true;
+    };
+    set_cos_ops_for_test(ops);
+    struct Reset {
+        ~Reset() { reset_cos_ops_for_test(); }
+    } reset;
+    reset_bucket_cors_once_for_test();
+
+    std::string err;
+    REQUIRE(put_bucket_cors(cfg, &err));
+    REQUIRE(seen_origins == "https://online.editor.liveint.cloud");
+
+    // 一次性：再次触发不再调用（进程内只配一次，避免每个请求都写桶）。
+    ensure_bucket_cors_once(cfg);
+    ensure_bucket_cors_once(cfg);
+    REQUIRE(calls.load() == 2);  // put_bucket_cors 显式一次 + ensure 首次一次
+
+    // 关闭开关时不触发。
+    reset_bucket_cors_once_for_test();
+    CosConfig off = cfg;
+    off.cors_enabled = false;
+    ensure_bucket_cors_once(off);
+    REQUIRE(calls.load() == 2);
+}

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/app_theme.dart';
+import '../blocks/block_library.dart';
 import '../editor/field_meta.dart';
 import '../editor/field_utils.dart';
 import 'effect_block_editor.dart';
@@ -63,6 +64,19 @@ class NoCodeEffectField extends StatelessWidget {
   /// 1D 码字段（screenEffect）：一句话只能一个屏幕效果。
   bool get _singleRow => type == '1D Array';
 
+  /// 用完整积木库（分类目录 + 多行搭建）替换字段内容。
+  Future<void> _openLibrary(BuildContext context, String text) async {
+    final out = await showBlockLibrary(
+      context,
+      initialText: text,
+      initialMode: _mode,
+      gameDicts: gameDicts,
+      singleRow: _singleRow,
+    );
+    if (out == null) return;
+    onChanged(ValueCodec.decode(out, type));
+  }
+
   @override
   Widget build(BuildContext context) {
     final text = ValueCodec.encode(value);
@@ -70,6 +84,24 @@ class NoCodeEffectField extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (!dense)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              children: [
+                Text('积木编辑',
+                    style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: palette.textMuted)),
+                const Spacer(),
+                fluent.Button(
+                  onPressed: () => _openLibrary(context, text),
+                  child: const Text('打开积木库', style: TextStyle(fontSize: 10)),
+                ),
+              ],
+            ),
+          ),
         EffectBlockEditor(
           key: ValueKey('nocode-blocks-$cfg-$fieldKey-$type'),
           initialText: text,

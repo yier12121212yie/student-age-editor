@@ -4,7 +4,7 @@
     "start_url": ".",
     "display": "standalone",
     "background_color": "#1b1b2e",
-    "theme_color": "#6C5CE7",
+    "theme_color": "#4F6EF7",
     "description": "面向《学生时代》模组作者的可视化编辑工具：AI 对话式改模、剧情图节点编排、多网盘云同步、TTS 配音。",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,

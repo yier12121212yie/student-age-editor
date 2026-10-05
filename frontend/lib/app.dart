@@ -129,13 +129,10 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
 
   Future<void> _setUiMode(UiMode mode) async {
     if (mode == _uiMode) return;
-    // 壳按 ValueKey(_uiMode) 整体重建：内容区注册的守卫（剧情图画布的
-    // 未保存确认）必须先通过，否则舞台编辑会被无声丢弃
-    final guard = state.leaveGuard;
-    if (guard != null) {
-      final ok = await guard();
-      if (!ok || !mounted) return;
-    }
+    // 壳按 ValueKey(_uiMode) 整体重建：内容区注册的守卫（剧情图画布、
+    // 各工作台的未保存修改）必须先通过，否则编辑内容会被无声丢弃。
+    if (!await state.runLeaveGuards()) return;
+    if (!mounted) return;
     await mode.save();
     if (!mounted) return;
     setState(() {
@@ -272,8 +269,8 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
         meta is Map && meta['appearanceModeExplicit'] == true;
     try {
       if (!explicit) {
-        // 种子迁移：只在值非默认（暗色）时写，避免无意义写入。
-        if (AppTheme.mode.value != AppThemeMode.dark) {
+        // 种子迁移：只在值非默认（亮色）时写，避免无意义写入。
+        if (AppTheme.mode.value != AppThemeMode.light) {
           // PUT 前复查：等待期间用户可能刚手动选了外观，种子不得盖过它。
           if (AppTheme.userTouchedThisSession) return;
           await ApiClient.instance.put('/api/settings/editor',
@@ -351,7 +348,7 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
 
   /// 构建 Fluent 主题（亮/暗共用强调色与字体，亮色为新增）。
   ///
-  /// accent 色阶随用户主题色变化：默认品牌紫沿用历史七档，自定义色派生。
+  /// accent 色阶随用户主题色变化：默认品牌蓝沿用固定七档，自定义色派生。
   fluent.FluentThemeData _fluentTheme(Brightness brightness) {
     return fluent.FluentThemeData(
       brightness: brightness,
@@ -483,7 +480,7 @@ class _StudentAgeEditorAppState extends State<StudentAgeEditorApp>
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           value: null,
-                          // 品牌紫 → 当前外观的浅一档（dark=#8B7FEF 与历史同值）
+                          // 品牌蓝 → 当前外观的浅一档
                           color: Color.lerp(accentColor, palette.accentLight, (v * 2) % 1),
                         ),
                       ),

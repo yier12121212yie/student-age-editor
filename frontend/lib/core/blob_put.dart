@@ -2,7 +2,8 @@
 ///
 /// - Web：`package:web` 的 XMLHttpRequest——[putXFileToUrl] 把 XFile 背后的浏览器
 ///   Blob 直接 `send()` 给预签名 URL（零 Dart 堆大字节拷贝）；调用方已持有字节
-///   时用 [putBytesToUrl]；[getBytesFromUrl] 按预签名直链取回字节（带进度）。
+///   时用 [putBytesToUrl]；[getBytesFromUrl] 按预签名直链取回字节（带进度）；
+///   [downloadUrlNative] 让浏览器原生下载（不读字节、无需对象存储放行 CORS）。
 /// - IO 平台：`package:http` 兜底（桌面/安卓的模组导入导出走本机路径与文件选择器，
 ///   正常不会走到这里）。
 library;

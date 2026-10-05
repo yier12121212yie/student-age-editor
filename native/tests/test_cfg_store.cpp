@@ -7,6 +7,8 @@
 // B6 digest beats mtime.
 #include <catch_amalgamated.hpp>
 
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -85,6 +87,38 @@ void bump_mtime(const std::string& p) {
     auto st = cs::stat(p);
     REQUIRE(st.has_value());
     REQUIRE(cs::set_mtime_ns(p, st->mtime_ns + 1000000000LL));
+}
+
+// What a browser echoes back for a >2^53 integer it parsed from JSON. JS and
+// Dart-on-web hold it as an IEEE-754 double and print the shortest decimal
+// that round-trips (positional below 1e21) — e.g. 1700000000123456789 becomes
+// the JSON integer 1700000000123456800, which is NOT
+// (long long)(double)1700000000123456789 == ...768. That shortest decimal is
+// the exact value the server receives as expect_mtime_ns, so the regression
+// test must feed it rather than the double's integer expansion.
+long long web_echo_mtime(long long ns) {
+    const double d = static_cast<double>(ns);
+    char buf[64];
+    for (int prec = 1; prec <= 17; ++prec) {
+        std::snprintf(buf, sizeof(buf), "%.*g", prec, d);
+        if (std::strtod(buf, nullptr) == d) break;  // shortest round-trip
+    }
+    std::string s(buf);
+    const size_t epos = s.find_first_of("eE");
+    int exp10 = 0;
+    if (epos != std::string::npos) {
+        exp10 = std::atoi(s.c_str() + epos + 1);
+        s.erase(epos);
+    }
+    const size_t dot = s.find('.');
+    int frac = 0;
+    if (dot != std::string::npos) {
+        frac = static_cast<int>(s.size() - dot - 1);
+        s.erase(dot, 1);
+    }
+    long long digits = std::stoll(s);
+    for (int shift = exp10 - frac; shift-- > 0;) digits *= 10;
+    return digits;
 }
 
 std::string sha1_of_file(const std::string& p) {
@@ -228,8 +262,11 @@ TEST_CASE("web JS double round-trip of a >2^53 mtime still matches, real edits c
     CHECK(stale["reason"] == "mtime");
     CHECK(cs::stat(fx.p())->mtime_ns == actual);  // conflict wrote nothing
 
-    // What a web client actually echoes: the nearest double, integer-encoded.
-    const long long web_echo = static_cast<long long>(static_cast<double>(actual));
+    // What a web client actually echoes: the shortest decimal that round-trips
+    // to the double, which differs from the double's exact integer value. This
+    // is the shape that used to trip the byte-equality comparison.
+    const long long web_echo = web_echo_mtime(actual);
+    CHECK(web_echo != static_cast<long long>(static_cast<double>(actual)));
     auto r = store::write_cfg(fx.p(), json{{"1", json{{"id", 1}, {"name", "web"}}}}, web_echo);
     CHECK(r["ok"] == true);
     CHECK(fx.read_direct() == json{{"1", json{{"id", 1}, {"name", "web"}}}});

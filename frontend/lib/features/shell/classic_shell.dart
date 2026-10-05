@@ -193,7 +193,7 @@ class _ClassicShellState extends State<ClassicShell> {
                 uiMode: widget.uiMode,
                 modName: state.modName.isEmpty ? '(未加载/空白)' : state.modName,
                 onGlobalSearch: () =>
-                    _showToolModal('🔍 全局功能搜索', BaseSearchPage(state: state)),
+                    _showToolModal('🔍 剧情库检索', BaseSearchPage(state: state)),
                 onModPreview: () {
                   shell.controller.open(OpenDoc.preview(eventId: '8000'));
                 },
@@ -305,7 +305,7 @@ class _ClassicShellState extends State<ClassicShell> {
                               },
                               onOpenSearch: () {
                                 _showToolModal(
-                                  '🔍 全局功能搜索',
+                                  '🔍 剧情库检索',
                                   BaseSearchPage(state: state),
                                 );
                               },
@@ -376,13 +376,13 @@ class _ClassicHeader extends StatelessWidget {
     final buttons = <Widget>[
       _ToolbarButton(
         emoji: '🔍',
-        label: '全局功能搜索 (Ctrl+F)',
+        label: '剧情库检索',
         onPressed: onGlobalSearch,
         delay: 0,
       ),
       _ToolbarButton(
         emoji: '📑',
-        label: '模组预览 (Ctrl+P)',
+        label: '模组预览',
         onPressed: onModPreview,
         delay: 1,
       ),
@@ -750,7 +750,7 @@ class _ClassicNav extends StatelessWidget {
           Expanded(
             // 指示条置于滚动内容之内（Stack 的兄弟 Column 决定高度）：随列表
             // 一起滚动。此前指示条在 ListView 之外、位置按未滚动坐标计算，列表
-            // 一旦滚动紫条就停在原位，与选中项错位（尤其「玩法主题」等长分组）。
+            // 一旦滚动主题色条就停在原位，与选中项错位（尤其「玩法主题」等长分组）。
             child: SingleChildScrollView(
               key: const ValueKey('classic-nav-list'),
               padding: EdgeInsets.zero,
@@ -825,7 +825,7 @@ class _ClassicNav extends StatelessWidget {
             ),
           ),
           Divider(color: palette.border, height: 1),
-          // 底部 AI/设置仍保留原有选中态（AI 用淡入紫条，设置无条）
+          // 底部 AI/设置仍保留原有选中态（AI 用淡入主题色条，设置无条）
           Stack(
             children: [
               Column(

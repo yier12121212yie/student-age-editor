@@ -89,6 +89,23 @@ Future<Uint8List> getBytesFromUrl(
   return done.future;
 }
 
+/// 浏览器原生下载：用隐藏 `<a>` 触发下载，不读字节、不经过 XHR，因此**无需**
+/// 对象存储 / CDN 放行 CORS，也不会把整包读进 Dart 堆（大 zip 更稳）。
+///
+/// 跨域时浏览器可能忽略 `download` 建议名（以 URL 末段为准）——预签名下载
+/// 直链末段即安全文件名（`safe_name`），因此落地名仍然正确。
+Future<void> downloadUrlNative(String url, {String? filename}) {
+  final anchor = web.document.createElement('a') as web.HTMLAnchorElement;
+  anchor
+    ..href = url
+    ..style.display = 'none';
+  if (filename != null && filename.isNotEmpty) anchor.download = filename;
+  web.document.body?.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  return Future<void>.value();
+}
+
 Future<void> _putBody(
   JSAny? body,
   String url, {

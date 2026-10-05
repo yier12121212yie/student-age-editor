@@ -157,3 +157,31 @@ class AppContentDialog extends StatelessWidget {
     );
   }
 }
+
+/// 统一的破坏性删除确认。返回 true 表示用户确认删除。
+///
+/// 各工作台的删除此前有的弹确认、有的直接删；此入口收敛文案与按钮语义。
+/// [message] 应说明删的是什么，并提示「保存前可放弃修改回退」。
+Future<bool> confirmDelete(BuildContext context, String message) async {
+  final ok = await fluent.showDialog<bool>(
+    context: context,
+    builder: (ctx) => AppContentDialog(
+      title: const Text('确认删除'),
+      content: Text(
+        message,
+        style: const TextStyle(fontSize: 12.5, height: 1.5),
+      ),
+      actions: [
+        fluent.Button(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('取消'),
+        ),
+        fluent.FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('删除'),
+        ),
+      ],
+    ),
+  );
+  return ok == true;
+}

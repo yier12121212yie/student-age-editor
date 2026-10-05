@@ -650,11 +650,11 @@ TEST_CASE("p1 routes: /api/settings/editor no-code toggle", "[p1][routes][nocode
 TEST_CASE("p1 routes: /api/settings/editor appearance mode (白日模式)", "[p1][routes][appearance]") {
     P1Fixture fx;
 
-    // 默认暗色；appearance_mode 从没写过 → explicit=false（GUI 据此把本地
+    // 默认亮色；appearance_mode 从没写过 → explicit=false（GUI 据此把本地
     // 已选外观种子上传，而不是被默认值覆盖）。
     auto g = fx.call("GET", "/api/settings/editor");
     REQUIRE(g.status == 200);
-    CHECK(g.json_payload.at("settings").at("appearanceMode") == "dark");
+    CHECK(g.json_payload.at("settings").at("appearanceMode") == "light");
     CHECK(g.json_payload.at("meta").at("appearanceModeExplicit") == false);
 
     // PUT light 生效并转 explicit=true；noCodeMode 不受影响。
@@ -694,11 +694,11 @@ TEST_CASE("p1 routes: /api/settings/editor appearance mode (白日模式)", "[p1
 TEST_CASE("p1 routes: /api/settings/editor theme color (用户主题色)", "[p1][routes][appearance]") {
     P1Fixture fx;
 
-    // 默认品牌紫；theme_color 从没写过 → explicit=false（GUI 据此把本地
+    // 默认品牌蓝；theme_color 从没写过 → explicit=false（GUI 据此把本地
     // 已选主题色种子上传，而不是被默认值覆盖）。
     auto g = fx.call("GET", "/api/settings/editor");
     REQUIRE(g.status == 200);
-    CHECK(g.json_payload.at("settings").at("themeColor") == "#6c5ce7");
+    CHECK(g.json_payload.at("settings").at("themeColor") == "#4f6ef7");
     CHECK(g.json_payload.at("meta").at("themeColorExplicit") == false);
 
     // PUT 生效并转 explicit=true；大小写输入归一为小写落盘。

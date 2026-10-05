@@ -65,6 +65,8 @@ bool status_from_name(const std::string& name, Status* out);
 //   EDITOR_FILE_RECLAIM_INTERVAL              后台回收扫描间隔（默认 60s）
 //   EDITOR_FILE_S3_ENABLED                    是否启用 S3 直传开关（默认 false）
 //   EDITOR_FILE_S3_THRESHOLD_BYTES            S3 直传阈值（默认 50 MiB）
+//   EDITOR_FILE_COS_CORS_ORIGINS              桶 CORS 放行来源（逗号分隔，默认 *）
+//   EDITOR_FILE_COS_CORS_DISABLE              =1 关闭启动时自动写桶 CORS
 // ---------------------------------------------------------------------------
 struct CosConfig {
     std::string secret_id;
@@ -93,6 +95,13 @@ struct CosConfig {
     long long reclaim_interval_seconds = 60;
     bool s3_direct_enabled = false;
     long long s3_threshold_bytes = 50LL * 1024 * 1024;  // 50 MiB
+
+    // 浏览器直传/直链下载必须由桶的 CORS 放行；自托管默认帮管理员把这条规则
+    // 写好（否则浏览器 PUT/GET 一律被 CORS 拦下，表现为「上传/下载必报错」）。
+    //   EDITOR_FILE_COS_CORS_ORIGINS  允许来源，逗号分隔，默认 "*"
+    //   EDITOR_FILE_COS_CORS_DISABLE  =1 关闭自动配置（管理员自管桶策略时）
+    bool cors_enabled = true;
+    std::string cors_origins = "*";
 
     bool ready() const;
 };
@@ -129,6 +138,8 @@ struct CosOps {
     std::function<bool(const CosConfig&, const std::string&, const std::string&, std::string*)> upload;
     // remove(cfg, key, err)
     std::function<bool(const CosConfig&, const std::string&, std::string*)> remove;
+    // put_cors(cfg, origins_csv, err) —— 写桶 CORS 规则（浏览器直传前置条件）
+    std::function<bool(const CosConfig&, const std::string&, std::string*)> put_cors;
 };
 
 bool default_download(const CosConfig& cfg, const std::string& key,
@@ -136,6 +147,14 @@ bool default_download(const CosConfig& cfg, const std::string& key,
 bool default_upload(const CosConfig& cfg, const std::string& local_path,
                     const std::string& key, std::string* err);
 bool default_remove(const CosConfig& cfg, const std::string& key, std::string* err);
+bool default_put_cors(const CosConfig& cfg, const std::string& origins_csv, std::string* err);
+
+// 浏览器直传前置：把桶 CORS 配置成允许站点来源 PUT/GET。best-effort——失败
+// 只记错误返回 false，不阻塞上传（管理员可能已手工配好其它策略）。幂等。
+bool put_bucket_cors(const CosConfig& cfg, std::string* err);
+// 进程内只尝试一次（首个 upload/request 触发）；供测试重置。
+void ensure_bucket_cors_once(const CosConfig& cfg);
+void reset_bucket_cors_once_for_test();
 
 CosOps make_default_ops();
 void set_cos_ops_for_test(const CosOps& ops);

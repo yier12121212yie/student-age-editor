@@ -34,7 +34,7 @@ class ActivityBar extends StatefulWidget {
 
 class _ActivityBarState extends State<ActivityBar> {
   // 条目区在窗口过矮时可滚动：指示条按布局坐标计算，必须随滚动偏移平移，
-  // 否则滚动后紫条与选中项错位。
+  // 否则滚动后主题色条与选中项错位。
   final ScrollController _scroll = ScrollController();
   double _scrollOffset = 0;
 
@@ -328,7 +328,7 @@ class _ActivityBarState extends State<ActivityBar> {
                   ),
                 ),
               ),
-              // 滑动紫条 - 连续位移动画（置于顶层，避免被按钮背景覆盖）
+              // 滑动主题色条 - 连续位移动画（置于顶层，避免被按钮背景覆盖）
               // Positioned 必须是 Stack 直接子级：IgnorePointer 移入 AnimatedPositioned 内部
               AnimatedPositioned(
                 duration: AppMotion.normal,

@@ -45,7 +45,7 @@ Color DirtyRed() { return Hex(0xf48771); }
 Color SyncGreen() { return Hex(0x89d185); }
 Color WarnColor() { return Hex(0xa66a00); }
 Color ErrorColor() { return Hex(0xbe1100); }
-Color FocusPurple() { return Hex(0x6c5ce7); }
+Color FocusAccent() { return Hex(0x4f6ef7); }
 Color SectionOrange() { return Hex(0xff8c00); }
 
 Element PanelTitleBar(const std::string& emoji, const std::string& title, bool focused) {

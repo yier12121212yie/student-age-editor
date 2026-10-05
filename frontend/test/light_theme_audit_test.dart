@@ -13,8 +13,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// 全仓库放行的颜色：无。
 ///
-/// 历史上品牌紫 `Color(0xFF6C5CE7)` 在此放行；主题色可由用户自定义后它是
-/// 违规写法——实底主色走 `accentColor`（动态 getter），变体走 palette token。
+/// 主题色可由用户自定义，实底主色走 `accentColor`（动态 getter），变体走
+/// palette token；设置页的主题色预设清单必须写死，按文件放行。
 const brandAllowedEverywhere = <String>[];
 
 /// 完全豁免的文件（调色板/派生定义处）。
@@ -24,7 +24,6 @@ const fullyExemptFiles = <String>{'core/app_theme.dart'};
 const allowedInFiles = <String, List<String>>{
   'features/settings/settings_page.dart': [
     // 主题色预设色板：用户可选种子色的清单必须写死；勾选取前景的两档中性色。
-    'Color(0xFF6C5CE7)',
     'Color(0xFF4F6EF7)',
     'Color(0xFF0078D4)',
     'Color(0xFF00897B)',

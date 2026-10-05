@@ -103,6 +103,8 @@ void main() {
     // 顶部工程栏品牌 + 副标题
     expect(find.text('学生时代模组编辑器'), findsOneWidget);
     expect(find.text('导演工作台'), findsOneWidget);
+    // 进入导演布局先到主页（功能总览）
+    expect(find.text('模组编辑功能'), findsOneWidget);
     // 状态栏模组名
     expect(find.text('模组: 测试模组'), findsOneWidget);
     // 导演的下一模式是创作
@@ -133,6 +135,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(tester.takeException(), isNull, reason: '导演布局在 800x600 下不应溢出');
+
+    // 配置表工作台的「条目列表 / 表单 / 信息栏」三栏在窄窗下也不应溢出。
+    await tester.tap(find.text('故事').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull, reason: '配置表工作台在 800x600 下不应溢出');
   });
 
   testWidgets('导演工作台：主页卡片 / 功能切换 / 操作说明', (tester) async {
@@ -155,19 +163,17 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    // 顶栏「主页」进入功能总览。
-    await tester.tap(find.text('主页'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('选择下面的功能模块开始编辑当前模组'), findsOneWidget);
+    // 首页：标题 + 功能卡片 + 模组管理工具 + 打开入口。
+    expect(find.text('模组编辑功能'), findsOneWidget);
+    expect(find.text('剧情舞台'), findsWidgets);
+    expect(find.text('模组管理'), findsOneWidget);
+    expect(find.text('打开 →'), findsWidgets);
 
-    // 点「配置表」卡片进入页面目录。
-    await tester.tap(find.text('配置表').last);
+    // 点「故事」页面卡片进入配置表工作台。
+    await tester.tap(find.text('故事').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    // 「剧情工作台」已从入口列表隐藏（仅供「故事」页跳转），列表里出的是「故事」。
-    expect(find.text('剧情工作台'), findsNothing);
-    expect(find.text('故事'), findsWidgets);
+    expect(find.text('可编辑配置表'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     // 操作说明覆盖层。
