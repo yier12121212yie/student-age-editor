@@ -798,10 +798,14 @@ void register_semantic_routes(Router& r) {
         if (patch.contains("appearanceMode") && patch["appearanceMode"].is_string()) {
             const std::string want = patch["appearanceMode"].get<std::string>();
             // 只认枚举值：非法写入不改库，但也不报错（与 noCodeMode 同风格）。
-            json env = sa_core::env_store::read_editor_env(sa::editor_root());
-            const std::string before = appearance_enum(env, nullptr);
             if (want == "system" || want == "light" || want == "dark") {
-                if (want != before)
+                json env = sa_core::env_store::read_editor_env(sa::editor_root());
+                // 必须比对 editor_env.json 是否真写过该键（explicit），不能只比对
+                // 生效值——否则「首次显式写入默认值」（如默认 light 时 PUT light）
+                // 会被 want==before 短路，键永不落盘、explicit 永远为 false。
+                bool explicit_before = false;
+                const std::string before = appearance_enum(env, &explicit_before);
+                if (!explicit_before || want != before)
                     sa_core::env_store::merge_editor_env(sa::editor_root(),
                                                          json{{"appearance_mode", want}});
             }
@@ -814,7 +818,10 @@ void register_semantic_routes(Router& r) {
                          norm.substr(1).find_first_not_of("0123456789abcdef") == std::string::npos;
             if (valid) {
                 json env = sa_core::env_store::read_editor_env(sa::editor_root());
-                if (norm != theme_hex(env, nullptr))
+                // 同 appearanceMode：首次写入默认品牌色也要落盘并转 explicit。
+                bool explicit_before = false;
+                const std::string before = theme_hex(env, &explicit_before);
+                if (!explicit_before || norm != before)
                     sa_core::env_store::merge_editor_env(sa::editor_root(),
                                                          json{{"theme_color", norm}});
             }
