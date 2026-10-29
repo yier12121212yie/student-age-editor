@@ -54,6 +54,11 @@ std::future<std::string> compute_revision_async();
 // Cache invalidation: called when local write succeeds (to invalidate any cached state).
 void invalidate_cache();
 
+// B2：写成功后用「已落盘字节的摘要」直接播种单文件指纹，避免紧接着的
+// 全量重算重新读取并 SHA-256 刚写的大表。路径分隔符会在内部归一。
+void seed_file_fingerprint(const std::string& abs_path, long long mtime_ns,
+                           long long size, const std::string& hash);
+
 // NTFS-specific: enable/disable ChangeTime monitoring (Windows only).
 // Default: enabled on Windows, disabled on other platforms.
 void set_ntfs_monitoring_enabled(bool enabled);

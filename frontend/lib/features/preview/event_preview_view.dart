@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -14,6 +13,7 @@ import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../ai/ai_panel.dart';
 import '../editor/editor_controller.dart';
+import '../../core/editor_leave_guard.dart';
 import '../resources/image_asset_picker.dart'
     show TexBytesCache, TexSource, TexSourceImage;
 import '../settings/settings_page.dart';
@@ -22,8 +22,13 @@ import 'preview_models.dart';
 import 'stage_effects.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/texture_budget.dart';
 
 /// 事件场景预览视图：把当前事件（EvtCfg + TalkCfg + OptionCfg）渲染成
+/// 立绘预加载并发上限（阶段 5·C11）：一句里同时在途的立绘不超过这么多张，
+/// 避免 5~6 张一起「下载 + base64 解码 + 纹理上传」把切句峰值顶起来。
+const int _preloadConcurrency = 3;
+
 /// 视觉小说式游戏场景（背景 + 立绘 + 对白 + 选项），支持对白导航、
 /// 画笔圈选并呼出 AI 侧栏修改命中内容。
 class EventPreviewView extends StatefulWidget {
@@ -243,6 +248,9 @@ class _EventPreviewViewState extends State<EventPreviewView> {
         _imgCache.clear();
         _imgErrors.clear();
         _imgUrls.clear();
+        // 阶段 5：换模组/换事件 = 换一场戏，顺手把上一场留在引擎里的**解码位图**
+        // 也放掉（`_imgCache.clear()` 只清压缩字节，位图仍在 GPU 侧缓存表里）。
+        TextureBudget.releaseScene();
         // 音频/效果状态随整场重置。
         _fx = const StageVisual();
         _fxFlashToken = _fxShakeToken = 0;
@@ -269,6 +277,15 @@ class _EventPreviewViewState extends State<EventPreviewView> {
   }
 
   /// 预加载当前对白的背景与立绘（并缓存）。
+  ///
+  /// 阶段 5·C11：原先用 `Future.wait` 把一句里所有立绘**一次性全并发**拉起——
+  /// 5~6 张立绘会在同一时刻一起「下载 + base64 解码 + 纹理上传」，是切句 /
+  /// 冷启动最尖的一处突发峰值（且它们同时抢 isolate 与网络）。改为
+  /// **并发上限 [_preloadConcurrency] 的池**。
+  ///
+  /// 优先级：背景在 [_ensureBg] 里**先行发起**（它铺满整屏，最该先上屏），
+  /// 立绘随后进池。本函数不做「后续句预载」——那属于 C11 的后半段，
+  /// 当前实现本就没有前视，故无需在此裁剪。
   Future<void> _preloadImages() async {
     final talk = currentTalk;
     if (talk == null) return;
@@ -277,12 +294,26 @@ class _EventPreviewViewState extends State<EventPreviewView> {
     if (bg != null && bg.key.isNotEmpty) {
       _ensureBg(bg);
     }
-    // 立绘并发预加载：逐张 await 会把 N 张图的「下载+解码」串成 N 倍延迟。
-    // _loadTex 自带错误处理（失败记入 _imgErrors）与完成后的局部 setState，
-    // 即各自完成后只刷新对应项，不因并发丢错误，这里也无需聚合结果。
-    await Future.wait([
-      for (final c in stage.chars)
-        if (c.tex.isNotEmpty) _loadTex(c.tex),
+    // 去重：同一 tex key 只排一次队（_loadTex 内部也有 _imgLoading 兜底）。
+    final keys = <String>[];
+    final seen = <String>{};
+    for (final c in stage.chars) {
+      if (c.tex.isNotEmpty && seen.add(c.tex)) keys.add(c.tex);
+    }
+    if (keys.isEmpty) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final queue = List<String>.of(keys);
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        await _loadTex(queue.removeAt(0));
+      }
+    }
+
+    await Future.wait(<Future<void>>[
+      for (var i = 0; i < _preloadConcurrency && i < keys.length; i++)
+        worker(),
     ]);
     if (mounted) setState(() {});
   }
@@ -543,7 +574,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
       for (final oid in optIds) {
         final opt = data.options[oid];
         if (opt != null && _overlap(rect, optRect) > 0.25) {
-          hits.add('选项（OptionCfg id=$oid）：「${opt.content}」');
+          hits.add('选项：「${opt.content}」');
         }
       }
     }
@@ -552,7 +583,7 @@ class _EventPreviewViewState extends State<EventPreviewView> {
     if (_overlap(rect, boxRect) > 0.25) {
       final speaker = talk.speakerLabel(data);
       final content = talk.content.trim();
-      hits.add('对白（TalkCfg id=${talk.id}）：说话人「$speaker」${content.isEmpty ? '' : '，内容「$content」'}');
+      hits.add('对白：说话人「$speaker」${content.isEmpty ? '' : '，内容「$content」'}');
     }
     // 立绘区域（按站位）
     for (final c in talk.stage.chars) {
@@ -564,14 +595,14 @@ class _EventPreviewViewState extends State<EventPreviewView> {
       final charRect = Rect.fromLTWH(x0, h * 0.12, w * 0.36, h * 0.62);
       if (_overlap(rect, charRect) > 0.15) {
         final name = data.meta.roles[c.roleId] ?? c.roleId;
-        hits.add('立绘角色（PersonCfg id=${c.roleId}）：$name（站位：${_posLabel(c.pos)}${c.expr > 0 ? '，表情${c.expr}' : ''}）');
+        hits.add('立绘角色：$name（站位：${_posLabel(c.pos)}${c.expr > 0 ? '，表情${c.expr}' : ''}）');
       }
     }
     // 兜底：圈在场景上部/空白处 → 命中背景（含「沿用上一背景」的情形）
     if (hits.isEmpty) {
       final bg = _currentBg(talk);
       hits.add(bg != null
-          ? '背景（BGCfg id=${bg.id}）：「${bg.name.isNotEmpty ? bg.name : bg.id}」'
+          ? '背景：「${bg.name.isNotEmpty ? bg.name : bg.id}」'
           : '背景区域（当前场景无背景条目，仅背景画面）');
     }
     return hits;
@@ -727,8 +758,11 @@ class _EventPreviewViewState extends State<EventPreviewView> {
           },
           onFullscreen: _toggleFullscreen,
           onRefresh: _load,
-          onEdit: () => widget.controller
-              .open(OpenDoc.cfg(cfgName: 'EvtCfg')),
+          onEdit: () => openDocGuarded(
+            context,
+            widget.controller,
+            OpenDoc.cfg(cfgName: 'EvtCfg'),
+          ),
         ),
         Divider(height: 1, color: palette.border),
         Expanded(
@@ -813,38 +847,60 @@ class _EventPreviewViewState extends State<EventPreviewView> {
                       // RepaintBoundary 把「模糊/反色输出」冻结成独立图层：
                       // 对白框/选项/闪白/黑幕这些同帧变化的兄弟节点重绘时不再
                       // 带着整画布 sigma=10 模糊重算（预览里最贵的一笔 GPU 开销）。
-                      RepaintBoundary(
-                        child: applyStageFilters(
-                          Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              if (bgBytes != null)
-                                // 按画布显示宽度 × DPR 限制解码尺寸（1080p 背景降采样）。
-                                Image.memory(bgBytes,
-                                    fit: BoxFit.cover,
-                                    gaplessPlayback: true,
-                                    cacheWidth:
-                                        _decodeCacheWidth(context, cw, factor: 2))
-                              else
-                                _Placeholder(
-                                  label: (bgKey == null || bgKey.isEmpty)
-                                      ? '无背景画面（该对白未指定背景）'
-                                      : (_imgErrors.containsKey(bgKey)
-                                          ? '背景不可用：${_imgErrors[bgKey]}'
-                                          : '背景加载中…'),
-                                  color: palette.bgDeep,
-                                ),
-                              for (final c in talk.stage.chars)
-                                _CharSprite(
-                                  char: c,
-                                  bytes:
-                                      c.tex.isNotEmpty ? _imgCache.get(c.tex) : null,
-                                  url: c.tex.isNotEmpty ? _imgUrls[c.tex] : null,
-                                ),
-                            ],
+                      //
+                      // 阶段 5·B8：全屏 CG 期间用 `Offstage` 把这一层挂起。
+                      // 刻意**不用** `SizedBox.shrink()`：Offstage 的子树仍是
+                      // mounted，其 `Image` 持有的 ImageStream 依旧是 live，因此
+                      // 37 MB 的 CG 不会把刚上屏的背景从 ImageCache 挤出去
+                      // （否则 CG 关掉的瞬间背景要重解码、闪一下）；而 offstage
+                      // 不参与绘制，整画布 sigma=10 模糊与那次 offscreen 合成
+                      // 都被跳过——CG 全遮挡时它本来就看不见。
+                      Offstage(
+                        offstage: _fx.cgRef != null && !_cgDismissed,
+                        child: RepaintBoundary(
+                          child: applyStageFilters(
+                            Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                if (bgBytes != null)
+                                  // 阶段 5·B5：背景按画布显示宽 × DPR 限解码尺寸，
+                                  // 上限收到 2048 —— 真实背景源图最大就是
+                                  // 2048×1152，解到 2048 已是无损；此前 factor 2
+                                  // 会顶到 4096（单张 37.7 MB）。
+                                  // factor 1.5 只覆盖 `BoxFit.cover` 的横向裁切
+                                  // 余量（超宽源图），不再做无脑 2 倍 overscan。
+                                  Image.memory(bgBytes,
+                                      fit: BoxFit.cover,
+                                      gaplessPlayback: true,
+                                      cacheWidth: TextureBudget.decodeWidth(
+                                          context, cw,
+                                          factor: 1.5,
+                                          max: TextureBudget
+                                              .kBackgroundMaxDecodeWidth))
+                                else
+                                  _Placeholder(
+                                    label: (bgKey == null || bgKey.isEmpty)
+                                        ? '无背景画面（该对白未指定背景）'
+                                        : (_imgErrors.containsKey(bgKey)
+                                            ? '背景不可用：${_imgErrors[bgKey]}'
+                                            : '背景加载中…'),
+                                    color: palette.bgDeep,
+                                  ),
+                                for (final c in talk.stage.chars)
+                                  _CharSprite(
+                                    char: c,
+                                    bytes: c.tex.isNotEmpty
+                                        ? _imgCache.get(c.tex)
+                                        : null,
+                                    url: c.tex.isNotEmpty
+                                        ? _imgUrls[c.tex]
+                                        : null,
+                                  ),
+                              ],
+                            ),
+                            blur: _fx.blur,
+                            invert: _fx.invert,
                           ),
-                          blur: _fx.blur,
-                          invert: _fx.invert,
                         ),
                       ),
                       // 选项 / 对白框：不进滤镜层，保持清晰可读。
@@ -887,8 +943,10 @@ class _EventPreviewViewState extends State<EventPreviewView> {
                         StageCgLayer(
                           bytes: _cgBytes,
                           onDismiss: _dismissCg,
-                          // BoxFit.contain 装得下整图，无需 overscan（factor=1）。
-                          cacheWidth: _decodeCacheWidth(context, cw),
+                          // BoxFit.contain 装得下整图，无需 overscan（factor=1）；
+                          // CG 是唯一保留 4096 上限的场景（真正的 4K 大图）。
+                          cacheWidth: TextureBudget.decodeWidth(context, cw,
+                              max: TextureBudget.kCgMaxDecodeWidth),
                         ),
                       // 画笔覆盖层（最上层，交互优先）。
                       if (_brushMode)
@@ -912,6 +970,9 @@ class _EventPreviewViewState extends State<EventPreviewView> {
     unawaited(_audio.dispose());
     _fsEntry?.remove();
     _fsEntry = null;
+    // 阶段 5：预览退场即回收本场留下的解码位图（含全屏预览那条 Overlay 共用
+    // 的同一份缓存）。
+    TextureBudget.releaseScene();
     super.dispose();
   }
 }
@@ -956,19 +1017,14 @@ class _BytesLru {
 /// [compute] 入口：后台 isolate 解码 base64 纹理（手机预览切背景/立绘不掉帧）。
 Uint8List _base64DecodeIsolate(String b64) => base64Decode(b64);
 
-/// 解码宽度上限（物理像素）= 显示宽（逻辑像素）× devicePixelRatio × [factor]，
-/// 夹在 64–4096；显示宽未知（无限约束）返回 null，保持原始解码尺寸。
+/// 解码宽度计算已上收到 `core/texture_budget.dart`（阶段 5 · D14「档位唯一来源」）。
+/// 本文件原先自带的 `_decodeCacheWidth` 已删除：它把上限写死 4096、不做档位收敛，
+/// 且各调用点参数不一致（背景 factor 2 / CG factor 1），是「同一张图解出好几份
+/// 位图」的成因之一。现在统一走
+/// `TextureBudget.decodeWidth(context, w, factor:, max:)`。
 ///
-/// 阶段 4d：`cacheWidth` 只影响解码采样，不改布局尺寸——Flutter 在原图更小时
-/// 按原尺寸解码，因此视觉不变。背景用 [factor] > 1 留余量：`BoxFit.cover`
-/// 会裁切，源图远宽于 16:9 画布时显示宽大于画布宽，需要多解一些才不糊。
-int? _decodeCacheWidth(BuildContext context, double displayWidth,
-    {double factor = 1}) {
-  if (!displayWidth.isFinite || displayWidth <= 0) return null;
-  final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1;
-  final px = (displayWidth * (dpr > 0 ? dpr : 1) * factor).ceil();
-  return px < 64 ? 64 : (px > 4096 ? 4096 : px);
-}
+/// 注意：`cacheWidth` 只影响解码采样，不改布局尺寸——Flutter 在原图更小时按
+/// 原尺寸解码，因此视觉不变。
 
 // ---------------- 工具栏 ----------------
 
@@ -1275,24 +1331,29 @@ class _CharSprite extends StatelessWidget {
             _ => 0.42,
           },
           heightFactor: 0.9,
-          child: Transform.flip(
-            flipX: char.flip,
-            child: hasBytes
-                // 立绘解码宽度按站位盒实际宽度 × DPR（4d）：
-                // 只降采样，显示尺寸仍由 FractionallySizedBox 决定。
-                ? LayoutBuilder(
-                    builder: (context, box) => Image.memory(
-                      bytes!,
+          child: Live2DBreathingActor(
+            child: Transform.flip(
+              flipX: char.flip,
+              child: hasBytes
+                  // 立绘解码宽度按站位盒实际宽度 × DPR，上限 2048（真实立绘源图
+                  // 约 557×1000，2048 已是无损上限）：
+                  // 只降采样，显示尺寸仍由 FractionallySizedBox 决定。
+                  ? LayoutBuilder(
+                      builder: (context, box) => Image.memory(
+                        bytes!,
+                        fit: BoxFit.contain,
+                        alignment: Alignment.bottomCenter,
+                        gaplessPlayback: true,
+                        cacheWidth: TextureBudget.decodeWidth(
+                            context, box.maxWidth,
+                            max: TextureBudget.kPortraitMaxDecodeWidth),
+                      ),
+                    )
+                  : TexSourceImage(
+                      source: TexSource.url(url!),
                       fit: BoxFit.contain,
-                      alignment: Alignment.bottomCenter,
-                      gaplessPlayback: true,
-                      cacheWidth: _decodeCacheWidth(context, box.maxWidth),
                     ),
-                  )
-                : TexSourceImage(
-                    source: TexSource.url(url!),
-                    fit: BoxFit.contain,
-                  ),
+            ),
           ),
         ),
       ),
@@ -1348,7 +1409,7 @@ class _TalkBox extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Flexible(
-                child: Text('TalkCfg #$talkId',
+                child: Text('对白 #$talkId',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 10.5, color: palette.textFaint)),

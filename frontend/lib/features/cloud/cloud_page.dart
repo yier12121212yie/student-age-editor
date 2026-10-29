@@ -31,6 +31,9 @@ class _CloudPageState extends State<CloudPage> {
   final Set<String> _checked = {};
   String _direction = 'upload';
   bool _busy = false;
+  // C5：前端层取消标志。置位后立即释放 _busy、停轮询、丢弃在途结果；后端任务
+  // 若已开始执行可能仍会继续（文案已说明），真中止需后端按 job_id 取消。
+  bool _syncCancelled = false;
   bool _dryRun = false;
   bool _deleteExtra = false;
   dynamic _syncResult;
@@ -384,8 +387,9 @@ class _CloudPageState extends State<CloudPage> {
                   final e = events[i] as Map;
                   final lvl = e['level'] as String? ?? 'info';
                   Color col = palette.textSecondary;
-                  if (lvl=='error') col = palette.statusDanger;
-                  else if (lvl=='warn') col = palette.statusWarn;
+                  if (lvl=='error') {
+                    col = palette.statusDanger;
+                  } else if (lvl=='warn') col = palette.statusWarn;
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal:8, vertical:2),
                     child: Row(children:[
@@ -543,18 +547,19 @@ class _CloudPageState extends State<CloudPage> {
             setDlg(()=>testing=true);
             try{
               final testCfg = <String,dynamic>{};
-              if (type=='local') testCfg['root']=rootLocalCtrl.text.trim();
-              else if (type=='webdav'){ testCfg['url']=urlCtrl.text.trim(); testCfg['username']=userCtrl.text.trim(); if (passCtrl.text.isNotEmpty) testCfg['password']=passCtrl.text; }
+              if (type=='local') {
+                testCfg['root']=rootLocalCtrl.text.trim();
+              } else if (type=='webdav'){ testCfg['url']=urlCtrl.text.trim(); testCfg['username']=userCtrl.text.trim(); if (passCtrl.text.isNotEmpty) testCfg['password']=passCtrl.text; }
               else if (type=='openlist' || type=='alist'){ testCfg['url']=urlCtrl.text.trim(); if(tokenCtrl.text.isNotEmpty) testCfg['token']=tokenCtrl.text.trim(); }
               else if (type=='baidu_netdisk' || type=='baidu'){ if(refreshCtrl.text.isNotEmpty) testCfg['refresh_token']=refreshCtrl.text.trim(); testCfg['openlist_url']=openUrlCtrl.text.trim(); if(openTokenCtrl.text.isNotEmpty) testCfg['openlist_token']=openTokenCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/baidu':mountCtrl.text.trim(); }
               else if (type=='123' || type=='123pan'){ testCfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) testCfg['password']=passCtrl.text; testCfg['openlist_url']=openUrlCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/123':mountCtrl.text.trim(); }
               else if (type=='google_drive' || type=='gdrive'){
-                final _openUrl = openUrlCtrl.text.trim();
-                if(_openUrl.contains('renewapi') || _openUrl.contains('googleui')){ setDlg(()=>errorText='OpenList 地址填写错误：请勿填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口）。直连请留空该字段；走 OpenList 请填你的 OpenList 实例如 http://127.0.0.1:5244'); return; }
+                final openUrl = openUrlCtrl.text.trim();
+                if(openUrl.contains('renewapi') || openUrl.contains('googleui')){ setDlg(()=>errorText='OpenList 地址填写错误：请勿填 https://api.oplist.org/.../renewapi（那是 Token 刷新接口）。直连请留空该字段；走 OpenList 请填你的 OpenList 实例如 http://127.0.0.1:5244'); return; }
                 if(refreshCtrl.text.isNotEmpty) testCfg['refresh_token']=refreshCtrl.text.trim(); 
                 if(gClientIdCtrl.text.trim().isNotEmpty) testCfg['client_id']=gClientIdCtrl.text.trim();
                 if(gClientSecretCtrl.text.isNotEmpty) testCfg['client_secret']=gClientSecretCtrl.text.trim();
-                testCfg['openlist_url']=_openUrl; testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
+                testCfg['openlist_url']=openUrl; testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
               else if (type=='onedrive'){ if(refreshCtrl.text.isNotEmpty) testCfg['refresh_token']=refreshCtrl.text.trim(); if(oClientIdCtrl.text.trim().isNotEmpty) testCfg['client_id']=oClientIdCtrl.text.trim(); if(oClientSecretCtrl.text.isNotEmpty) testCfg['client_secret']=oClientSecretCtrl.text.trim(); testCfg['openlist_url']=openUrlCtrl.text.trim(); testCfg['mount_path']=mountCtrl.text.trim().isEmpty?'/onedrive':mountCtrl.text.trim(); }
               else if (type=='aliyun_oss' || type=='tencent_cos' || type=='aws_s3' || type=='cloudflare_r2'){
                 testCfg['bucket']=bucketCtrl.text.trim();
@@ -587,17 +592,18 @@ class _CloudPageState extends State<CloudPage> {
             }
             Navigator.pop(ctx);
             final cfg=<String,dynamic>{};
-            if (type=='local') cfg['root']=rootLocalCtrl.text.trim();
-            else if (type=='webdav'){ cfg['url']=urlCtrl.text.trim(); cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; }
+            if (type=='local') {
+              cfg['root']=rootLocalCtrl.text.trim();
+            } else if (type=='webdav'){ cfg['url']=urlCtrl.text.trim(); cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; }
             else if (type=='openlist' || type=='alist'){ cfg['url']=urlCtrl.text.trim(); if(tokenCtrl.text.isNotEmpty) cfg['token']=tokenCtrl.text.trim(); }
             else if (type=='baidu_netdisk' || type=='baidu'){ if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim(); cfg['openlist_url']=openUrlCtrl.text.trim(); if(openTokenCtrl.text.isNotEmpty) cfg['openlist_token']=openTokenCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/baidu':mountCtrl.text.trim(); }
             else if (type=='123' || type=='123pan'){ cfg['username']=userCtrl.text.trim(); if(passCtrl.text.isNotEmpty) cfg['password']=passCtrl.text; cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/123':mountCtrl.text.trim(); }
             else if (type=='google_drive' || type=='gdrive'){
-                final _openUrl2 = openUrlCtrl.text.trim();
+                final openUrl2 = openUrlCtrl.text.trim();
                 if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim();
                 if(gClientIdCtrl.text.trim().isNotEmpty) cfg['client_id']=gClientIdCtrl.text.trim();
                 if(gClientSecretCtrl.text.isNotEmpty) cfg['client_secret']=gClientSecretCtrl.text.trim();
-                cfg['openlist_url']=_openUrl2; cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
+                cfg['openlist_url']=openUrl2; cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/gdrive':mountCtrl.text.trim(); }
             else if (type=='onedrive'){ if(refreshCtrl.text.isNotEmpty) cfg['refresh_token']=refreshCtrl.text.trim(); if(oClientIdCtrl.text.trim().isNotEmpty) cfg['client_id']=oClientIdCtrl.text.trim(); if(oClientSecretCtrl.text.isNotEmpty) cfg['client_secret']=oClientSecretCtrl.text.trim(); cfg['openlist_url']=openUrlCtrl.text.trim(); cfg['mount_path']=mountCtrl.text.trim().isEmpty?'/onedrive':mountCtrl.text.trim(); }
             else if (type=='aliyun_oss' || type=='tencent_cos' || type=='aws_s3' || type=='cloudflare_r2'){
               cfg['bucket']=bucketCtrl.text.trim();
@@ -678,7 +684,7 @@ class _CloudPageState extends State<CloudPage> {
 
   Future<void> _syncFolder() async {
     if(_selectedProvider==null || _selectedMod==null){ _showErr('请选择云盘和 Mod'); return; }
-    setState(()=>_busy=true);
+    setState((){ _busy=true; _syncCancelled=false; });
     _startPolling();
     try{
       // 全量同步是后端长任务端点（含 dry_run 预览：同一端点同一扫描量级，
@@ -687,6 +693,7 @@ class _CloudPageState extends State<CloudPage> {
       final r=await ApiClient.instance.runLongTask('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'folder':true,'dry_run':_dryRun, 'delete_extra':_deleteExtra}, maxWait:const Duration(seconds: 1800));
       _pollTimer?.cancel();
       if (!mounted) return;
+      if (_syncCancelled) return; // 已取消：丢弃在途结果
       setState(()=>_syncResult=r);
       final total = r['total'] as int? ?? (r['results'] as List?)?.length ?? 0;
       final results = (r['results'] as List?) ?? [];
@@ -702,34 +709,46 @@ class _CloudPageState extends State<CloudPage> {
     }catch(e){
       _pollTimer?.cancel();
       if (!mounted) return;
+      if (_syncCancelled) return; // 取消引发的异常不弹错
       setState(()=>_syncResult={'error': e.toString()});
       _showErr(e.toString());
     } finally{
-      if (mounted) setState(()=>_busy=false);
+      if (mounted && !_syncCancelled) setState(()=>_busy=false);
       _syncStatusN.value = null;
-      try{ final s=await ApiClient.instance.get('/api/cloud/status'); if(mounted) _syncStatusN.value = s; }catch(_){}
+      try{ final s=await ApiClient.instance.get('/api/cloud/status'); if(mounted && !_syncCancelled) _syncStatusN.value = s; }catch(_){}
     }
+  }
+
+  /// C5：取消同步（前端层）。立即恢复可交互、停轮询、丢弃在途结果。
+  void _cancelSync(){
+    if(!_busy) return;
+    setState((){ _syncCancelled = true; _busy = false; });
+    _pollTimer?.cancel();
+    _syncStatusN.value = null;
+    _showInfo('已取消同步：界面已恢复；后台若已开始执行可能仍会继续。');
   }
 
   Future<void> _syncFiles() async {
     if(_checked.isEmpty){ _showErr('请勾选文件'); return; }
     if(_selectedProvider==null || _selectedMod==null){ _showErr('请选择云盘和 Mod'); return; }
-    setState(()=>_busy=true);
+    setState((){ _busy=true; _syncCancelled=false; });
     _startPolling();
     try{
       // 单文件同步同样走长任务轮询（与全量一致，保持一套超时语义）。
       final r=await ApiClient.instance.runLongTask('/api/cloud/sync', body:{'provider_id':_selectedProvider,'direction':_direction,'mod_name':_selectedMod,'files':_checked.toList(),'dry_run':_dryRun}, maxWait:const Duration(seconds: 1800));
       _pollTimer?.cancel();
       if (!mounted) return;
+      if (_syncCancelled) return; // 已取消：丢弃在途结果
       setState(()=>_syncResult=r);
       _showInfo('单文件同步完成');
       _loadFiles();
     }catch(e){
       _pollTimer?.cancel();
       if (!mounted) return;
+      if (_syncCancelled) return;
       setState(()=>_syncResult={'error': e.toString()});
       _showErr(e.toString());
-    } finally{ if (mounted) setState(()=>_busy=false); }
+    } finally{ if (mounted && !_syncCancelled) setState(()=>_busy=false); }
   }
 
   void _showErr(String m){ if(!mounted) return; fluent.displayInfoBar(context, builder:(c,close)=>fluent.InfoBar(title:const Text('失败'), content:Text(m, maxLines:5), severity:fluent.InfoBarSeverity.error)); }
@@ -762,6 +781,7 @@ class _CloudPageState extends State<CloudPage> {
           const SizedBox(width:8),
           Expanded(child: Text(running ? '同步中 $action $prog/$total' : '就绪', style: TextStyle(fontSize:11, color: palette.textPrimary))),
           if(total>0) Text('$prog/$total', style: TextStyle(fontSize:10, color: palette.textMuted)),
+          if(running) Padding(padding: const EdgeInsets.only(left:6), child: fluent.Button(onPressed:_cancelSync, child: const Text('取消', style: TextStyle(fontSize:11)))),
         ]),
         if(total>0) Padding(padding: const EdgeInsets.only(top:6), child: fluent.ProgressBar(value: total==0? null : (prog/total*100).clamp(0,100))),
         if(last.isNotEmpty) Padding(padding: EdgeInsets.only(top:4), child: Text(last, style: TextStyle(fontSize:10, color: palette.textHint), overflow: TextOverflow.ellipsis)),
@@ -967,8 +987,11 @@ class _CloudPageState extends State<CloudPage> {
                 const SizedBox(width:6),
                 Tooltip(message: '全选/全不选', child: fluent.Checkbox(checked: _checked.length==filteredLocal.length && filteredLocal.isNotEmpty, onChanged: (v){
                   setState((){
-                    if(v==true) _checked.addAll(filteredLocal.map((e)=> e['name'] as String));
-                    else _checked.clear();
+                    if(v==true) {
+                      _checked.addAll(filteredLocal.map((e)=> e['name'] as String));
+                    } else {
+                      _checked.clear();
+                    }
                   });
                 })),
               ]),

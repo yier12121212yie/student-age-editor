@@ -131,7 +131,7 @@ const std::vector<std::string> kTextExts = {
 };
 
 const std::vector<std::string> kBinaryExts = {
-    ".png", ".jpg", ".jpeg", ".webp", ".bmp",  ".gif",  ".wav",
+    ".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp",  ".gif",  ".wav",
     ".ogg", ".mp3", ".bundle", ".assets", ".bytes", ".dll", ".exe",
 };
 

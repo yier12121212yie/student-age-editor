@@ -200,17 +200,25 @@ TableLoad load_table_cached(const std::string& path, const std::string& cfg_name
 
 void seed_table_cache(const std::string& path, const std::string& cfg_name, const json& data,
                       std::optional<long long> mtime_ns, bool lossy) {
+    seed_table_cache_shared(path, cfg_name, std::make_shared<const json>(data),
+                            mtime_ns, lossy);
+}
+
+void seed_table_cache_shared(const std::string& path, const std::string& cfg_name,
+                             std::shared_ptr<const json> data,
+                             std::optional<long long> mtime_ns, bool lossy) {
     // api.py:488-506: after a successful write the body is built from the known
     // data so the next GET hits the cache cold-free. Fingerprint = post-write
     // stat, so any external touch after us still invalidates naturally.
+    if (!data) return;
     auto st = cs::stat(path);
     if (!st || !mtime_ns) return;
     try {
-        std::string body = build_table_body(cfg_name, data, *mtime_ns, lossy);
+        std::string body = build_table_body(cfg_name, *data, *mtime_ns, lossy);
         sa::bump(lc::kCfgDumps);  // it IS a real json.dumps (Python bumps too)
         if (body.size() >= kTableCacheMinBody) {
-            auto shared = std::make_shared<const json>(data);
-            table_store(cs::path_key(path), *mtime_ns, st->size, shared, std::move(body), lossy);
+            table_store(cs::path_key(path), *mtime_ns, st->size, std::move(data),
+                        std::move(body), lossy);
         }
     } catch (const std::exception&) {
         // OSError/TypeError/ValueError equivalent: seeding is best-effort.
@@ -397,6 +405,15 @@ json fork_mod_table(const std::string& cfg_name) {
 }
 
 void note_mod_cfgs_write(const std::string& cfg_name, const json& data, const std::string& path) {
+    note_mod_cfgs_write_shared(
+        cfg_name,
+        std::make_shared<const json>(data.is_object() ? data : json::object()),
+        path);
+}
+
+void note_mod_cfgs_write_shared(const std::string& cfg_name,
+                                std::shared_ptr<const json> data,
+                                const std::string& path) {
     // api.py:346-359 (A10): refresh only the written table + its fingerprint.
     std::string abs_path = path.empty() ? [&] {
         try {
@@ -407,8 +424,8 @@ void note_mod_cfgs_write(const std::string& cfg_name, const json& data, const st
     }() : path;
     auto st = abs_path.empty() ? std::nullopt : cs::stat(abs_path);
     std::unique_lock<std::shared_mutex> lk(g_mod_cfgs_mu);
-    g_mod_cfgs_cache[cfg_name] = std::make_shared<const json>(data.is_object() ? data
-                                                                                : json::object());
+    g_mod_cfgs_cache[cfg_name] =
+        data && data->is_object() ? std::move(data) : std::make_shared<const json>(json::object());
     g_mod_cfgs_broken.erase(cfg_name);  // B16: a successful rewrite clears the ledger
     if (st && g_mod_cfgs_fp_valid) {
         g_mod_cfgs_fp[cfg_name + ".json"] = {st->mtime_ns, st->size};

@@ -4,6 +4,16 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'api_client_http.dart';
+import 'heavy_task.dart';
+import 'web_frame.dart';
+
+/// 字节 → JSON 的**融合**解码器：`utf8.decoder.fuse(json.decoder)` 一次流式
+/// 完成「UTF-8 解码 + JSON 解析」，省去 `jsonDecode(utf8.decode(bytes))` 那
+/// 一份数兆～数十兆的中间 UTF-16 `String` 分配。
+final Converter<List<int>, Object?> _jsonFromBytes =
+    utf8.decoder.fuse(json.decoder);
+
 /// 与本地 HTTP 后端通信的客户端（桌面/Android 直连 127.0.0.1；Web 同源）。
 class ApiClient {
   ApiClient._();
@@ -63,11 +73,30 @@ class ApiClient {
   /// 发送请求；遇 401 且配置了 [onRefresh] 时刷新令牌并重试一次
   /// （业务请求在鉴权失败时对后端无副作用，重试安全）。
   Future<http.Response> _sendWithRefresh(
-      Future<http.Response> Function() send) async {
-    var resp = await send();
-    if (resp.statusCode == 401 && onRefresh != null) {
-      final ok = await _ensureRefreshed();
-      if (ok) resp = await send();
+      Future<http.Response> Function() send,
+      {String method = '', String path = ''}) async {
+    final sw = kDebugMode ? (Stopwatch()..start()) : null;
+    http.Response resp;
+    try {
+      resp = await send();
+      if (resp.statusCode == 401 && onRefresh != null) {
+        final ok = await _ensureRefreshed();
+        if (ok) resp = await send();
+      }
+    } catch (e) {
+      if (kDebugMode && sw != null) {
+        final m = method.isNotEmpty ? method : 'REQ';
+        debugPrint('[ApiClient] $m $path 异常 (${sw.elapsedMilliseconds}ms): $e');
+      }
+      rethrow;
+    }
+    if (kDebugMode && sw != null) {
+      final req = resp.request;
+      final m = method.isNotEmpty ? method : (req?.method ?? 'REQ');
+      final p = path.isNotEmpty ? path : (req?.url.path ?? '');
+      final query = (req != null && req.url.hasQuery && path.isEmpty) ? '?${req.url.query}' : '';
+      debugPrint(
+          '[ApiClient] $m $p$query -> ${resp.statusCode} (${sw.elapsedMilliseconds}ms)');
     }
     return resp;
   }
@@ -83,6 +112,10 @@ class ApiClient {
         .timeout(timeout);
     return _decode(resp);
   }
+
+  /// 公开的鉴权头快照（SSE fetch 等绕过 [http.Client] 的通道使用）。
+  Map<String, String> authHeaders([Map<String, String>? base]) =>
+      _authHeaders(base);
 
   Map<String, String> _authHeaders([Map<String, String>? base]) {
     final h = <String, String>{...?base};
@@ -111,7 +144,10 @@ class ApiClient {
   static int debugOffIsolateParses = 0;
 
   /// 可替换的 HTTP 客户端（测试中注入 MockClient 用；默认等价于 http 全局函数）。
-  http.Client client = http.Client();
+  ///
+  /// 桌面/移动端由 [createApiClient] 放宽底层连接池并发（6 -> 32）；Web 端保持
+  /// 平台默认。测试可整体替换该字段（`ApiClient.instance.client = MockClient(...)`）。
+  http.Client client = createApiClient();
 
   Uri _uri(String path, [Map<String, String>? query]) {
     var url = baseUrl + path;
@@ -125,29 +161,146 @@ class ApiClient {
   }
 
   Future<dynamic> get(String path, {Map<String, String>? query}) async {
-    final resp = await _sendWithRefresh(() => client
-        .get(_uri(path, query), headers: _authHeaders())
-        .timeout(const Duration(seconds: 60)));
-    return _decode(resp);
+    final resp = await _sendWithRefresh(
+        () => client
+            .get(_uri(path, query), headers: _authHeaders())
+            .timeout(const Duration(seconds: 60)),
+        method: 'GET',
+        path: path);
+    return _decodeMaybeOffload(resp);
+  }
+
+  /// P1：大响应自动把 UTF-8 + JSON 解码搬到后台 isolate。
+  ///
+  /// 剧情导演 / 工作室 / 事件工作台首开会并发拉 6~7 张整表（TalkCfg 可达数
+  /// 十万行、数十 MB）。此前只有经典编辑器的 [getBig] 走 `compute`，其余
+  /// 入口都在 UI isolate 同步 `jsonDecode`，首帧会冻结数百毫秒到数秒。
+  /// ≤ 2MB 仍走同步路径，避免小响应付出 isolate 启动成本。
+  Future<dynamic> _decodeMaybeOffload(http.Response resp) async {
+    if (resp.statusCode >= 400 ||
+        resp.bodyBytes.length <= bigIsolateThreshold) {
+      return _decode(resp);
+    }
+    if (kDebugMode) debugOffIsolateParses++;
+    // Web：compute 退化为同步，先把「正在解析」画上屏再冻住。
+    final began = resp.bodyBytes.length > _webHeavyFeedbackBytes
+        ? await _beginHeavyTask('正在解析 ${_megabytes(resp.bodyBytes.length)} MB 数据…')
+        : false;
+    try {
+      final out = await compute(_decodeAnyIsolate, resp.bodyBytes);
+      if (out['ok'] != true) {
+        throw ApiException(resp.statusCode, 'invalid JSON response');
+      }
+      final payload = out['data'];
+      if (kDebugMode && payload is Map && payload.length > 1000) {
+        debugDecodedRows += payload.length;
+      }
+      return payload;
+    } finally {
+      _endHeavyTask(began);
+    }
+  }
+
+  /// Web 主线程同步解析的可见提示阈值：比 isolate 阈值（2MB）略高——
+  /// 2~3MB 的解析通常在百毫秒内，弹提示反而闪一下。
+  static const int _webHeavyFeedbackBytes = 3 * 1024 * 1024;
+
+  static String _megabytes(int bytes) => (bytes / 1048576).toStringAsFixed(1);
+
+  /// 写提示并等一帧；返回「是否真的进入重活路径」（false = 无需清理）。
+  ///
+  /// 用计数器而不是单槽：导演/工作室首开会并发拉好几张整表，先完成的那张
+  /// 不能把还在解析时的提示清掉。
+  Future<bool> _beginHeavyTask(String label) async {
+    if (!kIsWeb) return false;
+    _heavyDepth++;
+    HeavyTask.message.value = label;
+    await nextWebPaint();
+    return true;
+  }
+
+  int _heavyDepth = 0;
+
+  void _endHeavyTask(bool began) {
+    if (!began) return;
+    if (_heavyDepth > 0) _heavyDepth--;
+    if (_heavyDepth == 0) HeavyTask.message.value = null;
+  }
+
+  /// 二进制直发 GET（性能优化）：图片/音频走原始字节流，免 Base64 / JSON 解析 /
+  /// Isolate 解码。返回原始 [http.Response]，调用方自行读 `bodyBytes` 与状态码。
+  ///
+  /// 与 [get] 不同，本方法**不对 4xx/5xx 抛异常**——调用方需要按 404（旧后端无
+  /// 该路由 / 资源缺失）、422（索引有但无可解码文件）等状态做确定性判定或降级。
+  /// 仍带 auth 头与 401 刷新重试。
+  Future<http.Response> getRaw(String path,
+      {Map<String, String>? query, Map<String, String>? headers}) {
+    return _sendWithRefresh(
+        () => client
+            .get(_uri(path, query), headers: _authHeaders(headers))
+            .timeout(const Duration(seconds: 60)),
+        method: 'GET',
+        path: path);
+  }
+
+  /// 判断 200 响应体是否**看起来**是原始二进制（而非 JSON）。
+  ///
+  /// 后端二进制直发路由的资源一律是 PNG/JPEG/WEBP/AVIF/GIF/… 原始字节；而桩服务
+  /// （单元测试 MockClient）常把未 Mock 的路径一律回成 `200 {json}`。若把这种 JSON
+  /// 载荷当成图片字节喂给 `Image.memory`，就会渲染失败并干扰降级判定。这里对首个
+  /// 非空白字节做廉价嗅探：`{`/`[` 视为 JSON（非二进制）。
+  static bool looksBinaryPayload(Uint8List bytes) {
+    for (var i = 0; i < bytes.length; i++) {
+      final c = bytes[i];
+      if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) continue;
+      return c != 0x7B /* { */ && c != 0x5B /* [ */;
+    }
+    return false;
   }
 
   Future<dynamic> post(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
-    final resp = await _sendWithRefresh(() => client
-        .post(_uri(path),
-            headers: _authHeaders({'Content-Type': 'application/json'}),
-            body: jsonEncode(body ?? {}))
-        .timeout(timeout));
+    final resp = await _sendWithRefresh(
+        () => client
+            .post(_uri(path),
+                headers: _authHeaders({'Content-Type': 'application/json'}),
+                body: jsonEncode(body ?? {}))
+            .timeout(timeout),
+        method: 'POST',
+        path: path);
     return _decode(resp);
   }
 
   Future<dynamic> put(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
-    final resp = await _sendWithRefresh(() => client
-        .put(_uri(path),
-            headers: _authHeaders({'Content-Type': 'application/json'}),
-            body: jsonEncode(body ?? {}))
-        .timeout(timeout));
+    final resp = await _sendWithRefresh(
+        () => client
+            .put(_uri(path),
+                headers: _authHeaders({'Content-Type': 'application/json'}),
+                body: jsonEncode(body ?? {}))
+            .timeout(timeout),
+        method: 'PUT',
+        path: path);
+    return _decode(resp);
+  }
+
+  /// 原始字节 PUT（本地分片上传：每片 8 MiB 直接作为请求体）。
+  ///
+  /// 与 [put] 共用 401 刷新重试；响应按 JSON 解析（后端分片应答是 JSON）。
+  Future<dynamic> putBytes(
+    String path,
+    List<int> bytes, {
+    String contentType = 'application/octet-stream',
+    Duration timeout = const Duration(minutes: 10),
+  }) async {
+    final resp = await _sendWithRefresh(
+        () => client
+            .put(_uri(path),
+                headers: _authHeaders({'Content-Type': contentType}),
+                body: bytes)
+            .timeout(timeout),
+        method: 'PUT',
+        path: path);
     return _decode(resp);
   }
 
@@ -181,7 +334,12 @@ class ApiClient {
   Future<String> _encodeBody(Object? body) async {
     final payload = body ?? const <String, dynamic>{};
     if (_estimateEntries(payload) >= _offloadEntryThreshold) {
-      return await compute(jsonEncode, payload);
+      final began = await _beginHeavyTask('正在整理大表数据…');
+      try {
+        return await compute(jsonEncode, payload);
+      } finally {
+        _endHeavyTask(began);
+      }
     }
     return jsonEncode(payload);
   }
@@ -196,11 +354,14 @@ class ApiClient {
   Future<dynamic> postRaw(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
     final encoded = await _encodeBody(body);
-    final resp = await _sendWithRefresh(() => client
-        .post(_uri(path),
-            headers: _authHeaders({'Content-Type': 'application/json'}),
-            body: encoded)
-        .timeout(timeout));
+    final resp = await _sendWithRefresh(
+        () => client
+            .post(_uri(path),
+                headers: _authHeaders({'Content-Type': 'application/json'}),
+                body: encoded)
+            .timeout(timeout),
+        method: 'POST',
+        path: path);
     return _decode(resp);
   }
 
@@ -208,11 +369,14 @@ class ApiClient {
   Future<dynamic> putRaw(String path,
       {Object? body, Duration timeout = const Duration(seconds: 120)}) async {
     final encoded = await _encodeBody(body);
-    final resp = await _sendWithRefresh(() => client
-        .put(_uri(path),
-            headers: _authHeaders({'Content-Type': 'application/json'}),
-            body: encoded)
-        .timeout(timeout));
+    final resp = await _sendWithRefresh(
+        () => client
+            .put(_uri(path),
+                headers: _authHeaders({'Content-Type': 'application/json'}),
+                body: encoded)
+            .timeout(timeout),
+        method: 'PUT',
+        path: path);
     return _decode(resp);
   }
 
@@ -239,13 +403,16 @@ class ApiClient {
       Duration timeout = const Duration(seconds: 120),
       Duration pollInterval = const Duration(milliseconds: 400),
       Duration? maxWait}) async {
-    final resp = await _sendWithRefresh(() => client
-        .post(_longTaskUri(path),
-            headers: _authHeaders({'Content-Type': 'application/json'}),
-            body: jsonEncode(body ?? {}))
-        .timeout(timeout));
+    final resp = await _sendWithRefresh(
+        () => client
+            .post(_longTaskUri(path),
+                headers: _authHeaders({'Content-Type': 'application/json'}),
+                body: jsonEncode(body ?? {}))
+            .timeout(timeout),
+        method: 'POST',
+        path: path);
     if (resp.statusCode != 202) return _decode(resp);
-    final payload = _tryJsonDecode(utf8.decode(resp.bodyBytes));
+    final payload = _tryDecodeJsonBytes(resp.bodyBytes);
     final jobId = payload is Map ? payload['job_id']?.toString() : null;
     if (jobId == null || jobId.isEmpty) {
       throw ApiException(resp.statusCode, '202 accepted without job_id');
@@ -270,26 +437,31 @@ class ApiClient {
 
   Future<dynamic> delete(String path,
       {Map<String, String>? query, Object? body}) async {
-    final resp = await _sendWithRefresh(() => client
-        .delete(
-            _uri(path, query),
-            headers: body == null
-                ? (_authHeaders().isEmpty ? null : _authHeaders())
-                : _authHeaders({'Content-Type': 'application/json'}),
-            body: body == null ? null : jsonEncode(body))
-        .timeout(const Duration(seconds: 120)));
+    final resp = await _sendWithRefresh(
+        () => client
+            .delete(
+                _uri(path, query),
+                headers: body == null
+                    ? (_authHeaders().isEmpty ? null : _authHeaders())
+                    : _authHeaders({'Content-Type': 'application/json'}),
+                body: body == null ? null : jsonEncode(body))
+            .timeout(const Duration(seconds: 120)),
+        method: 'DELETE',
+        path: path);
     return _decode(resp);
   }
 
   dynamic _decode(http.Response resp) {
     // Track parsing metrics in debug mode
-    if (kDebugMode && resp.bodyBytes.length > 0) {
+    if (kDebugMode && resp.bodyBytes.isNotEmpty) {
       final sizeMb = resp.bodyBytes.length / (1024 * 1024);
       if (sizeMb > 2.0) {
         debugOffIsolateParses++;
         // 注意：主 isolate 大包走同步 jsonDecode（getBig 才用 compute），
         // 计数器名 debugOffIsolateParses 仅表示「>2MB 大包」次数
-        print('[ApiClient] Large payload (${sizeMb.toStringAsFixed(2)}MB)');
+        debugPrint(
+          '[ApiClient] Large payload (${sizeMb.toStringAsFixed(2)}MB)',
+        );
       } else {
         debugUiIsolateParsedRows++;
       }
@@ -303,7 +475,7 @@ class ApiClient {
       throw _apiError(resp);
     }
 
-    final payload = _tryJsonDecode(utf8.decode(resp.bodyBytes));
+    final payload = _tryDecodeJsonBytes(resp.bodyBytes);
     if (payload == null) {
       throw ApiException(resp.statusCode, 'invalid JSON response');
     }
@@ -325,7 +497,7 @@ class ApiClient {
   /// 冲突处理链路拿不到重试所需的最新指纹。
   static ApiException _apiError(http.Response resp) {
     try {
-      final payload = jsonDecode(utf8.decode(resp.bodyBytes));
+      final payload = _jsonFromBytes.convert(resp.bodyBytes);
       if (payload is Map) {
         final e = payload['error'];
         return ApiException(
@@ -345,20 +517,35 @@ class ApiClient {
     }
   }
 
-  static dynamic _tryJsonDecode(String source) {
+  static dynamic _tryDecodeJsonBytes(List<int> bytes) {
     try {
-      return jsonDecode(source);
+      return _jsonFromBytes.convert(bytes);
     } catch (_) {
       return null;
     }
   }
 
   /// 超过 2MB 的响应在后台 isolate 解码（getBig 专用阈值）。
-  static const int _bigIsolateThreshold = 2 * 1024 * 1024;
+  static const int _defaultBigIsolateThreshold = 2 * 1024 * 1024;
+
+  /// 可注入阈值（测试用：用小载荷覆盖 isolate 分支，避免 3MB 数据传输）。
+  @visibleForTesting
+  static int bigIsolateThreshold = _defaultBigIsolateThreshold;
+
+  /// 测试探针：是否应把该字节数的响应搬到后台 isolate（避免在单测里真的
+  /// 启动 isolate —— flutter_tester 在部分环境退出时会挂住）。
+  @visibleForTesting
+  static bool shouldOffloadForTest(int byteLength) =>
+      byteLength > bigIsolateThreshold;
+
+  /// 测试探针：直接验证 isolate 解码入口的 JSON 结果（不启动 isolate）。
+  @visibleForTesting
+  static Map<String, dynamic> decodeAnyForTest(Uint8List bytes) =>
+      _decodeAnyIsolate(bytes);
 
   /// 大表专用 GET（S3）：
   ///
-  /// body > [_bigIsolateThreshold] 时把解码搬到后台 isolate（`compute`，
+  /// body > [bigIsolateThreshold] 时把解码搬到后台 isolate（`compute`，
   /// worker 内返回已 `Map<String, dynamic>`
   /// 化的表，避免主 isolate 再 cast）；≤ 阈值走普通路径。4xx → ApiException
   /// 的判定留在主 isolate（worker 里抛异常回传会丢类型与状态码）。
@@ -367,9 +554,12 @@ class ApiClient {
   /// `compute` 把 9.8 万条对象图整体序列化送回 UI 的总工作量反而更高。
   Future<Map<String, dynamic>> getBig(String path,
       {Map<String, String>? query}) async {
-    final resp = await _sendWithRefresh(() => client
-        .get(_uri(path, query), headers: _authHeaders())
-        .timeout(const Duration(seconds: 120)));
+    final resp = await _sendWithRefresh(
+        () => client
+            .get(_uri(path, query), headers: _authHeaders())
+            .timeout(const Duration(seconds: 120)),
+        method: 'GET',
+        path: path);
     if (resp.statusCode >= 400) {
       _notifyUnauthorized(resp.statusCode);
       // 与 _decode 一致：错误体可能不是 JSON，用原文兜底而不是抛 FormatException。
@@ -377,28 +567,48 @@ class ApiClient {
     }
     final bodyBytes = resp.bodyBytes;
     if (kDebugMode) debugOffIsolateParses++;
-    if (bodyBytes.length > _bigIsolateThreshold) {
-      // compute 送入一次字节拷贝（40MB ≈ 十几毫秒），换来的是
-      // 几秒的 jsonDecode + utf8.decode 整体移出 UI isolate，净赚。
-      final out = await compute(_decodeTableIsolate, bodyBytes);
-      if (kDebugMode) debugDecodedRows += out.length;
-      return out;
+    final heavy = bodyBytes.length > _webHeavyFeedbackBytes;
+    final began = heavy
+        ? await _beginHeavyTask('正在解析 ${_megabytes(bodyBytes.length)} MB 表格…')
+        : false;
+    try {
+      if (bodyBytes.length > bigIsolateThreshold) {
+        // compute 送入一次字节拷贝（40MB ≈ 十几毫秒），换来的是
+        // 几秒的 jsonDecode + utf8.decode 整体移出 UI isolate，净赚。
+        final out = await compute(_decodeTableIsolate, bodyBytes);
+        if (kDebugMode) debugDecodedRows += out.length;
+        return out;
+      }
+      if (kDebugMode) debugUiIsolateParsedRows++;
+      final payload = _jsonFromBytes.convert(bodyBytes);
+      return payload is Map<String, dynamic>
+          ? payload
+          : <String, dynamic>{};
+    } finally {
+      _endHeavyTask(began);
     }
-    if (kDebugMode) debugUiIsolateParsedRows++;
-    final payload = jsonDecode(utf8.decode(bodyBytes));
-    return payload is Map<String, dynamic>
-        ? payload
-        : <String, dynamic>{};
   }
 }
 
 /// [compute] 入口：在后台 isolate 解码整表 JSON。
 Map<String, dynamic> _decodeTableIsolate(Uint8List bytes) {
-  final payload = jsonDecode(utf8.decode(bytes));
+  final payload = _jsonFromBytes.convert(bytes);
   if (payload is Map) {
     return payload.map((k, v) => MapEntry(k.toString(), v));
   }
   return <String, dynamic>{};
+}
+
+/// [compute] 入口：通用大响应解码（Map / List / 标量都原样回传）。
+///
+/// 用信封包住异常状态：isolate 内抛出会丢失类型与 HTTP 状态码，调用方需要
+/// 统一转成 `invalid JSON response` 的 [ApiException]。
+Map<String, dynamic> _decodeAnyIsolate(Uint8List bytes) {
+  try {
+    return {'ok': true, 'data': _jsonFromBytes.convert(bytes)};
+  } catch (e) {
+    return {'ok': false, 'error': e.toString()};
+  }
 }
 
 class ApiException implements Exception {

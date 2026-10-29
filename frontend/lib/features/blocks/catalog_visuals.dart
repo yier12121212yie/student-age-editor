@@ -1,7 +1,7 @@
 /// 目录卡片的公共视觉件：**只呈现「人话标题 + 分类」**，不显示占位符
 /// （`@ATTR@`）与原始代码（`[1, 1, @ATTR@, V]`）。
 ///
-/// 供积木库左栏 [BlockCatalogList] 与无代码字段目录（`_CatalogBrowserDialog`）
+/// 供积木库左栏 [BlockCatalogList] 与简易字段目录（`_CatalogBrowserDialog`）
 /// 共用，保证「选效果」的两种入口观感一致（对标成熟方案的目录卡片）。
 library;
 
@@ -9,9 +9,11 @@ import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/app_theme.dart';
+import '../../core/design_tokens.dart';
 import '../../core/motion.dart';
 
 /// 目录卡片：主行=人话标题，副行=分类；右侧一个「＋」。
+/// A2 起支持可选 [subtitle]（折叠组的人话句子）与 [footer]（行内算符按钮组）。
 class BlockCatalogTile extends StatefulWidget {
   const BlockCatalogTile({
     super.key,
@@ -19,6 +21,8 @@ class BlockCatalogTile extends StatefulWidget {
     required this.category,
     required this.onTap,
     this.addIcon = true,
+    this.subtitle = '',
+    this.footer,
   });
 
   /// 已人话化的标题（见 `humanizeBlockDesc`）。
@@ -28,6 +32,12 @@ class BlockCatalogTile extends StatefulWidget {
   final String category;
   final VoidCallback onTap;
   final bool addIcon;
+
+  /// 折叠组的第二行（当前算符变体的人话描述）；空则不渲染。
+  final String subtitle;
+
+  /// 卡片底部的附加件（行内算符按钮组等）；null 则不渲染。
+  final Widget? footer;
 
   @override
   State<BlockCatalogTile> createState() => _BlockCatalogTileState();
@@ -74,13 +84,28 @@ class _BlockCatalogTileState extends State<BlockCatalogTile> {
                         height: 1.3,
                       ),
                     ),
-                    const SizedBox(height: 3),
+                    if (widget.subtitle.isNotEmpty) ...[
+                      const SizedBox(height: AppSpace.xxs),
+                      Text(
+                        widget.subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: AppText.small, color: palette.textSecondary),
+                      ),
+                    ],
+                    const SizedBox(height: AppSpace.xxs),
                     Text(
                       widget.category,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10.5, color: palette.textMuted),
+                      style: TextStyle(
+                          fontSize: AppText.dense, color: palette.textMuted),
                     ),
+                    if (widget.footer != null) ...[
+                      const SizedBox(height: AppSpace.xs),
+                      widget.footer!,
+                    ],
                   ],
                 ),
               ),

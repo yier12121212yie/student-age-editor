@@ -93,7 +93,7 @@ native/
 | --- | --- |
 | `--host <addr>` | 监听任意本机地址（默认仍 `127.0.0.1`）。非 loopback 时 `POST /api/shutdown` 变 403 `{"error":"shutdown disabled in server mode"}`（`detail::set_shutdown_disabled`）。 |
 | `--trusted-origin <origin>`（可重复） | 切到 server 档来源校验：带 `Origin` 的请求其 authority（scheme+host[:port]，大小写不敏感、默认端口归一）必须命中白名单，否则 403 `{"error":"forbidden origin"}`；**不带 Origin 放行**（CLI/网关代理跳，同默认档）。默认档的 `Origin==Host` 等式在 server 档**有意不要求**：白名单比端口边界更强（rebinding 页面的 Origin 必不在名单内），保留等式会误伤跨端口开发。响应 `Access-Control-Allow-Origin` 由写死改为**回显通过校验的 Origin 原文**（控制字符/超长则省略该行），`Access-Control-Allow-Headers` 变 `Content-Type, Authorization`。 |
-| `--web-root <dir>` | 注册 GET 兜底静态路由（`server/services/static_routes.cpp`，**最后注册**，任何 API 路由优先）。`/`→index.html；路径过 `rel_is_safe` + web_root 包含性双保险（越界 400/403、缺失 404 `{"error":"no such file: …"}`）；`/api/*` 未命中仍回 §2.1 契约 404 信封；html 类 `Cache-Control: no-cache`，其余资源 `public, max-age=3600`（`Resp.cache_control`，唯一允许偏离 `no-store` 的来源）。 |
+| `--web-root <dir>` | 注册 GET 兜底静态路由（`server/services/static_routes.cpp`，**最后注册**，任何 API 路由优先）。`/`→index.html；路径过 `rel_is_safe` + web_root 包含性双保险（越界 400/403、缺失 404 `{"error":"no such file: …"}`）；`/api/*` 未命中仍回 §2.1 契约 404 信封。支持 `Accept-Encoding` 协商：优先 `path.br`、其次 `path.gz`（`build_release.py` 预生成），命中即回 `Content-Encoding` + `Vary: Accept-Encoding`；`.gz`/`.br` 直取 404。每个 200 带强 ETag，`If-None-Match` 命中回 304（0 字节）。`Cache-Control`：`fallback_fonts/**` 为 `public, max-age=31536000, immutable`，`icons/**`/`favicon*` 为 `public, max-age=86400`，其余（含 html、main.dart.js、canvaskit）一律 `no-cache` 靠 304 续缓存（避免升级串版）。`Resp.cache_control` 仍是唯一允许偏离 `no-store` 的来源。 |
 
 AI 供给（同 wave 落地，端点 additive 不进 golden）：`GET /api/ai/policy` + `POST /api/ai/relay/chat`
 （`server/services/ai_relay_routes.cpp`）。中继**只使用服务端配置的 base_url/apiKey**（请求体里的

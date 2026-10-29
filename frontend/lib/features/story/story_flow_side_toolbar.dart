@@ -6,6 +6,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
+import '../../core/empty_state.dart';
 import '../../core/motion.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../resources/image_asset_picker.dart';
@@ -643,29 +644,10 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
     }
     if (list.isEmpty) {
       final idle = _aaStatus.value == 'idle';
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpace.m),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.image_not_supported_outlined,
-                size: 26,
-                color: palette.iconDisabled,
-              ),
-              const SizedBox(height: AppSpace.s),
-              Text(
-                idle ? '尚未扫描游戏资源\n点击右上角刷新按钮建立索引' : '没有匹配的资源',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: AppType.title,
-                  color: palette.textHint,
-                ),
-              ),
-            ],
-          ),
-        ),
+      return EmptyState(
+        idle ? '尚未扫描游戏资源\n点击右上角刷新按钮建立索引' : '没有匹配的资源',
+        icon: Icons.image_not_supported_outlined,
+        dense: true,
       );
     }
     return ListView.builder(
@@ -765,7 +747,7 @@ class _FlowAssetPanelState extends State<FlowAssetPanel> {
             child: isTex
                 ? TexThumb(
                     keyName: key,
-                    borderRadius: BorderRadius.circular(AppRadius.xs),
+                    borderRadius: BorderRadius.circular(AppRadius.xxs),
                   )
                 : Icon(
                     Icons.music_note,

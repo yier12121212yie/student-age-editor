@@ -64,6 +64,25 @@ struct AiRelayCfg {
     std::string model;             // optional default model
     std::vector<std::string> models;  // whitelist; empty == unrestricted
     long long daily_limit = 0;     // 0 == unlimited
+
+    // ---- C1：托管 TTS / 生图转发（默认关闭）-------------------------------
+    // 关闭时 /api/tts/* 与 /api/ai/image/* 仍按托管默认策略 403。开启后：
+    //   * 生图：网关把请求体里的 api_key/base_url/model 换成管理员配置
+    //     （客户端自带的 hosts 一律丢弃，SSRF 面与原先的封禁等价）；
+    //   * TTS：网关写出 hosted_media.json 覆盖文件，实例用它覆盖账号设置里
+    //     的 tts* 字段（key 不进账号沙箱）。
+    // daily_limit 按账号/UTC 日计数（usage_media.json），0 == 不限。
+    bool media_enabled = false;
+    long long media_daily_limit = 0;
+    std::string tts_provider;
+    std::string tts_base_url;
+    std::string tts_api_key;
+    std::string tts_model;
+    std::string tts_voice;
+    std::string tts_format;
+    std::string image_base_url;
+    std::string image_api_key;
+    std::string image_model;
 };
 
 // 人物图片资源扩展（自托管服务器端「2 种安装方式」）：
@@ -114,6 +133,10 @@ struct Config {
     RegistrationCfg registration;
     PortraitCfg portraits;
     BackgroundCfg backgrounds;
+    // C2：托管 stdio MCP 桥接（默认关闭）。开启后网关把命令白名单传给
+    // 每个 backend 实例（EDITOR_MCP_STDIO_ALLOW）；不在白名单的命令 403。
+    bool mcp_stdio_enabled = false;
+    std::vector<std::string> mcp_stdio_allow;
     // 托管模式 SSRF 护栏（安全批次 A）：true 时网关 fork 的 backend 以
     // --cloud-public-only 启动，云同步出站 URL 强校验为公网地址。
     bool cloud_public_only = true;

@@ -197,6 +197,32 @@ TEST_CASE("mods import/export: 非 cfg 资源（含非 ASCII 文件名）原样�
     CHECK(*ztex == png);
 }
 
+// 流式解压原语：extract_to_file 直接把条目解到目标路径（UTF-8 安全），
+// 大资源不整条进堆；缺失条目返回 false。
+TEST_CASE("mods import: ZipReader::extract_to_file 流式解压大资源（含非 ASCII 名）",
+          "[modspack]") {
+    ModsPackFixture fx;
+    const std::string big(2u * 1024 * 1024, '\x5a');  // 2 MiB
+    const std::string zip = make_zip({
+        {"manifest.json", R"({"title":"流式"})"},
+        {"Cfgs/zh-cn/EvtCfg.json", R"({"1":{"id":1}})"},
+        {"Textures/大贴图.png", big},
+    });
+    const auto zpath = fx.root() / "s.zip";
+    REQUIRE(sa_core::paths::write_bytes_simple(sa_core::paths::path_to_utf8(zpath), zip));
+    auto z = sa::p3b::ZipReader::open_file(sa_core::paths::path_to_utf8(zpath));
+    REQUIRE(z.has_value());
+
+    const auto out = fx.root() / std::filesystem::u8path("out/大贴图.png");
+    std::filesystem::create_directories(out.parent_path());
+    REQUIRE(z->extract_to_file("Textures/大贴图.png", sa_core::paths::path_to_utf8(out)));
+    auto got = sa_core::paths::read_bytes(sa_core::paths::path_to_utf8(out));
+    REQUIRE(got.has_value());
+    CHECK(*got == big);
+
+    CHECK_FALSE(z->extract_to_file("nope.bin", sa_core::paths::path_to_utf8(fx.root() / "x")));
+}
+
 // 回归：带资源（贴图/配乐）的模组包在自托管网页版曾完全导不进来——base64
 // 的 import_upload 通道受网关 max_body_bytes（默认 256 MiB）与浏览器内存双
 // 重上限，资源一多必挂。修复走文件流转（模块 A）：浏览器直传 COS 暂存 →

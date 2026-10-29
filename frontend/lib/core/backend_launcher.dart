@@ -4,5 +4,6 @@
 ///
 /// 两份实现暴露同一公共 API（BackendLauncher.instance.ensureBackend /
 /// probe / shutdownBackend / buildSourceBackend / supportsSpawn）。
+library;
 export 'backend_launcher_stub.dart'
     if (dart.library.io) 'backend_launcher_io.dart';

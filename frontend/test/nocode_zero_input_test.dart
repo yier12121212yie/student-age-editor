@@ -6,6 +6,10 @@
 //   2) 解析失败时只读展示原文、绝不写回（数据安全边界）；
 //   3) 经典 schema 编辑器端到端：开启态用 NoCodeEffectField 顶掉 EffectHintField，
 //      并给出「选人物 / 选背景」这类纯选择入口；关闭态行为与旧版一致。
+//
+// 边界更新（D7 / Q5 决策）：**只对「拆不动」的字段**额外露出一个**默认折叠**的
+// 「仅此字段文本编辑」逃生口（带 /api/effect_validate 实时校验，点「应用」才写回）。
+// 它不属于常规路径——可拆解的字段、dense 内联卡片一律不出现。
 import 'dart:convert';
 
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -74,6 +78,8 @@ void _mockParse() {
           'translations': [],
           'rows': [_rowA()],
         });
+      case '/api/effect_validate':
+        return _json({'valid': true, 'translations': ['格式正常'], 'errors': []});
       case '/api/effect_suggest':
         return _json({
           'items': [
@@ -132,6 +138,42 @@ Future<int> _mountField(WidgetTester t, {required String text}) async {
   return writes;
 }
 
+/// 同 [_mountField]，但返回**可变**的写回日志（含 dense 开关），供 D7 逃生口断言。
+Future<List<dynamic>> _mountFieldLog(
+  WidgetTester t, {
+  required String text,
+  bool dense = false,
+}) async {
+  final log = <dynamic>[];
+  t.view.physicalSize = const Size(1200, 1000);
+  t.view.devicePixelRatio = 1.0;
+  addTearDown(t.view.reset);
+  await t.pumpWidget(fluent.FluentApp(
+    debugShowCheckedModeBanner: false,
+    home: Scaffold(
+      body: SingleChildScrollView(
+        child: SizedBox(
+          width: 640,
+          child: NoCodeEffectField(
+            value: text,
+            type: '2D Array',
+            cfg: 'TalkCfg',
+            fieldKey: 'effect',
+            gameDicts: const {},
+            dense: dense,
+            onChanged: (v) => log.add(v),
+            onDisableNoCode: () {},
+          ),
+        ),
+      ),
+    ),
+  ));
+  await t.pump();
+  await t.pump(const Duration(milliseconds: 400));
+  await t.pumpAndSettle();
+  return log;
+}
+
 Future<void> _mountEditor(WidgetTester t, AppState state, String cfg) async {
   SharedPreferences.setMockInitialValues({});
   t.view.physicalSize = const Size(1400, 1000);
@@ -185,7 +227,7 @@ void main() {
     testWidgets('逃生口按钮存在（关闭无代码模式以手动编辑）', (t) async {
       _mockParse();
       await _mountField(t, text: '[[1,1,3,5]]');
-      expect(find.text('关闭无代码模式以手动编辑'), findsOneWidget);
+      expect(find.text('切换到高级编辑'), findsOneWidget);
     });
 
     testWidgets('解析失败：只读展示原文、不给加行按钮、绝不写回', (t) async {
@@ -197,6 +239,58 @@ void main() {
       expect(find.byKey(const ValueKey('raw-toggle')), findsNothing);
       expect(find.byKey(const ValueKey('raw-input')), findsNothing);
       expect(writes, 0, reason: '只读态不得触发任何写回');
+      expect(t.takeException(), isNull);
+    });
+  });
+
+  group('D7 字段级逃生口（只对拆不动的字段、默认折叠）', () {
+    testWidgets('拆不动：折叠态不出现任何文本框，只有一句入口', (t) async {
+      _mockParse();
+      await _mountFieldLog(t, text: 'BAD[[1,1,3,5]]');
+      expect(find.byKey(const ValueKey('field-raw-toggle')), findsOneWidget);
+      expect(find.byKey(const ValueKey('field-raw-input')), findsNothing);
+      // 常规零输入承诺仍然成立：对话框态的原始文本通道不出现。
+      expect(find.byKey(const ValueKey('raw-toggle')), findsNothing);
+      expect(find.byKey(const ValueKey('raw-input')), findsNothing);
+      expect(find.byType(fluent.TextBox), findsNothing);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('展开→实时校验→输入→应用：写回一次', (t) async {
+      _mockParse();
+      final log = await _mountFieldLog(t, text: 'BAD[[1,1,3,5]]');
+      expect(log, isEmpty, reason: '未点「应用」前不得写回');
+
+      await t.tap(find.byKey(const ValueKey('field-raw-toggle')));
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('field-raw-input')), findsOneWidget);
+      await t.pump(const Duration(milliseconds: 400)); // 越过校验防抖
+      await t.pumpAndSettle();
+      expect(find.textContaining('校验通过'), findsOneWidget);
+
+      await t.enterText(find.byKey(const ValueKey('field-raw-input')), '[[1,1,3,9]]');
+      await t.pump(const Duration(milliseconds: 400));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const ValueKey('field-raw-apply')));
+      await t.pumpAndSettle();
+      expect(log.length, 1);
+      expect(log.first, [
+        [1, 1, 3, 9]
+      ]);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('可拆解：不出现逃生口（常规路径仍是积木行）', (t) async {
+      _mockParse();
+      await _mountFieldLog(t, text: '[[1,1,3,5]]');
+      expect(find.byKey(const ValueKey('field-raw-toggle')), findsNothing);
+      expect(find.byKey(const ValueKey('add-row')), findsOneWidget);
+    });
+
+    testWidgets('dense 内联卡片：拆不动也不出现逃生口（空间不足）', (t) async {
+      _mockParse();
+      await _mountFieldLog(t, text: 'BAD[[1,1,3,5]]', dense: true);
+      expect(find.byKey(const ValueKey('field-raw-toggle')), findsNothing);
       expect(t.takeException(), isNull);
     });
   });
@@ -320,7 +414,7 @@ void main() {
       await t.pump();
       expect(find.byType(fluent.TextBox), findsNothing);
       expect(find.byType(TextField), findsNothing);
-      expect(find.textContaining('关闭无代码模式'), findsWidgets);
+      expect(find.textContaining('切换到高级编辑'), findsWidgets);
       expect(t.takeException(), isNull);
     });
   });

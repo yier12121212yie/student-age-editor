@@ -33,6 +33,138 @@ void main() {
     });
   });
 
+  group('TexBytesCache 二进制直发通道（GET /api/aa/raw）', () {
+    final png = base64Decode(_kPng1x1);
+
+    tearDown(() {
+      ApiClient.instance.client = http.Client();
+    });
+
+    test('200 原始字节：直接命中，不再发 /api/aa/preview', () async {
+      var rawCalls = 0, previewCalls = 0;
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/aa/raw') {
+          rawCalls++;
+          return http.Response.bytes(png, 200,
+              headers: {'content-type': 'image/png'});
+        }
+        if (req.url.path == '/api/aa/preview') {
+          previewCalls++;
+          return http.Response(jsonEncode({'data': _kPng1x1}), 200);
+        }
+        return http.Response('{}', 404);
+      });
+
+      final src = await TexBytesCache.loadSource('bg/k');
+      expect(src?.bytes, png);
+      expect(rawCalls, 1);
+      expect(previewCalls, 0, reason: '命中二进制通道后不应再走 Base64 旧通道');
+    });
+
+    test('404（旧后端无该路由）降级旧版 POST /api/aa/preview', () async {
+      var previewCalls = 0;
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/aa/raw') {
+          return http.Response('{"error":"no route: GET /api/aa/raw"}', 404);
+        }
+        if (req.url.path == '/api/aa/preview') {
+          previewCalls++;
+          return http.Response(jsonEncode({'data': _kPng1x1}), 200);
+        }
+        return http.Response('{}', 404);
+      });
+
+      final src = await TexBytesCache.loadSource('bg/k');
+      expect(src?.bytes, isNotNull);
+      expect(previewCalls, 1);
+    });
+
+    test('200 但 JSON 载荷（桩服务把任意路径回成 JSON）降级旧通道', () async {
+      var previewCalls = 0;
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/aa/raw') {
+          return http.Response(jsonEncode({'data': {}}), 200,
+              headers: {'content-type': 'application/json'});
+        }
+        if (req.url.path == '/api/aa/preview') {
+          previewCalls++;
+          return http.Response(jsonEncode({'data': _kPng1x1}), 200);
+        }
+        return http.Response('{}', 404);
+      });
+
+      final src = await TexBytesCache.loadSource('bg/k');
+      expect(src?.bytes, isNotNull);
+      expect(previewCalls, 1);
+    });
+
+    test('422（索引有但无可解码文件）为确定性缺失：负缓存且不再发 preview', () async {
+      var rawCalls = 0, previewCalls = 0;
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/aa/raw') {
+          rawCalls++;
+          return http.Response('{"error":"texture decode failed"}', 422);
+        }
+        if (req.url.path == '/api/aa/preview') {
+          previewCalls++;
+          return http.Response(jsonEncode({'data': _kPng1x1}), 200);
+        }
+        return http.Response('{}', 404);
+      });
+
+      expect(await TexBytesCache.loadSource('bg/k'), isNull);
+      expect(previewCalls, 0);
+      // 第二次命中负缓存：不再发任何请求。
+      expect(await TexBytesCache.loadSource('bg/k'), isNull);
+      expect(rawCalls, 1, reason: '确定性缺失应负缓存，避免反复试探');
+    });
+  });
+
+  group('TexThumb 瞬时失败自重试', () {
+    testWidgets('贴图请求瞬时失败后组件自行重试并渲染出图片，不需要任何外部重建', (tester) async {
+      // 零延迟：走微任务立即重试，不挂假时钟定时器。
+      debugTexRetryDelay = Duration.zero;
+      addTearDown(() => debugTexRetryDelay = const Duration(milliseconds: 800));
+      TexBytesCache.clear();
+
+      var calls = 0;
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/aa/preview') {
+          calls++;
+          // 后端冷启动：最早的两次是瞬时失败（不进负缓存，可安全重发）。
+          if (calls <= 2) return http.Response('{"error":"warming up"}', 503);
+          return http.Response(jsonEncode({'data': _kPng1x1}), 200);
+        }
+        return http.Response('{}', 404);
+      });
+
+      await tester.pumpWidget(fluent.FluentApp(
+        theme: fluent.FluentThemeData(brightness: Brightness.dark),
+        home: const Scaffold(
+          body: Center(
+            child: TexThumb(keyName: 'bg/img_keting', width: 60, height: 45),
+          ),
+        ),
+      ));
+      // 反复 pump 让 http 栈与自重试（零延迟走微任务）依次推进到收敛。
+      await tester.pump();
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+
+      expect(calls, greaterThan(2),
+          reason: '瞬时失败后组件应自行重发请求，而不是等宿主重建');
+      // 拿到字节即渲染出真实图片（cacheWidth 会让 provider 包一层 ResizeImage）。
+      expect(
+        find.byWidgetPredicate((w) =>
+            w is Image && (w.image is MemoryImage || w.image is ResizeImage)),
+        findsOneWidget,
+        reason: '重试成功后应渲染出真实图片，而不是停在占位图上',
+      );
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('ImageAssetPickerDialog', () {
     late List<String>? result;
 

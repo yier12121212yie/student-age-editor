@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../resources/image_asset_picker.dart'
@@ -29,10 +33,14 @@ class WarehouseWorkbench extends StatefulWidget {
     super.key,
     required this.state,
     this.onOpenSearch,
+    this.initialMode = 'item',
   });
 
   final AppState state;
   final VoidCallback? onOpenSearch;
+
+  /// 进入时的模式：`'item'`（物品与书籍）或 `'shop'`（商店与商品）。
+  final String initialMode;
 
   @override
   State<WarehouseWorkbench> createState() => _WarehouseWorkbenchState();
@@ -43,17 +51,6 @@ const _bookCfg = 'BookCfg';
 const _shopCfg = 'ShopCfg';
 
 /// 一张正在编辑的配置表（整表数据 + 本次加载快照 + mtime）。
-class _TableBuf {
-  _TableBuf(this.name, this.data, this.snap, this.mtime);
-
-  final String name;
-  Map<String, dynamic> data;
-  String snap;
-  int? mtime;
-
-  bool get dirty => jsonEncode(data) != snap;
-}
-
 /// 仓库列表里的一行（table 可能是 ItemCfg / BookCfg / ShopCfg）。
 class _WhEntry {
   const _WhEntry(this.table, this.id, this.row, this.visual);
@@ -68,7 +65,21 @@ class _WhEntry {
 
 class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
     with WorkbenchLeaveGuard<WarehouseWorkbench> {
-  final Map<String, _TableBuf> _tables = {};
+  /// A3：可写主表由公共控制器管理；`_tables` 为转发 map。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_itemCfg, _bookCfg, _shopCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  Map<String, WorkbenchTable> get _tables =>
+      {for (final t in _ctl.tables) t.cfg: t};
 
   Map<String, dynamic> _types = {};
   Map<String, dynamic> _tags = {};
@@ -91,11 +102,33 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
   @override
   void initState() {
     super.initState();
+    _mode = widget.initialMode == 'shop' ? 'shop' : 'item';
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant WarehouseWorkbench old) {
+    super.didUpdateWidget(old);
+    // 主页点不同卡片（物品 / 商店商品）复用同一工作台实例：模式跟随外部意图切换。
+    if (old.initialMode != widget.initialMode) {
+      _setMode(widget.initialMode == 'shop' ? 'shop' : 'item');
+    }
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -103,16 +136,6 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -129,39 +152,20 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
   String get guardSubject => '物品与商店数据';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
       final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_itemCfg'),
-        ApiClient.instance.get('/api/cfg/$_bookCfg'),
-        ApiClient.instance.get('/api/cfg/$_shopCfg'),
+        _ctl.load(),
         ApiClient.instance.get('/api/cfg/ItemTypeCfg'),
         ApiClient.instance.get('/api/cfg/ItemTagCfg'),
         ApiClient.instance.get('/api/cfg/BookThemeCfg'),
       ]);
       if (!mounted) return;
-      final item = _dataOf(res[0]);
-      final book = _dataOf(res[1]);
-      final shop = _dataOf(res[2]);
-      _types = _dataOf(res[3]);
-      _tags = _dataOf(res[4]);
-      _bookThemes = _dataOf(res[5]);
-      _tables
-        ..clear()
-        ..[_itemCfg] = _TableBuf(_itemCfg, item, jsonEncode(item), _mtimeOf(res[0]))
-        ..[_bookCfg] = _TableBuf(_bookCfg, book, jsonEncode(book), _mtimeOf(res[1]))
-        ..[_shopCfg] = _TableBuf(_shopCfg, shop, jsonEncode(shop), _mtimeOf(res[2]));
+      _types = WorkbenchController.extractData(res[1]);
+      _tags = WorkbenchController.extractData(res[2]);
+      _bookThemes = WorkbenchController.extractData(res[3]);
       _ensureSelection();
-      setState(() => _loading = false);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error。
     }
   }
 
@@ -192,112 +196,24 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
 
   bool _tableDirty(String t) => _tables[t]?.dirty ?? false;
 
-  bool get _dirty =>
-      _tableDirty(_itemCfg) ||
-      _tableDirty(_bookCfg) ||
-      _tableDirty(_shopCfg);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      for (final name in const [_itemCfg, _bookCfg, _shopCfg]) {
-        final buf = _tables[name]!;
-        if (!buf.dirty) continue;
-        final ok = await _saveTable(buf);
-        if (!ok || !mounted) return;
-      }
-      if (mounted) {
-        _info('物品仓库已保存', fluent.InfoBarSeverity.success);
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<bool> _saveTable(_TableBuf buf) async {
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': buf.data,
-          if (!force) 'expect_mtime_ns': buf.mtime,
-          if (force) 'force': true,
-        };
-        final r = await ApiClient.instance.put('/api/cfg/${buf.name}', body: body);
-        if (!mounted) return false;
-        buf.mtime = _mtimeOf(r);
-        buf.snap = jsonEncode(buf.data);
-        return true;
-      } on ApiException catch (e) {
-        if (!mounted) return false;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(buf.name);
-          if (!mounted) return false;
-          if (act == 'reload') {
-            await _loadAll();
-            return false;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return false;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      } catch (e) {
-        if (!mounted) return false;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      }
+    final ok = await _ctl.save();
+    if (mounted && ok) {
+      if (mounted) AppFeedback.success(context, '物品仓库已保存');
     }
   }
 
   void _discard() {
-    setState(() {
-      for (final buf in _tables.values) {
-        buf.data = (jsonDecode(buf.snap) as Map).cast<String, dynamic>();
-      }
-      _ensureSelection();
-    });
+    _ctl.discard();
+    _ensureSelection();
   }
 
-  Future<String?> _conflictDialog(String name) {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$name 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
 
   // ------------------------------------------------------------------
   // 行访问
@@ -484,7 +400,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
       context: context,
       builder: (ctx) => AppContentDialog(
         title: const Text('新建物品'),
-        content: Text('选择要创建的物品类别。书籍使用 BookCfg，普通物品使用 ItemCfg。',
+        content: Text('选择要创建的条目类型：书籍，或普通物品。',
             style: TextStyle(
                 fontSize: 12.5, color: palette.textPrimary, height: 1.5)),
         actions: [
@@ -792,7 +708,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
     if (next == null || !mounted) return;
     if (next.toString() == id) return;
     if (_tableData(table).containsKey(next.toString())) {
-      _info('编号 $next 已被占用', fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(context, '编号 $next 已被占用');
       return;
     }
     setState(() {
@@ -839,36 +755,15 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('物品仓库加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '仓库数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -936,7 +831,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
                 Row(
                   children: [
                     Expanded(
-                      child: _MiniBtn(
+                      child: WorkbenchMiniButton(
                         label: '删除',
                         danger: true,
                         enabled: _selId != null,
@@ -945,7 +840,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
                     ),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: _MiniBtn(
+                      child: WorkbenchMiniButton(
                         label: '改编号',
                         enabled: _selId != null,
                         onTap: _changeId,
@@ -1098,7 +993,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${_selTable == _bookCfg ? 'BookCfg' : _selTable} · #$_selId',
+                  '${_selTable == _bookCfg ? '书籍' : (_selTable == _shopCfg ? '商店' : '物品')} · 编号 $_selId',
                   style: TextStyle(fontSize: 10.5, color: palette.textMuted),
                 ),
               ],
@@ -1122,7 +1017,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
   Widget _basicEditor(Map<String, dynamic> row) {
     if (_selTable == _shopCfg) {
       final product = _lookupAny(_selId!) ?? row;
-      return _SectionCard(
+      return WorkbenchSectionCard(
         title: '商品信息',
         children: [
           _labeled(
@@ -1144,18 +1039,18 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
             ),
           ),
           _labeled('商品类型', _readOnly(_selTypeName(row))),
-          _labeled('购买价格', _NumBox(
-            value: _numOf(row, 'price'),
+          _labeled('购买价格', NumBox(
+            format: true, value: _numOf(row, 'price'),
             hint: '0 表示免费',
             onChanged: (v) => setState(() => row['price'] = (v ?? 0).toInt()),
           )),
-          _labeled('数量上限', _NumBox(
-            value: _numOf(row, 'maxcount'),
+          _labeled('数量上限', NumBox(
+            format: true, value: _numOf(row, 'maxcount'),
             hint: '0 表示不限',
             onChanged: (v) => setState(() => row['maxcount'] = (v ?? 0).toInt()),
           )),
-          _labeled('上架概率', _NumBox(
-            value: _numOf(row, 'probability'),
+          _labeled('上架概率', NumBox(
+            format: true, value: _numOf(row, 'probability'),
             hint: '0 ~ 1',
             onChanged: (v) => setState(
                 () => row['probability'] = (v ?? 0).toDouble().clamp(0, 1)),
@@ -1163,15 +1058,15 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
           Row(
             children: [
               Expanded(
-                child: _labeled('开始出售年份', _NumBox(
-                  value: _numOf(row, 'time'),
+                child: _labeled('开始出售年份', NumBox(
+                  format: true, value: _numOf(row, 'time'),
                   onChanged: (v) => setState(() => row['time'] = (v ?? 0).toInt()),
                 )),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _labeled('打折回合', _NumBox(
-                  value: _numOf(row, 'discountRound'),
+                child: _labeled('打折回合', NumBox(
+                  format: true, value: _numOf(row, 'discountRound'),
                   onChanged: (v) =>
                       setState(() => row['discountRound'] = (v ?? 0).toInt()),
                 )),
@@ -1181,16 +1076,16 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
           Row(
             children: [
               Expanded(
-                child: _labeled('停止出售时间', _NumBox(
-                  value: _numOf(row, 'disappearTime'),
+                child: _labeled('停止出售时间', NumBox(
+                  format: true, value: _numOf(row, 'disappearTime'),
                   onChanged: (v) =>
                       setState(() => row['disappearTime'] = (v ?? 0).toInt()),
                 )),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _labeled('购买数量限制', _NumBox(
-                  value: _numOf(row, 'limcount'),
+                child: _labeled('购买数量限制', NumBox(
+                  format: true, value: _numOf(row, 'limcount'),
                   onChanged: (v) =>
                       setState(() => row['limcount'] = (v ?? 0).toInt()),
                 )),
@@ -1200,23 +1095,23 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
           Row(
             children: [
               Expanded(
-                child: _labeled('互斥商品组', _NumBox(
-                  value: _numOf(row, 'group'),
+                child: _labeled('互斥商品组', NumBox(
+                  format: true, value: _numOf(row, 'group'),
                   hint: '0 不分组',
                   onChanged: (v) => setState(() => row['group'] = (v ?? 0).toInt()),
                 )),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _labeled('售完替换商品', _NumBox(
-                  value: _numOf(row, 'next'),
+                child: _labeled('售完替换商品', NumBox(
+                  format: true, value: _numOf(row, 'next'),
                   hint: '商品编号',
                   onChanged: (v) => setState(() => row['next'] = (v ?? 0).toInt()),
                 )),
               ),
             ],
           ),
-          _labeled('店员台词', _SyncedText(
+          _labeled('店员台词', SyncedTextField(
             value: row['buyTalk']?.toString() ?? '',
             hint: '购买时的店员台词',
             maxLines: 3,
@@ -1227,10 +1122,10 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
     }
 
     if (_selTable == _bookCfg) {
-      return _SectionCard(
+      return WorkbenchSectionCard(
         title: '书籍信息',
         children: [
-          _labeled('名称', _SyncedText(
+          _labeled('名称', SyncedTextField(
             value: row['name']?.toString() ?? '',
             hint: '书籍名称',
             onChanged: (v) => setState(() => row['name'] = v),
@@ -1242,35 +1137,35 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
             },
             onChanged: (v) => setState(() => row['type'] = v),
           )),
-          _labeled('总页数', _NumBox(
-            value: _numOf(row, 'capacity'),
+          _labeled('总页数', NumBox(
+            format: true, value: _numOf(row, 'capacity'),
             onChanged: (v) => setState(() => row['capacity'] = (v ?? 0).toInt()),
           )),
           Row(
             children: [
               Expanded(
-                child: _labeled('赠送价值', _NumBox(
-                  value: _numOf(row, 'value', -1),
+                child: _labeled('赠送价值', NumBox(
+                  format: true, value: _numOf(row, 'value', -1),
                   hint: '−1 不可赠送',
                   onChanged: (v) => setState(() => row['value'] = (v ?? -1).toInt()),
                 )),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _labeled('出售价格', _NumBox(
-                  value: _numOf(row, 'sell', -1),
+                child: _labeled('出售价格', NumBox(
+                  format: true, value: _numOf(row, 'sell', -1),
                   hint: '−1 不可出售',
                   onChanged: (v) => setState(() => row['sell'] = (v ?? -1).toInt()),
                 )),
               ),
             ],
           ),
-          _labeled('阅读提示文字', _SyncedText(
+          _labeled('阅读提示文字', SyncedTextField(
             value: row['talk']?.toString() ?? '',
             hint: '阅读提示文字',
             onChanged: (v) => setState(() => row['talk'] = v),
           )),
-          _labeled('物品说明', _SyncedText(
+          _labeled('物品说明', SyncedTextField(
             value: row['desc']?.toString() ?? '',
             hint: '物品说明',
             maxLines: 3,
@@ -1280,10 +1175,10 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
       );
     }
 
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '物品信息',
       children: [
-        _labeled('名称', _SyncedText(
+        _labeled('名称', SyncedTextField(
           value: row['name']?.toString() ?? '',
           hint: '物品名称',
           onChanged: (v) => setState(() => row['name'] = v),
@@ -1296,16 +1191,16 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
         Row(
           children: [
             Expanded(
-              child: _labeled('赠送价值', _NumBox(
-                value: _numOf(row, 'value', -1),
+              child: _labeled('赠送价值', NumBox(
+                format: true, value: _numOf(row, 'value', -1),
                 hint: '−1 不可赠送',
                 onChanged: (v) => setState(() => row['value'] = (v ?? -1).toInt()),
               )),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _labeled('出售价格', _NumBox(
-                value: _numOf(row, 'sell', -1),
+              child: _labeled('出售价格', NumBox(
+                format: true, value: _numOf(row, 'sell', -1),
                 hint: '−1 不可出售',
                 onChanged: (v) => setState(() => row['sell'] = (v ?? -1).toInt()),
               )),
@@ -1315,22 +1210,22 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
         Row(
           children: [
             Expanded(
-              child: _labeled('数量上限', _NumBox(
-                value: _numOf(row, 'maxcount', 1),
+              child: _labeled('数量上限', NumBox(
+                format: true, value: _numOf(row, 'maxcount', 1),
                 onChanged: (v) => setState(() => row['maxcount'] = (v ?? 0).toInt()),
               )),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _labeled('使用后对话', _NumBox(
-                value: _numOf(row, 'talkId'),
-                hint: 'TalkCfg 编号',
+              child: _labeled('使用后对话', NumBox(
+                format: true, value: _numOf(row, 'talkId'),
+                hint: '对话编号',
                 onChanged: (v) => setState(() => row['talkId'] = (v ?? 0).toInt()),
               )),
             ),
           ],
         ),
-        _labeled('物品说明', _SyncedText(
+        _labeled('物品说明', SyncedTextField(
           value: row['desc']?.toString() ?? '',
           hint: '物品说明',
           maxLines: 3,
@@ -1378,7 +1273,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
       title: '高级扩展选项',
       children: isBook
           ? [
-              _labeled('阅读要求参数（逗号分隔）', _ListNumField(
+              _labeled('阅读要求参数（逗号分隔）', ListNumField(
                 value: _intList(row, 'need'),
                 hint: '例如 1,2,3',
                 onChanged: (v) => setState(() => row['need'] = v),
@@ -1403,8 +1298,8 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
           : [
               _labeled(
                 '稀有度',
-                _NumBox(
-                  value: _numOf(row, 'rarity'),
+                NumBox(
+                  format: true, value: _numOf(row, 'rarity'),
                   onChanged: (v) =>
                       setState(() => row['rarity'] = (v ?? 0).toInt()),
                 ),
@@ -1436,16 +1331,16 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
               Row(
                 children: [
                   Expanded(
-                    child: _labeled('细分类别', _NumBox(
-                      value: _numOf(row, 'subType'),
+                    child: _labeled('细分类别', NumBox(
+                      format: true, value: _numOf(row, 'subType'),
                       onChanged: (v) =>
                           setState(() => row['subType'] = (v ?? 0).toInt()),
                     )),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: _labeled('服装类别', _NumBox(
-                      value: _numOf(row, 'clothType'),
+                    child: _labeled('服装类别', NumBox(
+                      format: true, value: _numOf(row, 'clothType'),
                       onChanged: (v) =>
                           setState(() => row['clothType'] = (v ?? 0).toInt()),
                     )),
@@ -1455,15 +1350,15 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
               Row(
                 children: [
                   Expanded(
-                    child: _labeled('所需扩展内容编号', _NumBox(
-                      value: _numOf(row, 'needDLC'),
+                    child: _labeled('所需扩展内容编号', NumBox(
+                      format: true, value: _numOf(row, 'needDLC'),
                       onChanged: (v) =>
                           setState(() => row['needDLC'] = (v ?? 0).toInt()),
                     )),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: _labeled('使用按钮文字', _SyncedText(
+                    child: _labeled('使用按钮文字', SyncedTextField(
                       value: row['btn']?.toString() ?? '',
                       hint: '例如 使用',
                       onChanged: (v) => setState(() => row['btn'] = v),
@@ -1479,7 +1374,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
 
   Widget _commandEditor(Map<String, dynamic> row) {
     final isShop = _selTable == _shopCfg;
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: isShop ? '上架条件' : '效果指令',
       subtitle: '点击「打开积木库」用可视化积木搭建，和字段内编辑结果一致。',
       children: [
@@ -1519,7 +1414,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
               ],
             ),
           ),
-          _MiniBtn(
+          WorkbenchMiniButton(
             label: '打开积木库',
             onTap: () => _editBlocks(row, field, mode, title),
           ),
@@ -1537,7 +1432,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
         if (int.tryParse(k) != null && int.parse(k) >= 0 && int.parse(k) < 100)
           int.parse(k): _tagName(int.parse(k)),
     };
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '物品标签',
       subtitle: '标签用于任务目标、礼物喜好等条件；编号小于 100 的才算物品标签。',
       children: [
@@ -1563,55 +1458,13 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
   // ---------- 底部保存条 ----------
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1632,7 +1485,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _SectionCard(
+                  WorkbenchSectionCard(
                     title: '游戏内预览',
                     children: [_previewCard(row)],
                   ),
@@ -1693,7 +1546,7 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
   Widget _statsCard(Map<String, dynamic> row) {
     final isShop = _selTable == _shopCfg;
     final visual = isShop ? (_lookupAny(_selId!) ?? row) : row;
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '统计与引用',
       children: [
         if (isShop) ...[
@@ -1769,51 +1622,6 @@ class _WarehouseWorkbenchState extends State<WarehouseWorkbench>
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
 
 class _Collapsible extends StatefulWidget {
   const _Collapsible({required this.title, required this.children});
@@ -2175,163 +1983,6 @@ class _DropdownStr extends StatelessWidget {
     );
   }
 }
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({required this.value, required this.onChanged, this.hint});
-  final num? value;
-  final ValueChanged<num?> onChanged;
-  final String? hint;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: _fmt(widget.value));
-  final FocusNode _focus = FocusNode();
-
-  static String _fmt(num? v) {
-    if (v == null) return '';
-    if (v is double && v == v.roundToDouble()) return v.toInt().toString();
-    return v.toString();
-  }
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = _fmt(widget.value);
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) =>
-          widget.onChanged(v.trim().isEmpty ? null : num.tryParse(v.trim())),
-    );
-  }
-}
-
-class _ListNumField extends StatefulWidget {
-  const _ListNumField({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-  });
-
-  final List<int> value;
-  final ValueChanged<List<int>> onChanged;
-  final String? hint;
-
-  @override
-  State<_ListNumField> createState() => _ListNumFieldState();
-}
-
-class _ListNumFieldState extends State<_ListNumField> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value.join(', '));
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _ListNumField old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value.join(', ') != _c.text) {
-      _c.text = widget.value.join(', ');
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) {
-        final text = v.replaceAll('，', ',');
-        final parts = text
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
-        final nums = <int>[];
-        for (final p in parts) {
-          final n = int.tryParse(p);
-          if (n == null) return; // 有非法项时暂不写回
-          nums.add(n);
-        }
-        widget.onChanged(nums);
-      },
-    );
-  }
-}
-
 class _SegButton extends StatefulWidget {
   const _SegButton({
     required this.label,
@@ -2384,66 +2035,6 @@ class _SegButtonState extends State<_SegButton> {
               color: selected ? palette.textHigh : palette.textSecondary,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
           ),
         ),
       ),

@@ -11,6 +11,7 @@ import '../../core/api_client.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
 import '../../core/responsive.dart';
+import '../../core/texture_budget.dart';
 
 /// 文件查看器：文本只读展示；图片/音频走媒体预览（通过 /api/tools/read 的 base64）。
 class FileViewer extends StatefulWidget {
@@ -209,20 +210,23 @@ class ImagePreview extends StatelessWidget {
                 : '滚轮缩放 · 拖拽平移'),
         Divider(height: 1, color: palette.border),
         Expanded(
-          child: InteractiveViewer(
-            maxScale: 8,
-            child: Center(
-              child: Image.memory(bytes,
-                  // 阶段 4d：模组贴图可达数十 MB，全分辨率解码会卡；按当前
-                  // 视口宽×DPR 降采样（放大查看时略糊换取不冻结 UI）。
-                  cacheWidth:
-                      (MediaQuery.sizeOf(context).width *
-                              MediaQuery.devicePixelRatioOf(context))
-                          .round(),
-                  fit: BoxFit.contain,
-                  gaplessPlayback: true,
-                  errorBuilder: (_, _, _) => Text('图片解码失败',
-                      style: TextStyle(color: palette.textSecondary, fontSize: 13))),
+          child: LayoutBuilder(
+            builder: (context, box) => InteractiveViewer(
+              maxScale: 8,
+              child: Center(
+                child: Image.memory(bytes,
+                    // 阶段 4d/5：模组贴图可达数十 MB（`Tex2D/` 里有 8192×8192
+                    // 的 SDF 字体图集，按原尺寸解码单张就是 256 MB 位图），
+                    // 按**视口盒宽** × DPR 降采样，上限给「看原图」档 4096。
+                    // 阶段 5·D14：改走 TextureBudget，不再手写尺寸计算——顺手
+                    // 把「屏幕宽」换成真实视口宽（大窗外挂时不要再多解）。
+                    cacheWidth: TextureBudget.decodeWidth(context, box.maxWidth,
+                        max: TextureBudget.kFullViewMaxDecodeWidth),
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                    errorBuilder: (_, _, _) => Text('图片解码失败',
+                        style: TextStyle(color: palette.textSecondary, fontSize: 13))),
+              ),
             ),
           ),
         ),

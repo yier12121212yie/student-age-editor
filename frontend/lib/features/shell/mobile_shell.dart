@@ -1,10 +1,16 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
+import '../../core/app_command.dart';
 import '../../core/mobile_widgets.dart';
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
+import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../ai/ai_panel.dart';
 import '../base/base_search_page.dart';
@@ -61,16 +67,39 @@ class _MobileShellState extends State<MobileShell> {
   /// 而不是在任何 tab 上都直接退出应用。
   final List<int> _tabHistory = [];
 
+  /// Android 首页「再按一次退出」的上次返回时间。
+  DateTime? _lastExitAt;
+
+  /// 首页返回提示的显示状态（自绘、2s 自动消失；Timer 在 dispose 取消）。
+  bool _exitHint = false;
+  Timer? _exitHintTimer;
+
+  /// 仅 Android 原生端拦截首页返回；Web/桌面保留原有浏览器/窗口行为。
+  bool get _interceptAndroidExit =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  /// Ctrl+F：本壳没有左侧栏，检索以底部滑出层承载（与顶栏放大镜同款）。
+  AppCommandHost? _registeredHost;
+
   @override
   void initState() {
     super.initState();
     _openSeq = shell.controller.openSeq;
     shell.controller.addListener(_onEditorChanged);
+    _registeredHost = AppCommandHost(
+      openSearch: () =>
+          _showSheet(BaseSearchPage(state: state), title: '检索'),
+    );
+    shell.registerCommandHost(_registeredHost!);
   }
 
   @override
   void dispose() {
+    _exitHintTimer?.cancel();
     shell.controller.removeListener(_onEditorChanged);
+    if (_registeredHost != null) {
+      shell.unregisterCommandHost(_registeredHost!);
+    }
     super.dispose();
   }
 
@@ -105,6 +134,37 @@ class _MobileShellState extends State<MobileShell> {
     });
   }
 
+  /// 底部导航点击：先给轻触反馈，再切 tab。
+  void _onTabTapped(int i) {
+    MobileHaptic.lightImpact();
+    _switchTab(i);
+  }
+
+  /// 抽屉导航：先关抽屉再切 tab，并补触感反馈。
+  void _onDrawerSelectTab(int i) {
+    Navigator.of(context).pop();
+    MobileHaptic.lightImpact();
+    _switchTab(i);
+  }
+
+  /// 首页返回：Android 上两次返回间隔 < 2s 才真正退出，第一次只提示。
+  void _handleExitBack() {
+    if (!_interceptAndroidExit) return;
+    final now = DateTime.now();
+    final last = _lastExitAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 2)) {
+      _lastExitAt = null;
+      SystemNavigator.pop();
+      return;
+    }
+    _lastExitAt = now;
+    setState(() => _exitHint = true);
+    _exitHintTimer?.cancel();
+    _exitHintTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _exitHint = false);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return fluent.FluentTheme(
@@ -125,9 +185,9 @@ class _MobileShellState extends State<MobileShell> {
           ),
         ),
         child: PopScope(
-          // 非首页 tab 时拦截系统返回：先逐级回退 tab，只有回到首页（模组）
-          // 再按返回才退出应用——这是 Android 用户对底部导航的默认预期。
-          canPop: _tab == 0,
+          // 非首页 tab 时拦截系统返回：先逐级回退 tab；首页再按返回
+          // 在 Android 上走「再按一次退出」，避免误触直接杀掉应用。
+          canPop: _tab == 0 && !_interceptAndroidExit,
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) return;
             // 抽屉打开时优先关闭抽屉（部分机型返回键不会先走 LocalHistoryEntry）。
@@ -136,28 +196,90 @@ class _MobileShellState extends State<MobileShell> {
               scaffold.closeDrawer();
               return;
             }
-            _goBackTab();
+            if (_tab != 0) {
+              _goBackTab();
+              return;
+            }
+            _handleExitBack();
           },
           child: Scaffold(
             key: _scaffoldKey,
             backgroundColor: palette.bgDeep2,
             appBar: _MobileAppBar(
               state: state,
+              tabIndex: _tab,
               onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-              onSearch: () => _showSheet(BaseSearchPage(state: state)),
+              onSearch: () =>
+                  _showSheet(BaseSearchPage(state: state), title: '检索'),
               onAi: () => _showAiSheet(),
             ),
             drawer: _MobileDrawer(
               state: state,
               currentTab: _tab,
-              onSelectTab: _switchTab,
+              onSelectTab: _onDrawerSelectTab,
             ),
-            body: SafeArea(child: _buildBody()),
+            body: SafeArea(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  NotificationListener<ScrollNotification>(
+                    onNotification: (n) {
+                      if (n is ScrollStartNotification &&
+                          n.dragDetails != null) {
+                        FocusManager.instance.primaryFocus?.unfocus();
+                      }
+                      return false;
+                    },
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onTap: () =>
+                          FocusManager.instance.primaryFocus?.unfocus(),
+                      child: _buildBody(),
+                    ),
+                  ),
+                  if (_exitHint)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 16,
+                      child: IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpace.l, vertical: AppSpace.s),
+                            decoration: BoxDecoration(
+                              color: palette.card,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(color: palette.border),
+                            ),
+                            child: Text(
+                              '再按一次返回退出',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: palette.textPrimary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            // 控制器变化（开/关文档、保存）要刷新徽标；壳自身不一定重建。
             bottomNavigationBar: SafeArea(
-              child: _MobileBottomBar(
-                current: _tab,
-                editorBadge: shell.controller.docs.isNotEmpty,
-                onTap: _switchTab,
+              child: ListenableBuilder(
+                listenable: shell.controller,
+                builder: (context, _) {
+                  final docs = shell.controller.docs;
+                  return _MobileBottomBar(
+                    current: _tab,
+                    editorCount: docs.length,
+                    editorDirty:
+                        docs.any((d) => shell.controller.isDirty(d)),
+                    onTap: _onTabTapped,
+                  );
+                },
               ),
             ),
           ),
@@ -263,8 +385,19 @@ class _MobileShellState extends State<MobileShell> {
   }
 
   /// 通用底部滑出层：见 [showMobileSheet]（已抽到 core 供预览等复用）。
-  void _showSheet(Widget child, {List<Widget>? headerActions}) {
-    showMobileSheet(context, child, headerActions: headerActions);
+  void _showSheet(
+    Widget child, {
+    List<Widget>? headerActions,
+    String? title,
+    double initialSize = 0.92,
+  }) {
+    showMobileSheet(
+      context,
+      child,
+      headerActions: headerActions,
+      title: title,
+      initialSize: initialSize,
+    );
   }
 
   void _showAiSheet() {
@@ -279,8 +412,10 @@ class _MobileShellState extends State<MobileShell> {
           setState(() => _tab = 4);
         },
       ),
+      title: 'AI 助手',
       headerActions: [
         IconButton(
+          tooltip: '全屏',
           icon: Icon(
             FluentIcons.full_screen_maximize_24_regular,
             size: 18,
@@ -320,15 +455,21 @@ class _MobileShellState extends State<MobileShell> {
 class _MobileAppBar extends StatelessWidget implements PreferredSizeWidget {
   const _MobileAppBar({
     required this.state,
+    required this.tabIndex,
     required this.onMenu,
     required this.onSearch,
     required this.onAi,
   });
 
   final AppState state;
+
+  /// 当前底部 tab：标题跟随，避免在 5 个 tab 之间迷路。
+  final int tabIndex;
   final VoidCallback onMenu;
   final VoidCallback onSearch;
   final VoidCallback onAi;
+
+  static const _tabTitles = ['模组', '编辑页面', '文件', '编辑', '更多'];
 
   @override
   Size get preferredSize => const Size.fromHeight(52);
@@ -336,49 +477,70 @@ class _MobileAppBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     final mod = state.modName.isEmpty ? '未加载' : state.modName;
-    return AppBar(
-      // 与 preferredSize(52) 对齐：Material AppBar 默认 toolbarHeight 56，
-      // 会让两行标题在 52 高里被裁 4px。
-      toolbarHeight: 52,
-      backgroundColor: palette.bg,
-      elevation: 0,
-      leading: IconButton(
-        icon: Icon(FluentIcons.navigation_24_regular, color: palette.textHigh),
-        onPressed: onMenu,
-      ),
-      title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '学生时代模组编辑器',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: palette.textHigh,
+    final title = _tabTitles[tabIndex.clamp(0, _tabTitles.length - 1)];
+    return clampedChromeText(
+      AppBar(
+        // 与 preferredSize(52) 对齐：Material AppBar 默认 toolbarHeight 56，
+        // 会让两行标题在 52 高里被裁 4px。
+        toolbarHeight: 52,
+        backgroundColor: palette.bg,
+        elevation: 0,
+        leading: Semantics(
+          label: '菜单',
+          button: true,
+          child: IconButton(
+            tooltip: '菜单',
+            icon:
+                Icon(FluentIcons.navigation_24_regular, color: palette.textHigh),
+            onPressed: onMenu,
+          ),
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: palette.textHigh,
+              ),
+            ),
+            Text(
+              '工作区: $mod',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: palette.textSecondary),
+            ),
+          ],
+        ),
+        actions: [
+          Semantics(
+            label: '检索',
+            button: true,
+            child: IconButton(
+              tooltip: '检索',
+              icon: Icon(
+                FluentIcons.search_24_regular,
+                color: palette.textSecondary,
+              ),
+              onPressed: onSearch,
             ),
           ),
-          Text(
-            '工作区: $mod',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11, color: palette.textSecondary),
+          Semantics(
+            label: 'AI 助手',
+            button: true,
+            child: IconButton(
+              tooltip: 'AI 助手',
+              icon: Icon(FluentIcons.bot_24_regular, color: accentColor),
+              onPressed: onAi,
+            ),
           ),
+          const SizedBox(width: AppSpace.xs),
         ],
       ),
-      actions: [
-        IconButton(
-          icon: Icon(
-            FluentIcons.search_24_regular,
-            color: palette.textSecondary,
-          ),
-          onPressed: onSearch,
-        ),
-        IconButton(
-          icon: Icon(FluentIcons.bot_24_regular, color: accentColor),
-          onPressed: onAi,
-        ),
-        const SizedBox(width: 4),
-      ],
     );
   }
 }
@@ -396,9 +558,12 @@ class _MobileDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 320 宽小屏上固定 300 会让遮罩只剩 20px；按屏宽收一点。
+    final width =
+        (MediaQuery.sizeOf(context).width * 0.85).clamp(240.0, 300.0);
     return Drawer(
       backgroundColor: palette.bgDeep2,
-      width: 300,
+      width: width,
       child: SafeArea(
         child: ListView(
           padding: EdgeInsets.zero,
@@ -486,10 +651,10 @@ class _MobileDrawer extends StatelessWidget {
     );
   }
 
-  /// 选中导航项：先关抽屉再切 tab。旧实现只切 tab 不关抽屉，抽屉会继续
-  /// 盖住刚切到的页面，用户必须再滑一次——不符合底部/侧边导航的默认预期。
+  /// 选中导航项：关闭抽屉与切 tab 由宿主的 [_onDrawerSelectTab] 统一处理，
+  /// 这里只转发，避免重复 pop（旧实现只切 tab 不关抽屉，抽屉会继续盖住
+  /// 刚切到的页面——不符合底部/侧边导航的默认预期）。
   void _select(BuildContext context, int tab) {
-    Navigator.of(context).pop(); // 关闭抽屉（Scaffold 的本地历史项）
     onSelectTab(tab);
   }
 
@@ -551,57 +716,64 @@ class _MobileDrawer extends StatelessWidget {
 class _MobileBottomBar extends StatelessWidget {
   const _MobileBottomBar({
     required this.current,
-    required this.editorBadge,
+    required this.editorCount,
+    required this.editorDirty,
     required this.onTap,
   });
 
   final int current;
-  final bool editorBadge;
+  final int editorCount;
+  final bool editorDirty;
   final ValueChanged<int> onTap;
 
   @override
   Widget build(BuildContext context) {
-    return NavigationBar(
-      height: 64,
-      backgroundColor: palette.bg,
-      indicatorColor: palette.card,
-      selectedIndex: current,
-      onDestinationSelected: onTap,
-      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      destinations: [
-        const NavigationDestination(
-          icon: Icon(FluentIcons.box_24_regular),
-          selectedIcon: Icon(FluentIcons.box_24_filled),
-          label: '模组',
-        ),
-        const NavigationDestination(
-          icon: Icon(FluentIcons.apps_24_regular),
-          selectedIcon: Icon(FluentIcons.apps_24_filled),
-          label: '页面',
-        ),
-        const NavigationDestination(
-          icon: Icon(FluentIcons.folder_24_regular),
-          selectedIcon: Icon(FluentIcons.folder_24_filled),
-          label: '文件',
-        ),
-        NavigationDestination(
-          icon: Badge(
-            isLabelVisible: editorBadge,
-            smallSize: 8,
-            child: const Icon(FluentIcons.document_24_regular),
+    Widget editorIcon(IconData icon) {
+      if (editorCount <= 0) return Icon(icon);
+      return Badge.count(
+        count: editorCount,
+        backgroundColor:
+            editorDirty ? palette.statusWarn : palette.primaryColor,
+        textColor: palette.onAccent,
+        child: Icon(icon),
+      );
+    }
+
+    return clampedChromeText(
+      NavigationBar(
+        height: 64,
+        backgroundColor: palette.bg,
+        indicatorColor: palette.card,
+        selectedIndex: current,
+        onDestinationSelected: onTap,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        destinations: [
+          const NavigationDestination(
+            icon: Icon(FluentIcons.box_24_regular),
+            selectedIcon: Icon(FluentIcons.box_24_filled),
+            label: '模组',
           ),
-          selectedIcon: Badge(
-            isLabelVisible: editorBadge,
-            smallSize: 8,
-            child: const Icon(FluentIcons.document_24_filled),
+          const NavigationDestination(
+            icon: Icon(FluentIcons.apps_24_regular),
+            selectedIcon: Icon(FluentIcons.apps_24_filled),
+            label: '页面',
           ),
-          label: '编辑',
-        ),
-        const NavigationDestination(
-          icon: Icon(FluentIcons.more_horizontal_24_regular),
-          label: '更多',
-        ),
-      ],
+          const NavigationDestination(
+            icon: Icon(FluentIcons.folder_24_regular),
+            selectedIcon: Icon(FluentIcons.folder_24_filled),
+            label: '文件',
+          ),
+          NavigationDestination(
+            icon: editorIcon(FluentIcons.document_24_regular),
+            selectedIcon: editorIcon(FluentIcons.document_24_filled),
+            label: '编辑',
+          ),
+          const NavigationDestination(
+            icon: Icon(FluentIcons.more_horizontal_24_regular),
+            label: '更多',
+          ),
+        ],
+      ),
     );
   }
 }

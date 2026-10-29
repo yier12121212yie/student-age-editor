@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show ValueNotifier, kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
@@ -7,7 +7,9 @@ import 'dart:convert';
 
 import '../../core/api_client.dart';
 import '../../core/blob_put.dart' show downloadUrlNative;
+import '../../core/error_text.dart';
 import '../../core/file_save.dart';
+import '../../core/long_task_progress.dart';
 import '../../core/mod_staged_export.dart';
 import '../../core/mod_staged_import.dart';
 import '../../core/models.dart';
@@ -16,6 +18,9 @@ import '../../core/zip_staging.dart';
 import '../editor/editor_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/mobile_widgets.dart';
+import '../auth/deployment_caps.dart';
+import 'workshop_publish_dialog.dart';
 
 /// 创意工坊 AppID，与 native 的 sa_core::steam_paths::kGameAppid 同源。
 const String _kWorkshopAppid = '1991040';
@@ -143,7 +148,7 @@ class _ModsPageState extends State<ModsPage> {
       final map = r is Map ? r.cast<String, dynamic>() : <String, dynamic>{};
       await _applyImportResult(map);
     } catch (e) {
-      if (mounted) _showError('导入失败：$e');
+      if (mounted) _showError('导入失败：${humanizeErrorMessage(e)}');
     } finally {
       try {
         await staged?.cleanup();
@@ -154,27 +159,27 @@ class _ModsPageState extends State<ModsPage> {
   /// 自托管大模组包：直传对象存储 -> 服务器落盘 -> import_staged，
   /// 全程带进度对话框。抛出的异常由 [._importMod] 决定回退或展示。
   Future<void> _importModStaged(XFile file) async {
-    final stage =
-        ValueNotifier<_ModImportStage>(const _ModImportStage('申请直传', null));
-    final dialogShown = showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _ModImportProgressDialog(stage: stage),
-    );
+    final ctl = showLongTaskProgress(context,
+        title: '导入模组包', initialLabel: '申请直传');
     try {
       final map = await StagedModImport.run(
         file,
-        onStage: (label, frac) => stage.value = _ModImportStage(label, frac),
+        onStage: (label, frac) => ctl.update(label, frac),
+        isCancelled: () => ctl.isCancelled,
       );
-      stage.value = const _ModImportStage('导入完成', 1, done: true);
-      await dialogShown;
+      ctl.finish('导入完成');
+      await ctl.closed;
+      if (ctl.isCancelled) return; // 已取消：丢弃在途结果
       await _applyImportResult(map);
+    } on LongTaskCancelled {
+      await ctl.closed; // 用户主动取消：静默，不弹错误
     } catch (e) {
-      stage.value = const _ModImportStage('导入失败', null, done: true);
-      await dialogShown;
+      ctl.fail('导入失败');
+      await ctl.closed;
+      if (ctl.isCancelled) return;
       rethrow;
     } finally {
-      stage.dispose();
+      ctl.dispose();
     }
   }
 
@@ -215,7 +220,7 @@ class _ModsPageState extends State<ModsPage> {
         final notConfigured = e.statusCode == 500 &&
             e.message.toLowerCase().contains('file transfer not configured');
         if (!notConfigured) {
-          if (mounted) _showError('导出失败：$e');
+          if (mounted) _showError('导出失败：${humanizeErrorMessage(e)}');
           return;
         }
         // 未配置对象存储：回退 base64 通道，让小模组照常导出。
@@ -226,20 +231,17 @@ class _ModsPageState extends State<ModsPage> {
 
   /// 服务端拼包导出（web）：打包 -> 等待预热 -> 直链带进度下载 -> 保存。
   Future<void> _exportStaged(String name) async {
-    final stage =
-        ValueNotifier<_ModImportStage>(const _ModImportStage('服务端打包', null));
-    final dialogShown = showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _ModImportProgressDialog(stage: stage, title: '导出模组包'),
-    );
+    final ctl = showLongTaskProgress(context,
+        title: '导出模组包', initialLabel: '服务端打包');
     try {
       final out = await StagedModExport.run(
         name,
-        onStage: (label, frac) => stage.value = _ModImportStage(label, frac),
+        onStage: (label, frac) => ctl.update(label, frac),
+        isCancelled: () => ctl.isCancelled,
       );
-      stage.value = const _ModImportStage('保存中', 1, done: true);
-      await dialogShown;
+      ctl.finish('保存中');
+      await ctl.closed;
+      if (ctl.isCancelled) return; // 已取消：丢弃在途结果
       final saved = out.bytes != null
           ? await saveBytesToFile(
               filename: out.filename,
@@ -254,12 +256,15 @@ class _ModsPageState extends State<ModsPage> {
                 content: Text('已保存 ${out.filename}'),
                 severity: fluent.InfoBarSeverity.success));
       }
+    } on LongTaskCancelled {
+      await ctl.closed; // 用户主动取消：静默
     } catch (e) {
-      stage.value = const _ModImportStage('导出失败', null, done: true);
-      await dialogShown;
+      ctl.fail('导出失败');
+      await ctl.closed;
+      if (ctl.isCancelled) return;
       rethrow;
     } finally {
-      stage.dispose();
+      ctl.dispose();
     }
   }
 
@@ -295,7 +300,7 @@ class _ModsPageState extends State<ModsPage> {
                 severity: fluent.InfoBarSeverity.success));
       }
     } catch (e) {
-      if (mounted) _showError('导出失败：$e');
+      if (mounted) _showError('导出失败：${humanizeErrorMessage(e)}');
     }
   }
 
@@ -359,8 +364,47 @@ class _ModsPageState extends State<ModsPage> {
         fluent.InfoBar(title: Text('操作失败'), content: Text(msg), severity: fluent.InfoBarSeverity.error));
   }
 
+  void _publishWorkshop() {
+    if (!DeploymentCaps.steamWorkshopAvailable) {
+      if (mounted) {
+        fluent.displayInfoBar(
+          context,
+          builder: (ctx, close) => const fluent.InfoBar(
+            title: Text('Steam 创意工坊不可用'),
+            content: Text('自托管部署运行在服务器上，没有 Steam 客户端。'
+                '请在桌面版本机发布，或下载模组 zip 后手动上传。'),
+            severity: fluent.InfoBarSeverity.warning,
+          ),
+        );
+      }
+      return;
+    }
+    final name = widget.state.modName;
+    if (name.isEmpty) {
+      if (mounted) _showError('请先选择要发布的模组');
+      return;
+    }
+    final curMod = widget.state.mods.firstWhere(
+      (m) => m.name == name,
+      orElse: () => ModInfo(
+        name: name,
+        root: '',
+        cfgFiles: const [],
+        hasManifest: false,
+        manifestTitle: '',
+      ),
+    );
+    WorkshopPublishDialog.show(
+      context,
+      modName: name,
+      initialTitle: curMod.manifestTitle.isNotEmpty ? curMod.manifestTitle : name,
+      initialDesc: '',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final mob = isMobileWidth(context);
     return Column(
       children: [
         _Header(
@@ -368,6 +412,8 @@ class _ModsPageState extends State<ModsPage> {
           onCreate: _create,
           onImport: _importMod,
           onExport: _exportCurrent,
+          onPublishWorkshop: _publishWorkshop,
+          publishWorkshopAvailable: DeploymentCaps.steamWorkshopAvailable,
         ),
         Divider(height: 1, color: palette.border),
         Expanded(
@@ -380,8 +426,11 @@ class _ModsPageState extends State<ModsPage> {
                         textAlign: TextAlign.center,
                         style: TextStyle(color: palette.textHint, fontSize: 12)));
               }
-              return ListView.separated(
+              final list = ListView.separated(
                 padding: const EdgeInsets.symmetric(vertical: 4),
+                physics: mob
+                    ? const AlwaysScrollableScrollPhysics()
+                    : null,
                 itemCount: widget.state.mods.length,
                 separatorBuilder: (_, _) => Divider(height: 1, color: palette.panel),
                 itemBuilder: (context, i) {
@@ -402,14 +451,30 @@ class _ModsPageState extends State<ModsPage> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                      mod.manifestTitle.isNotEmpty
-                                          ? mod.manifestTitle
-                                          : mod.name,
-                                      style: TextStyle(
-                                          fontSize: 13,
-                                          color: selected ? palette.textHigh : palette.textPrimary,
-                                          fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                                  Row(
+                                    children: [
+                                      Text(
+                                          mod.manifestTitle.isNotEmpty
+                                              ? mod.manifestTitle
+                                              : mod.name,
+                                          style: TextStyle(
+                                              fontSize: 13,
+                                              color: selected ? palette.textHigh : palette.textPrimary,
+                                              fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                                      if (_isWorkshop(mod)) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                          decoration: BoxDecoration(
+                                            color: Colors.blue.withOpacity(0.15),
+                                            borderRadius: BorderRadius.circular(3),
+                                          ),
+                                          child: const Text('Steam 工坊',
+                                              style: TextStyle(fontSize: 10, color: Colors.blue, fontWeight: FontWeight.bold)),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
                                   if (mod.manifestTitle.isNotEmpty)
                                     Text(mod.name,
                                         maxLines: 1,
@@ -422,10 +487,25 @@ class _ModsPageState extends State<ModsPage> {
                               ),
                             ),
                             if (selected && !_isWorkshop(mod))
-                              GestureDetector(
-                                onTap: () => _delete(mod),
-                                child: Icon(FluentIcons.delete_24_regular,
-                                    size: 15, color: palette.textMuted),
+                              Tooltip(
+                                message: '删除模组',
+                                child: InkWell(
+                                  onTap: () {
+                                    MobileHaptic.mediumImpact();
+                                    _delete(mod);
+                                  },
+                                  borderRadius: BorderRadius.circular(AppRadius.m),
+                                  child: SizedBox(
+                                    width: mob ? 44 : 24,
+                                    height: mob ? 44 : 24,
+                                    child: Center(
+                                      child: Icon(
+                                          FluentIcons.delete_24_regular,
+                                          size: 15,
+                                          color: palette.textMuted),
+                                    ),
+                                  ),
+                                ),
                               ),
                           ],
                         ),
@@ -434,6 +514,9 @@ class _ModsPageState extends State<ModsPage> {
                   );
                 },
               );
+              return mob
+                  ? RefreshIndicator(onRefresh: _refresh, child: list)
+                  : list;
             },
           ),
         ),
@@ -448,11 +531,15 @@ class _Header extends StatelessWidget {
     required this.onCreate,
     required this.onImport,
     required this.onExport,
+    required this.onPublishWorkshop,
+    required this.publishWorkshopAvailable,
   });
   final VoidCallback onRefresh;
   final VoidCallback onCreate;
   final VoidCallback onImport;
   final VoidCallback onExport;
+  final VoidCallback onPublishWorkshop;
+  final bool publishWorkshopAvailable;
 
   @override
   Widget build(BuildContext context) {
@@ -465,6 +552,16 @@ class _Header extends StatelessWidget {
           Text('模组',
               style: TextStyle(fontSize: 12, color: palette.textSecondary, fontWeight: FontWeight.w600)),
           const Spacer(),
+          _HeaderIcon(
+            icon: FluentIcons.cloud_sync_24_regular,
+            tip: publishWorkshopAvailable
+                ? '发布到 Steam 创意工坊'
+                : '自托管部署没有 Steam 客户端，无法发布到创意工坊',
+            onTap: onPublishWorkshop,
+            mob: mob,
+            enabled: publishWorkshopAvailable,
+          ),
+          const SizedBox(width: 4),
           _HeaderIcon(
             icon: FluentIcons.arrow_download_24_regular,
             tip: '导入模组 zip',
@@ -521,26 +618,34 @@ class _HeaderIcon extends StatelessWidget {
     required this.tip,
     required this.onTap,
     required this.mob,
+    this.enabled = true,
   });
   final IconData icon;
   final String tip;
   final VoidCallback onTap;
   final bool mob;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     return Tooltip(
       message: tip,
       child: MouseRegion(
-        cursor: SystemMouseCursors.click,
+        cursor: enabled
+            ? SystemMouseCursors.click
+            : SystemMouseCursors.forbidden,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: onTap,
+          onTap: enabled ? onTap : null,
           child: SizedBox(
             width: mob ? 44 : 32,
             height: mob ? 44 : 32,
             child: Center(
-              child: Icon(icon, size: 15, color: palette.textMuted),
+              child: Icon(
+                icon,
+                size: 15,
+                color: enabled ? palette.textMuted : palette.textHint,
+              ),
             ),
           ),
         ),
@@ -549,74 +654,5 @@ class _HeaderIcon extends StatelessWidget {
   }
 }
 
-/// 大模组包直传导入的阶段快照（标签 + 可选进度 0..1 + 是否结束）。
-class _ModImportStage {
-  const _ModImportStage(this.label, this.frac, {this.done = false});
-  final String label;
-  final double? frac;
-  final bool done;
-}
-
-/// 直传导入/导出进度对话框：监听 [stage]，`done` 置位后自动关闭（无论完成还是
-/// 失败；调用方通过它持有的 Future 汇合，避免竞态 pop）。
-class _ModImportProgressDialog extends StatefulWidget {
-  const _ModImportProgressDialog({required this.stage, this.title = '导入模组包'});
-  final ValueNotifier<_ModImportStage> stage;
-  final String title;
-
-  @override
-  State<_ModImportProgressDialog> createState() =>
-      _ModImportProgressDialogState();
-}
-
-class _ModImportProgressDialogState extends State<_ModImportProgressDialog> {
-  @override
-  void initState() {
-    super.initState();
-    widget.stage.addListener(_maybeClose);
-    // 对话框可能在导入已结束后才真正弹出（showDialog 排队）：首帧即检查。
-    if (widget.stage.value.done) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _maybeClose());
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.stage.removeListener(_maybeClose);
-    super.dispose();
-  }
-
-  void _maybeClose() {
-    if (widget.stage.value.done && Navigator.of(context).canPop()) {
-      Navigator.of(context).pop();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<_ModImportStage>(
-      valueListenable: widget.stage,
-      builder: (context, stage, _) {
-        final pct = stage.frac == null ? null : (stage.frac! * 100).clamp(0.0, 100.0);
-        return AppContentDialog(
-          title: Text(widget.title),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                pct == null
-                    ? '${stage.label} …'
-                    : '${stage.label} ${pct.toStringAsFixed(1)}%',
-                style: const TextStyle(fontSize: 12.5),
-              ),
-              const SizedBox(height: 10),
-              fluent.ProgressBar(value: pct),
-            ],
-          ),
-          actions: const [],
-        );
-      },
-    );
-  }
-}
+// 直传导入/导出的进度对话框已提升为公共件 core/long_task_progress.dart（C5），
+// 带「取消」按钮，四个长任务场景复用。

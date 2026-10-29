@@ -80,7 +80,7 @@ class FlowInspectorPanel extends StatefulWidget {
     this.gameDicts = const {},
   });
 
-  /// 无代码模式：为效果类字段追加「积木编辑」入口（schema 编辑器同款形态，
+  /// 简易模式：为效果类字段追加「积木编辑」入口（schema 编辑器同款形态，
   /// 见 nocode/effect_block_editor.dart）。默认关——宿主未接线时行为与旧版一致。
   final bool noCodeMode;
 
@@ -427,7 +427,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       );
     }
     final style = TextStyle(fontSize: 11.5, color: palette.textBody);
-    // 无代码模式分流（与 schema 编辑器、内联卡片同一张表）：码字段铺内联积木
+    // 简易模式分流（与 schema 编辑器、内联卡片同一张表）：码字段铺内联积木
     // 编辑器，引用/枚举字段只给选择入口——两者都不出现可编辑文本控件。
     final shape = noCodeShapeFor(meta.cfg, meta.key, meta.type, meta.rule);
     final noCodeBlocks = widget.noCodeMode && shape == NoCodeShape.blocks;
@@ -466,7 +466,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
       editor = _noCodePickRow(meta, ctl);
     } else if (meta.effectLike || meta.rule != null) {
       // 效果/条件类与有下拉规则的字段一律走补全框：裸 TextBox 会让全角逗号绕过
-      // 校验直接进存档。（关闭无代码模式时的形态，开启态已被上面两个分支接管。）
+      // 校验直接进存档。（开启态已被上面两个分支接管。）
       final node = _focusFor(meta);
       _order.add(node);
       editor = SuggestionTextField(
@@ -497,7 +497,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
         onTab: () => _advance(node),
       );
     }
-    // 无代码模式下「选背景图」的缩略图并进了只读行（见 [_noCodePickRow]），
+    // 简易模式下「选背景图」的缩略图并进了只读行（见 [_noCodePickRow]），
     // 避免同一行出现两个选择入口；关闭态保持原有缩略图 + 选背景图。
     final bgExtras =
         widget.noCodeMode ? null : _bgExtrasFor(meta, ctl);
@@ -510,7 +510,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
           );
   }
 
-  /// 无代码模式的引用/枚举字段：只读现值 + 「选 X…」入口。
+  /// 简易模式的引用/枚举字段：只读现值 + 「选 X…」入口。
   ///
   /// 面板依旧不落库：选中结果经 [FlowInspectorPanel.onFieldChanged] 交宿主
   /// 解析、标脏、记撤销步；控制器与内联卡片同实例，写回即双向同步。
@@ -550,24 +550,6 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
             ),
           ],
         ),
-        if (kind == null && !hasSource)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '该字段没有可选候选；如需手写请关闭无代码模式。',
-                    style: TextStyle(fontSize: 10, color: palette.textHint),
-                  ),
-                ),
-                _miniAction(
-                  label: '关闭无代码模式',
-                  onTap: () => exitNoCodeMode(context),
-                ),
-              ],
-            ),
-          ),
       ],
     );
   }
@@ -620,7 +602,7 @@ class FlowInspectorPanelState extends State<FlowInspectorPanel> {
     _scheduleEcho();
   }
 
-  /// 小动作按钮（选 X / 关闭无代码模式）：[onTap] 为 null 时置灰不可点。
+  /// 小动作按钮（选 X…）：[onTap] 为 null 时置灰不可点。
   Widget _miniAction({required String label, VoidCallback? onTap}) {
     return MouseRegion(
       cursor: onTap == null

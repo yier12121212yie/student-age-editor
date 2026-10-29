@@ -193,7 +193,8 @@ TEST_CASE("GET /api/ping over the wire: status + headers + body", "[httpd][contr
     CHECK(res->get_header_value("Access-Control-Allow-Origin") == "http://127.0.0.1");
     CHECK(res->get_header_value("Access-Control-Allow-Methods") ==
           "GET, POST, PUT, DELETE, OPTIONS");
-    CHECK(res->get_header_value("Access-Control-Allow-Headers") == "Content-Type");
+    CHECK(res->get_header_value("Access-Control-Allow-Headers") ==
+          "Content-Type, Authorization, Mcp-Session-Id");
     CHECK(res->get_header_value("Content-Length") == std::to_string(res->body.size()));
     // httpd.py emits no Server/Date headers; the raw transport matches.
     CHECK(res->get_header_value("Server").empty());

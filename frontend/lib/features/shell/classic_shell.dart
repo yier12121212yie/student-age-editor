@@ -3,10 +3,12 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/app_dialogs.dart';
+import '../../core/mode_picker.dart';
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
+import '../../core/editor_leave_guard.dart';
 import '../../core/motion.dart';
 import 'ai_dock.dart';
 import '../base/base_search_page.dart';
@@ -67,7 +69,7 @@ class _ClassicShellState extends State<ClassicShell> {
     }
   }
 
-  void _selectPage(String pageId) {
+  Future<void> _selectPage(String pageId) async {
     setState(() {
       _activePageId = pageId;
       final def = pageById(pageId);
@@ -77,7 +79,9 @@ class _ClassicShellState extends State<ClassicShell> {
     });
     final def = pageById(pageId);
     if (def != null) {
-      widget.shell.controller.open(
+      await openDocGuarded(
+        context,
+        widget.shell.controller,
         OpenDoc.page(pageId: pageId, title: def.title),
       );
     }
@@ -195,7 +199,12 @@ class _ClassicShellState extends State<ClassicShell> {
                 onGlobalSearch: () =>
                     _showToolModal('🔍 剧情库检索', BaseSearchPage(state: state)),
                 onModPreview: () {
-                  shell.controller.open(OpenDoc.preview(eventId: '8000'));
+                  openDocGuarded(
+                    context,
+                    shell.controller,
+                    OpenDoc.preview(eventId: '8000'),
+                    action: '打开预览',
+                  );
                 },
                 onSwitchMod: () => _showToolModal(
                   '📂 加载 / 切换模组',
@@ -227,8 +236,10 @@ class _ClassicShellState extends State<ClassicShell> {
                     onUiModeChanged: widget.onUiModeChanged,
                   ),
                 ),
-                onToggleUiMode: () =>
-                    widget.onUiModeChanged(uiMode.nextCycle()),
+                onToggleUiMode: () async {
+                  final picked = await showModePicker(context, uiMode);
+                  if (picked != null) widget.onUiModeChanged(picked);
+                },
               ),
               Expanded(
                 child: Row(
@@ -299,8 +310,11 @@ class _ClassicShellState extends State<ClassicShell> {
                               cfgName: _activeCfgName,
                               onOpenPage: _selectPage,
                               onPreview: (evtId) {
-                                shell.controller.open(
+                                openDocGuarded(
+                                  context,
+                                  shell.controller,
                                   OpenDoc.preview(eventId: evtId),
+                                  action: '打开预览',
                                 );
                               },
                               onOpenSearch: () {
@@ -360,16 +374,8 @@ class _ClassicHeader extends StatelessWidget {
   final VoidCallback onSettings;
   final VoidCallback onToggleUiMode;
 
-  /// 当前 UI 模式（循环切换按钮显示"下一模式"）。
+  /// 当前 UI 模式（切换按钮显示当前模式并打开选择器）。
   final UiMode uiMode;
-
-  /// 循环切换按钮的目标模式图标：创作=画笔，经典=列表，剧情图=流程图，导演=场记板。
-  IconData _nextModeIcon(UiMode m) => switch (m) {
-    UiMode.creation => FluentIcons.paint_brush_24_regular,
-    UiMode.classic => FluentIcons.list_24_regular,
-    UiMode.storyFlow => FluentIcons.flow_24_regular,
-    UiMode.director => FluentIcons.movies_and_tv_24_regular,
-  };
 
   @override
   Widget build(BuildContext context) {
@@ -469,7 +475,7 @@ class _ClassicHeader extends StatelessWidget {
                   const SizedBox(width: 16),
                   _HoverScale(
                     child: Tooltip(
-                      message: '切换到${uiMode.nextCycle().label}布局 (循环切换四种布局)',
+                      message: '切换界面模式（创作 / 经典 / 剧情图 / 导演）',
                       child: MouseRegion(
                         cursor: SystemMouseCursors.click,
                         child: GestureDetector(
@@ -489,13 +495,13 @@ class _ClassicHeader extends StatelessWidget {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(
-                                  _nextModeIcon(uiMode.nextCycle()),
+                                  uiModeIcon(uiMode),
                                   size: 13,
                                   color: accentColor,
                                 ),
                                 SizedBox(width: 6),
                                 Text(
-                                  '${uiMode.nextCycle().label}布局',
+                                  uiMode.label,
                                   style: TextStyle(
                                     fontSize: 11,
                                     color: palette.textMid,

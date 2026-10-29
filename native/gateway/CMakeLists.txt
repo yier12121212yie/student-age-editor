@@ -9,6 +9,7 @@
 # in-process without duplicating it. main.cpp holds only the CLI + boot wiring.
 add_library(sa_gateway STATIC
     gw_accounts.cpp
+    gw_api_tokens.cpp
     gw_config.cpp
     gw_sessions.cpp
     gw_refresh.cpp

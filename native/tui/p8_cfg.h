@@ -85,6 +85,11 @@ std::string EncodeFieldValue(const Json& value, const std::string& ftype);
 // 1D arrays split on , ， ; and newlines, 2D arrays on ; and newlines.
 Json DecodeFieldValue(const std::string& text, const std::string& ftype);
 
+// True when `text` is a plain integer or float literal — the accepted input for
+// a "Number" schema field (the form editor refuses anything else instead of
+// silently coercing it to 0).
+bool IsNumericText(const std::string& text);
+
 // The Alpha _choose_columns: "ID" + up to 3 schema-ordered fields that appear
 // in the sample rows (preferred names first), falling back to a 预览 column.
 // `schema_cfg` is game_schema[cfg] (ordered); `sample_rows` are raw JSON texts.

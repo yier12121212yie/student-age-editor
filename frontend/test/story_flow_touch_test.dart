@@ -12,7 +12,8 @@ import 'package:student_age_editor/features/story/story_flow_models.dart';
 void main() {
   const nodeId = '1000001001';
   // 节点世界矩形 (100,100)-(300,212)，scale=1、pan=0 时屏幕同值。
-  const nodeCenterScreen = Offset(200, 156);
+  /// 节点标题条左侧拖拽把手（正文/说话人是输入框，长按会走文本选择）。
+  const nodeGripScreen = Offset(106, 112);
 
   late FlowGraph graph;
   late Map<String, TextEditingController> ctls;
@@ -41,29 +42,28 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
-      MaterialApp(
-        home: fluent.FluentTheme(
-          data: fluent.FluentThemeData(brightness: Brightness.dark),
-          child: Scaffold(
-            body: SizedBox(
-              width: 900,
-              height: 700,
-              child: StoryFlowGraph(
-                graph: graph,
-                positions: const {nodeId: Offset(100, 100)},
-                selection: FlowSelection.none,
-                expandedNodes: const {},
-                onSelectionChanged: selectionCalls.add,
-                onMoveNode: (_, _) {},
-                onAddEdge: (_, _, _) {},
-                onDeleteEdge: (_, _, _) {},
-                onRequestDelete: () {},
-                onToggleExpand: (_) {},
-                fieldController: ctlFor,
-                onFieldChanged: (_, _, _) {},
-                onDeleteNode: (_) {},
-                onContextMenu: contextTaps.add,
-              ),
+      // 卡片正文/说话人是 fluent.TextBox：用 FluentApp 提供
+      // FluentLocalizations，选中文本/右键的上下文菜单才能构建。
+      fluent.FluentApp(
+        theme: fluent.FluentThemeData(brightness: Brightness.dark),
+        home: Scaffold(
+          body: SizedBox(
+            width: 900,
+            height: 700,
+            child: StoryFlowGraph(
+              graph: graph,
+              positions: const {nodeId: Offset(100, 100)},
+              selection: FlowSelection.none,
+              onSelectionChanged: selectionCalls.add,
+              onMoveNode: (_, _) {},
+              onAddEdge: (_, _, _) {},
+              onDeleteEdge: (_, _, _) {},
+              onRequestDelete: () {},
+              fieldController: ctlFor,
+              onFieldChanged: (_, _, _) {},
+              speakerController: (_) => null,
+              onSpeakerSubmitted: (_, _) {},
+              onContextMenu: contextTaps.add,
             ),
           ),
         ),
@@ -140,13 +140,13 @@ void main() {
 
   testWidgets('长按节点：触发与右键同型的节点上下文菜单', (tester) async {
     await pump(tester);
-    final g = await tester.startGesture(nodeCenterScreen);
+    final g = await tester.startGesture(nodeGripScreen);
     await tester.pump(const Duration(milliseconds: 600));
     await g.up();
     await tester.pump();
     expect(contextTaps, hasLength(1));
     expect(contextTaps.single.nodeId, nodeId);
-    expect(contextTaps.single.screen, nodeCenterScreen);
+    expect(contextTaps.single.screen, nodeGripScreen);
   });
 
   testWidgets('长按空白：上报空区域菜单锚点', (tester) async {
@@ -187,9 +187,9 @@ void main() {
     expect(vp(tester).scale, 1);
     expect(vp(tester).pan, const Offset(-100, -50));
     // 右键菜单照旧。平移后节点屏幕矩形为 (0,50)-(200,162)，
-    // 取内部点 (100,106)（避开 contains 不含右缘的边界）。
+    // 取标题条左侧把手 (6,62)（正文是输入框，右键会弹文本菜单）。
     final r = await tester.startGesture(
-      const Offset(100, 106),
+      const Offset(6, 62),
       buttons: kSecondaryButton,
     );
     await tester.pump();

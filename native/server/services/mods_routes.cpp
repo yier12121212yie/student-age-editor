@@ -119,12 +119,17 @@ json import_mod_zip(const std::string& path, const std::string& filename) {
     // 目录名优先级：manifest 标题 > 压缩包文件名 > imported_mod
     std::string mod_name;
     if (z->has(manifest_entry)) {
-        if (auto m = z->read(manifest_entry)) {
-            json mf = json::parse(*m, nullptr, false);
-            if (mf.is_object()) {
-                std::string t = body_str(mf, "title");
-                if (t.empty()) t = body_str(mf, "name");
-                mod_name = safe_mod_dir_name(t);
+        // 只读小 manifest：避免恶意/异常包里塞一个巨型 JSON 把整条读进内存。
+        constexpr long long kMaxManifestBytes = 4 * 1024 * 1024;
+        auto msize = z->uncompressed_size(manifest_entry);
+        if (msize && *msize <= kMaxManifestBytes) {
+            if (auto m = z->read(manifest_entry)) {
+                json mf = json::parse(*m, nullptr, false);
+                if (mf.is_object()) {
+                    std::string t = body_str(mf, "title");
+                    if (t.empty()) t = body_str(mf, "name");
+                    mod_name = safe_mod_dir_name(t);
+                }
             }
         }
     }
@@ -155,14 +160,13 @@ json import_mod_zip(const std::string& path, const std::string& filename) {
         }
         if (rel.empty() || rel.back() == '/') continue;  // 目录条目
         if (!mod_zip_entry_safe(rel)) { ok = false; break; }
-        auto data = z->read(raw);
-        if (!data) { ok = false; break; }
         std::string out = cs::join(dest, rel);
         // UTF-8-safe parent extraction: std::filesystem::path(std::string) uses
         // the ANSI code page on Windows and throws for non-ASCII resource names
         // (e.g. 贴图/配乐), so route through the u8 helpers like every other path.
         cs::create_dirs(cs::dirname(out));
-        if (!cs::write_bytes_simple(out, *data)) { ok = false; break; }
+        // 流式解压：大贴图/配乐逐块写盘，不再整条 read 进内存。
+        if (!z->extract_to_file(raw, out)) { ok = false; break; }
     }
     if (!ok) {
         cs::remove_tree(dest);

@@ -280,6 +280,7 @@ class _AudioAuditionButtonState extends State<AudioAuditionButton> {
         await _auditionPlayer.stop();
       } catch (_) {}
     }
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;

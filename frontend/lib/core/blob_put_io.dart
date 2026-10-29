@@ -37,6 +37,40 @@ Future<void> putBytesToUrl(
   onProgress?.call(bytes.length, bytes.length);
 }
 
+/// 分片上传（IO 兜底）：从 [offset, offset+length) 流式读取分段并 PUT，
+/// 返回 ETag。桌面/安卓正常走本机路径导入，这里是公共 API 的完整实现。
+Future<String> putXFileRangeToUrl(
+  XFile file,
+  String url, {
+  required int offset,
+  required int length,
+  void Function(int sent, int total)? onProgress,
+  Duration timeout = const Duration(minutes: 60),
+}) async {
+  onProgress?.call(0, length);
+  final client = http.Client();
+  try {
+    final req = http.StreamedRequest('PUT', Uri.parse(url));
+    req.contentLength = length;
+    final respFuture = client.send(req);
+    int sent = 0;
+    await for (final chunk in file.openRead(offset, offset + length)) {
+      req.sink.add(chunk);
+      sent += chunk.length;
+      onProgress?.call(sent, length);
+    }
+    await req.sink.close();
+    final resp = await respFuture.timeout(timeout);
+    await resp.stream.drain<void>();
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw Exception('分片直传失败：HTTP ${resp.statusCode}');
+    }
+    return resp.headers['etag'] ?? resp.headers['ETag'] ?? '';
+  } finally {
+    client.close();
+  }
+}
+
 Future<Uint8List> getBytesFromUrl(
   String url, {
   void Function(int received, int total)? onProgress,
@@ -48,6 +82,34 @@ Future<Uint8List> getBytesFromUrl(
   }
   onProgress?.call(resp.bodyBytes.length, resp.bodyBytes.length);
   return resp.bodyBytes;
+}
+
+/// 带自定义请求头的直链 GET（本地文件流转的 `/api/v1/files/{id}/raw`）。
+Future<Uint8List> getBytesFromUrlWithHeaders(
+  String url, {
+  Map<String, String> headers = const {},
+  void Function(int received, int total)? onProgress,
+  Duration timeout = const Duration(minutes: 60),
+}) async {
+  final req = http.Request('GET', Uri.parse(url))..headers.addAll(headers);
+  final client = http.Client();
+  try {
+    final resp = await client.send(req).timeout(timeout);
+    final builder = BytesBuilder(copy: false);
+    final total = resp.contentLength ?? 0;
+    await for (final chunk in resp.stream) {
+      builder.add(chunk);
+      if (total > 0) onProgress?.call(builder.length, total);
+    }
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw Exception('下载失败：HTTP ${resp.statusCode}');
+    }
+    final bytes = builder.takeBytes();
+    onProgress?.call(bytes.length, total > 0 ? total : bytes.length);
+    return bytes;
+  } finally {
+    client.close();
+  }
 }
 
 /// IO 平台没有「浏览器原生下载」，这里 GET 全量后交给 [saveBytesToFile] 落盘。

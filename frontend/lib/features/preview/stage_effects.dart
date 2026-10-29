@@ -181,20 +181,34 @@ StageOneShot stageOneShotOf(ScreenEffect? fx) {
 
 // ---------------- 舞台叠加构件 ----------------
 
-/// 对「背景 + 立绘」图层施加持续滤镜（模糊→反色）。选项/对白框/CG/闪白不进此层，
+/// 对「背景 + 立绘」图层施加持续滤镜（模糊 + 反色）。选项/对白框/CG/闪白不进此层，
 /// 保持清晰，符合视觉小说惯例。
+///
+/// 阶段 5·B6：两者同时命中时**合成单个 `ImageFilter`**——原来是
+/// `ColorFiltered(ImageFiltered(...))` 两层嵌套，各要一块全画布中间 surface
+/// （1080p × DPR2 约 13 MB/块）。`ColorFilter` 本身 `implements ImageFilter`
+/// （见 SDK `painting.dart`：`class ColorFilter implements ImageFilter`），
+/// 于是可用 `ImageFilter.compose` 把「模糊 → 反色」压成一次 offscreen。
+/// 合成语义与原来严格一致：`compose(inner: blur, outer: invert)` = `invert(blur(src))`。
 Widget applyStageFilters(Widget scene, {bool blur = false, bool invert = false}) {
-  if (blur) {
-    scene = ImageFiltered(
-      imageFilter: ImageFilter.blur(sigmaX: 10, sigmaY: 10, tileMode: TileMode.decal),
+  final ImageFilter? blurFilter = blur
+      ? ImageFilter.blur(sigmaX: 10, sigmaY: 10, tileMode: TileMode.decal)
+      : null;
+  final ColorFilter? invertFilter =
+      invert ? ColorFilter.matrix(kInvertColorMatrix) : null;
+
+  if (blurFilter != null && invertFilter != null) {
+    // 单 pass：省掉一块嵌套中间 surface。
+    return ImageFiltered(
+      imageFilter: ImageFilter.compose(inner: blurFilter, outer: invertFilter),
       child: scene,
     );
   }
-  if (invert) {
-    scene = ColorFiltered(
-      colorFilter: ColorFilter.matrix(kInvertColorMatrix),
-      child: scene,
-    );
+  if (blurFilter != null) {
+    return ImageFiltered(imageFilter: blurFilter, child: scene);
+  }
+  if (invertFilter != null) {
+    return ColorFiltered(colorFilter: invertFilter, child: scene);
   }
   return scene;
 }
@@ -371,3 +385,49 @@ class StageCgLayer extends StatelessWidget {
     );
   }
 }
+
+/// 仿真 Live2D 动态呼吸与微动组件 (Live2D Breathing Actor)
+class Live2DBreathingActor extends StatefulWidget {
+  const Live2DBreathingActor({super.key, required this.child, this.enabled = true});
+  final Widget child;
+  final bool enabled;
+
+  @override
+  State<Live2DBreathingActor> createState() => _Live2DBreathingActorState();
+}
+
+class _Live2DBreathingActorState extends State<Live2DBreathingActor>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2400),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.enabled) return widget.child;
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) {
+        final v = _c.value;
+        final dy = (math.sin(v * math.pi) - 0.5) * 3.0;
+        final scale = 1.0 + v * 0.005;
+        return Transform(
+          alignment: Alignment.bottomCenter,
+          transform: Matrix4.identity()
+            ..translate(0.0, dy)
+            ..scale(1.0, scale),
+          child: child,
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+

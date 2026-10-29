@@ -10,7 +10,9 @@
 //     agent loop parses exactly what it would parse from a direct call.
 #include "ai_relay_routes.h"
 
+#include <cctype>
 #include <string>
+#include <string_view>
 
 #include "env_store_ai.h"
 #include "sa_core/http_client.h"
@@ -73,7 +75,8 @@ RelaySettings read_settings_from_ai(const json& ai) {
 }
 
 json policy_json(const RelaySettings& s, bool own_key_allowed, bool tts_image_available,
-                 const std::vector<std::string>& models, long long daily_limit) {
+                 const std::vector<std::string>& models, long long daily_limit,
+                 bool stream) {
     json body;
     body["relay_available"] = s.usable;
     body["provider"] = s.usable ? s.provider : "";
@@ -83,48 +86,73 @@ json policy_json(const RelaySettings& s, bool own_key_allowed, bool tts_image_av
     body["models"] = std::move(m);  // empty == unrestricted
     body["own_key_allowed"] = own_key_allowed;
     body["tts_image_available"] = tts_image_available;
-    body["stream"] = false;  // buffered transport only (v1)
+    body["stream"] = stream;
     json limits = json::object();
     limits["daily"] = daily_limit;  // 0 == no limit (raw backend)
     body["limits"] = std::move(limits);
     return body;
 }
 
-Resp relay_chat(const RelaySettings& s, const json& client_body) {
-    if (!s.usable) return Resp::Json(503, json{{"error", "ai relay not configured"}});
-    if (!client_body.is_object())
-        return Resp::Json(400, json{{"error", "body must be a JSON object"}});
+namespace {
 
-    json fwd = client_body;  // ordered_json copy; drop control + injection keys
+// 清洗客户端请求体：只保留协议负载，剔除服务端选择项与注入键。
+json forward_body(const RelaySettings& s, const json& client_body, bool stream) {
+    json fwd = client_body;
     fwd.erase("protocol");   // frontend hint; the SERVER decides the protocol
     fwd.erase("base_url");   // SSRF wall: caller-chosen hosts are never used
     fwd.erase("baseUrl");
     fwd.erase("api_key");
     fwd.erase("apiKey");
-    fwd["stream"] = false;   // httpd has no chunked transport (v1)
+    fwd["stream"] = stream;
     if (!fwd.contains("model") || !fwd.at("model").is_string() ||
         fwd.at("model").get<std::string>().empty()) {
         if (!s.model.empty()) fwd["model"] = s.model;
     }
     // Anthropic rejects requests without max_tokens; supply a sane default.
     if (s.provider == "anthropic" && !fwd.contains("max_tokens")) fwd["max_tokens"] = 8192;
+    return fwd;
+}
 
+http::Request upstream_request(const RelaySettings& s, const json& fwd, bool stream) {
     http::Request req;
     req.method = "POST";
     req.url = normalize_base(s.base_url, s.provider) + path_for(s.provider);
     req.body = sa_core::py_dumps(fwd);
     req.timeout_seconds = 300.0;
     req.follow_redirects = true;  // 云端 API 上游：保持 urllib 跟随语义
+    const char* accept = stream ? "text/event-stream" : "application/json";
     if (s.provider == "anthropic") {
         req.headers = {{"Content-Type", "application/json"},
-                       {"Accept", "application/json"},
+                       {"Accept", accept},
                        {"x-api-key", s.api_key},
                        {"anthropic-version", "2023-06-01"}};
     } else {
         req.headers = {{"Content-Type", "application/json"},
-                       {"Accept", "application/json"},
+                       {"Accept", accept},
                        {"Authorization", "Bearer " + s.api_key}};
     }
+    return req;
+}
+
+std::string content_type_of(
+    const std::vector<std::pair<std::string, std::string>>& headers) {
+    for (const auto& kv : headers) {
+        std::string name = kv.first;
+        for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (name == "content-type") return kv.second;
+    }
+    return {};
+}
+
+}  // namespace
+
+Resp relay_chat(const RelaySettings& s, const json& client_body) {
+    if (!s.usable) return Resp::Json(503, json{{"error", "ai relay not configured"}});
+    if (!client_body.is_object())
+        return Resp::Json(400, json{{"error", "body must be a JSON object"}});
+
+    json fwd = forward_body(s, client_body, /*stream=*/false);
+    http::Request req = upstream_request(s, fwd, /*stream=*/false);
     http::Response up = http::request(req);
     if (!up.transport_ok()) {
         // Machine-readable prefix lets the client branch; message is the OS one.
@@ -138,6 +166,53 @@ Resp relay_chat(const RelaySettings& s, const json& client_body) {
     return r;
 }
 
+Resp relay_chat_stream(const RelaySettings& s, const json& client_body) {
+    if (!s.usable) return Resp::Json(503, json{{"error", "ai relay not configured"}});
+    if (!client_body.is_object())
+        return Resp::Json(400, json{{"error", "body must be a JSON object"}});
+
+    json fwd = forward_body(s, client_body, /*stream=*/true);
+    http::Request req = upstream_request(s, fwd, /*stream=*/true);
+    req.discard_body = true;
+
+    Resp out;
+    out.body_stream = [req = std::move(req)](StreamEmitter& emitter) -> bool {
+        bool started = false;
+        bool start_ok = true;
+        http::Request up_req = req;
+        up_req.on_response = [&](int status,
+                                 const std::vector<std::pair<std::string, std::string>>& hdrs) {
+            std::string ct = content_type_of(hdrs);
+            if (ct.empty()) ct = "text/event-stream";
+            start_ok = emitter.start(status, std::move(ct));
+            started = true;
+        };
+        bool write_ok = true;
+        http::Response up = http::request_stream(
+            up_req, [&](std::string_view chunk) {
+                if (!started) {
+                    // on_response 理论上总在首个字节前触发；防御性兜底。
+                    start_ok = emitter.start(200, "text/event-stream");
+                    started = true;
+                }
+                if (!start_ok) return false;
+                if (!emitter.write(chunk)) {
+                    write_ok = false;
+                    return false;
+                }
+                return true;
+            });
+        if (!started) {
+            // 连接失败/无响应头：给前端一个可解析的错误信封。
+            emitter.start(502, "application/json; charset=utf-8");
+            emitter.write(error_json_str("ai_upstream_unreachable: " + up.error_message));
+            return true;
+        }
+        return write_ok;
+    };
+    return out;
+}
+
 }  // namespace ai_relay
 
 void register_ai_relay_routes(Router& r) {
@@ -148,7 +223,8 @@ void register_ai_relay_routes(Router& r) {
         json ai = env_store_ai::read_ai_settings(editor_root());
         ai_relay::RelaySettings s = ai_relay::read_settings_from_ai(ai);
         return Resp::Json(200, ai_relay::policy_json(s, /*own_key_allowed=*/true,
-                                                     /*tts_image_available=*/true, {}, 0));
+                                                     /*tts_image_available=*/true, {}, 0,
+                                                     /*stream=*/true));
     });
 
     // POST /api/ai/relay/chat — one buffered round of the provider conversation
@@ -159,6 +235,14 @@ void register_ai_relay_routes(Router& r) {
         ai_relay::RelaySettings s = ai_relay::read_settings_from_ai(ai);
         return ai_relay::relay_chat(s, req.body);
     }));
+
+    // POST /api/ai/relay/chat/stream — chunked SSE pass-through. 不走 async
+    // job：流式响应必须占用当前连接。
+    r.post(R"(/api/ai/relay/chat/stream)", [](const Req& req) -> Resp {
+        json ai = env_store_ai::read_ai_settings(editor_root());
+        ai_relay::RelaySettings s = ai_relay::read_settings_from_ai(ai);
+        return ai_relay::relay_chat_stream(s, req.body);
+    });
 }
 
 }  // namespace sa

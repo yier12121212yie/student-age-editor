@@ -13,6 +13,7 @@
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/sha1.h"
+#include "sa_core/sha256.h"
 #include "sa_core/strings.h"
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
@@ -44,7 +45,14 @@ struct StackPair {
 
 std::mutex g_reg_mu;  // _STACK_LOCK: guards the registries below
 std::map<std::string, StackPair> g_stacks;
-std::map<std::string, std::shared_ptr<std::recursive_mutex>> g_path_locks;
+// 按路径缓存 `recursive_mutex`。存 **weak_ptr** 而非 shared_ptr：否则条目只增不删，
+// 长跑时随不同表路径缓慢增长。用 weak_ptr 后，只要没有调用方正在持锁，条目就会
+// 自然过期、可被惰性清理（见 path_lock_for 的容量清理）。
+//
+// 生命周期契约：**调用方必须把返回的 shared_ptr 绑定成局部变量**，不能写成
+// `path_lock_for(k)->lock()`——那样 shared_ptr 临时量在整条表达式结束即析构，
+// 一旦注册表里只剩 weak_ptr，mutex 会被销毁，而 lock_guard 仍持有悬垂引用。
+std::map<std::string, std::weak_ptr<std::recursive_mutex>> g_path_locks;
 ParseProvider g_provider;
 
 void trim_keep_last(std::vector<StackEntry>& v, size_t limit) {
@@ -55,9 +63,23 @@ void trim_keep_last(std::vector<StackEntry>& v, size_t limit) {
 std::shared_ptr<std::recursive_mutex> path_lock_for(const std::string& key) {
     std::lock_guard<std::mutex> lk(g_reg_mu);
     auto it = g_path_locks.find(key);
-    if (it != g_path_locks.end()) return it->second;
+    if (it != g_path_locks.end()) {
+        if (auto alive = it->second.lock()) return alive;  // 仍在使用：复用同一把锁
+    }
     auto m = std::make_shared<std::recursive_mutex>();
     g_path_locks[key] = m;
+    // 惰性清理：表变大时顺手剔除已过期（无人在用）的条目，避免只增不减。
+    // 必须在 g_reg_mu 内做，且只删 expired 的——在用条目不可删，否则同一路径
+    // 会出现两把不同的锁，互斥失效。
+    if (g_path_locks.size() > 256) {
+        for (auto i = g_path_locks.begin(); i != g_path_locks.end();) {
+            if (i->second.expired()) {
+                i = g_path_locks.erase(i);
+            } else {
+                ++i;
+            }
+        }
+    }
     return m;
 }
 
@@ -485,6 +507,9 @@ json commit(const std::string& abs_path, const json& data, const std::optional<s
     out["snapshot"] = snap_name ? json(*snap_name) : json();
     out["unchanged"] = false;
     out["lossy"] = lossy;
+    // B2：写盘字节的摘要随结果回传，revision_manager 用它直接播种 per-file
+    // 指纹，写完后的全量重算不必再读一遍刚写的大表。
+    out["sha256"] = sa_core::sha256_hex(new_bytes);
     return out;
 }
 
@@ -582,7 +607,9 @@ json write_cfg(const std::string& abs_path, const json& data,
                bool force, bool snapshot) {
     const std::string abs = cs::abs_path(abs_path);
     const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
-    std::lock_guard<std::recursive_mutex> lk(*path_lock_for(path_key(abs)));
+    // 必须持有 shared_ptr 局部量：注册表只存 weak_ptr（见 path_lock_for 注释）。
+    auto path_lock = path_lock_for(path_key(abs));
+    std::lock_guard<std::recursive_mutex> lk(*path_lock);
     auto lr = read_lossy(abs);  // the single disk read (A7)
     return commit(abs, data, lr.raw, lr.lossy, expect_mtime_ns, expect_digest, force, snapshot);
 }
@@ -592,7 +619,8 @@ json apply_patch(const std::string& abs_path, const json& set, const json& remov
                  const std::string* expect_digest, bool force) {
     const std::string abs = cs::abs_path(abs_path);
     const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
-    std::lock_guard<std::recursive_mutex> lk(*path_lock_for(path_key(abs)));
+    auto path_lock = path_lock_for(path_key(abs));  // 持 shared_ptr 局部量（见 path_lock_for 注释）
+    std::lock_guard<std::recursive_mutex> lk(*path_lock);
 
     // (1) current data: S1 parse provider first (40MB parse saving), falling
     // back to the local lenient read. Provider call runs WITHOUT the registry
@@ -685,7 +713,7 @@ json apply_patch(const std::string& abs_path, const json& set, const json& remov
         applied["remove"] = n_remove;
         applied["remove_unmatched"] = n_remove_unmatched;
         result["applied"] = applied;
-        result["data"] = data;  // merged table for the api cache refresh only
+        result["data"] = std::move(data);  // merged table for the api cache refresh only
     }
     return result;
 }
@@ -694,7 +722,8 @@ json undo(const std::string& abs_path) {
     const std::string abs = cs::abs_path(abs_path);
     const std::string key = path_key(abs);
     const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
-    std::lock_guard<std::recursive_mutex> lk(*path_lock_for(key));
+    auto path_lock = path_lock_for(key);  // 持 shared_ptr 局部量（见 path_lock_for 注释）
+    std::lock_guard<std::recursive_mutex> lk(*path_lock);
     hydrate_stack(abs, key);  // cross-process history (bug #6)
 
     StackEntry item;
@@ -764,7 +793,8 @@ json redo(const std::string& abs_path) {
     const std::string abs = cs::abs_path(abs_path);
     const std::string key = path_key(abs);
     const WorkspaceWriteGuard wgate;  // 锁序固定：gate -> path
-    std::lock_guard<std::recursive_mutex> lk(*path_lock_for(key));
+    auto path_lock = path_lock_for(key);  // 持 shared_ptr 局部量（见 path_lock_for 注释）
+    std::lock_guard<std::recursive_mutex> lk(*path_lock);
     hydrate_stack(abs, key);  // cross-process history (bug #6)
 
     StackEntry item;

@@ -71,11 +71,15 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull, reason: '打开设置弹窗不应异常');
-    // 设置弹窗包含界面风格选择
+    // 设置弹窗包含界面风格选择（弹窗之外的头栏本身也显示当前模式名，故限定在对话框内）
     expect(find.text('界面风格'), findsOneWidget);
-    expect(find.text('创作'), findsOneWidget);
-    expect(find.text('经典'), findsOneWidget);
-    expect(find.text('剧情图'), findsOneWidget);
+    final settingsDialog = find.byType(Dialog);
+    expect(find.descendant(of: settingsDialog, matching: find.text('创作')),
+        findsOneWidget);
+    expect(find.descendant(of: settingsDialog, matching: find.text('经典')),
+        findsOneWidget);
+    expect(find.descendant(of: settingsDialog, matching: find.text('剧情图')),
+        findsOneWidget);
 
     // 关闭弹窗（弹窗独有的 dismiss 图标）
     await tester.tap(find.byIcon(FluentIcons.dismiss_24_regular));
@@ -83,9 +87,19 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('界面风格'), findsNothing);
 
-    // 顶栏布局切换按钮：classic 的下一模式是剧情图
-    await tester.tap(find.text('剧情图布局'));
+    // 顶栏布局切换（A1）：不再循环切换，改为「模式选择器」——
+    // 点头部当前模式标签打开弹窗，在弹窗里直接点目标模式。
+    await tester.tap(find.text('经典'));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('切换界面模式'), findsOneWidget, reason: '应弹出模式选择器');
+    // 面板外的「剧情图」字样（设置弹窗已关，但保险起见）不参与命中：
+    // 在模式选择器子树内定位目标项。
+    final picker = find.byKey(const ValueKey('mode-picker'));
+    expect(picker, findsOneWidget);
+    await tester.tap(find.descendant(of: picker, matching: find.text('剧情图')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
     expect(changed, UiMode.storyFlow);
 
     // 「扫描修复」工具栏按钮同样打开弹窗（BugfixPanel）

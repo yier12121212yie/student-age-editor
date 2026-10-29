@@ -101,6 +101,19 @@ std::string new_id() {
     return out;
 }
 
+// 本地分片上传：单片 8 MiB，正好落在 httpd 的 raw_body 保留上限内（超过则
+// 无法在路由里拿到原始字节）。10000 片 => 上限 80 GiB。
+constexpr long long kLocalUploadPartSize = 8LL * 1024 * 1024;
+constexpr long long kLocalUploadMaxParts = 10000;
+
+std::string local_upload_root(const std::string& data_root) {
+    return spath::join(data_root, "_cache/file_transfer/local_upload");
+}
+
+std::string local_upload_dir(const std::string& data_root, const std::string& id) {
+    return spath::join(local_upload_root(data_root), id);
+}
+
 void utc_stamps(time_t now, char* amz_date, size_t ad_len, char* date_stamp, size_t ds_len) {
     std::tm g{};
 #ifdef _WIN32
@@ -782,8 +795,13 @@ std::string warm_key(const CosConfig& cfg, const std::string& id,
 // ---------------------------------------------------------------------------
 // SigV4 预签名
 // ---------------------------------------------------------------------------
-std::string presign_url(const CosConfig& cfg, const std::string& method, const std::string& key,
-                        long long expires_seconds, long long now_unix) {
+namespace {
+
+// extra 为额外的、必须进规范 query 的业务参数（如分片 partNumber/uploadId）。
+std::string presign_url_q(const CosConfig& cfg, const std::string& method,
+                          const std::string& key,
+                          const std::vector<std::pair<std::string, std::string>>& extra,
+                          long long expires_seconds, long long now_unix) {
     if (!cfg.ready()) return {};
     sa_core::http::Url u;
     if (!sa_core::http::parse_url(cfg.public_endpoint, &u)) return {};
@@ -800,7 +818,7 @@ std::string presign_url(const CosConfig& cfg, const std::string& method, const s
         std::string(date_stamp) + "/" + cfg.region + "/" + cfg.service + "/aws4_request";
     const std::string credential = cfg.secret_id + "/" + scope;
 
-    std::vector<std::pair<std::string, std::string>> q;
+    std::vector<std::pair<std::string, std::string>> q = extra;
     q.emplace_back("X-Amz-Algorithm", "AWS4-HMAC-SHA256");
     q.emplace_back("X-Amz-Credential", credential);
     q.emplace_back("X-Amz-Date", amz_date);
@@ -830,6 +848,36 @@ std::string presign_url(const CosConfig& cfg, const std::string& method, const s
 
     return rstrip_slash(cfg.public_endpoint) + encoded_path + "?" + canonical_query +
            "&X-Amz-Signature=" + signature;
+}
+
+}  // namespace
+
+std::string presign_url(const CosConfig& cfg, const std::string& method, const std::string& key,
+                        long long expires_seconds, long long now_unix) {
+    return presign_url_q(cfg, method, key, {}, expires_seconds, now_unix);
+}
+
+std::string presign_part_url(const CosConfig& cfg, const std::string& key,
+                             const std::string& upload_id, int part_number,
+                             long long expires_seconds, long long now_unix) {
+    if (part_number <= 0) return {};
+    return presign_url_q(cfg, "PUT", key,
+                         {{"partNumber", std::to_string(part_number)},
+                          {"uploadId", upload_id}},
+                         expires_seconds, now_unix);
+}
+
+long long multipart_part_size(long long total_size) {
+    constexpr long long kMib = 1024 * 1024;
+    constexpr long long kMaxParts = 10000;
+    constexpr long long kMaxPart = 512 * kMib;  // 单片的实际上限（S3 为 5 GiB，取小）
+    long long ps = 8 * kMib;
+    if (total_size > 0) {
+        const long long need = (total_size + kMaxParts - 1) / kMaxParts;
+        if (need > ps) ps = ((need + kMib - 1) / kMib) * kMib;
+    }
+    if (ps > kMaxPart) ps = kMaxPart;
+    return ps;
 }
 
 // ---------------------------------------------------------------------------
@@ -935,12 +983,146 @@ bool default_remove(const CosConfig& cfg, const std::string& key, std::string* e
     return true;
 }
 
+namespace {
+
+// 极简 XML 取值：取第一个 <tag>...</tag> 的文本（COS 控制面返回体很小且固定）。
+std::string xml_tag_text(const std::string& xml, const std::string& tag) {
+    const std::string open = "<" + tag + ">";
+    auto b = xml.find(open);
+    if (b == std::string::npos) return {};
+    b += open.size();
+    auto e = xml.find("</" + tag + ">", b);
+    if (e == std::string::npos) return {};
+    return xml.substr(b, e - b);
+}
+
+// COS 的错误体（完成分片在 200 里也可能回 <Error>）。
+std::string cos_error_text(const std::string& body) {
+    const std::string code = xml_tag_text(body, "Code");
+    const std::string msg = xml_tag_text(body, "Message");
+    if (code.empty() && msg.empty()) return {};
+    return code.empty() ? msg : (code + ": " + msg);
+}
+
+}  // namespace
+
+std::string default_multipart_initiate(const CosConfig& cfg, const std::string& key,
+                                       std::string* err) {
+    SignedHttp s = sign_headers(cfg, cfg.internal_endpoint, "POST", key, "", "", "",
+                                {{"uploads", ""}});
+    if (s.url.empty()) {
+        if (err) *err = "invalid internal endpoint";
+        return {};
+    }
+    sa_core::http::Request req;
+    req.method = "POST";
+    req.url = s.url;
+    req.headers = s.headers;
+    req.timeout_seconds = 120;
+    req.bypass_proxy = true;
+    auto resp = sa_core::http::request(req);
+    if (!resp.transport_ok()) {
+        if (err) *err = "COS multipart initiate failed: " + resp.error_message;
+        return {};
+    }
+    if (resp.status != 200) {
+        if (err)
+            *err = "COS multipart initiate -> HTTP " + std::to_string(resp.status) + " " +
+                   cos_error_text(resp.body);
+        return {};
+    }
+    const std::string id = xml_tag_text(resp.body, "UploadId");
+    if (id.empty()) {
+        if (err) *err = "COS multipart initiate: no UploadId in response";
+        return {};
+    }
+    return id;
+}
+
+bool default_multipart_complete(const CosConfig& cfg, const std::string& key,
+                                const std::string& upload_id,
+                                const std::vector<std::pair<long long, std::string>>& parts,
+                                std::string* err) {
+    if (parts.empty()) {
+        if (err) *err = "no parts";
+        return false;
+    }
+    // ETag 原样保留（浏览器读到的是带引号的 "..."）；xml_escape 把引号编成
+    // &quot; 后 XML 解析回同一字符串，COS 两端口径都能匹配。
+    std::string body = "<CompleteMultipartUpload>";
+    for (const auto& [num, etag] : parts) {
+        body += "<Part><PartNumber>" + std::to_string(num) + "</PartNumber><ETag>" +
+                xml_escape(sp::trim(etag)) + "</ETag></Part>";
+    }
+    body += "</CompleteMultipartUpload>";
+
+    SignedHttp s = sign_headers(cfg, cfg.internal_endpoint, "POST", key, body,
+                                "application/xml", "", {{"uploadId", upload_id}});
+    if (s.url.empty()) {
+        if (err) *err = "invalid internal endpoint";
+        return false;
+    }
+    sa_core::http::Request req;
+    req.method = "POST";
+    req.url = s.url;
+    req.headers = s.headers;
+    req.body = body;
+    req.timeout_seconds = 300;
+    req.bypass_proxy = true;
+    auto resp = sa_core::http::request(req);
+    if (!resp.transport_ok()) {
+        if (err) *err = "COS multipart complete failed: " + resp.error_message;
+        return false;
+    }
+    if (resp.status != 200) {
+        if (err)
+            *err = "COS multipart complete -> HTTP " + std::to_string(resp.status) + " " +
+                   cos_error_text(resp.body);
+        return false;
+    }
+    const std::string e = cos_error_text(resp.body);
+    if (!e.empty()) {
+        if (err) *err = "COS multipart complete: " + e;
+        return false;
+    }
+    return true;
+}
+
+bool default_multipart_abort(const CosConfig& cfg, const std::string& key,
+                             const std::string& upload_id, std::string* err) {
+    SignedHttp s = sign_headers(cfg, cfg.internal_endpoint, "DELETE", key, "", "", "",
+                                {{"uploadId", upload_id}});
+    if (s.url.empty()) {
+        if (err) *err = "invalid internal endpoint";
+        return false;
+    }
+    sa_core::http::Request req;
+    req.method = "DELETE";
+    req.url = s.url;
+    req.headers = s.headers;
+    req.timeout_seconds = 60;
+    req.bypass_proxy = true;
+    auto resp = sa_core::http::request(req);
+    if (!resp.transport_ok()) {
+        if (err) *err = "COS multipart abort failed: " + resp.error_message;
+        return false;
+    }
+    if (!(resp.status == 200 || resp.status == 204 || resp.status == 404)) {
+        if (err) *err = "COS multipart abort -> HTTP " + std::to_string(resp.status);
+        return false;
+    }
+    return true;
+}
+
 CosOps make_default_ops() {
     CosOps ops;
     ops.download = default_download;
     ops.upload = default_upload;
     ops.remove = default_remove;
     ops.put_cors = default_put_cors;
+    ops.multipart_initiate = default_multipart_initiate;
+    ops.multipart_complete = default_multipart_complete;
+    ops.multipart_abort = default_multipart_abort;
     return ops;
 }
 
@@ -1155,6 +1337,35 @@ bool mark_linked(const std::string& data_root, const std::string& id, std::strin
     return true;
 }
 
+bool discard_local_record(const std::string& data_root, const std::string& id,
+                          std::string* err) {
+    json rec = find_record(data_root, id);
+    if (!rec.is_object()) {
+        if (err) *err = "no such file: " + id;
+        return false;
+    }
+    if (j_str(rec, "storage_type") != "local") {
+        if (err) *err = "not a local record";
+        return false;
+    }
+    const std::string local = j_str(rec, "local_path");
+    if (!local.empty()) spath::remove_file(local);
+    spath::remove_tree(local_upload_dir(data_root, id));
+    std::lock_guard<std::mutex> lk(g_store_mu);
+    json doc = read_store_unlocked(data_root);
+    auto it = doc.find("files");
+    if (it != doc.end() && it->is_array()) {
+        auto& files = *it;
+        for (auto f = files.begin(); f != files.end(); ++f) {
+            if (f->is_object() && j_str(*f, "id") == id) {
+                files.erase(f);
+                break;
+            }
+        }
+    }
+    return write_store_unlocked(data_root, doc);
+}
+
 bool materialize(const std::string& data_root, const std::string& id,
                  const std::string& dst_path, std::string* err) {
     json rec = find_record(data_root, id);
@@ -1248,60 +1459,122 @@ int reclaim_expired(const std::string& data_root, long long now_unix_ms, long lo
     long long pending_ttl_ms = env_i64("EDITOR_FILE_PENDING_TTL", 6 * 3600) * 1000;
 
     CosOps ops = active_ops();
-    int processed = 0;
 
-    std::lock_guard<std::mutex> lk(g_store_mu);
-    json doc = read_store_unlocked(data_root);
-    if (!doc.contains("files") || !doc["files"].is_array()) return 0;
+    // 两段式回收：锁内只扫出「待删除任务」快照，**网络删除在锁外执行**，最后再短暂
+    // 持锁回写最终状态。原实现把 ops.remove/multipart_abort（含超时的对象存储请求）
+    // 整个放进 g_store_mu 临界区，会阻塞所有 files.json 读写（上传/下载登记等）。
+    struct ReclaimTask {
+        std::string id;
+        std::string key;
+        std::string upload_id;
+        bool multipart = false;      // 分片上传会话 → 走 AbortMultipartUpload
+        bool do_remove = false;      // 是否需要真正发起删除请求
+        bool pending_upload = false; // PendingUpload 分支：不再改状态，仅置 failed
+        long long base_updated_at = 0;  // 扫描时刻的 updated_at，回写前复核
+        bool ok = true;
+        std::string derr;
+    };
+    std::vector<ReclaimTask> tasks;
 
-    for (auto& rec : doc["files"]) {
-        if (!rec.is_object()) continue;
-        Status st = Status::Failed;
-        if (!status_from_name(j_str(rec, "status"), &st)) continue;
-        const std::string id = j_str(rec, "id");
-        const std::string safe = j_str(rec, "safe_name").empty()
-                                     ? sanitize_name(j_str(rec, "name"))
-                                     : j_str(rec, "safe_name");
+    {
+        std::lock_guard<std::mutex> lk(g_store_mu);
+        json doc = read_store_unlocked(data_root);
+        if (!doc.contains("files") || !doc["files"].is_array()) return 0;
 
-        if (st == Status::Ready) {
-            long long base = j_i64(rec, "last_download_at");
-            if (base <= 0) base = j_i64(rec, "warmed_at");
-            if (base <= 0) base = j_i64(rec, "updated_at");
-            if (base <= 0 || now_unix_ms - base < ttl_ms) continue;
+        for (auto& rec : doc["files"]) {
+            if (!rec.is_object()) continue;
+            Status st = Status::Failed;
+            if (!status_from_name(j_str(rec, "status"), &st)) continue;
+            const std::string id = j_str(rec, "id");
+            const std::string safe = j_str(rec, "safe_name").empty()
+                                         ? sanitize_name(j_str(rec, "name"))
+                                         : j_str(rec, "safe_name");
 
-            std::string key = j_str(rec, "warm_key");
-            if (key.empty()) key = warm_key(cfg, id, safe);
-            bool removed = true;
-            std::string derr;
-            if (cfg.ready() && ops.remove) removed = ops.remove(cfg, key, &derr);
-            if (!removed) {
-                rec["error"] = "reclaim delete failed: " + derr;
-                continue;
+            if (st == Status::Ready) {
+                long long base = j_i64(rec, "last_download_at");
+                if (base <= 0) base = j_i64(rec, "warmed_at");
+                if (base <= 0) base = j_i64(rec, "updated_at");
+                if (base <= 0 || now_unix_ms - base < ttl_ms) continue;
+
+                ReclaimTask t;
+                t.id = id;
+                t.key = j_str(rec, "warm_key");
+                if (t.key.empty()) t.key = warm_key(cfg, id, safe);
+                t.do_remove = cfg.ready() && static_cast<bool>(ops.remove);
+                t.base_updated_at = j_i64(rec, "updated_at");
+                tasks.push_back(std::move(t));
+            } else if (st == Status::PendingUpload) {
+                long long created = j_i64(rec, "created_at");
+                if (created <= 0 || now_unix_ms - created < pending_ttl_ms) continue;
+                ReclaimTask t;
+                t.id = id;
+                t.key = j_str(rec, "staging_key");
+                if (t.key.empty()) t.key = staging_key(cfg, id, safe);
+                t.upload_id = j_str(rec, "upload_id");
+                t.multipart = rec.value("multipart", false);
+                t.pending_upload = true;
+                t.do_remove = cfg.ready() && static_cast<bool>(ops.remove);
+                t.base_updated_at = j_i64(rec, "updated_at");
+                tasks.push_back(std::move(t));
             }
-            rec["status"] = "archived";
-            rec["warm_key"] = "";
-            rec["warmed_at"] = 0;
-            rec["last_download_at"] = 0;
-            rec["updated_at"] = now_unix_ms;
-            rec["error"] = "";
-            ++processed;
-        } else if (st == Status::PendingUpload) {
-            long long created = j_i64(rec, "created_at");
-            if (created <= 0 || now_unix_ms - created < pending_ttl_ms) continue;
-            std::string key = j_str(rec, "staging_key");
-            if (key.empty()) key = staging_key(cfg, id, safe);
-            if (cfg.ready() && ops.remove) {
-                std::string derr;
-                ops.remove(cfg, key, &derr);  // 尽力删除；对象可能本就未上传
-            }
-            rec["status"] = "failed";
-            rec["error"] = "upload abandoned";
-            rec["updated_at"] = now_unix_ms;
-            ++processed;
         }
     }
 
-    if (processed > 0) write_store_unlocked(data_root, doc);
+    if (tasks.empty()) return 0;
+
+    // 锁外：执行对象存储删除 / 中止（含网络超时，不得持锁）。
+    for (auto& t : tasks) {
+        if (t.pending_upload) {
+            if (t.multipart) {
+                // 分片上传遗留的是 multipart upload 会话（不是对象），必须用
+                // AbortMultipartUpload 才能释放已上传的分片，否则一直计费。
+                if (cfg.ready() && ops.multipart_abort) {
+                    ops.multipart_abort(cfg, t.key, t.upload_id, &t.derr);
+                }
+            } else if (t.do_remove) {
+                ops.remove(cfg, t.key, &t.derr);  // 尽力删除；对象可能本就未上传
+            }
+        } else if (t.do_remove) {
+            t.ok = ops.remove(cfg, t.key, &t.derr);
+        }
+    }
+
+    // 锁内：复核 updated_at 未被并发改写后回写最终态。
+    int processed = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_store_mu);
+        json doc = read_store_unlocked(data_root);
+        if (!doc.contains("files") || !doc["files"].is_array()) return 0;
+        for (auto& t : tasks) {
+            for (auto& rec : doc["files"]) {
+                if (!rec.is_object()) continue;
+                if (j_str(rec, "id") != t.id) continue;
+                // 回收期间该记录被并发改动（如重新上传/下载登记）→ 放弃本次回写，
+                // 避免用过期快照覆盖新状态。
+                if (j_i64(rec, "updated_at") != t.base_updated_at) break;
+                if (t.pending_upload) {
+                    rec["status"] = "failed";
+                    rec["error"] = "upload abandoned";
+                    rec["updated_at"] = now_unix_ms;
+                    ++processed;
+                } else if (t.ok) {
+                    rec["status"] = "archived";
+                    rec["warm_key"] = "";
+                    rec["warmed_at"] = 0;
+                    rec["last_download_at"] = 0;
+                    rec["updated_at"] = now_unix_ms;
+                    rec["error"] = "";
+                    ++processed;
+                } else {
+                    // 删除失败：状态保持 ready，仅记录错误（与原行为一致）。
+                    rec["error"] = "reclaim delete failed: " + t.derr;
+                }
+                break;
+            }
+        }
+        // 只要扫出了任务就回写：既要落盘成功结果，也要把可能的 error 落盘。
+        write_store_unlocked(data_root, doc);
+    }
     return processed;
 }
 
@@ -1384,6 +1657,442 @@ void register_file_transfer_routes(Router& r) {
         out["cos_key"] = key;
         out["expires_in"] = cfg.upload_ttl_seconds;
         return Resp::Json(200, out);
+    });
+
+    // -----------------------------------------------------------------------
+    // 本地分片上传（免 COS）：浏览器把 Blob 切成 8 MiB，逐片 PUT 到后端；
+    // complete 在服务端流式拼接到本地大容量盘。没有 COS 凭据时，大模组包 /
+    // 大资源仍可导入/导出。
+    //
+    //   GET  /api/v1/files/upload/modes            -> {cos, local, part_size, max_bytes}
+    //   POST /api/v1/files/upload/local/init       -> {file_id, part_size, part_count}
+    //   PUT  /api/v1/files/upload/local/{id}/part/{n}
+    //   POST /api/v1/files/upload/local/complete   -> 200 archived
+    //   POST /api/v1/files/upload/local/abort
+    // -----------------------------------------------------------------------
+    r.get(R"(/api/v1/files/upload/modes)", [](const Req&) -> Resp {
+        CosConfig cfg = load_config();
+        long long max_bytes = cfg.max_bytes;
+        const long long local_cap = kLocalUploadPartSize * kLocalUploadMaxParts;
+        if (max_bytes <= 0 || max_bytes > local_cap) max_bytes = local_cap;
+        return Resp::Json(200, json{{"cos", cfg.ready()},
+                                    {"local", true},
+                                    {"part_size", kLocalUploadPartSize},
+                                    {"max_bytes", max_bytes}});
+    });
+
+    r.post(R"(/api/v1/files/upload/local/init)", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        std::string name = body_str(*body, "name");
+        if (name.empty()) name = body_str(*body, "filename");
+        name = sanitize_name(name);
+        if (name.empty()) return err_json(400, "name required");
+        long long size = 0;
+        if (!body_i64(*body, "size", &size)) return err_json(400, "size required");
+        if (size <= 0) return err_json(400, "size must be positive");
+
+        CosConfig cfg = load_config();
+        const long long cap = kLocalUploadPartSize * kLocalUploadMaxParts;
+        if (size > cap)
+            return err_json(413, "file too large for local upload (max " +
+                                     std::to_string(cap) + " bytes)");
+
+        const std::string id = new_id();
+        const long long part_count = (size + kLocalUploadPartSize - 1) / kLocalUploadPartSize;
+        const long long now = sa_core::now_ms();
+
+        json rec = json::object();
+        rec["id"] = id;
+        rec["name"] = name;
+        rec["safe_name"] = name;
+        rec["size"] = size;
+        rec["status"] = status_name(Status::PendingUpload);
+        rec["storage_type"] = "local";
+        rec["local_upload"] = true;
+        rec["part_size"] = kLocalUploadPartSize;
+        rec["part_count"] = part_count;
+        rec["created_at"] = now;
+        rec["updated_at"] = now;
+        {
+            std::lock_guard<std::mutex> lk(g_store_mu);
+            json doc = read_store_unlocked(sa::editor_root());
+            doc["files"].push_back(rec);
+            if (!write_store_unlocked(sa::editor_root(), doc))
+                return err_json(500, "cannot persist file record");
+        }
+        spath::create_dirs(local_upload_dir(sa::editor_root(), id));
+
+        json out = json::object();
+        out["file_id"] = id;
+        out["status"] = status_name(Status::PendingUpload);
+        out["part_size"] = kLocalUploadPartSize;
+        out["part_count"] = part_count;
+        out["upload_mode"] = "local";
+        return Resp::Json(200, out);
+    });
+
+    r.put(R"(/api/v1/files/upload/local/(?P<id>[0-9a-fA-F]{8,64})/part/(?P<n>[0-9]+))",
+          [](const Req& req) -> Resp {
+              const std::string id = req.params.at("id");
+              long long n = 0;
+              try {
+                  n = std::stoll(req.params.at("n"));
+              } catch (...) {
+                  return err_json(400, "invalid part number");
+              }
+              json rec = find_record(sa::editor_root(), id);
+              if (!rec.is_object()) return err_json(404, "no such file: " + id);
+              if (!rec.value("local_upload", false))
+                  return err_json(409, "file is not a local upload");
+              Status st = Status::Failed;
+              status_from_name(j_str(rec, "status"), &st);
+              if (st != Status::PendingUpload || rec.value("stored", false))
+                  return err_json(409, "upload already completed");
+              const long long size = j_i64(rec, "size");
+              const long long part_size = j_i64(rec, "part_size");
+              const long long part_count = j_i64(rec, "part_count");
+              if (n < 1 || n > part_count || part_size <= 0)
+                  return err_json(400, "part_number out of range");
+              const long long offset = (n - 1) * part_size;
+              const long long expected =
+                  std::min(part_size, size - offset);
+              if (expected <= 0) return err_json(400, "part_number out of range");
+              // httpd 只保留 <= 8 MiB 的 raw_body；超过的请求会被拒绝，避免
+              // 整片进 JSON 解析或内存复制。
+              if (static_cast<long long>(req.raw_body.size()) != expected) {
+                  if (req.raw_body.empty())
+                      return err_json(413, "part too large or empty");
+                  return err_json(400, "part size mismatch: expected " +
+                                           std::to_string(expected) + " got " +
+                                           std::to_string(req.raw_body.size()));
+              }
+              const std::string dir = local_upload_dir(sa::editor_root(), id);
+              if (!spath::create_dirs(dir)) return err_json(500, "cannot create part dir");
+              const std::string path =
+                  spath::join(dir, "part-" + std::to_string(n));
+              if (!spath::write_bytes_simple(path, req.raw_body))
+                  return err_json(500, "cannot write part");
+              return Resp::Json(200, json{{"ok", true},
+                                          {"part_number", n},
+                                          {"size", expected}});
+          });
+
+    r.post(R"(/api/v1/files/upload/local/complete)", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        const std::string id = body_str(*body, "file_id");
+        if (id.empty()) return err_json(400, "file_id required");
+        json rec = find_record(sa::editor_root(), id);
+        if (!rec.is_object()) return err_json(404, "no such file: " + id);
+        if (!rec.value("local_upload", false))
+            return err_json(409, "file is not a local upload");
+        Status st = Status::Failed;
+        status_from_name(j_str(rec, "status"), &st);
+        if (st == Status::Archived || st == Status::Ready) {
+            return Resp::Json(200, public_record(rec));
+        }
+        if (st != Status::PendingUpload)
+            return err_json(409, "upload is not pending");
+
+        const long long size = j_i64(rec, "size");
+        const long long part_size = j_i64(rec, "part_size");
+        const long long part_count = j_i64(rec, "part_count");
+        if (size <= 0 || part_size <= 0 || part_count <= 0)
+            return err_json(500, "record missing part metadata");
+        const std::string dir = local_upload_dir(sa::editor_root(), id);
+        for (long long n = 1; n <= part_count; ++n) {
+            const std::string p = spath::join(dir, "part-" + std::to_string(n));
+            const long long expected =
+                std::min(part_size, size - (n - 1) * part_size);
+            if (!spath::is_file(p) || spath::file_size(p) != expected)
+                return err_json(409, "part " + std::to_string(n) + " missing or incomplete");
+        }
+
+        const std::string objects = local_objects_dir(sa::editor_root());
+        if (!spath::create_dirs(objects))
+            return err_json(500, "cannot create objects dir");
+        const std::string out_path = spath::join(objects, id);
+        std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
+        if (!out) return err_json(500, "cannot open output file");
+        long long total = 0;
+        char buf[1 << 16];
+        for (long long n = 1; n <= part_count; ++n) {
+            const std::string p = spath::join(dir, "part-" + std::to_string(n));
+            std::ifstream in(p, std::ios::binary);
+            if (!in) {
+                out.close();
+                spath::remove_file(out_path);
+                return err_json(500, "cannot read part " + std::to_string(n));
+            }
+            while (in) {
+                in.read(buf, sizeof(buf));
+                const auto got = in.gcount();
+                if (got > 0) {
+                    out.write(buf, got);
+                    total += got;
+                }
+            }
+        }
+        out.close();
+        if (total != size) {
+            spath::remove_file(out_path);
+            return err_json(500, "assembled size mismatch: expected " +
+                                     std::to_string(size) + " got " +
+                                     std::to_string(total));
+        }
+        patch_and_get(sa::editor_root(), id, [&](json& r) {
+            r["status"] = status_name(Status::Archived);
+            r["storage_type"] = "local";
+            r["local_path"] = out_path;
+            r["archived_at"] = sa_core::now_ms();
+            r["updated_at"] = sa_core::now_ms();
+            r["stored"] = true;
+            r["error"] = "";
+        });
+        spath::remove_tree(dir);
+        return Resp::Json(200, json{{"file_id", id},
+                                    {"status", "archived"},
+                                    {"size", size}});
+    });
+
+    r.post(R"(/api/v1/files/upload/local/abort)", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        const std::string id = body_str(*body, "file_id");
+        if (id.empty()) return err_json(400, "file_id required");
+        json rec = find_record(sa::editor_root(), id);
+        if (!rec.is_object()) return err_json(404, "no such file: " + id);
+        spath::remove_tree(local_upload_dir(sa::editor_root(), id));
+        patch_and_get(sa::editor_root(), id, [](json& r) {
+            r["status"] = status_name(Status::Failed);
+            r["error"] = "upload aborted";
+            r["updated_at"] = sa_core::now_ms();
+        });
+        return Resp::Json(200, json{{"ok", true}, {"file_id", id}});
+    });
+
+    // -----------------------------------------------------------------------
+    // 分片上传（COS Multipart Upload）：超大模组包/资源的分片流式直传。
+    //
+    //   init     {name,size}         -> {file_id, part_size, part_count}
+    //   sign     {file_id, part_number|part_numbers} -> 每片的预签名 PUT URL
+    //   complete {file_id, parts:[{part_number, etag}]} -> 202 archiving
+    //   abort    {file_id}           -> 取消并标记失败
+    //
+    // 浏览器对每一片 Blob.slice(offset,len) 直接 PUT，ETag 从响应头读回；
+    // 字节不经过 backend，也不进 base64。complete 后与单次直传共用同一
+    // staging_key，archive_now 内网拉回落到大容量盘的管线完全复用。
+    // -----------------------------------------------------------------------
+    r.post("/api/v1/files/upload/multipart/init", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        CosConfig cfg = load_config();
+        if (!cfg.ready())
+            return err_json(500,
+                            "file transfer not configured: set EDITOR_FILE_COS_SECRET_ID, "
+                            "EDITOR_FILE_COS_SECRET_KEY and EDITOR_FILE_COS_BUCKET");
+        ensure_bucket_cors_once(cfg);
+
+        std::string name = body_str(*body, "name");
+        if (name.empty()) name = body_str(*body, "filename");
+        name = sanitize_name(name);
+        long long size = 0;
+        if (!body_i64(*body, "size", &size)) return err_json(400, "size required");
+        if (size <= 0) return err_json(400, "size must be positive");
+        if (cfg.max_bytes > 0 && size > cfg.max_bytes)
+            return err_json(413, "file too large (max " + std::to_string(cfg.max_bytes) +
+                                     " bytes)");
+
+        const std::string id = new_id();
+        const std::string safe = sanitize_name(name);
+        const std::string key = staging_key(cfg, id, safe);
+
+        CosOps ops = active_ops();
+        if (!ops.multipart_initiate) return err_json(500, "multipart upload not available");
+        std::string ierr;
+        const std::string upload_id = ops.multipart_initiate(cfg, key, &ierr);
+        if (upload_id.empty())
+            return err_json(502, "COS 分片初始化失败: " + ierr);
+
+        const long long part_size = multipart_part_size(size);
+        const long long part_count = (size + part_size - 1) / part_size;
+        const long long now = sa_core::now_ms();
+
+        json rec = json::object();
+        rec["id"] = id;
+        rec["name"] = name;
+        rec["safe_name"] = safe;
+        rec["size"] = size;
+        rec["status"] = status_name(Status::PendingUpload);
+        rec["staging_key"] = key;
+        rec["key"] = key;
+        rec["multipart"] = true;
+        rec["upload_id"] = upload_id;
+        rec["part_size"] = part_size;
+        rec["part_count"] = part_count;
+        rec["created_at"] = now;
+        rec["updated_at"] = now;
+        rec["upload_ttl_seconds"] = cfg.upload_ttl_seconds;
+        {
+            std::lock_guard<std::mutex> lk(g_store_mu);
+            json doc = read_store_unlocked(sa::editor_root());
+            doc["files"].push_back(rec);
+            if (!write_store_unlocked(sa::editor_root(), doc))
+                return err_json(500, "cannot persist file record");
+        }
+
+        json out = json::object();
+        out["file_id"] = id;
+        out["status"] = status_name(Status::PendingUpload);
+        out["part_size"] = part_size;
+        out["part_count"] = part_count;
+        out["expires_in"] = cfg.upload_ttl_seconds;
+        out["upload_mode"] = "multipart";
+        return Resp::Json(200, out);
+    });
+
+    r.post("/api/v1/files/upload/multipart/sign", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        const std::string id = body_str(*body, "file_id");
+        if (id.empty()) return err_json(400, "file_id required");
+
+        json rec = find_record(sa::editor_root(), id);
+        if (!rec.is_object()) return err_json(404, "no such file: " + id);
+        Status st = Status::Failed;
+        status_from_name(j_str(rec, "status"), &st);
+        if (st != Status::PendingUpload || !rec.value("multipart", false))
+            return err_json(409, "file is not a pending multipart upload");
+
+        std::vector<long long> nums;
+        long long single = 0;
+        if (body_i64(*body, "part_number", &single)) nums.push_back(single);
+        auto it_nums = body->find("part_numbers");
+        if (it_nums != body->end() && it_nums->is_array()) {
+            for (const auto& n : *it_nums)
+                if (n.is_number_integer()) nums.push_back(n.get<long long>());
+        }
+        if (nums.empty()) return err_json(400, "part_number required");
+
+        CosConfig cfg = load_config();
+        if (!cfg.ready()) return err_json(500, "file transfer not configured");
+        const std::string key = j_str(rec, "key").empty() ? j_str(rec, "staging_key")
+                                                          : j_str(rec, "key");
+        const std::string upload_id = j_str(rec, "upload_id");
+        const long long part_count = j_i64(rec, "part_count");
+        if (key.empty() || upload_id.empty()) return err_json(500, "record missing upload id");
+
+        json arr = json::array();
+        for (long long n : nums) {
+            if (n < 1 || (part_count > 0 && n > part_count))
+                return err_json(400, "part_number out of range");
+            const std::string url =
+                presign_part_url(cfg, key, upload_id, static_cast<int>(n), cfg.upload_ttl_seconds);
+            if (url.empty()) return err_json(500, "cannot sign part url");
+            arr.push_back(json{{"part_number", n}, {"part_url", url}});
+        }
+        json out = json::object();
+        out["file_id"] = id;
+        out["parts"] = std::move(arr);
+        return Resp::Json(200, out);
+    });
+
+    r.post("/api/v1/files/upload/multipart/complete", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        const std::string id = body_str(*body, "file_id");
+        if (id.empty()) return err_json(400, "file_id required");
+
+        json rec = find_record(sa::editor_root(), id);
+        if (!rec.is_object()) return err_json(404, "no such file: " + id);
+        Status st = Status::Failed;
+        status_from_name(j_str(rec, "status"), &st);
+        if (st == Status::Archiving || st == Status::Archived || st == Status::Ready) {
+            json out = public_record(rec);
+            out["retry_after"] = 5;
+            return Resp::Json(202, out);  // 幂等
+        }
+        if (st != Status::PendingUpload || !rec.value("multipart", false))
+            return err_json(409, "file is not a pending multipart upload");
+
+        std::vector<std::pair<long long, std::string>> parts;
+        auto it = body->find("parts");
+        if (it != body->end() && it->is_array()) {
+            for (const auto& p : *it) {
+                if (!p.is_object()) continue;
+                long long num = j_i64(p, "part_number");
+                if (num <= 0) num = j_i64(p, "partNumber");
+                std::string etag = j_str(p, "etag");
+                if (etag.empty()) etag = j_str(p, "ETag");
+                if (num > 0 && !etag.empty()) parts.emplace_back(num, etag);
+            }
+        }
+        if (parts.empty()) return err_json(400, "parts required");
+        std::sort(parts.begin(), parts.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        CosConfig cfg = load_config();
+        if (!cfg.ready()) return err_json(500, "file transfer not configured");
+        const std::string key = j_str(rec, "key").empty() ? j_str(rec, "staging_key")
+                                                          : j_str(rec, "key");
+        const std::string upload_id = j_str(rec, "upload_id");
+        if (key.empty() || upload_id.empty()) return err_json(500, "record missing upload id");
+
+        CosOps ops = active_ops();
+        if (!ops.multipart_complete) return err_json(500, "multipart upload not available");
+        std::string cerr;
+        if (!ops.multipart_complete(cfg, key, upload_id, parts, &cerr))
+            return err_json(502, "COS 分片合并失败: " + cerr);
+
+        patch_and_get(sa::editor_root(), id, [](json& r) {
+            r["status"] = status_name(Status::Archiving);
+            r["uploaded_at"] = sa_core::now_ms();
+            r["multipart_done"] = true;
+            r["error"] = "";
+        });
+        enqueue_archive(sa::editor_root(), id);
+        return Resp::Json(202, json{{"file_id", id},
+                                    {"status", "archiving"},
+                                    {"retry_after", 5}});
+    });
+
+    r.post("/api/v1/files/upload/multipart/abort", [](const Req& req) -> Resp {
+        const json* body = nullptr;
+        if (!get_body_object(req, &body) || !body->is_object())
+            return err_json(400, "invalid JSON body");
+        const std::string id = body_str(*body, "file_id");
+        if (id.empty()) return err_json(400, "file_id required");
+
+        json rec = find_record(sa::editor_root(), id);
+        if (!rec.is_object()) return err_json(404, "no such file: " + id);
+        Status st = Status::Failed;
+        status_from_name(j_str(rec, "status"), &st);
+        if (st != Status::PendingUpload || !rec.value("multipart", false)) {
+            json out = public_record(rec);
+            return Resp::Json(200, out);  // 已归档/已完成：无需 abort，幂等返回
+        }
+        CosConfig cfg = load_config();
+        CosOps ops = active_ops();
+        if (cfg.ready() && ops.multipart_abort) {
+            std::string aerr;
+            ops.multipart_abort(cfg, j_str(rec, "key"), j_str(rec, "upload_id"), &aerr);
+        }
+        patch_and_get(sa::editor_root(), id, [](json& r) {
+            r["status"] = status_name(Status::Failed);
+            r["error"] = "upload aborted";
+            r["updated_at"] = sa_core::now_ms();
+        });
+        json out = json::object();
+        out["ok"] = true;
+        out["file_id"] = id;
+        return Resp::Json(200, std::move(out));
     });
 
 
@@ -1599,6 +2308,19 @@ r.post("/api/v1/files/upload/s3-complete", [](const Req& req) -> Resp {
                                             {"status", "warming_up"},
                                             {"retry_after", 3}});
             case Status::Archived: {
+                // 本地分片上传/本地产物：字节已在服务端盘上。配置了 COS 时
+                // 仍优先预热到 COS（CDN 直链更快）；没有 COS 时走 /raw。
+                const std::string storage = j_str(rec, "storage_type");
+                const std::string local = j_str(rec, "local_path");
+                const bool local_ready = !local.empty() && spath::is_file(local) &&
+                                         (storage == "local" || !cfg.ready());
+                if (local_ready) {
+                    return Resp::Json(200, json{{"file_id", id},
+                                                {"status", "ready"},
+                                                {"url", "/api/v1/files/" + id + "/raw"},
+                                                {"local", true},
+                                                {"method", "GET"}});
+                }
                 if (!cfg.ready())
                     return err_json(500, "file transfer not configured");
                 patch_and_get(root, id, [](json& r) {
@@ -1650,6 +2372,45 @@ r.post("/api/v1/files/upload/s3-complete", [](const Req& req) -> Resp {
             }
         }
         return err_json(500, "unknown file state");
+    });
+
+    // GET /api/v1/files/:id/raw — 本地记录的原文件（chunked，避免整包进内存）。
+    // 只允许服务端自己登记的 local_path：必须位于本地对象根目录内。
+    r.get(R"(/api/v1/files/(?P<id>[0-9a-fA-F]{8,64})/raw)", [](const Req& req) -> Resp {
+        const std::string id = req.params.at("id");
+        const std::string root = sa::editor_root();
+        json rec = find_record(root, id);
+        if (!rec.is_object()) return err_json(404, "no such file: " + id);
+        const std::string local = j_str(rec, "local_path");
+        if (local.empty() || !spath::is_file(local))
+            return err_json(404, "local file not found");
+        const std::string base = spath::path_key(local_objects_dir(root));
+        const std::string key = spath::path_key(local);
+        if (key.size() <= base.size() || key.compare(0, base.size(), base) != 0 ||
+            (key[base.size()] != '/' && key[base.size()] != '\\'))
+            return err_json(403, "local path outside objects root");
+
+        Resp out;
+        out.content_type = "application/octet-stream";
+        out.cache_control = "no-store";
+        out.body_stream = [local](StreamEmitter& emitter) -> bool {
+            std::ifstream in(local, std::ios::binary);
+            if (!in) {
+                emitter.start(404, "application/json; charset=utf-8");
+                emitter.write("{\"error\":\"local file not found\"}");
+                return true;
+            }
+            if (!emitter.start(200, "application/octet-stream")) return false;
+            char buf[1 << 16];
+            while (in) {
+                in.read(buf, sizeof(buf));
+                const auto got = in.gcount();
+                if (got > 0 && !emitter.write(std::string_view(buf, static_cast<size_t>(got))))
+                    return false;
+            }
+            return true;
+        };
+        return out;
     });
 
     // GET /api/v1/files/:id — 状态查询（供客户端轮询 retry_after 用）。

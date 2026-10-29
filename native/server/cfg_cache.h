@@ -58,6 +58,12 @@ TableLoad load_table_cached(const std::string& path, const std::string& cfg_name
 void seed_table_cache(const std::string& path, const std::string& cfg_name, const json& data,
                       std::optional<long long> mtime_ns, bool lossy = false);
 
+// B1：写路径已经持有一份共享只读表时使用，避免 seed 与 mod-cfgs 各克隆一次
+// （大表一次保存曾因此多出 2 份整表深拷贝）。
+void seed_table_cache_shared(const std::string& path, const std::string& cfg_name,
+                             std::shared_ptr<const json> data,
+                             std::optional<long long> mtime_ns, bool lossy = false);
+
 // api.py:480-486 _invalidate_table_cache(abs_path=None clears all).
 void invalidate_table_cache(const std::string& abs_path);
 void invalidate_table_cache_all();
@@ -77,6 +83,11 @@ json fork_mod_table(const std::string& cfg_name);
 
 // api.py:346-359 _note_mod_cfgs_write: refresh one table + its fingerprint.
 void note_mod_cfgs_write(const std::string& cfg_name, const json& data, const std::string& path);
+
+// B1：与 [seed_table_cache_shared] 共享同一份表，避免重复克隆。
+void note_mod_cfgs_write_shared(const std::string& cfg_name,
+                                std::shared_ptr<const json> data,
+                                const std::string& path);
 
 // api.py:459-463 _invalidate_mod_cfgs_cache (fingerprints drop; select_mod and
 // undo/redo call it).

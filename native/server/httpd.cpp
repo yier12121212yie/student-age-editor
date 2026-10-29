@@ -393,6 +393,8 @@ const char* reason_phrase(int status) {
     switch (status) {
         case 200: return "OK";
         case 204: return "No Content";
+        case 302: return "Found";
+        case 304: return "Not Modified";
         case 400: return "Bad Request";
         case 403: return "Forbidden";
         case 404: return "Not Found";
@@ -419,8 +421,8 @@ const char* reason_phrase(int status) {
 // downgraded. (The pre-web transport used `c <= 0x20`, which wrongly rejected
 // the space; every value that reached it was space-free JSON/§4-proxy types so
 // the difference was never observed. Default-tier bytes are unchanged.)
-bool safe_header_value(const std::string& v) {
-    if (v.size() > 128) return false;
+bool safe_header_value(const std::string& v, size_t max_len = 128) {
+    if (v.size() > max_len) return false;
     for (unsigned char c : v) {
         if (c < 0x20 || c == 0x7F) return false;
     }
@@ -428,24 +430,31 @@ bool safe_header_value(const std::string& v) {
 }
 
 // Appends the tier-dependent CORS header lines. Default tier reproduces the
-// fixed CONVENTIONS 2 block byte-for-byte.
+// fixed CONVENTIONS 2 block plus the HTTP-MCP additions (网页版 M2):
+// `Authorization`（外部 Agent / 浏览器版前端都要带 Bearer 令牌）与
+// `Mcp-Session-Id`（Streamable HTTP 会话头）进允许头，会话头进暴露头，
+// 否则浏览器读不到响应里的 `Mcp-Session-Id`。
 void append_cors_headers(std::string& head, const CorsWire& cors) {
     if (!cors.server_mode) {
         head += "Access-Control-Allow-Origin: http://127.0.0.1\r\n";
         head += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
-        head += "Access-Control-Allow-Headers: Content-Type\r\n";
+        head += "Access-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id\r\n";
+        head += "Access-Control-Expose-Headers: Mcp-Session-Id\r\n";
         return;
     }
     if (!cors.echo_origin.empty() && safe_header_value(cors.echo_origin)) {
         head += "Access-Control-Allow-Origin: " + cors.echo_origin + "\r\n";
     }
     head += "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n";
-    head += "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
+    head += "Access-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id\r\n";
+    head += "Access-Control-Expose-Headers: Mcp-Session-Id\r\n";
 }
 
 bool write_response(sa_socket_t sock, int status, const std::string& body, bool close_after,
                     const std::string& content_type = {},
-                    const std::string& cache_control = {}, const CorsWire& cors = {}) {
+                    const std::string& cache_control = {}, const CorsWire& cors = {},
+                    const std::string& etag = {}, const std::string& location = {},
+                    const std::vector<std::pair<std::string, std::string>>& extra_headers = {}) {
     const char* ct = "application/json; charset=utf-8";
     if (!content_type.empty()) {
         if (safe_header_value(content_type)) ct = content_type.c_str();
@@ -459,6 +468,26 @@ bool write_response(sa_socket_t sock, int status, const std::string& body, bool 
     head += ct;
     head += "\r\n";
     head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    if (!etag.empty() && safe_header_value(etag)) {
+        head += "ETag: " + etag + "\r\n";
+    }
+    if (!location.empty() && safe_header_value(location, 2048)) {
+        head += "Location: " + location + "\r\n";
+    }
+    // HTTP MCP 附加头（Mcp-Session-Id）。名称走安全字符集白名单，值过
+    // safe_header_value：任何一项非法即整条丢弃。
+    for (const auto& kv : extra_headers) {
+        if (kv.first.empty()) continue;
+        bool name_ok = true;
+        for (unsigned char c : kv.first) {
+            if (!(std::isalnum(c) || c == '-')) { name_ok = false; break; }
+        }
+        if (!name_ok || !safe_header_value(kv.second, 1024)) continue;
+        head += kv.first;
+        head += ": ";
+        head += kv.second;
+        head += "\r\n";
+    }
     if (cache_control.empty() || !safe_header_value(cache_control)) {
         head += "Cache-Control: no-store\r\n";
     } else {
@@ -470,6 +499,126 @@ bool write_response(sa_socket_t sock, int status, const std::string& body, bool 
     if (!send_all(sock, head.data(), head.size())) return false;
     if (!body.empty() && !send_all(sock, body.data(), body.size())) return false;
     return true;
+}
+
+// chunked 流式响应出口。只在 handler 显式设置 body_stream 时使用；普通
+// JSON/bytes 响应仍走 write_response（字节级旧行为不变）。
+class SocketStreamEmitter final : public StreamEmitter {
+public:
+    SocketStreamEmitter(sa_socket_t sock, const Resp& resp, bool close_after,
+                        const CorsWire& cors)
+        : sock_(sock), resp_(resp), close_after_(close_after), cors_(cors) {}
+
+    bool start(int status, std::string content_type = {},
+               std::vector<std::pair<std::string, std::string>> headers = {}) override {
+        if (started_) return !failed_;
+        started_ = true;
+        status_ = status;
+        if (content_type.empty()) content_type = "application/json; charset=utf-8";
+        std::string head = "HTTP/1.1 ";
+        head += std::to_string(status_);
+        head += ' ';
+        head += reason_phrase(status_);
+        head += "\r\n";
+        head += "Content-Type: ";
+        head += safe_header_value(content_type) ? content_type
+                                                : "application/json; charset=utf-8";
+        head += "\r\n";
+        head += "Transfer-Encoding: chunked\r\n";
+        if (!resp_.etag.empty() && safe_header_value(resp_.etag)) {
+            head += "ETag: " + resp_.etag + "\r\n";
+        }
+        if (!resp_.location.empty() && safe_header_value(resp_.location, 2048)) {
+            head += "Location: " + resp_.location + "\r\n";
+        }
+        for (const auto& kv : resp_.headers) append_header(head, kv);
+        for (const auto& kv : headers) append_header(head, kv);
+        if (resp_.cache_control.empty() || !safe_header_value(resp_.cache_control)) {
+            head += "Cache-Control: no-store\r\n";
+        } else {
+            head += "Cache-Control: " + resp_.cache_control + "\r\n";
+        }
+        append_cors_headers(head, cors_);
+        if (close_after_) head += "Connection: close\r\n";
+        head += "\r\n";
+        if (!send_all(sock_, head.data(), head.size())) {
+            failed_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    bool write(std::string_view chunk) override {
+        if (failed_) return false;
+        if (!started_ && !start(200)) return false;
+        if (chunk.empty()) return true;
+        char frame[32];
+        int n = std::snprintf(frame, sizeof(frame), "%zx\r\n", chunk.size());
+        if (n <= 0) return false;
+        if (!send_all(sock_, frame, static_cast<size_t>(n)) ||
+            !send_all(sock_, chunk.data(), chunk.size()) ||
+            !send_all(sock_, "\r\n", 2)) {
+            failed_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    bool finish() {
+        if (failed_) return false;
+        if (!started_ && !start(500)) return false;
+        if (started_ && !finished_) {
+            finished_ = true;
+            if (!send_all(sock_, "0\r\n\r\n", 5)) {
+                failed_ = true;
+                return false;
+            }
+        }
+        return !failed_;
+    }
+
+    bool started() const { return started_; }
+
+private:
+    static void append_header(std::string& head,
+                              const std::pair<std::string, std::string>& kv) {
+        if (kv.first.empty()) return;
+        bool name_ok = true;
+        for (unsigned char c : kv.first) {
+            if (!(std::isalnum(c) || c == '-')) {
+                name_ok = false;
+                break;
+            }
+        }
+        if (!name_ok || !safe_header_value(kv.second, 1024)) return;
+        head += kv.first;
+        head += ": ";
+        head += kv.second;
+        head += "\r\n";
+    }
+
+    sa_socket_t sock_;
+    const Resp& resp_;
+    bool close_after_;
+    const CorsWire& cors_;
+    bool started_ = false;
+    bool finished_ = false;
+    bool failed_ = false;
+    int status_ = 200;
+};
+
+bool write_stream_response(sa_socket_t sock, Resp& resp, bool close_after,
+                           const CorsWire& cors) {
+    SocketStreamEmitter emitter(sock, resp, close_after, cors);
+    if (!resp.body_stream(emitter)) {
+        // handler 在 start 之前失败：给一个可解析的 500 信封；已经 start 过
+        // 就只补结束帧，避免重复写状态行。
+        if (!emitter.started()) {
+            emitter.start(500, "application/json; charset=utf-8");
+            emitter.write("{\"error\":\"internal server error\"}");
+        }
+    }
+    return emitter.finish();
 }
 
 bool write_options_response(sa_socket_t sock, bool close_after, const CorsWire& cors = {}) {
@@ -538,14 +687,40 @@ bool token_exempt(const std::string& path) {
     return path == "/api/ping" || path.rfind("/api/", 0) != 0;
 }
 
+// 从 raw Authorization 头解析 `Bearer <token>`（RFC 7235：scheme 大小写不敏感，
+// scheme 与 token 之间至少一个空白）。不是 Bearer 形态返回 nullopt。
+std::optional<std::string> bearer_token_from(const std::string& header) {
+    static const char kScheme[] = "bearer";
+    size_t i = 0;
+    while (i < header.size() && (header[i] == ' ' || header[i] == '\t')) ++i;
+    if (header.size() < i + sizeof(kScheme) - 1) return std::nullopt;
+    for (size_t k = 0; k < sizeof(kScheme) - 1; ++k) {
+        if (std::tolower(static_cast<unsigned char>(header[i + k])) != kScheme[k])
+            return std::nullopt;
+    }
+    size_t j = i + sizeof(kScheme) - 1;
+    if (j >= header.size() || (header[j] != ' ' && header[j] != '\t')) return std::nullopt;
+    while (j < header.size() && (header[j] == ' ' || header[j] == '\t')) ++j;
+    if (j >= header.size()) return std::nullopt;
+    return header.substr(j);
+}
+
 // 常数时间比较：长度不等直接 false（长度本身不构成泄露）；逐字节 XOR 折叠。
+// 令牌来源（网页版 M2）：优先 `X-Backend-Token`（网关代理跳 / 桌面客户端），
+// 否则回落 `Authorization: Bearer <token>`（外部 Agent 经 HTTP MCP 接入时
+// 只会带这一个头）。
 bool token_ok(const std::string& require, const Req& req) {
     if (token_exempt(req.path)) return true;
-    if (req.backend_token_header.size() != require.size()) return false;
+    std::string presented = req.backend_token_header;
+    if (presented.empty()) {
+        auto bearer = bearer_token_from(req.authorization_header);
+        if (bearer) presented = std::move(*bearer);
+    }
+    if (presented.size() != require.size()) return false;
     unsigned char diff = 0;
     for (size_t i = 0; i < require.size(); ++i) {
         diff |= static_cast<unsigned char>(require[i]) ^
-                static_cast<unsigned char>(req.backend_token_header[i]);
+                static_cast<unsigned char>(presented[i]);
     }
     return diff == 0;
 }
@@ -614,6 +789,10 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                     req.authorization_header = value;
                 } else if (name == "x-backend-token" && req.backend_token_header.empty()) {
                     req.backend_token_header = value;
+                } else if (name == "if-none-match" && req.if_none_match_header.empty()) {
+                    req.if_none_match_header = value;
+                } else if (name == "accept-encoding" && req.accept_encoding_header.empty()) {
+                    req.accept_encoding_header = value;
                 } else if (name == "content-length" && !have_length_header) {
                     have_length_header = true;  // first wins (.headers.get)
                     content_length = value;
@@ -705,16 +884,21 @@ void serve_connection(sa_socket_t sock, const Router& router, const std::atomic<
                     resp = router.dispatch(req);
                 }
                 responded = true;
-                int status = resp.status;
-                std::string body;
-                serialize_payload(status, resp, body);  // may downgrade to 500
                 // /api/shutdown must not wait out the 65s keep-alive idle: force
                 // Connection: close so this loop exits immediately and the owning
                 // thread can _Exit(0) right after flushing the response.
                 if (g_shutdown_after.load()) close_after = true;
-                if (!write_response(sock, status, body, close_after, resp.content_type,
-                                    resp.cache_control, wire))
-                    break;
+                if (resp.body_stream) {
+                    if (!write_stream_response(sock, resp, close_after, wire)) break;
+                } else {
+                    int status = resp.status;
+                    std::string body;
+                    serialize_payload(status, resp, body);  // may downgrade to 500
+                    if (!write_response(sock, status, body, close_after, resp.content_type,
+                                        resp.cache_control, wire, resp.etag, resp.location,
+                                        resp.headers))
+                        break;
+                }
             }
         } catch (const std::exception&) {
             // httpd.py:121-129: fallback 500 ONLY when nothing was written (B11).

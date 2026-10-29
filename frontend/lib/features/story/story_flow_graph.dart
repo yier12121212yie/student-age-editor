@@ -21,12 +21,6 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/app_theme.dart';
 import '../../core/history_client.dart';
-import '../editor/field_meta.dart';
-import '../editor/field_utils.dart';
-import '../editor/suggestion_text_field.dart';
-import '../nocode/entity_picker.dart';
-import '../nocode/no_code_list_field.dart';
-import '../nocode/nocode_effect_field.dart';
 import 'story_flow_models.dart';
 import 'story_flow_snap.dart';
 import 'tombstone_node_widget.dart';
@@ -36,12 +30,15 @@ const double kFlowNodeH = 112;
 const double kFlowMissingH = 56;
 const double kPortR = 5;
 
-/// 展开态高度（内联参数编辑器；可滚动，超出部分滚动查看）。
-const double kFlowTalkExpandedH = 316;
-const double kFlowOptionExpandedH = 276;
+/// 卡片标题条（说话人输入行）高度。
+const double kFlowHeaderH = 30;
 
-/// 展开箭头命中区（折叠足迹右下角；世界像素，随外层 Transform 缩放）。
-const double kExpandArrowSize = 18;
+/// 标题条左侧拖拽把手宽度：这块归画布的节点拖拽命中，其余标题区让给
+/// 说话人输入框（见 StoryFlowGraphState._titleFieldWorldRect）。
+const double kFlowGripW = 18;
+
+/// 卡片正文（对白/选项文本）输入区的四周内边距。
+const double kFlowBodyPad = 6;
 
 /// 画布视口：世界 → 屏幕 = pan + scale·world。
 ///
@@ -135,14 +132,11 @@ int debugEchoQueries = 0;
 @visibleForTesting
 int debugDashCacheClears = 0;
 
-// 内联编辑区的六个数据通道默认值。函数型属性的默认值必须是编译期常量，
-// 所以只能是这样一组顶层函数：宿主不接就等于「无字段级报错、内联区不铺
-// 字段、无候选、无 Inspector」，画布自身仍然完整可用。
-bool _noFieldInvalid(String _, String _) => false;
-bool _noFieldDirty(String _, String _) => false;
-List<FieldMeta> _noInlineMetas(String _) => const [];
-FocusNode? _noNodeFocus(String _, String _) => null;
-SuggestionSource? _noSuggest(String _, FieldMeta _) => null;
+// 卡片编辑通道的默认值。函数型属性的默认值必须是编译期常量，所以只能是
+// 这样一组顶层函数：宿主不接就等于「无说话人控制器、提交无操作、无
+// Inspector」，画布自身仍然完整可用。
+TextEditingController? _noSpeakerCtl(String _) => null;
+void _noSpeakerSubmit(String _, String _) {}
 VoidCallback? _noInspector(String _) => null;
 
 class StoryFlowGraph extends StatefulWidget {
@@ -151,26 +145,20 @@ class StoryFlowGraph extends StatefulWidget {
     required this.graph,
     required this.positions,
     this.selection = FlowSelection.none,
-    this.expandedNodes = const {},
     this.highlightNode,
     this.tombstones,
-    this.fieldInvalid = _noFieldInvalid,
-    this.fieldDirty = _noFieldDirty,
-    this.inlineMetas = _noInlineMetas,
-    this.nodeFocus = _noNodeFocus,
-    this.suggestFor = _noSuggest,
+    this.speakerController = _noSpeakerCtl,
+    this.onSpeakerSubmitted = _noSpeakerSubmit,
+    this.onNodeFocused,
     this.onRequestInspector = _noInspector,
-    this.noCodeMode = false,
-    this.gameDicts = const {},
     required this.onSelectionChanged,
     required this.onMoveNode,
     required this.onAddEdge,
     required this.onDeleteEdge,
     required this.onRequestDelete,
-    required this.onToggleExpand,
     required this.fieldController,
     required this.onFieldChanged,
-    required this.onDeleteNode,
+    this.onDeleteNode,
     this.onContextMenu,
     this.onUndo,
     this.onRedo,
@@ -193,9 +181,6 @@ class StoryFlowGraph extends StatefulWidget {
   /// 选中集（节点 id + 边）。状态由宿主持有，画布只算出「下一次选什么」。
   final FlowSelection selection;
 
-  /// 展开参数编辑器的节点集合（workspace 持有）。
-  final Set<String> expandedNodes;
-
   /// 资产拖拽悬停高亮的节点。
   final String? highlightNode;
 
@@ -206,31 +191,21 @@ class StoryFlowGraph extends StatefulWidget {
   /// null = 宿主未接墓碑，talk/option 一律按普通卡片渲染。
   final TombstoneStore? tombstones;
 
-  /// 该字段写回失败（解析不动）：卡片/内联红字只标这一个字段。
-  final bool Function(String nodeId, String field) fieldInvalid;
+  /// 说话人标题输入：nodeId → 控制器（展示名；null=该节点无记录/不可编辑）。
+  /// 提交（回车/失焦）后由宿主演绎「名称/ID → 人物 id」并回写卡片文本。
+  final TextEditingController? Function(String nodeId) speakerController;
 
-  /// 该字段与载入基线不同：用于「已改」标记。
-  final bool Function(String nodeId, String field) fieldDirty;
+  /// 提交说话人输入（回车/失焦）：匹配成功写 roleIds，失败弹窗列相近人物。
+  final void Function(String nodeId, String text) onSpeakerSubmitted;
 
-  /// 内联区要渲染的字段（已由宿主按 schema 过滤掉不可写字段）。
-  final List<FieldMeta> Function(String nodeId) inlineMetas;
+  /// 卡片输入区获得焦点：宿主据此选中节点（输入区已让位，指针按下不再选中）。
+  final ValueChanged<String>? onNodeFocused;
 
-  /// 字段焦点节点（与控制器同键，补全输入框要挂在它上面接按键）。
-  final FocusNode? Function(String nodeId, String field) nodeFocus;
-
-  /// 字段候选来源；null 表示该字段无补全。
-  final SuggestionSource? Function(String nodeId, FieldMeta meta) suggestFor;
-
-  /// 请求打开该节点的完整参数 Inspector。
+  /// 请求打开该节点的完整参数 Inspector（双击卡片）。
   final VoidCallback? Function(String nodeId) onRequestInspector;
 
   /// 无代码模式（后端共享开关）：开启后内联区不再铺任何可输入的代码/ID 框 ——
   /// 码字段铺内联积木编辑器，引用字段只显示现值 + 去 Inspector 选择的入口。
-  final bool noCodeMode;
-
-  /// 游戏字典（实体浏览面板的候选名来源；与原版 game_dicts 同一份）。
-  final Map<String, dynamic> gameDicts;
-
   final void Function(FlowSelection next) onSelectionChanged;
   final void Function(String id, Offset pos) onMoveNode;
 
@@ -240,18 +215,15 @@ class StoryFlowGraph extends StatefulWidget {
   onDeleteEdge;
   final VoidCallback onRequestDelete;
 
-  /// 右下角箭头切换展开/收起。
-  final ValueChanged<String> onToggleExpand;
-
-  /// 内联编辑：字段输入控制器（null=该字段不显示输入框）。
+  /// 卡片正文输入控制器（null=该字段不显示输入框，退化为只读文本）。
   final TextEditingController? Function(String nodeId, String field)
   fieldController;
 
-  /// 内联编辑：文本变更写回（按字段类型解析）。
+  /// 卡片正文文本变更写回（按字段类型解析）。
   final void Function(String nodeId, String field, String text) onFieldChanged;
 
-  /// 内联编辑：删除该节点。
-  final ValueChanged<String> onDeleteNode;
+  /// 删除该节点（宿主程序化删除；卡片内不再有删除按钮）。
+  final ValueChanged<String>? onDeleteNode;
 
   /// 右键命中上报（null = 宿主不接菜单）。菜单本体是 GUI 层，宿主用
   /// showMenu 绘制并保证底板不透明，画布只负责把命中换算成屏幕锚点。
@@ -399,11 +371,7 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
 
   /// 不含 positionsVersion：旧实现把它算进 rev，拖一帧就整批清空 52 条
   /// 虚线路径缓存再逐条重算，拖拽帧凭空多出全量 computeMetrics/extract。
-  int get _geometryRev => Object.hash(
-    widget.graph,
-    Object.hashAll(widget.expandedNodes),
-    _lodTier,
-  );
+  int get _geometryRev => Object.hash(widget.graph, _lodTier);
 
   Map<String, Path> _dashCacheFor() {
     final rev = _geometryRev;
@@ -420,20 +388,8 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   // 只有命中测试要比较原始指针坐标，故只保留屏幕→世界方向。
   Offset _toCanvas(Offset screen) => (screen - _pan) / _scale;
 
-  bool _isExpanded(FlowNode n) => widget.expandedNodes.contains(n.id);
-
-  /// 折叠态高度（展开时即「底座」高度，箭头与拖拽命中都锚在这里）。
-  double _baseH(FlowNode n) => n.isMissing ? kFlowMissingH : kFlowNodeH;
-
-  /// 当前渲染高度：展开的节点为内联编辑器全高。
-  ///
-  /// 低于完整档时展开区不渲染，高度必须回到折叠足迹 —— 否则连线还从
-  /// 「看不见的编辑器底部」出发，端口与卡片脱节。
-  double _nodeH(FlowNode n) {
-    if (n.isMissing) return kFlowMissingH;
-    if (_lodTier != kLodFull || !_isExpanded(n)) return kFlowNodeH;
-    return n.isOption ? kFlowOptionExpandedH : kFlowTalkExpandedH;
-  }
+  /// 卡片高度：对白/选项恒为 [kFlowNodeH]，缺失节点为终端占位高度。
+  double _nodeH(FlowNode n) => n.isMissing ? kFlowMissingH : kFlowNodeH;
 
   /// 节点世界足迹（与卡片 Positioned 同式）。
   Rect _nodeWorldRect(FlowNode n) {
@@ -452,22 +408,34 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   }
 
   /// 展开编辑区（底座以下的扩展部分）屏幕矩形；未展开返回 null。
-  Rect? _editorScreenRect(FlowNode n) {
-    if (_lodTier != kLodFull || !_isExpanded(n)) return null;
+  /// 标题条说话人输入区（世界坐标）：把左侧拖拽把手让给节点拖拽，其余归输入。
+  Rect _titleFieldWorldRect(FlowNode n) {
     final p = _nodeAnchor(n);
-    final base = _baseH(n);
-    return _toScreenRect(
-      Rect.fromLTWH(p.dx, p.dy + base, kFlowNodeW, _nodeH(n) - base),
+    return Rect.fromLTWH(
+      p.dx + kFlowGripW,
+      p.dy,
+      kFlowNodeW - kFlowGripW,
+      kFlowHeaderH,
     );
   }
 
-  /// 展开箭头命中区：与卡片 _arrow 的 Positioned(right:2, top:baseH-20) 同式。
-  Rect _arrowScreenRect(FlowNode n) {
+  /// 正文输入区（世界坐标）：标题条以下的正文块，左右各留 [kFlowBodyPad]。
+  Rect _bodyFieldWorldRect(FlowNode n) {
     final p = _nodeAnchor(n);
-    final s = kExpandArrowSize;
-    return _toScreenRect(
-      Rect.fromLTWH(p.dx + kFlowNodeW - s - 2, p.dy + _baseH(n) - s - 2, s, s),
+    return Rect.fromLTWH(
+      p.dx + kFlowBodyPad,
+      p.dy + kFlowHeaderH,
+      kFlowNodeW - kFlowBodyPad * 2,
+      _nodeH(n) - kFlowHeaderH - kFlowBodyPad,
     );
+  }
+
+  /// 指针是否落在卡片的可输入字段上：是则画布让位给内层输入框（聚焦/编辑），
+  /// 拖拽改由标题条左侧把手与卡片边框/徽章行承载。
+  bool _hitsEditableField(FlowNode n, Offset world) {
+    if (n.isMissing || _lodTier != kLodFull) return false;
+    return _titleFieldWorldRect(n).contains(world) ||
+        _bodyFieldWorldRect(n).contains(world);
   }
 
   /// 节点屏幕足迹。Listener 在 Transform 之外，拿到的是屏幕坐标，
@@ -577,23 +545,18 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
         }
       }
     }
-    // 展开箭头：切换内联参数编辑（不进入拖拽/选中）。低 LOD 档箭头不渲染，
-    // 命中区一并让位，否则点卡片右下角会在看不见状态下收起展开。
-    if (_lodTier == kLodFull) {
-      for (final n in widget.graph.nodes) {
-        if (n.isMissing) continue;
-        if (_arrowScreenRect(n).contains(local)) {
-          _takeCanvasFocus();
-          widget.onToggleExpand(n.id);
-          return;
-        }
-      }
-    }
-    // 展开编辑区：让位给内部输入框/滚动，画布手势全部不接管
+    // 卡片输入区（说话人标题 / 正文）：让位给内层输入框，画布不拖拽/不抢
+    // 焦点；但仍更新选中集（否则点卡片正文编辑时键盘删除等失焦）。
+    // 输入区之外（标题把手、卡片边框、徽章行）仍归节点拖拽/选中。
     for (final n in widget.graph.nodes) {
-      final editor = _editorScreenRect(n);
-      if (editor != null && editor.contains(local)) {
+      if (_hitsEditableField(n, world)) {
         _mode = _DragMode.none;
+        final sel = widget.selection;
+        final already = sel.nodes.contains(n.id);
+        final next = additive
+            ? sel.toggledNode(n.id)
+            : (already ? sel : FlowSelection.ofNode(n.id));
+        if (next != sel) widget.onSelectionChanged(next);
         return;
       }
     }
@@ -1080,12 +1043,12 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
   void _onPointerSignal(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
     final local = e.localPosition;
-    // 指针在展开的参数编辑区：滚轮只归内层滚动视图。Listener 是画布
-    // 祖先，信号事件沿命中链直达，不在这里让位就会出现「滚参数把整个
+    // 指针在卡片正文输入区：滚轮只归内层文本滚动视图。Listener 是画布
+    // 祖先，信号事件沿命中链直达，不在这里让位就会出现「滚台词把整个
     // 画布一起缩放」的连滚。
+    final world = _toCanvas(local);
     for (final n in widget.graph.nodes) {
-      final editor = _editorScreenRect(n);
-      if (editor != null && editor.contains(local)) return;
+      if (!n.isMissing && _bodyFieldWorldRect(n).contains(world)) return;
     }
     final factor = e.scrollDelta.dy > 0 ? 0.9 : 1.1;
     final next = (_scale * factor)
@@ -1199,38 +1162,21 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
 
   /// 槽位内容签名：决定「卡片实例能否复用」的全部输入。
   ///
-  /// - tier：LOD 档（titleOnly / expanded / 节点高度都随档变）；
-  /// - expandedNodes 内容：宿主原地改这个集合，实例不变，只能按内容比；
+  /// - tier：LOD 档（titleOnly / 节点高度都随档变）；
   /// - selection / highlight：卡片边框、阴影、选中态；
-  /// - fieldInvalid 探针：解析失败红字是唯一**不换图对象**的宿主变化
-  ///   （_applyFieldText 解析失败只 setState 加 key，不 _markEdited），
-  ///   因此对展开节点的各字段重查一遍 fieldInvalid 并入签名；展开集为空时
-  ///   跳过 —— 折叠卡片不渲染字段行，红字无处显示，无需探针。
+  /// - tombstones.version：集合内容变化（reload 后 bump）必须作废卡片缓存。
   ///
-  /// graph 身份在 [_slotsFor] 里 identical 比对（宿主任何内容变更都会换新
-  /// 图对象）；**positionsVersion 刻意不进来**：位置只影响外层 Positioned
-  /// 包装的 left/top（见 [_slotsFor]），卡片内容与位置无关；把它算进签名
-  /// 等于回到「拖拽每帧全量重建卡片」。
+  /// 正文/说话人文本的变更走宿主 `_bumpGraph` 换新图对象，由 graph 身份比对
+  /// 捕获；**positionsVersion 刻意不进来**：位置只影响外层 Positioned 包装的
+  /// left/top（见 [_slotsFor]），卡片内容与位置无关；把它算进签名等于回到
+  /// 「拖拽每帧全量重建卡片」。
   int _contentSig(int tier) {
-    var sig = Object.hash(
+    return Object.hash(
       tier,
-      Object.hashAllUnordered(widget.expandedNodes),
       widget.selection,
       widget.highlightNode,
-      // 阶段 4a：墓碑集合版本号。集合内容变化（reload 后 bump）必须作废
-      // 卡片缓存，否则被删/被恢复的节点还按旧集合渲染；无变化的刷新
-      // version 不动，整批卡片原样复用。
       widget.tombstones?.version,
-      // 无代码模式切换会整体改变内联区的控件形态（文本框 ↔ 积木/只读），
-      // 不进签名的话切开关后缓存卡片仍是旧形态。
-      widget.noCodeMode,
     );
-    for (final id in widget.expandedNodes) {
-      for (final m in widget.inlineMetas(id)) {
-        sig = Object.hash(sig, id, m.key, widget.fieldInvalid(id, m.key));
-      }
-    }
-    return sig;
   }
 
   /// 槽位获取门控，画布子树每次重渲染都会经过这里：
@@ -1288,23 +1234,17 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
       titleOnly: !full,
       selected: widget.selection.nodes.contains(n.id),
       highlighted: widget.highlightNode == n.id,
-      // 低档不渲染展开区，卡片高度才会与 _nodeH 的折叠足迹一致。
-      expanded: full && _isExpanded(n),
       // 逐节点数据一律以函数形式下传：卡片是 StatelessWidget 且实例被
       // 缓存复用，读全局会在内容变更前渲染出旧值。
-      fieldInvalid: widget.fieldInvalid,
-      fieldDirty: widget.fieldDirty,
-      inlineMetas: widget.inlineMetas,
-      nodeFocus: widget.nodeFocus,
-      suggestFor: widget.suggestFor,
+      speakerController: widget.speakerController,
+      onSpeakerSubmitted: widget.onSpeakerSubmitted,
+      onNodeFocused: widget.onNodeFocused,
       onRequestInspector: widget.onRequestInspector,
-      noCodeMode: widget.noCodeMode,
-      gameDicts: widget.gameDicts,
       outputPorts: _outputPorts(n),
       fieldController: widget.fieldController,
       onFieldChanged: widget.onFieldChanged,
-      onDeleteNode: widget.onDeleteNode,
       tombstones: widget.tombstones,
+      onDeleteNode: widget.onDeleteNode,
     );
     _cards[n.id] = card;
     return card;
@@ -1342,7 +1282,6 @@ class StoryFlowGraphState extends State<StoryFlowGraph> {
                       viewport: vp,
                       lodTier: _lodTier,
                       nodeH: _nodeH,
-                      expandedNodes: widget.expandedNodes,
                       selection: widget.selection,
                       marquee: _mode == _DragMode.marquee
                           ? Rect.fromPoints(
@@ -1415,20 +1354,15 @@ class _FlowNodeCard extends StatelessWidget {
     required this.node,
     required this.selected,
     required this.highlighted,
-    required this.expanded,
-    required this.fieldInvalid,
-    required this.fieldDirty,
-    required this.inlineMetas,
-    required this.nodeFocus,
-    required this.suggestFor,
+    required this.speakerController,
+    required this.onSpeakerSubmitted,
+    required this.onNodeFocused,
     required this.onRequestInspector,
-    required this.noCodeMode,
-    required this.gameDicts,
     required this.outputPorts,
     required this.fieldController,
     required this.onFieldChanged,
-    required this.onDeleteNode,
     required this.tombstones,
+    this.onDeleteNode,
     this.titleOnly = false,
   });
 
@@ -1438,43 +1372,37 @@ class _FlowNodeCard extends StatelessWidget {
   /// 世界坐标的 Positioned 在槽位包装（_FlowSlot）上，拖拽帧只更新包装。
   final bool selected;
   final bool highlighted;
-  final bool expanded;
 
-  /// 以下六个通道是逐节点数据的**唯一**来源：卡片按 LOD 档缓存复用，
-  /// 自己去读全局/workspace 会在换档前一直显示旧值（红字、脏标记、字段
-  /// 清单都会滞后一帧以上），所以只能由画布把宿主函数原样递进来。
-  final bool Function(String nodeId, String field) fieldInvalid;
-  final bool Function(String nodeId, String field) fieldDirty;
-  final List<FieldMeta> Function(String nodeId) inlineMetas;
-  final FocusNode? Function(String nodeId, String field) nodeFocus;
-  final SuggestionSource? Function(String nodeId, FieldMeta meta) suggestFor;
+  /// 说话人标题输入控制器（null=无记录/不可编辑，退化为静态标题）。
+  final TextEditingController? Function(String nodeId) speakerController;
+
+  /// 提交说话人输入（回车/失焦）：宿主匹配人物 id 或弹窗。
+  final void Function(String nodeId, String text) onSpeakerSubmitted;
+
+  /// 输入区获得焦点：宿主据此选中节点（画布已对输入区让位）。
+  final ValueChanged<String>? onNodeFocused;
+
+  /// 请求打开完整参数 Inspector（双击卡片）。
   final VoidCallback? Function(String nodeId) onRequestInspector;
-
-  /// 无代码模式与其候选名来源（见 [StoryFlowGraph.noCodeMode]）。
-  final bool noCodeMode;
-  final Map<String, dynamic> gameDicts;
 
   final List<_OutPort> outputPorts;
   final TextEditingController? Function(String nodeId, String field)
   fieldController;
   final void Function(String nodeId, String field, String text) onFieldChanged;
-  final ValueChanged<String> onDeleteNode;
 
-  /// 阶段 4a：story 级共享墓碑集合，由画布原样递下（与上面六个通道同理：
-  /// 卡片实例被缓存复用，自己去读全局会在集合变更后渲染出旧值）。
+  /// 阶段 4a：story 级共享墓碑集合，由画布原样递下（卡片实例被缓存复用，
+  /// 自己去读全局会在集合变更后渲染出旧值）。
   /// null = 宿主未接墓碑，talk/option 按普通卡片渲染。
   final TombstoneStore? tombstones;
+
+  /// 删除落盘成功后通知宿主把该节点从画布数据里摘掉（阶段 2d：删失败不摘，
+  /// 避免「画布删了但磁盘还在」的分叉）。缺省时只刷新墓碑集合。
+  final ValueChanged<String>? onDeleteNode;
 
   /// LOD 中档：只画标题条。低缩放下正文与端口都不可读，省掉整段排版。
   final bool titleOnly;
 
-  double get _baseH => node.isMissing ? kFlowMissingH : kFlowNodeH;
-
-  double get _h {
-    if (node.isMissing) return kFlowMissingH;
-    if (!expanded) return kFlowNodeH;
-    return node.isOption ? kFlowOptionExpandedH : kFlowTalkExpandedH;
-  }
+  double get _h => node.isMissing ? kFlowMissingH : kFlowNodeH;
 
   Color get _tint => flowNodeTint(node);
 
@@ -1508,7 +1436,8 @@ class _FlowNodeCard extends StatelessWidget {
             // 删除落盘 = 墓碑集合可能变化：刷新共享集合（单飞拉取，
             // 内容变了才 bump version → _contentSig 变 → 卡片重渲染）。
             await tombstones!.reload();
-            onDeleteNode(node.id);
+            // 删除落盘成功后才本地摘节点（失败走 catch，画布保持原样）。
+            onDeleteNode?.call(node.id);
           } catch (e) {
             if (context.mounted) {
               fluent.displayInfoBar(
@@ -1529,9 +1458,7 @@ class _FlowNodeCard extends StatelessWidget {
 
   Widget _buildCard(BuildContext context) {
     final w = kFlowNodeW;
-    // expanded 由画布按 LOD 档传入，低档恒为 false，_h 即折叠足迹高度。
     final hh = _h;
-    final base = hh;
     final r = kPortR;
     final dots = <Widget>[
       for (final p in outputPorts)
@@ -1551,29 +1478,19 @@ class _FlowNodeCard extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          // 底座卡片（折叠区）：拖拽/连线由画布 Listener 统一处理
           Positioned(
             left: 0,
             top: 0,
             width: w,
-            height: base,
-            child: IgnorePointer(child: _baseCard(base)),
+            height: hh,
+            child: _baseCard(),
           ),
-          // 展开编辑区：指针直达输入框（画布对命中此区的手势让位）
-          if (!titleOnly && expanded && !node.isMissing)
-            Positioned(
-              left: 0,
-              top: _baseH,
-              width: w,
-              height: hh - _baseH,
-              child: _editorPanel(),
-            ),
           if (!titleOnly) ...dots,
           // 输入接入点（顶部中心，缺失节点居左侧中点）
           if (!titleOnly)
             Positioned(
               left: node.isMissing ? -r : w / 2 - r,
-              top: node.isMissing ? base / 2 - r : -r,
+              top: node.isMissing ? hh / 2 - r : -r,
               width: r * 2,
               height: r * 2,
               child: _PortDot(
@@ -1581,99 +1498,147 @@ class _FlowNodeCard extends StatelessWidget {
                 color: palette.borderHover,
               ),
             ),
-          if (!titleOnly && !node.isMissing) _arrow(_baseH),
         ],
       ),
     );
   }
 
-  Widget _baseCard(double base) {
-    final radius = BorderRadius.vertical(
-      top: Radius.circular(AppRadius.m),
-      bottom: expanded ? Radius.zero : Radius.circular(AppRadius.m),
-    );
-    final body = node.content;
-    return Container(
-      decoration: BoxDecoration(
-        color: palette.card,
-        border: Border.all(color: _borderColor, width: selected ? 1.6 : 1),
-        borderRadius: radius,
-        boxShadow: selected
-            ? [BoxShadow(color: _tint.withValues(alpha: 0.22), blurRadius: 10)]
-            : highlighted
-            ? [
-                BoxShadow(
-                  color: palette.flowAudio.withValues(alpha: 0.3),
-                  blurRadius: 10,
-                ),
-              ]
-            : null,
-      ),
-      child: ClipRRect(
-        borderRadius: radius,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _header(),
-            // LOD 中档：只留标题条。卡片尺寸不变，连线端点才不会错位。
-            if (!titleOnly)
-              Expanded(
-                child: Padding(
-                  padding: EdgeInsets.all(7),
-                  child: RichText(
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    text: TextSpan(
-                      text: body.isEmpty ? '(空台词)' : body,
-                      style: TextStyle(
-                        fontSize: AppType.body,
-                        color: body.isEmpty
-                            ? palette.textHint
-                            : palette.textSecondary,
-                        height: 1.3,
-                      ),
-                    ),
+  Widget _baseCard() {
+    final radius = BorderRadius.circular(AppRadius.m);
+    return GestureDetector(
+      // 双击卡片打开完整参数 Inspector（面板头「展开完整参数」入口的替代）。
+      onDoubleTap: () => onRequestInspector(node.id)?.call(),
+      child: Container(
+        decoration: BoxDecoration(
+          color: palette.card,
+          border: Border.all(
+            color: _borderColor,
+            width: selected ? 1.6 : 1,
+          ),
+          borderRadius: radius,
+          boxShadow: selected
+              ? [BoxShadow(color: _tint.withValues(alpha: 0.22), blurRadius: 10)]
+              : highlighted
+              ? [
+                  BoxShadow(
+                    color: palette.flowAudio.withValues(alpha: 0.3),
+                    blurRadius: 10,
                   ),
-                ),
-              ),
-            if (!titleOnly && node.hasParamBadges) _badgeRow(),
-          ],
+                ]
+              : null,
+        ),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _titleRow(),
+              // LOD 中档：只留标题条。卡片尺寸不变，连线端点才不会错位。
+              if (!titleOnly) Expanded(child: _bodyArea()),
+              if (!titleOnly && node.hasParamBadges) _badgeRow(),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  /// 卡片标题条：LOD 各档都渲染，是唯一不随缩放消失的信息。
-  Widget _header() {
+  /// 卡片标题条：左侧拖拽把手 + 说话人输入（对白），选项/缺失节点走静态标题。
+  Widget _titleRow() {
     return Container(
-      height: 26,
+      height: kFlowHeaderH,
       color: _tint.withValues(alpha: 0.16),
-      padding: EdgeInsets.symmetric(horizontal: AppSpace.s),
+      padding: const EdgeInsets.only(right: AppSpace.xs),
       child: Row(
         children: [
-          Icon(
-            node.isOption
-                ? Icons.alt_route
-                : (node.isMissing ? Icons.link_off : Icons.chat),
-            size: 12,
-            color: _tint,
-          ),
-          SizedBox(width: 5),
-          Expanded(
-            child: Text(
-              node.cardLabel.isNotEmpty
-                  ? '${node.title} · ${node.cardLabel}'
-                  : node.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: AppType.title,
-                fontWeight: FontWeight.w600,
-                color: palette.textHigh,
-              ),
+          // 拖拽把手：这块宽度（kFlowGripW）由画布命中共为节点拖拽/选中。
+          SizedBox(
+            width: kFlowGripW,
+            child: Icon(
+              node.isMissing
+                  ? Icons.link_off
+                  : (node.isOption ? Icons.alt_route : Icons.drag_indicator),
+              size: 13,
+              color: _tint,
             ),
           ),
+          Expanded(child: _titleContent()),
         ],
+      ),
+    );
+  }
+
+  Widget _titleContent() {
+    if (node.isOption || node.isMissing) return _staticTitle();
+    final ctl = speakerController(node.id);
+    if (titleOnly || ctl == null) return _staticTitle();
+    return _SpeakerField(
+      key: ValueKey('flowSpeaker|${node.id}'),
+      controller: ctl,
+      placeholder: node.isNarrator ? '旁白' : '对白',
+      onSubmitted: (v) => onSpeakerSubmitted(node.id, v),
+      onFocused: () => onNodeFocused?.call(node.id),
+    );
+  }
+
+  Widget _staticTitle() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        node.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: AppType.title,
+          fontWeight: FontWeight.w600,
+          color: palette.textHigh,
+        ),
+      ),
+    );
+  }
+
+  /// 卡片正文：对白/选项直接内联编辑 content，缺失节点/低档退化为只读文本。
+  Widget _bodyArea() {
+    final body = node.content;
+    if (node.isMissing) {
+      return Padding(
+        padding: const EdgeInsets.all(7),
+        child: Text(
+          body.isEmpty ? '(空)' : body,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: AppType.body,
+            color: palette.textSecondary,
+            height: 1.3,
+          ),
+        ),
+      );
+    }
+    final ctl = fieldController(node.id, 'content');
+    if (titleOnly || ctl == null) {
+      return Padding(
+        padding: const EdgeInsets.all(7),
+        child: Text(
+          body.isEmpty ? '(空台词)' : body,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: AppType.body,
+            color: body.isEmpty ? palette.textHint : palette.textSecondary,
+            height: 1.3,
+          ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kFlowBodyPad, 3, kFlowBodyPad, 3),
+      child: _BodyField(
+        key: ValueKey('flowBody|${node.id}'),
+        controller: ctl,
+        placeholder: node.isOption ? '选项文本' : '台词内容',
+        onChanged: (v) => onFieldChanged(node.id, 'content', v),
+        onFocused: () => onNodeFocused?.call(node.id),
       ),
     );
   }
@@ -1730,7 +1695,7 @@ class _FlowNodeCard extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: AppSpace.xs, vertical: 1),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(AppRadius.xs),
+        borderRadius: BorderRadius.circular(AppRadius.xxs),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1755,539 +1720,127 @@ class _FlowNodeCard extends StatelessWidget {
       ),
     );
   }
-
-  /// 右下角展开箭头（视觉；命中判定在画布 Listener 的 _arrowScreenRect）。
-  Widget _arrow(double base) {
-    final s = kExpandArrowSize;
-    return Positioned(
-      right: 2,
-      top: base - s - 2,
-      width: s,
-      height: s,
-      child: IgnorePointer(
-        child: Container(
-          decoration: BoxDecoration(
-            color: palette.card,
-            shape: BoxShape.circle,
-            border: Border.all(color: palette.borderHover),
-          ),
-          child: Icon(
-            expanded ? Icons.expand_less : Icons.expand_more,
-            size: 13,
-            color: palette.textSecondary,
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 内联参数编辑器（展开区）：字段清单与控件类型都由宿主给的 [FieldMeta] 决定。
-  ///
-  /// 展开高度是固定常量（见 kFlowTalkExpandedH），字段变多由这里的
-  /// SingleChildScrollView 吸收 —— 那个常量同时被 _nodeH、命中矩形、展开箭头、
-  /// 端口锚点与连线 painter 引用，绝不允许按字段数推算。
-  Widget _editorPanel() {
-    final radius = BorderRadius.vertical(bottom: Radius.circular(AppRadius.m));
-    final metas = inlineMetas(node.id);
-    return Container(
-      decoration: BoxDecoration(
-        color: palette.card,
-        border: Border.all(color: _borderColor, width: selected ? 1.6 : 1),
-        borderRadius: radius,
-      ),
-      child: ClipRRect(
-        borderRadius: radius,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _editorPanelHeader(),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: EdgeInsets.all(7),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [for (final m in metas) _fieldRow(m)],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 展开区标题条：「参数」+ 去 Inspector 的入口 + 删除。
-  ///
-  /// 三个动作挤在 200px 宽的一条里：标题用 Expanded 收缩，按钮各自
-  /// mainAxisSize.min，字段再多也不会把这条撑出 RenderFlex 溢出。
-  Widget _editorPanelHeader() {
-    return Container(
-      height: 20,
-      padding: EdgeInsets.symmetric(horizontal: 7),
-      color: _tint.withValues(alpha: 0.08),
-      child: Row(
-        children: [
-          Icon(Icons.tune, size: 10, color: _tint),
-          SizedBox(width: AppSpace.xs),
-          Expanded(
-            child: Text(
-              '参数',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 9.5,
-                fontWeight: FontWeight.w600,
-                color: palette.textSecondary,
-              ),
-            ),
-          ),
-          _headerAction(
-            tooltip: '展开该节点的完整参数（含本清单放不下的字段）',
-            icon: Icons.open_in_full,
-            label: '展开完整参数',
-            color: palette.textSecondary,
-            onTap: onRequestInspector(node.id),
-          ),
-          SizedBox(width: AppSpace.xs),
-          _headerAction(
-            tooltip: '删除该节点（或选中后按 Delete）',
-            icon: Icons.delete_outline,
-            label: '删除',
-            color: palette.flowMissing,
-            onTap: () => onDeleteNode(node.id),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 标题条上的小动作按钮；[onTap] 为 null（宿主不接该能力）时整体不渲染。
-  Widget _headerAction({
-    required String tooltip,
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback? onTap,
-  }) {
-    if (onTap == null) return const SizedBox.shrink();
-    return Tooltip(
-      message: tooltip,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onTap,
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 11, color: color),
-                SizedBox(width: AppSpace.xxs),
-                Text(label, style: TextStyle(fontSize: 9.5, color: color)),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 单字段行：控件类型由 [FieldMeta] 分派，不再一律裸 TextBox。
-  Widget _fieldRow(FieldMeta meta) {
-    final ctl = fieldController(node.id, meta.key);
-    // 宿主已按 schema 过滤掉不可写字段；这里再兜一层 null，
-    // 保证「没有控制器」的字段不会铺出一个填了也不写回的输入框。
-    if (ctl == null) return const SizedBox.shrink();
-    return Padding(
-      padding: EdgeInsets.only(bottom: 6),
-      child: _FieldInput(
-        key: ValueKey('${node.id}|${meta.key}'),
-        nodeId: node.id,
-        meta: meta,
-        controller: ctl,
-        focusNode: nodeFocus(node.id, meta.key),
-        source: suggestFor(node.id, meta),
-        invalid: fieldInvalid(node.id, meta.key),
-        dirty: fieldDirty(node.id, meta.key),
-        maxLines: _maxLinesFor(meta),
-        onChanged: onFieldChanged,
-        noCodeMode: noCodeMode,
-        gameDicts: gameDicts,
-        onOpenInspector: onRequestInspector(node.id),
-      ),
-    );
-  }
-
-  /// 展开区高度固定，行数只为可读性服务：2D 指令与多值字段两行、
-  /// 台词按节点类型 2~3 行，其余一行。
-  int _maxLinesFor(FieldMeta meta) {
-    if (meta.key == 'content') return node.isOption ? 2 : 3;
-    if (meta.type == '2D Array' || meta.type == '1D Array') return 2;
-    return 1;
-  }
 }
 
-/// 内联区的单字段编辑器：标签行 + 按 [FieldMeta] 分派的控件 + 名称回显 +
-/// 字段级红字。
+/// 标题条说话人输入：回车或失焦时把文本交给宿主匹配人物 id。
 ///
-/// 控件分派规则（这是本次改造的核心，写错就是污染存档）：
-/// - `effectLike`（check / screenEffect / roles / precondition / effect…）
-///   **必须**走 [SuggestionTextField]：裸 TextBox 里一个全角逗号就能绕过
-///   后端校验直接落进存档；
-/// - `rule` 非空（bg / audio / highlights / nextTalk / talkId / talkId2 /
-///   nextEvtId）同样走 [SuggestionTextField]，并在下方回显这个 ID 解析到的名称；
-/// - 只有 roleName / content / time / showTxt 这类纯文本才是裸 TextBox。
-///
-/// 做成 StatefulWidget 有两个非做不可的理由：宿主没给焦点节点时要自备一个
-/// （补全框的按键接管挂在 FocusNode 上），以及名称回显要监听控制器变化。
-class _FieldInput extends StatefulWidget {
-  const _FieldInput({
+/// 只在失焦时提交（回车仅负责收起键盘/取消焦点），避免回车与失焦各触发
+/// 一次匹配、弹出两个对话框。
+class _SpeakerField extends StatefulWidget {
+  const _SpeakerField({
     super.key,
-    required this.nodeId,
-    required this.meta,
     required this.controller,
-    required this.focusNode,
-    required this.source,
-    required this.invalid,
-    required this.dirty,
-    required this.maxLines,
-    required this.onChanged,
-    this.noCodeMode = false,
-    this.gameDicts = const {},
-    this.onOpenInspector,
+    required this.placeholder,
+    required this.onSubmitted,
+    this.onFocused,
   });
 
-  final String nodeId;
-  final FieldMeta meta;
   final TextEditingController controller;
-
-  /// 宿主按「控制器同键」给的焦点节点；null 时本组件自备一个。
-  final FocusNode? focusNode;
-
-  /// 候选来源；null = 该字段无补全（效果类字段此时退化为无候选的受控输入框，
-  /// 但仍然是补全框，不会退回裸 TextBox）。
-  final SuggestionSource? source;
-
-  final bool invalid;
-  final bool dirty;
-  final int maxLines;
-  final void Function(String nodeId, String field, String text) onChanged;
-
-  /// 无代码模式：内联区不铺任何可输入的代码/ID 框（见 [StoryFlowGraph.noCodeMode]）。
-  final bool noCodeMode;
-  final Map<String, dynamic> gameDicts;
-
-  /// 「去 Inspector 选择」入口（内联卡片放不下的选择面板在 Inspector 里）。
-  final VoidCallback? onOpenInspector;
+  final String placeholder;
+  final ValueChanged<String> onSubmitted;
+  final VoidCallback? onFocused;
 
   @override
-  State<_FieldInput> createState() => _FieldInputState();
+  State<_SpeakerField> createState() => _SpeakerFieldState();
 }
 
-class _FieldInputState extends State<_FieldInput> {
-  /// 宿主没给焦点节点时的兜底，本组件持有并负责释放。
-  FocusNode? _ownFocus;
-
-  Timer? _echoDebounce;
-
-  /// 已回显的输入文本与解析到的名称：同一串文本不重复查，名称行按此显示。
-  String? _echoedText;
-  String? _echoLabel;
-  int _echoSeq = 0;
-
-  bool get _wantsSuggest => widget.meta.effectLike || widget.meta.rule != null;
-
-  bool get _wantsEcho =>
-      widget.meta.rule != null && widget.meta.editable && widget.source != null;
+class _SpeakerFieldState extends State<_SpeakerField> {
+  final FocusNode _focus = FocusNode(debugLabel: 'flowSpeakerField');
 
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_onTextChanged);
-    _takeFocusOwnership();
-    if (_wantsEcho) _scheduleEcho(sync: true);
-  }
-
-  @override
-  void didUpdateWidget(covariant _FieldInput oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.controller, widget.controller)) {
-      oldWidget.controller.removeListener(_onTextChanged);
-      widget.controller.addListener(_onTextChanged);
-      _invalidateEcho(sync: true);
-    }
-    if (!identical(oldWidget.focusNode, widget.focusNode)) {
-      _takeFocusOwnership();
-    }
-    if (!identical(oldWidget.source, widget.source)) {
-      _invalidateEcho(sync: true);
-    }
+    _focus.addListener(_onFocusChange);
   }
 
   @override
   void dispose() {
-    _echoDebounce?.cancel();
-    widget.controller.removeListener(_onTextChanged);
-    _ownFocus?.dispose();
-    _ownFocus = null;
+    _focus.removeListener(_onFocusChange);
+    _focus.dispose();
     super.dispose();
   }
 
-  /// 焦点节点归属：换成宿主给的就要收回自己那个，否则两张卡片会抢同一个
-  /// FocusNode（FocusNode 同时只能挂在一处）。
-  void _takeFocusOwnership() {
-    if (widget.focusNode != null) {
-      _ownFocus?.dispose();
-      _ownFocus = null;
-      return;
-    }
-    _ownFocus ??= FocusNode(
-      debugLabel: 'flowField:${widget.nodeId}:${widget.meta.key}',
-    );
-  }
-
-  FocusNode get _focus => widget.focusNode ?? _ownFocus!;
-
-  // ---------- 名称回显 ----------
-
-  void _onTextChanged() {
-    if (!_wantsEcho) return;
-    _scheduleEcho();
-  }
-
-  /// [sync] = 正处于本组件自己的 build 生命周期（initState / didUpdateWidget），
-  /// 那时紧接着就会 build，直接改字段即可，不该再 setState。
-  void _invalidateEcho({bool sync = false}) {
-    _echoedText = null;
-    _clearLabel(sync: sync);
-    _scheduleEcho(sync: sync);
-  }
-
-  void _clearLabel({bool sync = false}) {
-    if (_echoLabel == null) return;
-    if (sync) {
-      _echoLabel = null;
+  void _onFocusChange() {
+    if (_focus.hasFocus) {
+      widget.onFocused?.call();
     } else {
-      setState(() => _echoLabel = null);
+      widget.onSubmitted(widget.controller.text);
     }
   }
-
-  /// 防抖 220ms 再查：逐字符打 id 时不该每次都打一遍候选接口，
-  /// 空值与含分隔符的多值文本干脆不查（回显只对单值有意义）。
-  void _scheduleEcho({bool sync = false}) {
-    if (!_wantsEcho) return;
-    _echoDebounce?.cancel();
-    final token = widget.controller.text.trim();
-    if (token.isEmpty || _isMultiValue(token)) {
-      _echoedText = null;
-      _clearLabel(sync: sync);
-      return;
-    }
-    if (token == _echoedText) return;
-    _echoDebounce = Timer(const Duration(milliseconds: 220), _queryEcho);
-  }
-
-  bool _isMultiValue(String t) =>
-      t.contains(',') || t.contains('，') || t.contains(';') || t.contains('；');
-
-  Future<void> _queryEcho() async {
-    final source = widget.source;
-    if (source == null || !mounted) return;
-    final text = widget.controller.text;
-    final token = text.trim();
-    if (token.isEmpty || _isMultiValue(token)) return;
-    final seq = ++_echoSeq;
-    List<Suggestion> found;
-    try {
-      found = await source(
-        SuggestionQuery(token: token, cursor: text.length, text: text),
-      );
-    } catch (_) {
-      // 回显是锦上添花：查不到/接口挂了就不显示，绝不影响输入本身。
-      return;
-    }
-    if (!mounted || seq != _echoSeq) return;
-    _echoedText = token;
-    setState(() => _echoLabel = _echoFor(token, found));
-  }
-
-  /// 只有候选确实解析得到输入值才回显：字典候选按名称模糊匹配，
-  /// 随手打个「1」就显示某条无关记录的名字比不显示更坏。
-  String? _echoFor(String token, List<Suggestion> found) {
-    final lower = token.toLowerCase();
-    for (final s in found) {
-      final code = s.code.trim();
-      final desc = s.desc.trim();
-      final exact = code.toLowerCase() == lower;
-      if (!exact &&
-          !(found.length == 1 && code.toLowerCase().startsWith(lower))) {
-        continue;
-      }
-      if (desc.isEmpty ||
-          desc.toLowerCase() == lower ||
-          desc.toLowerCase() == code.toLowerCase()) {
-        return null;
-      }
-      return desc;
-    }
-    return null;
-  }
-
-  // ---------- 渲染 ----------
 
   @override
   Widget build(BuildContext context) {
-    final meta = widget.meta;
-    // 无代码模式分流（与 schema 编辑器同一张表）：码字段铺内联积木编辑器，
-    // 引用/枚举字段只显示现值 + 去 Inspector 选择的入口，两者都不给文本输入。
-    final shape = noCodeShapeFor(meta.cfg, meta.key, meta.type, meta.rule);
-    final noCodeBlocks = widget.noCodeMode && shape == NoCodeShape.blocks;
-    final noCodeList = widget.noCodeMode && shape == NoCodeShape.list;
-    final noCodeReadOnly = widget.noCodeMode &&
-        (shape == NoCodeShape.visual || shape == NoCodeShape.reference);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _labelRow(meta),
-        SizedBox(height: AppSpace.xxs),
-        if (noCodeBlocks)
-          NoCodeEffectField(
-            value: ValueCodec.decode(widget.controller.text, meta.type),
-            type: meta.type,
-            cfg: meta.cfg,
-            fieldKey: meta.key,
-            mode: meta.suggestMode,
-            gameDicts: widget.gameDicts,
-            dense: true,
-            onChanged: (v) => widget.onChanged(
-                widget.nodeId, meta.key, ValueCodec.encode(v)),
-          )
-        else if (noCodeList)
-          NoCodeListField(
-            value: ValueCodec.decode(widget.controller.text, meta.type),
-            type: meta.type,
-            dense: true,
-            onChanged: (v) => widget.onChanged(
-                widget.nodeId, meta.key, ValueCodec.encode(v)),
-          )
-        else if (noCodeReadOnly)
-          _noCodeSummary(meta)
-        else if (_wantsSuggest)
-          SuggestionTextField(
-            controller: widget.controller,
-            focusNode: _focus,
-            source: widget.source,
-            maxLines: widget.maxLines,
-            multivalued: meta.multivalued,
-            replaceWholeOnAccept: meta.replaceWholeOnAccept,
-            enabled: meta.editable,
-            // 内联卡片不接管 Tab：无候选时交回系统焦点树序，
-            // 自己管跳焦环的是 Inspector。
-            onTabWithoutCandidates: null,
-            style: TextStyle(fontSize: 10),
-            padding: EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            onChanged: (v) => widget.onChanged(widget.nodeId, meta.key, v),
-          )
-        else
-          fluent.TextBox(
-            controller: widget.controller,
-            maxLines: widget.maxLines,
-            minLines: 1,
-            style: TextStyle(fontSize: 10),
-            padding: EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            onChanged: (v) => widget.onChanged(widget.nodeId, meta.key, v),
-          ),
-        if (_echoLabel != null)
-          Padding(
-            padding: EdgeInsets.only(top: AppSpace.xxs),
-            child: Text(
-              _echoLabel!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 8.5, color: palette.textHint),
-            ),
-          ),
-        if (widget.invalid)
-          Padding(
-            padding: EdgeInsets.only(top: AppSpace.xxs),
-            child: Text(
-              '解析失败，未写入存档',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 9, color: palette.flowMissing),
-            ),
-          ),
-      ],
-    );
-  }
-
-  /// 无代码模式下的引用字段摘要：只读现值 + 「选择…」入口。
-  ///
-  /// 内联卡片只有 200px 宽，放不下实体浏览面板与多值 chips；这里刻意不给
-  /// 任何输入控件（那正是无代码模式要消灭的东西），选择动作交给 Inspector。
-  Widget _noCodeSummary(FieldMeta meta) {
-    final text = widget.controller.text.trim();
-    final kind = entityKindForRule(meta.rule);
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            text.isEmpty ? '（未设置）' : text,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 10,
-              color: text.isEmpty ? palette.textHint : palette.textBody,
-            ),
-          ),
-        ),
-        SizedBox(width: AppSpace.xxs),
-        MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: widget.onOpenInspector,
-            child: Text(
-              kind == null ? '去选择…' : '选${kind.label}…',
-              style: TextStyle(fontSize: 9.5, color: accentColor),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// 标签行：中文名 + 原始 key（与旧内联编辑区同款式，测试与肌肉记忆都靠它），
-  /// 右侧挂「必选」「已改」两类标记。
-  Widget _labelRow(FieldMeta meta) {
-    return Tooltip(
-      message: '${meta.key}（${meta.type}）',
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              '${meta.label} ${meta.key}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 9, color: palette.textSecondary),
-            ),
-          ),
-          if (meta.required)
-            Text(
-              '*',
-              style: TextStyle(fontSize: 9, color: palette.flowMissing),
-            ),
-          if (widget.dirty)
-            Padding(
-              padding: EdgeInsets.only(left: AppSpace.xxs),
-              child: Text(
-                '已改',
-                style: TextStyle(fontSize: 8, color: palette.flowCheck),
-              ),
-            ),
-        ],
+    return fluent.TextBox(
+      controller: widget.controller,
+      focusNode: _focus,
+      maxLines: 1,
+      placeholder: widget.placeholder,
+      style: TextStyle(
+        fontSize: AppType.title,
+        fontWeight: FontWeight.w600,
+        color: palette.textHigh,
       ),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      onSubmitted: (_) => _focus.unfocus(),
+    );
+  }
+}
+
+/// 卡片正文输入：对白/选项文本直接用输入框编辑，随卡片高度撑满。
+class _BodyField extends StatefulWidget {
+  const _BodyField({
+    super.key,
+    required this.controller,
+    required this.placeholder,
+    required this.onChanged,
+    this.onFocused,
+  });
+
+  final TextEditingController controller;
+  final String placeholder;
+  final ValueChanged<String> onChanged;
+  final VoidCallback? onFocused;
+
+  @override
+  State<_BodyField> createState() => _BodyFieldState();
+}
+
+class _BodyFieldState extends State<_BodyField> {
+  final FocusNode _focus = FocusNode(debugLabel: 'flowBodyField');
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocusChange);
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    if (_focus.hasFocus) widget.onFocused?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return fluent.TextBox(
+      controller: widget.controller,
+      focusNode: _focus,
+      maxLines: null,
+      expands: true,
+      textAlignVertical: TextAlignVertical.top,
+      placeholder: widget.placeholder,
+      style: TextStyle(
+        fontSize: AppType.body,
+        color: palette.textSecondary,
+        height: 1.3,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      onChanged: widget.onChanged,
     );
   }
 }
@@ -2371,7 +1924,6 @@ class _FlowEdgesPainter extends CustomPainter {
     required this.viewport,
     required this.lodTier,
     required this.nodeH,
-    required this.expandedNodes,
     required this.selection,
     required this.dashCache,
     this.marquee,
@@ -2396,9 +1948,6 @@ class _FlowEdgesPainter extends CustomPainter {
   /// LOD 档。最低档画布不挂任何卡片 Widget，节点改由本 painter 批量画色块。
   final int lodTier;
   final double Function(FlowNode) nodeH;
-
-  /// 展开节点集合：展开高度影响端口锚点，集合变化时需重绘连线。
-  final Set<String> expandedNodes;
 
   /// 选中集：高亮的边 + 最低档要描边的节点。整体值相等，换一次选中就重绘。
   final FlowSelection selection;
@@ -2647,7 +2196,6 @@ class _FlowEdgesPainter extends CustomPainter {
       old._accent != _accent ||
       old.graph != graph ||
       old.positionsVersion != positionsVersion ||
-      !setEquals(old.expandedNodes, expandedNodes) ||
       old.selection != selection ||
       old.marquee != marquee ||
       old.lodTier != lodTier ||

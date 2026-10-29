@@ -2,7 +2,6 @@
 // 从对白 A 的输出端口拖线到对白 B，应写回 nextTalk 并出现连线。
 import 'dart:convert';
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter_test/flutter_test.dart';

@@ -344,7 +344,7 @@ TEST_CASE("Snapshot: help documents the Alpha modal keys", "[p8]") {
     std::string out = RenderPageToString(s, 100, 30);
     REQUIRE(Contains(out, "a / c / p / b"));
     REQUIRE(Contains(out, "u             检查更新"));
-    REQUIRE(Contains(out, "Ctrl-M"));
+    REQUIRE(Contains(out, "Ctrl-G"));
     REQUIRE(Contains(out, "confirm"));
     REQUIRE(Contains(out, "Tab/Shift+Tab"));
 }
@@ -397,7 +397,7 @@ TEST_CASE("Snapshot: the footer advertises the Ctrl-N no-code toggle", "[p8]") {
     // The Alpha bar order, plus the native keys folded into line two.
     REQUIRE(Contains(out, "N 新建Mod"));
     REQUIRE(Contains(out, "^p palette"));
-    REQUIRE(Contains(out, "^M 权限"));
+    REQUIRE(Contains(out, "^G 权限"));
 }
 
 TEST_CASE("Snapshot: field editor shows the candidate list with its key hints", "[p8]") {

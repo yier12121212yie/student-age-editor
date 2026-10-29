@@ -20,6 +20,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/api_client.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../settings/settings_page.dart';
 import 'ai_client.dart';
@@ -27,6 +28,7 @@ import 'ai_models.dart';
 import 'ai_policy.dart';
 import 'ai_prompts.dart';
 import 'ai_tools.dart';
+import 'mcp/mcp_backend_bridge.dart';
 import 'mcp/mcp_client.dart';
 import 'mcp/mcp_transport_factory.dart';
 import 'mcp/mcp_types.dart';
@@ -63,8 +65,7 @@ class AiDialogHost {
 }
 
 class AiChatController extends ChangeNotifier {
-  AiChatController({required this.appState, required AiSettings settings})
-    : _settings = settings;
+  AiChatController({required this.appState, required this._settings});
 
   /// 提供当前工作区/模组名（发送前置检查与 modContext 用）。
   final AppState appState;
@@ -619,6 +620,9 @@ class AiChatController extends ChangeNotifier {
       relayProvider: relay ? policy.provider : '',
       relayModel: relay ? policy.model : '',
       relayModels: relay ? policy.models : const [],
+      // 平台网关支持流式时，Web 也走 fetch/ReadableStream；policy.stream
+      // 为 false（旧后端/未配置）时保持整包，行为与之前一致。
+      relayStreaming: relay && policy.stream,
     );
     final content = _buildContent(text, attachments);
     if (appendUser) {
@@ -975,7 +979,7 @@ class AiChatController extends ChangeNotifier {
       if (_disposed) return;
       _uploading = false;
       changed();
-      _toast('上传「${f.name}」失败：$e');
+      _toast('上传「${f.name}」失败：${humanizeErrorMessage(e)}');
     }
   }
 
@@ -1005,7 +1009,7 @@ class AiChatController extends ChangeNotifier {
       }
       return true;
     } catch (e) {
-      _toast('同步当前模组失败：$e');
+      _toast('同步当前模组失败：${humanizeErrorMessage(e)}');
       return false;
     }
   }
@@ -1070,9 +1074,13 @@ class AiChatController extends ChangeNotifier {
     for (final entry in wanted.entries) {
       if (_mcpClients.containsKey(entry.key)) continue; // 连接中/已连接
       final cfg = entry.value;
-      // 网页版没有子进程，stdio 服务器本就不可用（stub 工厂必然抛错）：
-      // 直接跳过，不为注定失败的连接弹确认框。
-      if (kIsWeb && cfg.transport != 'http') continue;
+      // 网页版 stdio 由后端桥接代持子进程（C2）：自托管默认关闭，先问
+      // policy 再决定是否继续——不可用时不为注定失败的连接弹确认框。
+      if (kIsWeb && cfg.transport != 'http' &&
+          !await McpStdioBridge.available()) {
+        debugPrint('MCP 服务器 ${cfg.id}：当前部署未开启 stdio 桥接，跳过');
+        continue;
+      }
       // 安全批次 B：首次连接需用户确认——stdio 传输会在本机拉起子进程执行
       // 命令，未经确认（名单外未询问/已拒绝/无面板可弹窗）一律跳过，
       // 不建立连接、不执行任何工具。
@@ -1117,9 +1125,11 @@ class AiChatController extends ChangeNotifier {
 
   /// 弹出首次连接确认对话框并按结果更新名单/拒绝集合。
   Future<bool> _askMcpAllow(AiDialogHost host, McpServerConfig cfg) async {
+    final cmdline = '${cfg.command} ${cfg.args.join(' ')}'.trim();
     final what = cfg.transport == 'stdio'
-        // stdio：本机子进程，可读写文件、访问网络（与编辑器同权限）。
-        ? '将在本机执行命令：${cfg.command} ${cfg.args.join(' ')}'.trim()
+        // stdio：子进程（Web 由后端代持；桌面/移动端本机），可读写文件、
+        // 访问网络（与编辑器同权限）。
+        ? (kIsWeb ? '将在服务器上执行命令：$cmdline' : '将在本机执行命令：$cmdline')
         : '将连接远程服务：${cfg.url}';
     final ok = await host.confirm(
       '允许连接 MCP 服务？',
@@ -1219,7 +1229,8 @@ class AiChatController extends ChangeNotifier {
       switch (call.name) {
         case 'list_domains':
           final r = await ApiClient.instance.get('/api/ai/domains');
-          final domains = (r['domains'] as List)
+          final rawDomains = r['domains'];
+          final domains = (rawDomains is List ? rawDomains : const [])
               .whereType<Map>()
               .map((d) {
                 final m = Map<String, dynamic>.from(d);
@@ -1242,19 +1253,23 @@ class AiChatController extends ChangeNotifier {
               if (limit != null) 'limit': '$limit',
             },
           );
-          if (r['dicts'] != null) {
+          final dictsRaw = r['dicts'];
+          if (dictsRaw is List) {
             // 列出可用字典
-            final dicts = (r['dicts'] as List)
+            final dicts = dictsRaw
+                .whereType<Map>()
                 .map((d) {
-                  final m = d as Map<String, dynamic>;
+                  final m = Map<String, dynamic>.from(d);
                   return '${m['id']}（${m['name']}）：${m['count']} 项';
                 })
                 .join('\n');
             return '可用字典：\n$dicts';
           }
-          final items = (r['items'] as List)
+          final itemsRaw = r['items'];
+          final items = (itemsRaw is List ? itemsRaw : const [])
+              .whereType<Map>()
               .map((e) {
-                final m = e as Map<String, dynamic>;
+                final m = Map<String, dynamic>.from(e);
                 return '${m['id']} · ${m['name']}';
               })
               .join('\n');
@@ -1274,9 +1289,11 @@ class AiChatController extends ChangeNotifier {
               if (limit != null) 'limit': '$limit',
             },
           );
-          final items = (r['items'] as List)
+          final itemsRaw = r['items'];
+          final items = (itemsRaw is List ? itemsRaw : const [])
+              .whereType<Map>()
               .map((e) {
-                final m = e as Map<String, dynamic>;
+                final m = Map<String, dynamic>.from(e);
                 final name = (m['name'] as String? ?? '').trim();
                 final summary = (m['summary'] as String? ?? '').trim();
                 final label = name.isEmpty

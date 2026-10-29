@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
@@ -64,18 +68,6 @@ String _kindLabel(String kind) {
   }
   return kind;
 }
-
-class _TableBuf {
-  _TableBuf(this.name, this.data, this.snap, this.mtime);
-
-  final String name;
-  Map<String, dynamic> data;
-  String snap;
-  int? mtime;
-
-  bool get dirty => jsonEncode(data) != snap;
-}
-
 /// 一个外部对白入口。
 class _ExtEntry {
   const _ExtEntry({
@@ -100,7 +92,21 @@ class _ExtEntry {
 class _ExternalDialoguesWorkbenchState
     extends State<ExternalDialoguesWorkbench>
     with WorkbenchLeaveGuard<ExternalDialoguesWorkbench> {
-  final Map<String, _TableBuf> _tables = {};
+  /// A3：可写主表由公共控制器管理；`_tables` 为转发 map。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_giftCfg, _miniCfg, _interactCfg, _talkCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  Map<String, WorkbenchTable> get _tables =>
+      {for (final t in _ctl.tables) t.cfg: t};
 
   Map<String, dynamic> _grow = {};
   Map<String, dynamic> _items = {};
@@ -126,11 +132,23 @@ class _ExternalDialoguesWorkbenchState
     super.initState();
     _maps = (widget.state.gameDicts['maps'] as Map?)?.cast<String, dynamic>() ??
         const {};
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -138,16 +156,6 @@ class _ExternalDialoguesWorkbenchState
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -164,16 +172,9 @@ class _ExternalDialoguesWorkbenchState
   String get guardSubject => '外部对话';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
       final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_giftCfg'),
-        ApiClient.instance.get('/api/cfg/$_miniCfg'),
-        ApiClient.instance.get('/api/cfg/$_interactCfg'),
-        ApiClient.instance.get('/api/cfg/$_talkCfg'),
+        _ctl.load(),
         ApiClient.instance.get('/api/cfg/PersonGrowCfg'),
         ApiClient.instance.get('/api/cfg/ItemCfg'),
         ApiClient.instance.get('/api/cfg/BookCfg'),
@@ -181,26 +182,15 @@ class _ExternalDialoguesWorkbenchState
         ApiClient.instance.get('/api/cfg/RelationCfg'),
       ]);
       if (!mounted) return;
-      _grow = _dataOf(res[4]);
-      _items = _dataOf(res[5]);
-      _books = _dataOf(res[6]);
-      _minigames = _dataOf(res[7]);
-      _relations = _dataOf(res[8]);
-      _tables.clear();
-      for (var i = 0; i < 4; i++) {
-        final name = [_giftCfg, _miniCfg, _interactCfg, _talkCfg][i];
-        final data = _dataOf(res[i]);
-        _tables[name] = _TableBuf(name, data, jsonEncode(data), _mtimeOf(res[i]));
-      }
+      _grow = WorkbenchController.extractData(res[1]);
+      _items = WorkbenchController.extractData(res[2]);
+      _books = WorkbenchController.extractData(res[3]);
+      _minigames = WorkbenchController.extractData(res[4]);
+      _relations = WorkbenchController.extractData(res[5]);
       _ensureSelection();
-      setState(() => _loading = false);
       _loadRoles();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error。
     }
   }
 
@@ -215,113 +205,25 @@ class _ExternalDialoguesWorkbenchState
 
   bool _tableDirty(String t) => _tables[t]?.dirty ?? false;
 
-  bool get _dirty =>
-      _tableDirty(_giftCfg) ||
-      _tableDirty(_miniCfg) ||
-      _tableDirty(_interactCfg) ||
-      _tableDirty(_talkCfg);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      for (final name in const [_giftCfg, _miniCfg, _interactCfg, _talkCfg]) {
-        final buf = _tables[name]!;
-        if (!buf.dirty) continue;
-        final ok = await _saveTable(buf);
-        if (!ok || !mounted) return;
-      }
+    final ok = await _ctl.save();
+    if (mounted && ok) {
       if (mounted) {
-        _info('外部对话已保存', fluent.InfoBarSeverity.success);
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<bool> _saveTable(_TableBuf buf) async {
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': buf.data,
-          if (!force) 'expect_mtime_ns': buf.mtime,
-          if (force) 'force': true,
-        };
-        final r = await ApiClient.instance.put('/api/cfg/${buf.name}', body: body);
-        if (!mounted) return false;
-        buf.mtime = _mtimeOf(r);
-        buf.snap = jsonEncode(buf.data);
-        return true;
-      } on ApiException catch (e) {
-        if (!mounted) return false;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(buf.name);
-          if (!mounted) return false;
-          if (act == 'reload') {
-            await _loadAll();
-            return false;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return false;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      } catch (e) {
-        if (!mounted) return false;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
+        AppFeedback.success(context, '外部对话已保存');
       }
     }
   }
 
   void _discard() {
-    setState(() {
-      for (final buf in _tables.values) {
-        buf.data = (jsonDecode(buf.snap) as Map).cast<String, dynamic>();
-      }
-      _ensureSelection();
-    });
+    _ctl.discard();
+    _ensureSelection();
   }
 
-  Future<String?> _conflictDialog(String name) {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$name 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
   // ------------------------------------------------------------------
   // 行 / 名称
@@ -873,36 +775,15 @@ class _ExternalDialoguesWorkbenchState
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('外部对话加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '外部对话数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -1129,7 +1010,7 @@ class _ExternalDialoguesWorkbenchState
   Widget _bindingCard(_ExtEntry e) {
     final row = _rowIn(e.table, e.id);
     if (row == null) {
-      return _SectionCard(title: '用途参数', children: const [
+      return WorkbenchSectionCard(title: '用途参数', children: const [
         Text('找不到对应的记录。'),
       ]);
     }
@@ -1147,7 +1028,7 @@ class _ExternalDialoguesWorkbenchState
     final types = _intList(row, 'type');
     final mode = e.index >= 0 && e.index < types.length ? types[e.index] : 0;
     final itemId = _intOf(row, 'item');
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '送礼用途',
       subtitle: '人物 × 礼物 → 对白。同一个礼物规则可对多个人物各绑一条对白。',
       children: [
@@ -1157,7 +1038,7 @@ class _ExternalDialoguesWorkbenchState
             children: [
               Expanded(child: _valueBox(_personName(e.personId))),
               const SizedBox(width: 8),
-              _MiniBtn(
+              WorkbenchMiniButton(
                 label: '更换',
                 enabled: e.index >= 0,
                 onTap: () async {
@@ -1182,7 +1063,7 @@ class _ExternalDialoguesWorkbenchState
             children: [
               Expanded(child: _valueBox(_itemName(itemId))),
               const SizedBox(width: 8),
-              _MiniBtn(
+              WorkbenchMiniButton(
                 label: '更换',
                 onTap: () async {
                   final picked = await _pickItem();
@@ -1231,7 +1112,7 @@ class _ExternalDialoguesWorkbenchState
   Widget _miniBinding(_ExtEntry e, Map<String, dynamic> row) {
     final gameId = (int.tryParse(e.id) ?? 0) ~/ 100;
     final level = (int.tryParse(e.id) ?? 0) % 100;
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '小游戏用途',
       subtitle: '人物在「人物工作台」绑定小游戏后，其关卡的开场 / 胜利 / 失败对白在此编辑。',
       children: [
@@ -1242,8 +1123,8 @@ class _ExternalDialoguesWorkbenchState
         Row(
           children: [
             Expanded(
-              child: _labeled('精力消耗', _NumBox(
-                value: row['cost'],
+              child: _labeled('精力消耗', NumBox(
+                format: true, value: row['cost'],
                 onChanged: (v) => setState(() => row['cost'] = (v ?? 0).toInt()),
               )),
             ),
@@ -1261,7 +1142,7 @@ class _ExternalDialoguesWorkbenchState
 
   Widget _interactBinding(_ExtEntry e, Map<String, dynamic> row) {
     final maps = _intList(row, 'map');
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '闲聊用途',
       subtitle: '人物在地点触发的闲聊（与「闲聊」工作台共用 InteractCfg）。',
       children: [
@@ -1271,7 +1152,7 @@ class _ExternalDialoguesWorkbenchState
             children: [
               Expanded(child: _valueBox(_personName(_intOf(row, 'npc')))),
               const SizedBox(width: 8),
-              _MiniBtn(
+              WorkbenchMiniButton(
                 label: '更换',
                 onTap: () async {
                   final picked = await _pickPerson();
@@ -1282,7 +1163,7 @@ class _ExternalDialoguesWorkbenchState
             ],
           ),
         ),
-        _labeled('进度文字', _SyncedText(
+        _labeled('进度文字', SyncedTextField(
           value: row['text']?.toString() ?? '',
           hint: '正在和谁…… 的进度文字',
           onChanged: (v) => setState(() => row['text'] = v),
@@ -1317,7 +1198,7 @@ class _ExternalDialoguesWorkbenchState
               ],
             ),
           ),
-          _MiniBtn(
+          WorkbenchMiniButton(
             label: '打开积木库',
             onTap: () => _editBlocks(row, field, mode, title),
           ),
@@ -1331,8 +1212,8 @@ class _ExternalDialoguesWorkbenchState
   Widget _chainCard(_ExtEntry e) {
     final talkId = _entryTalk(e);
     final chain = _chainOf(talkId);
-    return _SectionCard(
-      title: '对白链（TalkCfg）',
+    return WorkbenchSectionCard(
+      title: '对白链',
       subtitle: '从入口对白起沿 nextTalk 主线串联，逐句就地编辑；分支与选项去「剧情舞台」。',
       children: [
         if (talkId != 0 && chain.isEmpty)
@@ -1347,12 +1228,12 @@ class _ExternalDialoguesWorkbenchState
         const SizedBox(height: 4),
         Row(
           children: [
-            _MiniBtn(
+            WorkbenchMiniButton(
               label: '＋ 白雨对白',
               onTap: () => _addLine(e, 0),
             ),
             const SizedBox(width: 8),
-            _MiniBtn(
+            WorkbenchMiniButton(
               label: '＋ ${_personName(e.personId)}对白',
               onTap: () => _addLine(e, e.personId),
             ),
@@ -1413,7 +1294,7 @@ class _ExternalDialoguesWorkbenchState
             ],
           ),
           const SizedBox(height: 6),
-          _SyncedText(
+          SyncedTextField(
             value: talk['content']?.toString() ?? '',
             hint: '对白内容',
             maxLines: 2,
@@ -1427,55 +1308,13 @@ class _ExternalDialoguesWorkbenchState
   // ---------- 底部保存条 ----------
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1496,7 +1335,7 @@ class _ExternalDialoguesWorkbenchState
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _SectionCard(
+                  WorkbenchSectionCard(
                     title: '对话预览',
                     children: [_preview(e)],
                   ),
@@ -1575,7 +1414,7 @@ class _ExternalDialoguesWorkbenchState
   Widget _statsCard(_ExtEntry e) {
     final chain = _chainOf(_entryTalk(e));
     final row = _rowIn(e.table, e.id);
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '统计与引用',
       children: [
         _kv('用途', _kindLabel(e.kind)),
@@ -1653,51 +1492,6 @@ class _ExternalDialoguesWorkbenchState
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
 
 class _Tag extends StatelessWidget {
   const _Tag({required this.text, required this.color});
@@ -1767,101 +1561,6 @@ class _HoverTileState extends State<_HoverTile> {
     );
   }
 }
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({required this.value, required this.onChanged});
-  final num? value;
-  final ValueChanged<num?> onChanged;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: _fmt(widget.value));
-  final FocusNode _focus = FocusNode();
-
-  static String _fmt(num? v) {
-    if (v == null) return '';
-    if (v is double && v == v.roundToDouble()) return v.toInt().toString();
-    return v.toString();
-  }
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = _fmt(widget.value);
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      onChanged: (v) =>
-          widget.onChanged(v.trim().isEmpty ? null : num.tryParse(v.trim())),
-    );
-  }
-}
-
 class _SegButton extends StatefulWidget {
   const _SegButton({
     required this.label,
@@ -1918,57 +1617,6 @@ class _SegButtonState extends State<_SegButton> {
               color: selected ? palette.textHigh : palette.textSecondary,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color =
-        widget.enabled ? palette.textPrimary : palette.iconDisabled;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: palette.border),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
           ),
         ),
       ),

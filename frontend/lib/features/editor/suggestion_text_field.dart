@@ -46,16 +46,68 @@ class SuggestionSlot {
 }
 
 /// 一条候选：[code] 是插入的文本，[desc] 是给人看的说明。
-/// [slots] 非空表示代码带参数（占位符/数值槽）——无代码模式下接受时
+/// [slots] 非空表示代码带参数（占位符/数值槽）——简易模式下接受时
 /// 先走 [SuggestionTextField.slotResolver] 表单补全再插入。
 /// [template] 是未渲染的参数槽代码模板（raw_code），用作使用度上报的
 /// 稳定 key（[code] 可能已被数字直映替换掉占位符）。
+///
+/// A1 元数据（可空，老后端无这些键）：[family]/[familyLabel] 概念键与展示名、
+/// [description] 白话说明、[op] 本条变体算符、[ops] 同族全部算符变体。
 class Suggestion {
-  const Suggestion(this.code, this.desc, {this.slots = const [], this.template = ''});
+  const Suggestion(
+    this.code,
+    this.desc, {
+    this.slots = const [],
+    this.template = '',
+    this.family = '',
+    this.familyLabel = '',
+    this.description = '',
+    this.op = '',
+    this.ops = const [],
+  });
   final String code;
   final String desc;
   final List<SuggestionSlot> slots;
   final String template;
+  final String family;
+  final String familyLabel;
+  final String description;
+  final String op;
+  final List<EffectOpVariant> ops;
+}
+
+/// A1 元数据：一个概念（family）下的某个算符变体（`ops[]` 条目）。
+/// [op] 取值 `= > ≥ < ≤ ≠`、`范围`（两值上下限）或空串（无算符）；
+/// [valueIndex]/[upperIndex] 指向 [code] 逗号段里参数值/上限值的位置
+/// （-1 = 无）；[slots] 是该变体自己的参数槽（含自然标签），行内切算符
+/// 时自给自足。
+class EffectOpVariant {
+  const EffectOpVariant({
+    required this.op,
+    required this.code,
+    this.valueIndex = -1,
+    this.upperIndex = -1,
+    this.slots = const [],
+  });
+  final String op;
+  final String code;
+  final int valueIndex;
+  final int upperIndex;
+  final List<SuggestionSlot> slots;
+
+  factory EffectOpVariant.fromJson(Map j) => EffectOpVariant(
+        op: j['op'] as String? ?? '',
+        code: j['code'] as String? ?? '',
+        valueIndex: (j['value_index'] as num?)?.toInt() ?? -1,
+        upperIndex: (j['upper_index'] as num?)?.toInt() ?? -1,
+        slots: [
+          for (final s in (j['slots'] as List? ?? const []).cast<Map>())
+            SuggestionSlot.fromJson(s),
+        ],
+      );
+
+  /// 界面展示名：无算符时显示「无条件」。
+  String get displayOp => op.isEmpty ? '无条件' : op;
 }
 
 /// 一次候选查询：光标前解析出的 [token] 及完整上下文。
@@ -121,7 +173,7 @@ class SuggestionTextField extends StatefulWidget {
   /// false 时不查候选（只读展示或字段暂不可编辑）。
   final bool enabled;
 
-  /// 空 token 也查询并展示（无代码模式：聚焦/清空即出「最近使用」默认候选，
+  /// 空 token 也查询并展示（简易模式：聚焦/清空即出「最近使用」默认候选，
   /// 由后端空 q 契约提供）。false = 传统行为，打字才提示。
   final bool suggestOnEmpty;
 
@@ -216,7 +268,7 @@ class SuggestionTextFieldState extends State<SuggestionTextField> {
   }
 
   void _onFocusChanged() {
-    // 无代码模式：聚焦即查一轮（空 token → 后端返回最近使用/目录默认候选），
+    // 简易模式：聚焦即查一轮（空 token → 后端返回最近使用/目录默认候选），
     // 用户不打字也能"先看后选"。
     if (widget.focusNode.hasFocus) {
       if (widget.suggestOnEmpty && widget.enabled && widget.source != null) {

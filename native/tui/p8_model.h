@@ -43,8 +43,10 @@ enum class Intent {
     None,
     RefreshMods,   // GET /api/mods?with_counts=1
     SelectMod,     // POST /api/mods/select {name}
+    SelectModFromPending, // dirty-table confirm approved: selected_mod=pending_mod
     RefreshTables, // GET /api/cfg
     LoadTable,     // GET /api/cfg/<name>?keys=1
+    OpenPendingTable, // dirty-table confirm approved: load st.pending_table
     SaveTable,     // PUT /api/cfg/<name> patch
     ScanBugs,      // POST /api/bugfix/scan
     FixBugs,       // POST /api/bugfix/fix
@@ -316,7 +318,9 @@ struct AppState {
     std::string selected_mod;
     std::string workspace;    // resolved workspace root (header "@ path")
     std::string pending_table;  // Enter on a cfg of an unselected mod: load it
-                                // right after the selection round-trips
+                                // right after the selection round-trips; also
+                                // the dirty-table confirm's switch target
+    std::string pending_mod;  // dirty-table confirm's mod-switch target
 
     // tables (left pane of the browse page)
     std::vector<std::string> tables;
@@ -429,5 +433,9 @@ struct AppState {
 // Drive one keypress. Returns the intent the caller must act on. Pure: only
 // mutates `s` from `s` + `k`, never performs I/O.
 Intent HandleKey(AppState& s, const KeyInput& k);
+
+// ASCII case-insensitive substring test; shared by the palette's filter logic
+// (state machine + renderer must agree on what is shown) and the row filters.
+bool CaseInsensitiveContains(const std::string& hay, const std::string& needle);
 
 }  // namespace p8

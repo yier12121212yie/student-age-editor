@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 import '../../core/api_client.dart';
+import '../../core/sse_client.dart';
 import '../settings/settings_page.dart';
 import 'ai_policy.dart';
 import 'ai_prompts.dart';
@@ -88,8 +89,10 @@ class AiClient {
     this.relayModel = '',
     this.relayModels = const [],
     bool? forceNonStream,
+    bool relayStreaming = false,
     http.Client Function()? clientFactory,
-  }) : _nonStream = kIsWeb || (forceNonStream ?? false),
+  }) : _nonStream =
+           forceNonStream ?? (kIsWeb && !relayStreaming),
        _clientFactory = clientFactory ?? http.Client.new;
 
   final AiSettings settings;
@@ -170,6 +173,8 @@ class AiClient {
   /// cancel() 需要关掉所有未终结的连接，不然旧轮泄漏的 socket 无人回收。
   final Set<http.Client> _openClients = {};
   bool _cancelled = false;
+  /// Web fetch SSE 的取消钩子（AbortController.abort）。
+  void Function()? _webAbort;
 
   void cancel() {
     _cancelled = true;
@@ -178,6 +183,10 @@ class AiClient {
       c.close();
     }
     _openClients.clear();
+    try {
+      _webAbort?.call();
+    } catch (_) {}
+    _webAbort = null;
     _client = null;
   }
 
@@ -348,13 +357,13 @@ class AiClient {
           },
       ],
     };
-    if (_nonStream) {
+    final resp = await _tryStream('/chat/completions', body);
+    if (resp == null) {
       final json = await _postJson('/chat/completions', body);
       final (calls, text) = parseOpenaiJson(json);
       if (text.isNotEmpty) cb.onText?.call(text);
       return (calls, text);
     }
-    final resp = await _postStream(_uri('/chat/completions'), body);
     final calls = <int, Map<String, dynamic>>{};
     final textBuf = StringBuffer();
 
@@ -432,13 +441,13 @@ class AiClient {
           },
       ],
     };
-    if (_nonStream) {
+    final resp = await _tryStream('/responses', body);
+    if (resp == null) {
       final json = await _postJson('/responses', body);
       final (calls, text) = parseResponsesJson(json);
       if (text.isNotEmpty) cb.onText?.call(text);
       return (calls, text);
     }
-    final resp = await _postStream(_uri('/responses'), body);
     final calls = <int, Map<String, dynamic>>{};
     final textBuf = StringBuffer();
     var callIdx = 0;
@@ -517,13 +526,13 @@ class AiClient {
           },
       ],
     };
-    if (_nonStream) {
+    final resp = await _tryStream('/messages', body);
+    if (resp == null) {
       final json = await _postJson('/messages', body);
       final (calls, text) = parseAnthropicJson(json);
       if (text.isNotEmpty) cb.onText?.call(text);
       return (calls, text);
     }
-    final resp = await _postStream(_uri('/messages'), body);
     final calls = <String, Map<String, dynamic>>{}; // id -> {name, arguments}
     final textBuf = StringBuffer();
     String? currentToolId;
@@ -756,8 +765,45 @@ class AiClient {
     return ('image/png', url);
   }
 
-  Future<Stream<String>> _postStream(Uri uri, Map<String, dynamic> body) async {
+  /// 尝试流式；Web 上 fetch 流不可用（CORS / 非 SSE / 旧后端）返回 null，
+  /// 调用方回退到 `_postJson` 整包路径。保证在首个文本增量前失败。
+  Future<Stream<String>?> _tryStream(
+    String protocolPath,
+    Map<String, dynamic> body,
+  ) async {
+    if (_nonStream) return null;
+    try {
+      return await _postStream(
+        _uri(protocolPath),
+        body,
+        relay: channel == AiTransportChannel.relay,
+      );
+    } on SseUnavailable {
+      return null;
+    }
+  }
+
+  Future<Stream<String>> _postStream(
+    Uri uri,
+    Map<String, dynamic> body, {
+    bool relay = false,
+  }) async {
     if (_cancelled) throw AiClientException('已取消');
+    if (kIsWeb) {
+      // 平台网关：走本机/网关后端的 SSE 路由；自带 key 直连暂不启用
+      // 浏览器流式（CORS 与 provider 支持差异太大），仍走整包路径。
+      if (!relay) throw SseUnavailable('直连模式暂不支持浏览器流式');
+      final target = Uri.parse(
+        '${ApiClient.instance.baseUrl}/api/ai/relay/chat/stream',
+      );
+      return openSseStream(
+        uri: target,
+        headers: ApiClient.instance.authHeaders(),
+        body: jsonEncode(body),
+        registerAbort: (abort) => _webAbort = abort,
+      );
+    }
+    if (relay) throw AiClientException('relay 流式仅支持 Web');
     final req = http.Request('POST', uri)
       ..headers.addAll(await _headers())
       ..body = jsonEncode(body);
@@ -838,6 +884,8 @@ class AiClient {
     Map<String, dynamic> body,
   ) async {
     if (_cancelled) throw AiClientException('已取消');
+    // 流式回退时 body 里可能仍是 stream:true；整包端点必须显式关掉。
+    if (body['stream'] != false) body = {...body, 'stream': false};
     if (channel == AiTransportChannel.relay) {
       try {
         // relay 是后端长任务端点：async=1 走 202+轮询（runLongTask），

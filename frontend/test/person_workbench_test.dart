@@ -260,4 +260,32 @@ void main() {
     expect(await leave, isFalse, reason: '取消后应中止离开');
     await tester.pumpAndSettle(const Duration(milliseconds: 400));
   });
+
+  testWidgets('N12：新增角色可撤销回退、可重做（SaveBar 撤销/重做按钮）', (tester) async {
+    await pumpWorkbench(tester, const Size(1600, 1000));
+
+    // 新增角色 → 脏 + 新角色出现。
+    await tester.tap(find.text('＋ 添加角色'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700)); // 编辑窗口封口
+    expect(find.text('未命名人物'), findsWidgets);
+    expect(find.text('有未保存的修改'), findsOneWidget, reason: '新增后应为脏');
+
+    // 撤销 → 新角色消失、脏标记归位（回到磁盘态）。
+    await tester.tap(find.byTooltip('撤销 (Ctrl+Z)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('未命名人物'), findsNothing, reason: '撤销应移除新增角色');
+    expect(find.text('已与磁盘同步'), findsOneWidget,
+        reason: '撤销回磁盘内容后应显示已同步');
+    expect(tester.takeException(), isNull);
+
+    // 重做 → 新角色回来、重新变脏。
+    await tester.tap(find.byTooltip('重做 (Ctrl+Y)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('未命名人物'), findsWidgets);
+    expect(find.text('有未保存的修改'), findsOneWidget, reason: '重做后又应为脏');
+    expect(tester.takeException(), isNull);
+  });
 }

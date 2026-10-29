@@ -242,7 +242,7 @@ void main() {
     expect(tester.takeException(), isNull, reason: '窄窗不应溢出');
   });
 
-  testWidgets('导演主页「事件」卡片进入事件工作台', (tester) async {
+  testWidgets('导演工程栏「事件」进入事件工作台', (tester) async {
     tester.view.physicalSize = const Size(1500, 950);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);

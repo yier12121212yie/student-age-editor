@@ -174,7 +174,7 @@ void main() {
     expect(find.text('＋ 新建小游戏'), findsOneWidget);
     expect(find.text('小游戏定义'), findsOneWidget);
     expect(find.text('数独'), findsWidgets);
-    expect(find.text('关卡（MinigameActionCfg）'), findsOneWidget);
+    expect(find.text('关卡'), findsOneWidget);
     expect(find.text('第 1 关'), findsWidgets);
     expect(find.text('玩法预览'), findsOneWidget);
   });

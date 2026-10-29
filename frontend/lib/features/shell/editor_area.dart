@@ -1,12 +1,12 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/history_client.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
+import '../../core/responsive.dart';
 import '../editor/editor_controller.dart';
 import '../editor/schema_editor_view.dart';
 import '../editor/section_card.dart';
@@ -15,7 +15,8 @@ import '../pages/page_view.dart';
 import '../pages/pages_catalog.dart';
 import '../preview/event_preview_view.dart';
 import '../../core/app_theme.dart';
-import '../../core/app_dialogs.dart';
+import '../../core/editor_leave_guard.dart';
+import '../../core/mobile_widgets.dart';
 
 class EditorArea extends StatefulWidget {
   const EditorArea({
@@ -96,8 +97,12 @@ class _EditorAreaState extends State<EditorArea> {
                     classic: widget.classic,
                     reloadToken: _cfgReloadToken,
                     onDirtyChanged: (v) => widget.controller.markDirty(doc, v),
-                    onPreview: (evtId) =>
-                        widget.controller.open(OpenDoc.preview(eventId: evtId)),
+                    onPreview: (evtId) => openDocGuarded(
+                      context,
+                      widget.controller,
+                      OpenDoc.preview(eventId: evtId),
+                      action: '打开预览',
+                    ),
                     onOpenSearch: widget.onOpenSearch,
                   );
                 } else if (doc.kind == 'page') {
@@ -108,8 +113,11 @@ class _EditorAreaState extends State<EditorArea> {
                       state: widget.state,
                       page: page,
                       classic: widget.classic,
-                      onPreview: (evtId) => widget.controller.open(
+                      onPreview: (evtId) => openDocGuarded(
+                        context,
+                        widget.controller,
                         OpenDoc.preview(eventId: evtId),
+                        action: '打开预览',
                       ),
                       onOpenSearch: widget.onOpenSearch,
                     );
@@ -174,45 +182,27 @@ class _TabBar extends StatelessWidget {
   final VoidCallback? onUndo;
   final VoidCallback? onRedo;
 
-  /// 页签脏守卫确认（阶段 2b）：视图切走后其内存改动即丢失，必须问一句。
-  Future<bool> _confirmDiscard(
-    BuildContext context,
-    OpenDoc doc,
-    String action,
-  ) async {
-    final ok = await fluent.showDialog<bool>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: Text('$action${doc.title}'),
-        content: const Text(
-          '该页签有未保存修改，继续将丢失这些改动。',
-          style: TextStyle(fontSize: 12.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(action),
-          ),
-        ],
-      ),
+  /// 页签脏守卫（U1）：复用全局离开守卫，支持「保存并继续」。
+  Future<bool> _confirmLeave(BuildContext context, String action) async {
+    final cur = controller.current;
+    return confirmLeaveDirty(
+      context,
+      action: action,
+      isDirty: () => cur != null && controller.isDirty(cur),
+      onDiscard: cur == null ? null : () => controller.markDirty(cur, false),
     );
-    return ok == true;
   }
 
   Future<void> _switchTo(BuildContext context, OpenDoc target) async {
     final cur = controller.current;
     if (cur != null && cur != target && controller.isDirty(cur)) {
-      if (!await _confirmDiscard(context, cur, '切换到其它页签')) return;
+      if (!await _confirmLeave(context, '切换')) return;
     }
     controller.open(target);
   }
 
   Future<void> _closeTab(BuildContext context, OpenDoc doc) async {
-    if (controller.isDirty(doc) && !await _confirmDiscard(context, doc, '关闭')) {
+    if (controller.isDirty(doc) && !await _confirmLeave(context, '关闭')) {
       return;
     }
     controller.closeDoc(doc);
@@ -239,10 +229,11 @@ class _TabBar extends StatelessWidget {
       builder: (context, _) {
         final doc = controller.current;
         final canHistory = doc != null && doc.kind == 'cfg';
-        return Container(
-          height: isMob ? 44 : 36,
-          color: palette.bg,
-          child: Row(
+        return clampedChromeText(
+          Container(
+            height: isMob ? 44 : 36,
+            color: palette.bg,
+            child: Row(
             children: [
               Expanded(
                 child: ListView.separated(
@@ -259,6 +250,7 @@ class _TabBar extends StatelessWidget {
                     return _TabItem(
                       doc: doc,
                       selected: selected,
+                      dirty: controller.isDirty(doc),
                       onTap: () => _switchTo(context, doc),
                       onClose: () => _closeTab(context, doc),
                       icon: _tabIcon(doc),
@@ -282,6 +274,7 @@ class _TabBar extends StatelessWidget {
               ),
               const SizedBox(width: 4),
             ],
+          ),
           ),
         );
       },
@@ -355,9 +348,11 @@ class _TabItem extends StatefulWidget {
     required this.onTap,
     required this.onClose,
     required this.icon,
+    this.dirty = false,
   });
   final OpenDoc doc;
   final bool selected;
+  final bool dirty;
   final VoidCallback onTap;
   final VoidCallback onClose;
   final IconData icon;
@@ -376,7 +371,10 @@ class _TabItemState extends State<_TabItem> {
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
-        onTap: widget.onTap,
+        onTap: () {
+          MobileHaptic.lightImpact();
+          widget.onTap();
+        },
         child: AnimatedContainer(
           duration: AppMotion.fast,
           curve: AppMotion.easeOut,
@@ -422,15 +420,29 @@ class _TabItemState extends State<_TabItem> {
                 child: Text(widget.doc.title),
               ),
               const SizedBox(width: 8),
+              // U1：脏点与页签标题同排，关闭前即可看出哪一页还没保存。
+              if (widget.dirty)
+                Container(
+                  width: 5,
+                  height: 5,
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: BoxDecoration(
+                    color: palette.statusWarn,
+                    shape: BoxShape.circle,
+                  ),
+                ),
               MouseRegion(
                 onEnter: (_) => setState(() => _closeHover = true),
                 onExit: (_) => setState(() => _closeHover = false),
                 child: GestureDetector(
-                  onTap: widget.onClose,
+                  onTap: () {
+                    MobileHaptic.lightImpact();
+                    widget.onClose();
+                  },
                   behavior: HitTestBehavior.opaque,
-                  // 移动端扩大关闭按钮热区，便于手指点击
+                  // 移动端扩大关闭按钮热区：12px 图标 + 14px 内衬 ≈ 40dp。
                   child: Padding(
-                    padding: EdgeInsets.all(isMob ? 8 : 0),
+                    padding: EdgeInsets.all(isMob ? 14 : 0),
                     child: AnimatedContainer(
                       duration: AppMotion.fast,
                       padding: const EdgeInsets.all(2),

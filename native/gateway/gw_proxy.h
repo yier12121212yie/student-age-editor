@@ -10,6 +10,9 @@
 //   GET  /api/auth/registration — public signup policy (enabled/invite).
 //   GET  /api/auth/whoami   — Bearer -> {name}.
 //   POST /api/auth/logout   — Bearer (+ optional refresh_token) -> revoke both.
+//   GET  /api/auth/tokens   — Bearer; list the caller's long-lived MCP API tokens.
+//   POST /api/auth/tokens   — Bearer; mint one (plaintext returned exactly once).
+//   DELETE /api/auth/tokens/:id — Bearer; revoke one.
 //   GET  /api/ai/policy     — Bearer; supply policy from gateway.json ai_relay.
 //   POST /api/ai/relay/chat — Bearer; whitelist + per-day quota; ai_relay relay.
 //   <anything else /api/*>  — Bearer gate, then banned-path filter, then
@@ -27,6 +30,7 @@
 #include "server/services/ai_relay_routes.h"
 
 #include "gw_accounts.h"
+#include "gw_api_tokens.h"
 #include "gw_config.h"
 #include "gw_refresh.h"
 #include "gw_sessions.h"
@@ -66,7 +70,14 @@ struct Gateway {
     // 长期鉴权（记住我）的 refresh token 表。可能为空（测试/未启用），
     // 为空时 login/register 不签发 refresh token，refresh 端点返回 401。
     std::unique_ptr<RefreshTokens> refresh;
+    // 用户为外部 Agent 签发的长期 API 令牌（<state_dir>/api_tokens.json）。
+    // 可能为空（测试/未装配），为空时 /api/auth/tokens 返回 503、Bearer 只认
+    // 会话令牌。
+    std::unique_ptr<ApiTokens> api_tokens;
     std::unique_ptr<UsageStore> usage;
+    // C1：托管 TTS/生图转发的独立日额度（<state_dir>/usage_media.json）。
+    // 与 AI 对话额度分开计数，避免生图消耗掉聊天配额。
+    std::unique_ptr<UsageStore> media_usage;
     // 自助注册账号的持久化存储（<state_dir>/accounts.json）。可能为空
     // （测试/未启用注册的部署），注册路由对此防御。
     std::unique_ptr<RegisteredAccounts> accounts;
@@ -96,7 +107,12 @@ void register_gateway_routes(sa::Router& r, Gateway& gwctx);
 // true when the proxy must answer 403 (endpoint disabled). Method matters:
 // POST /api/workspace is banned (would rewrite the account's workspace root)
 // but GET /api/workspace/status is allowed.
+//
+// C1: `/api/tts/*` 与 `/api/ai/image/*` 默认封禁，但管理员在
+// ai_relay.media_relay 显式开启后放行（网关负责注入全局 key）。
 bool endpoint_banned(const std::string& method, const std::string& path);
+bool endpoint_banned(const std::string& method, const std::string& path,
+                     const Config& cfg);
 
 // Model whitelist enforcement: empty `models` == unrestricted (any model,
 // including the empty/omitted one -> relay fills the admin default). When a

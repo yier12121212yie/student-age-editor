@@ -6,8 +6,12 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_feedback.dart';
+import '../../core/error_text.dart';
+import '../../core/mobile_widgets.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
+import '../../core/save_hub.dart';
 import '../settings/settings_page.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../nocode/entity_picker.dart';
@@ -138,11 +142,7 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
 
   void _notify(String msg, fluent.InfoBarSeverity sev) {
     if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) =>
-          fluent.InfoBar(title: Text(msg), severity: sev),
-    );
+    AppFeedback.show(context, msg, severity: sev);
   }
 
   @override
@@ -152,8 +152,53 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
     _load();
   }
 
+  // U1：把本编辑器的「脏 + 保存」登记进全局 SaveHub。离开守卫（切文档 /
+  // 切配置表）据此提供「保存并继续」，用户不必先手动 Ctrl+S；隐藏视图
+  // （导演壳 Offstage / 移动壳 IndexedStack）由 TickerMode 判定，不抢句柄。
+  SaveHub? _saveHub;
+  SaveHandle? _saveHandle;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final hub = SaveHubScope.maybeOf(context);
+    if (!identical(hub, _saveHub)) {
+      _unregisterSaveHandle();
+      _saveHub = hub;
+    }
+    if (TickerMode.valuesOf(context).enabled) {
+      _registerSaveHandle();
+    } else {
+      _unregisterSaveHandle();
+    }
+  }
+
+  void _registerSaveHandle() {
+    final hub = _saveHub;
+    if (hub == null || _saveHandle != null) return;
+    final handle = SaveHandle(
+      debugOwner: 'SchemaEditorView:${widget.cfgName}',
+      isEditor: true,
+      canSave: () => _dirty && !_saving,
+      save: () async {
+        await _save();
+      },
+    );
+    _saveHandle = handle;
+    hub.register(handle);
+  }
+
+  void _unregisterSaveHandle() {
+    final hub = _saveHub;
+    final handle = _saveHandle;
+    if (hub == null || handle == null) return;
+    hub.unregister(handle);
+    _saveHandle = null;
+  }
+
   @override
   void dispose() {
+    _unregisterSaveHandle();
     widget.state.removeListener(_onAppStateChanged);
     _filterDebounce?.cancel();
     super.dispose();
@@ -511,11 +556,11 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
           }
           return;
         }
-        _notify('保存失败：$e', fluent.InfoBarSeverity.error);
+        _notify('保存失败：${humanizeErrorMessage(e)}', fluent.InfoBarSeverity.error);
         return;
       } catch (e) {
         if (!mounted) return;
-        _notify('保存失败：$e', fluent.InfoBarSeverity.error);
+        _notify('保存失败：${humanizeErrorMessage(e)}', fluent.InfoBarSeverity.error);
         return;
       }
     }
@@ -1142,32 +1187,65 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
 
   /// 移动端表单页（独立路由，返回后停留在列表）。
   void _openMobileForm(KeyTranslator translator) {
-    final rec = _selectedRecord;
     final id = _selectedId;
-    if (rec == null || id == null) return;
-    
-    // 获取当前条目在列表中的索引，用于返回后保持选中状态
-    final currentIndex = _sortedIds.indexOf(id);
-    
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => _MobileFormPage(
-          cfgName: widget.cfgName,
-          record: rec,
-          entryTitle: translator.entryName(id, rec),
-          fieldKeys: _fieldKeys,
-          fieldType: _fieldType,
-          translator: translator,
-          gameDicts: widget.state.gameDicts,
-          loadIdCandidates: _loadIdCandidates,
-          currentIndex: currentIndex,
-          totalItems: _sortedIds.length,
-          noCodeMode: widget.state.noCodeMode,
-          onChanged: _markDirty,
-          onSave: () => _save(),
-        ),
-      ),
+    if (id == null) return;
+    _openMobileFormAt(id, translator);
+  }
+
+  /// 打开指定条目的移动表单；[replace] 用于「上一条/下一条」在原路由上替换，
+  /// 避免每切一条就叠一层返回栈。
+  void _openMobileFormAt(
+    String id,
+    KeyTranslator translator, {
+    bool replace = false,
+  }) {
+    final rec = _data[id];
+    if (rec == null) return;
+    setState(() => _selectedId = id);
+
+    final index = _sortedIds.indexOf(id);
+    final total = _sortedIds.length;
+    final record = rec is Map
+        ? rec.cast<String, dynamic>()
+        : <String, dynamic>{'id': id};
+
+    final page = _MobileFormPage(
+      cfgName: widget.cfgName,
+      record: record,
+      entryTitle: translator.entryName(id, record),
+      fieldKeys: _fieldKeys,
+      fieldType: _fieldType,
+      translator: translator,
+      gameDicts: widget.state.gameDicts,
+      loadIdCandidates: _loadIdCandidates,
+      currentIndex: index,
+      totalItems: total,
+      noCodeMode: widget.state.noCodeMode,
+      onChanged: _markDirty,
+      onSave: _save,
+      isDirty: () => _dirty,
+      onPrev: index > 0
+          ? () => _openMobileFormAt(
+                _sortedIds[index - 1],
+                translator,
+                replace: true,
+              )
+          : null,
+      onNext: index >= 0 && index < total - 1
+          ? () => _openMobileFormAt(
+                _sortedIds[index + 1],
+                translator,
+                replace: true,
+              )
+          : null,
     );
+
+    final route = MaterialPageRoute<void>(builder: (_) => page);
+    if (replace) {
+      Navigator.of(context).pushReplacement(route);
+    } else {
+      Navigator.of(context).push(route);
+    }
   }
 
   /// 经典布局的编辑区：📚 条目列表卡 + 📝 字段编辑卡（EvtCfg 另有 🧰 工具卡）。
@@ -1415,7 +1493,10 @@ class _SchemaEditorViewState extends State<SchemaEditorView> {
 }
 
 /// 移动端字段编辑页：AppBar 返回 + 保存，正文为字段表单。
-class _MobileFormPage extends StatelessWidget {
+///
+/// 与剧情详情页同口径：返回前先处理未保存修改（保存并返回 / 直接返回 /
+/// 继续编辑）；底部给「上一条 / 下一条」，避免编辑多条记录时反复退回列表。
+class _MobileFormPage extends StatefulWidget {
   const _MobileFormPage({
     required this.cfgName,
     required this.record,
@@ -1427,6 +1508,9 @@ class _MobileFormPage extends StatelessWidget {
     required this.loadIdCandidates,
     required this.onChanged,
     required this.onSave,
+    required this.isDirty,
+    this.onPrev,
+    this.onNext,
     this.currentIndex = -1,
     this.totalItems = 0,
     this.noCodeMode = false,
@@ -1441,59 +1525,289 @@ class _MobileFormPage extends StatelessWidget {
   final Map<String, dynamic> gameDicts;
   final Future<List<(String, String)>> Function(String cfg) loadIdCandidates;
   final VoidCallback onChanged;
-  final VoidCallback onSave;
+  final Future<void> Function() onSave;
+
+  /// 表格级脏标记（进入本页前可能已有未保存修改）。
+  final bool Function() isDirty;
+  final VoidCallback? onPrev;
+  final VoidCallback? onNext;
   final int currentIndex;
   final int totalItems;
   final bool noCodeMode;
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: palette.bgDeep2,
-      appBar: AppBar(
-        backgroundColor: palette.bg,
-        elevation: 0,
-        leading: BackButton(color: palette.textHigh),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              entryTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 15, color: palette.textHigh),
-            ),
-            if (currentIndex >= 0 && totalItems > 0)
-              Text(
-                '第 ${currentIndex + 1} / $totalItems 条',
-                style: TextStyle(fontSize: 11, color: palette.textMuted),
-              ),
-          ],
+  State<_MobileFormPage> createState() => _MobileFormPageState();
+}
+
+class _MobileFormPageState extends State<_MobileFormPage> {
+  /// 本页是否发生过编辑（用于即时刷新标题栏「未保存」）。
+  bool _edited = false;
+  bool _saving = false;
+
+  bool get _hasUnsaved => _edited || widget.isDirty();
+
+  void _onFieldChanged() {
+    widget.onChanged();
+    if (!_edited) setState(() => _edited = true);
+  }
+
+  Future<bool> _saveNow() async {
+    if (_saving) return false;
+    setState(() => _saving = true);
+    try {
+      await widget.onSave();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+    if (!mounted) return false;
+    // 保存期间又有新编辑时 parent 仍为脏，视为没保存完。
+    final clean = !widget.isDirty();
+    if (clean && mounted) setState(() => _edited = false);
+    return clean;
+  }
+
+  Future<String?> _askUnsaved() {
+    return fluent.showDialog<String>(
+      context: context,
+      builder: (ctx) => AppContentDialog(
+        title: const Text('有未保存修改'),
+        content: const Text(
+          '返回列表不会丢失当前内容，但修改尚未写入磁盘。\n'
+          '也可以先保存再继续。',
+          style: TextStyle(fontSize: 13, height: 1.5),
         ),
         actions: [
-          fluent.FilledButton(
-            onPressed: onSave,
-            style: const fluent.ButtonStyle(
-              padding: WidgetStatePropertyAll(
-                EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              ),
-            ),
-            child: const Text('保存', style: TextStyle(fontSize: 13)),
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('继续编辑'),
           ),
-          const SizedBox(width: 8),
+          fluent.Button(
+            onPressed: () => Navigator.pop(ctx, 'leave'),
+            child: const Text('直接返回'),
+          ),
+          fluent.FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'save'),
+            child: const Text('保存并返回'),
+          ),
         ],
       ),
-      body: SafeArea(
-        child: _FieldForm(
-          cfgName: cfgName,
-          record: record,
-          fieldKeys: fieldKeys,
-          fieldType: fieldType,
-          translator: translator,
-          gameDicts: gameDicts,
-          loadIdCandidates: loadIdCandidates,
-          onChanged: onChanged,
-          noCodeMode: noCodeMode,
+    );
+  }
+
+  /// true = 可以离开当前页（已保存或用户选择直接返回）。
+  Future<bool> _confirmLeave() async {
+    if (!_hasUnsaved) return true;
+    final action = await _askUnsaved();
+    if (!mounted) return false;
+    if (action == 'save') return _saveNow();
+    return action == 'leave';
+  }
+
+  Future<void> _handleBack() async {
+    if (_saving) return;
+    if (await _confirmLeave() && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _go(VoidCallback? nav) async {
+    if (nav == null || _saving) return;
+    if (await _confirmLeave() && mounted) nav();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final indexLabel = widget.currentIndex >= 0 && widget.totalItems > 0
+        ? '第 ${widget.currentIndex + 1} / ${widget.totalItems} 条'
+        : '';
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _handleBack();
+      },
+      child: Scaffold(
+        backgroundColor: palette.bgDeep2,
+        appBar: AppBar(
+          backgroundColor: palette.bg,
+          elevation: 0,
+          leading: BackButton(
+            color: palette.textHigh,
+            onPressed: _handleBack,
+          ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                widget.entryTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 15, color: palette.textHigh),
+              ),
+              if (indexLabel.isNotEmpty || _hasUnsaved)
+                Text(
+                  [
+                    if (indexLabel.isNotEmpty) indexLabel,
+                    if (_hasUnsaved) '● 未保存',
+                  ].join(' · '),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: _hasUnsaved
+                        ? palette.statusWarn
+                        : palette.textMuted,
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            fluent.FilledButton(
+              onPressed: _saving ? null : () => _saveNow(),
+              style: const fluent.ButtonStyle(
+                padding: WidgetStatePropertyAll(
+                  EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                ),
+              ),
+              child: _saving
+                  ? const SizedBox.square(
+                      dimension: 14,
+                      child: fluent.ProgressRing(strokeWidth: 2),
+                    )
+                  : const Text('保存', style: TextStyle(fontSize: 13)),
+            ),
+            const SizedBox(width: AppSpace.s),
+          ],
+        ),
+        body: NotificationListener<ScrollNotification>(
+          onNotification: (n) {
+            if (n is ScrollStartNotification && n.dragDetails != null) {
+              FocusManager.instance.primaryFocus?.unfocus();
+            }
+            return false;
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+            child: SafeArea(
+              bottom: false,
+              child: _FieldForm(
+                cfgName: widget.cfgName,
+                record: widget.record,
+                fieldKeys: widget.fieldKeys,
+                fieldType: widget.fieldType,
+                translator: widget.translator,
+                gameDicts: widget.gameDicts,
+                loadIdCandidates: widget.loadIdCandidates,
+                onChanged: _onFieldChanged,
+                noCodeMode: widget.noCodeMode,
+              ),
+            ),
+          ),
+        ),
+        bottomNavigationBar: _MobileRecordNavBar(
+          hasPrev: widget.onPrev != null,
+          hasNext: widget.onNext != null,
+          indexLabel: indexLabel,
+          onPrev: () => _go(widget.onPrev),
+          onNext: () => _go(widget.onNext),
+        ),
+      ),
+    );
+  }
+}
+
+/// 编辑页底部「上一条 / 下一条」动作条。
+class _MobileRecordNavBar extends StatelessWidget {
+  const _MobileRecordNavBar({
+    required this.hasPrev,
+    required this.hasNext,
+    required this.indexLabel,
+    required this.onPrev,
+    required this.onNext,
+  });
+
+  final bool hasPrev;
+  final bool hasNext;
+  final String indexLabel;
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
+
+  @override
+  Widget build(BuildContext context) {
+    return clampedChromeText(
+      Container(
+        decoration: BoxDecoration(
+          color: palette.panel,
+          border: Border(top: BorderSide(color: palette.border)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 48,
+            child: Row(
+            children: [
+              Expanded(
+                child: _button(
+                  icon: FluentIcons.chevron_left_24_regular,
+                  label: '上一条',
+                  enabled: hasPrev,
+                  onTap: onPrev,
+                ),
+              ),
+              Container(width: 1, height: 24, color: palette.border),
+              Expanded(
+                child: indexLabel.isEmpty
+                    ? const SizedBox.shrink()
+                    : Center(
+                        child: Text(
+                          indexLabel,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: palette.textMuted,
+                          ),
+                        ),
+                      ),
+              ),
+              Container(width: 1, height: 24, color: palette.border),
+              Expanded(
+                child: _button(
+                  icon: FluentIcons.chevron_right_24_regular,
+                  label: '下一条',
+                  enabled: hasNext,
+                  onTap: onNext,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      ),
+    );
+  }
+
+  Widget _button({
+    required IconData icon,
+    required String label,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: enabled
+          ? () {
+              MobileHaptic.lightImpact();
+              onTap();
+            }
+          : null,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.35,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 16, color: palette.textPrimary),
+            Text(
+              label,
+              style: TextStyle(fontSize: 10.5, color: palette.textSecondary),
+            ),
+          ],
         ),
       ),
     );
@@ -1583,7 +1897,7 @@ class _FieldForm extends StatefulWidget {
   /// 经典布局：以两列表格（属性名称 | 属性值）呈现字段。
   final bool classic;
 
-  /// 无代码模式（后端共享开关）：效果字段点选 + 参数表单，人物字段出浏览面板。
+  /// 简易模式（后端共享开关）：效果字段点选 + 参数表单，人物字段出浏览面板。
   final bool noCodeMode;
 
   @override
@@ -2100,7 +2414,7 @@ class _FieldInput extends StatefulWidget {
   /// 原始字段 key，用于决定走 effect/condition/cost 哪套提示
   final String? fieldKey;
 
-  /// 无代码模式：效果字段点选（空输入出候选 + 参数表单），人物字段出浏览面板。
+  /// 简易模式：效果字段点选（空输入出候选 + 参数表单），人物字段出浏览面板。
   final bool noCodeMode;
 
   /// ID 引用候选加载器（rule.idRefCfg 指定的配置表，懒加载 + 上层缓存）。
@@ -2339,7 +2653,7 @@ class _FieldInputState extends State<_FieldInput> {
 
   /// 弹出「ID · 预览」候选列表（可多选），确定后追加为逗号分隔多值。
   Future<void> _pickIdsFromList() async {
-    // 无代码模式下有专用面板的种类（人物/道具/背景…）：换成实体浏览面板。
+    // 简易模式下有专用面板的种类（人物/道具/背景…）：换成实体浏览面板。
     if (widget.noCodeMode && _entityKind != null) return _pickEntity();
     final cfg = widget.rule?.idRefCfg;
     if (cfg == null) return;
@@ -2368,11 +2682,11 @@ class _FieldInputState extends State<_FieldInput> {
     setState(() {});
   }
 
-  /// 本字段的实体种类（无代码模式浏览面板入口）；null = 没有专用面板，
+  /// 本字段的实体种类（简易模式浏览面板入口）；null = 没有专用面板，
   /// 沿用既有的 ID 浏览对话框。
   EntityKind? get _entityKind => entityKindForRule(widget.rule);
 
-  /// 无代码模式「选 X」：实体浏览面板（人物是立绘网格、背景带缩略图）选 id 写回。
+  /// 简易模式「选 X」：实体浏览面板（人物是立绘网格、背景带缩略图）选 id 写回。
   /// Number/String 单选替换；数组类多选并入现值（已含项置灰防重复）。
   Future<void> _pickEntity() async {
     final kind = _entityKind;
@@ -2414,7 +2728,7 @@ class _FieldInputState extends State<_FieldInput> {
   }
 
   /// 音频候选池：game_dicts['audios']（后端由 AudioCfg 合并而成）。
-  /// 无代码模式给「key 命中音频命名但字段没有 dictName 规则」的字段（vocals /
+  /// 简易模式给「key 命中音频命名但字段没有 dictName 规则」的字段（vocals /
   /// music / entersound…）留一条只选不敲的通道。
   List<(String, String)> _audioPool() {
     final dict = widget.gameDicts['audios'];
@@ -2435,7 +2749,7 @@ class _FieldInputState extends State<_FieldInput> {
     return out;
   }
 
-  /// 无代码模式选音频：从音频池里挑（可先试听），Number 直接写 id；
+  /// 简易模式选音频：从音频池里挑（可先试听），Number 直接写 id；
   /// 数组（vocals 这类 [声ID, 音量] 扁平对）只替换首个 token，音量原样保留。
   Future<void> _pickAudioId() async {
     final pool = _audioPool();
@@ -2703,7 +3017,7 @@ class _FieldInputState extends State<_FieldInput> {
     final k = rawKey.toLowerCase();
     // 「效果/条件/指令」类判定统一用 field_meta，与剧情图共用同一份规则表
     final effectLike = isEffectLikeField(widget.cfgName, rawKey, widget.type);
-    // 无代码模式的渲染分流（schema 编辑器 / 剧情图内联 / Inspector 唯一真源）
+    // 简易模式的渲染分流（schema 编辑器 / 剧情图内联 / Inspector 唯一真源）
     final noCodeShape =
         noCodeShapeFor(widget.cfgName, rawKey, widget.type, widget.rule);
     // roles（TalkCfg.roles 指令行）/ screenEffect（1D 扁平代码）同样走效果提示；
@@ -2713,7 +3027,7 @@ class _FieldInputState extends State<_FieldInput> {
         ((effectLike && (widget.type == '2D Array' || isActionOrScreen)) ||
             (k.isEmpty && widget.type == '2D Array'));
 
-    // 无代码模式 + 码字段：内联积木编辑，**没有任何文本输入**。
+    // 简易模式 + 码字段：内联积木编辑，**没有任何文本输入**。
     // 规则类字段（shape=reference/visual）不在此列，由下方下拉/浏览分支处理。
     if (widget.noCodeMode && noCodeShape == NoCodeShape.blocks) {
       final fieldKey = rawKey.isEmpty ? 'effect' : rawKey;
@@ -2729,7 +3043,7 @@ class _FieldInputState extends State<_FieldInput> {
       );
     }
 
-    // 无代码模式 + 普通数据数组（非效果码、无引用规则）：行级列表编辑器，
+    // 简易模式 + 普通数据数组（非效果码、无引用规则）：行级列表编辑器，
     // 只做增删/编辑数值或文本，不铺效果码候选。
     if (widget.noCodeMode && noCodeShape == NoCodeShape.list) {
       return NoCodeListField(
@@ -2776,11 +3090,11 @@ class _FieldInputState extends State<_FieldInput> {
       // P0-2：存在性判断走 [_optIndex]（_options() 同步维护的 id→名称
       // 索引），替代对全候选的 any/where 线性扫——大字典每次 build 两趟 O(n)。
       final hasCurrent = currentId.isNotEmpty && _optIndex.containsKey(currentId);
-      // 无代码模式：引用/枚举字段只留下拉与动作按钮——旁边的自由文本框会让用户
+      // 简易模式：引用/枚举字段只留下拉与动作按钮——旁边的自由文本框会让用户
       // 仍然能直接敲 ID（那正是"输入代码的地方"）。Number 步进框同理去掉：
       // 对引用字段来说那个数字就是 id。
       final hideTextInput = widget.noCodeMode && widget.rule != null;
-      // 无代码模式：引用字段的实体浏览面板（人物是立绘网格、背景带缩略图）。
+      // 简易模式：引用字段的实体浏览面板（人物是立绘网格、背景带缩略图）。
       // 但这里的下拉框已把该实体的候选完整列出，若面板再给不出下拉没有的东西
       // （事件类型/地图/属性等小字典没有缩略图、候选也没多到被 [_kMaxComboItems]
       // 截断），再挂一个「选 X」按钮就是同一份选项的第二个入口——保留下拉、
@@ -2971,7 +3285,7 @@ class _FieldInputState extends State<_FieldInput> {
         (widget.rule?.idRefCfg != null ||
             _visual == FieldVisual.multiIdChips ||
             _visual == FieldVisual.jumpTarget);
-    // 无代码模式：码/引用字段的裸文本框整体不渲染——只留 chips、缩略图、
+    // 简易模式：码/引用字段的裸文本框整体不渲染——只留 chips、缩略图、
     // 试听与浏览按钮；否则用户仍能直接敲 ID 或代码。
     final noCodeHideText =
         widget.noCodeMode && noCodeShape != NoCodeShape.untouched;
@@ -3059,7 +3373,7 @@ class _FieldInputState extends State<_FieldInput> {
                       padding: const EdgeInsets.only(top: 2),
                       child: fluent.Button(
                         // M1：跳转目标/数组多选升级为「有序浏览」（顺序即语义）；
-                        // 人物引用在无代码模式仍走立绘面板。
+                        // 人物引用在简易模式仍走立绘面板。
                         onPressed: () {
                           if (widget.noCodeMode && _entityKind != null) {
                             _pickEntity();
@@ -3096,7 +3410,7 @@ class _FieldInputState extends State<_FieldInput> {
                       ),
                     ),
                   ],
-                  // 无代码模式且数组通道不可用（Number 单选 / 音频 / 无 idRefCfg 的
+                  // 简易模式且数组通道不可用（Number 单选 / 音频 / 无 idRefCfg 的
                   // 数组）：补一个与 chips 同源的选择入口，藏了文本框也选得到值。
                   if (!canPickIds && noCodePick != null)
                     Padding(
@@ -3152,7 +3466,7 @@ class _FieldInputState extends State<_FieldInput> {
     );
   }
 
-  /// 无代码模式的死路提示：字段没有候选池、也没有浏览/试听/选图入口，
+  /// 简易模式的死路提示：字段没有候选池、也没有浏览/试听/选图入口，
   /// 文本框又被藏起来——给出唯一可行的逃生口（关闭共享开关）。
   Widget _noCodeDeadEndRow() {
     return Padding(
@@ -3161,20 +3475,20 @@ class _FieldInputState extends State<_FieldInput> {
         children: [
           Expanded(
             child: Text(
-              '该字段没有可选候选；如需手写请关闭无代码模式。',
+              '该字段没有可选候选；如需手写请切换到高级编辑。',
               style: TextStyle(fontSize: 10.5, color: palette.textHint),
             ),
           ),
           fluent.Button(
             onPressed: _leaveNoCodeMode,
-            child: const Text('关闭无代码模式', style: TextStyle(fontSize: 10.5)),
+            child: const Text('切换到高级编辑', style: TextStyle(fontSize: 10.5)),
           ),
         ],
       ),
     );
   }
 
-  /// 逃生口：关闭共享的无代码开关（写穿后端 editor_env.json），
+  /// 逃生口：关闭共享的简易开关（写穿后端 editor_env.json），
   /// 让当前字段回到可手写的形态。写穿失败时提示并回滚本地态。
   Future<void> _leaveNoCodeMode() => exitNoCodeMode(context);
 }

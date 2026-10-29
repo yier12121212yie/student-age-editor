@@ -71,14 +71,14 @@ void main() {
       'textMuted': p.textMuted,
     };
     body.forEach((name, c) {
-      expect(_contrast(c, p.bg), greaterThanOrEqualTo(4.5), reason: tag + '/' + name + ' vs bg');
-      expect(_contrast(c, p.card), greaterThanOrEqualTo(4.5), reason: tag + '/' + name + ' vs card');
+      expect(_contrast(c, p.bg), greaterThanOrEqualTo(4.5), reason: '$tag/$name vs bg');
+      expect(_contrast(c, p.card), greaterThanOrEqualTo(4.5), reason: '$tag/$name vs card');
     });
 
     // 三级文本：允许降到 3.0（提示/占位），但不得再低。
     final tertiary = <String, Color>{'textHint': p.textHint, 'textFaint': p.textFaint};
     tertiary.forEach((name, c) {
-      expect(_contrast(c, p.bg), greaterThanOrEqualTo(3.0), reason: tag + '/' + name + ' vs bg');
+      expect(_contrast(c, p.bg), greaterThanOrEqualTo(3.0), reason: '$tag/$name vs bg');
     });
 
     // 图形/状态色：既做图标也做小字，一律 3.0 起步。
@@ -109,18 +109,18 @@ void main() {
       'flowMissing': p.flowMissing,
     };
     graphic.forEach((name, c) {
-      expect(_contrast(c, p.bg), greaterThanOrEqualTo(3.0), reason: tag + '/' + name + ' vs bg');
-      expect(_contrast(c, p.card), greaterThanOrEqualTo(3.0), reason: tag + '/' + name + ' vs card');
+      expect(_contrast(c, p.bg), greaterThanOrEqualTo(3.0), reason: '$tag/$name vs bg');
+      expect(_contrast(c, p.card), greaterThanOrEqualTo(3.0), reason: '$tag/$name vs card');
     });
 
     // 禁用态（WCAG 豁免）：仍守一个地板值，避免退化成「看不见」。
-    expect(_contrast(p.iconDisabled, p.bg), greaterThanOrEqualTo(3.0), reason: tag + '/iconDisabled vs bg');
-    expect(_contrast(p.iconDisabled, p.card), greaterThanOrEqualTo(2.5), reason: tag + '/iconDisabled vs card');
+    expect(_contrast(p.iconDisabled, p.bg), greaterThanOrEqualTo(3.0), reason: '$tag/iconDisabled vs bg');
+    expect(_contrast(p.iconDisabled, p.card), greaterThanOrEqualTo(2.5), reason: '$tag/iconDisabled vs card');
 
     // 实底强调色之上的前景。
-    expect(_contrast(p.onAccent, p.accentDeep), greaterThanOrEqualTo(4.5), reason: tag + '/onAccent vs accentDeep');
+    expect(_contrast(p.onAccent, p.accentDeep), greaterThanOrEqualTo(4.5), reason: '$tag/onAccent vs accentDeep');
     // 品牌蓝多用于加粗按钮文字，按大字档 3.0 守。
-    expect(_contrast(p.onAccent, p.primaryColor), greaterThanOrEqualTo(3.0), reason: tag + '/onAccent vs primaryColor');
+    expect(_contrast(p.onAccent, p.primaryColor), greaterThanOrEqualTo(3.0), reason: '$tag/onAccent vs primaryColor');
 
     // 灰阶阶梯必须严格单调，否则「更弱的文本」会比更强的还显眼。
     final ladder = <Color>[
@@ -133,9 +133,9 @@ void main() {
     for (var i = 0; i + 1 < ladder.length; i++) {
       expect(_contrast(ladder[i], p.bg),
           greaterThan(_contrast(ladder[i + 1], p.bg)),
-          reason: tag + ' 阶梯第 ' + i.toString() + ' 档不强于第 ' + (i + 1).toString() + ' 档');
+          reason: '$tag 阶梯第 $i 档不强于第 ${i + 1} 档');
     }
-    expect(_contrast(p.textHigh, p.bg), greaterThan(10.0), reason: tag + '/textHigh 应远高于 10:1');
+    expect(_contrast(p.textHigh, p.bg), greaterThan(10.0), reason: '$tag/textHigh 应远高于 10:1');
   }
 
   test('暗色与亮色两套调色板都过 WCAG 阈值', () {
@@ -238,9 +238,9 @@ void main() {
         final tag = '${base.isLight ? 'light' : 'dark'}/${AppAccentColor.toHex(seed)}';
         // 实底强调色上的前景：白/近黑择优，理论最差 ~4.33（等对比平衡点）。
         expect(_contrast(p.onAccent, seed), greaterThanOrEqualTo(4.3),
-            reason: tag + ' onAccent vs seed');
+            reason: '$tag onAccent vs seed');
         expect(_contrast(p.onAccent, p.accentDeep), greaterThanOrEqualTo(4.3),
-            reason: tag + ' onAccent vs accentDeep');
+            reason: '$tag onAccent vs accentDeep');
         // 图标/强调用变体在底上至少可辨（3.0）。
         final variants = {
           'accentLight': p.accentLight,
@@ -248,8 +248,8 @@ void main() {
           'accentPale': p.accentPale,
         };
         variants.forEach((name, c) {
-          expect(_contrast(c, p.bg), greaterThanOrEqualTo(3.0), reason: tag + ' $name vs bg');
-          expect(_contrast(c, p.card), greaterThanOrEqualTo(3.0), reason: tag + ' $name vs card');
+          expect(_contrast(c, p.bg), greaterThanOrEqualTo(3.0), reason: '$tag $name vs bg');
+          expect(_contrast(c, p.card), greaterThanOrEqualTo(3.0), reason: '$tag $name vs card');
         });
         // 非强调色 token 一律不漂移（主题色只动强调色族）。
         expect(p.bg.toARGB32(), base.bg.toARGB32(), reason: tag);

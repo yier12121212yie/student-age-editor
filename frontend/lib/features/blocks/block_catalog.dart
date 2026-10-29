@@ -181,7 +181,8 @@ String humanizeBlockDesc(String desc, List<SuggestionSlot> slots) {
     if (s.kind == 'dict') continue;
     final tok =
         RegExp('(?<![A-Za-z0-9_])${RegExp.escape(s.name)}(?![A-Za-z0-9_])');
-    out = out.replaceAll(tok, '数值');
+    // A1 起数字槽自带模板自然标签（如「年龄」「数量」），无标签回退「数值」。
+    out = out.replaceAll(tok, s.label.isNotEmpty ? s.label : '数值');
   }
   out = out.replaceAll(RegExp(r'\s+'), ' ').trim();
   final kept = <String>[];
@@ -191,6 +192,45 @@ String humanizeBlockDesc(String desc, List<SuggestionSlot> slots) {
     kept.add(p);
   }
   return kept.join(' ');
+}
+
+/// A2：把候选按 family 折叠成组（保序——组按首条出现位置排，组内保原序）。
+/// 无 family 的候选（老后端 / 未折叠规则）各自成组，维持一条一行的旧行为。
+List<List<Suggestion>> groupByFamily(List<Suggestion> items) {
+  final groups = <List<Suggestion>>[];
+  final index = <String, int>{};
+  for (final s in items) {
+    if (s.family.isEmpty) {
+      groups.add([s]);
+      continue;
+    }
+    final i = index[s.family];
+    if (i == null) {
+      index[s.family] = groups.length;
+      groups.add([s]);
+    } else {
+      groups[i].add(s);
+    }
+  }
+  return groups;
+}
+
+/// A2：组的展示名——familyLabel（概念名）优先，回退首条的人话标题。
+String blockGroupTitle(List<Suggestion> group) {
+  if (group.isEmpty) return '';
+  final first = group.first;
+  return first.familyLabel.isNotEmpty
+      ? first.familyLabel
+      : humanizeBlockDesc(first.desc, first.slots);
+}
+
+/// A2：组内当前选中的算符变体——[op] 为空 / 找不到时回退首条。
+Suggestion blockGroupPick(List<Suggestion> group, String op) {
+  if (op.isEmpty) return group.first;
+  for (final s in group) {
+    if (s.op == op) return s;
+  }
+  return group.first;
 }
 
 /// 分类引擎：懒加载 `ConditionTypeCfg` / `EffectTypeCfg`，并缓存成本地映射。
@@ -260,6 +300,7 @@ class BlockCategoryEngine {
 }
 
 /// 拉取某 mode 的候选目录（`q` 为空时后端返回「最近使用 + 默认目录」）。
+/// A1 起每条候选还带 family/op/ops/description 元数据（老后端缺这些键）。
 Future<List<Suggestion>> loadBlockCatalog(String mode, String q) async {
   try {
     final resp = await ApiClient.instance.get('/api/effect_suggest',
@@ -274,6 +315,14 @@ Future<List<Suggestion>> loadBlockCatalog(String mode, String q) async {
           slots: [
             for (final s in (e['slots'] as List? ?? const []).cast<Map>())
               SuggestionSlot.fromJson(s),
+          ],
+          family: e['family']?.toString() ?? '',
+          familyLabel: e['family_label']?.toString() ?? '',
+          description: e['description']?.toString() ?? '',
+          op: e['op']?.toString() ?? '',
+          ops: [
+            for (final o in (e['ops'] as List? ?? const []).cast<Map>())
+              EffectOpVariant.fromJson(o),
           ],
         ),
     ];

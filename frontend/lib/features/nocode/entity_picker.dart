@@ -1,4 +1,4 @@
-/// 无代码模式的通用实体浏览面板：人物 / 道具 / 背景 / 地图 / 属性 / 职业 /
+/// 简易模式的通用实体浏览面板：人物 / 道具 / 背景 / 地图 / 属性 / 职业 /
 /// 关系 / 学期 / 事件类型，统一个「ID · 名称」（人物、背景带缩略图）的选择器。
 ///
 /// 数据来源（全部复用既有链路，**零新增请求、零新增路由**）：
@@ -13,10 +13,13 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/empty_state.dart';
+import '../../core/pinyin_search.dart';
 import '../editor/field_meta.dart' show FieldRule;
 import '../resources/image_asset_picker.dart';
 import 'effect_slot_form.dart' show reportUsage;
@@ -58,7 +61,7 @@ extension EntityKindMeta on EntityKind {
   String? get usageKind => this == EntityKind.roles ? 'role' : null;
 }
 
-/// 字段规则 → 实体种类：无代码模式给引用字段挂「选 X」浏览面板用。
+/// 字段规则 → 实体种类：简易模式给引用字段挂「选 X」浏览面板用。
 ///
 /// 只映射确有候选池的种类；返回 null 的字段（如 EvtCfg 跳转目标、actions
 /// 行动表）沿用既有的 ID 浏览对话框，不在这里造第二套入口。
@@ -108,12 +111,54 @@ EntityKind? entityKindForRule(FieldRule? rule) {
 
 /// 一条可选项。
 class EntityEntry {
-  const EntityEntry({required this.id, required this.name, this.thumbKey = ''});
+  const EntityEntry({
+    required this.id,
+    required this.name,
+    this.thumbKey = '',
+    this.thumbCandidates = const [],
+  });
   final String id;
   final String name;
 
   /// 贴图 key：人物 = 立绘 key；背景 = BgCfg id 反查出来的 tex key（见 [BgIdThumb]）。
   final String thumbKey;
+
+  /// 立绘候选链（变体优先）：[TexThumb] 依次尝试直到命中，单一 key 缺失时
+  /// 自动回退（人物 = portrait2 → portrait1 → portrait）。背景不用此项。
+  final List<String> thumbCandidates;
+}
+
+/// 立绘字段（url/url2、base/base2）既可能是字符串也可能是数组：取首项并剔除
+/// JSON 空值字面量。口径与 story 的 `portraitFirstStr` 一致，此处内联以避免
+/// nocode → story 的反向依赖。
+String _firstPortraitKey(dynamic v) {
+  final raw = (v is List && v.isNotEmpty) ? v.first : v;
+  final s = raw?.toString().trim() ?? '';
+  if (s == '[]' || s == 'null' || s == 'None' || s == '{}') return '';
+  return s;
+}
+
+/// 组装一个人物的立绘候选链（去重，变体优先）。
+///
+/// [mainAlias] 是主角 `0` 的目录条目：`00` / `000` 这两个别名没有独立立绘，
+/// 复用主角立绘，避免首屏出现无图卡片。
+List<String> _roleThumbChain(RoleEntry r, RoleEntry? mainAlias) {
+  final cands = <String>[];
+  void push(String v) {
+    final s = v.trim();
+    if (s.isEmpty || cands.contains(s)) return;
+    cands.add(s);
+  }
+
+  push(r.portrait2);
+  push(r.portrait1);
+  push(r.portrait);
+  if (cands.isEmpty && mainAlias != null && (r.id == '00' || r.id == '000')) {
+    push(mainAlias.portrait2);
+    push(mainAlias.portrait1);
+    push(mainAlias.portrait);
+  }
+  return cands;
 }
 
 class RoleEntry {
@@ -190,8 +235,40 @@ List<EntityEntry> _localEntries(
       if (name.trim().isNotEmpty) out[id] = name.trim();
     }
   }
+  // 人物：从 MOD 记录（url2/url）与合并元数据（base2/base）兜底提取立绘候选，
+  // 使 /api/roles 尚未就绪（冷启动）时本地字典也能显示立绘而非整页占位图。
+  final thumbs = <String, List<String>>{};
+  if (kind == EntityKind.roles) {
+    for (final id in out.keys) {
+      final cands = <String>[];
+      void push(String v) {
+        final s = v.trim();
+        if (s.isEmpty || cands.contains(s)) return;
+        cands.add(s);
+      }
+
+      final rec = modRecords?[id];
+      if (rec is Map) {
+        push(_firstPortraitKey(rec['url2']));
+        push(_firstPortraitKey(rec['url']));
+      }
+      final ck = charKeysMapOrNull?[id];
+      if (ck is Map) {
+        push(_firstPortraitKey(ck['base2']));
+        push(_firstPortraitKey(ck['base']));
+      }
+      if (cands.isNotEmpty) thumbs[id] = cands;
+    }
+  }
+
   final entries = [
-    for (final e in out.entries) EntityEntry(id: e.key, name: e.value),
+    for (final e in out.entries)
+      EntityEntry(
+        id: e.key,
+        name: e.value,
+        thumbKey: thumbs[e.key]?.isNotEmpty == true ? thumbs[e.key]!.first : '',
+        thumbCandidates: thumbs[e.key] ?? const [],
+      ),
   ];
   // 数字 id 按数值序，其余按字典序（与 schema 编辑器的候选排序一致）。
   entries.sort((a, b) {
@@ -204,11 +281,11 @@ List<EntityEntry> _localEntries(
 }
 
 List<EntityEntry> _filter(List<EntityEntry> items, String q) {
-  final t = q.trim().toLowerCase();
+  final t = q.trim();
   if (t.isEmpty) return items;
   return [
     for (final e in items)
-      if (e.id.toLowerCase().contains(t) || e.name.toLowerCase().contains(t)) e,
+      if (e.id.toLowerCase().contains(t.toLowerCase()) || PinyinSearch.match(t, e.name)) e,
   ];
 }
 
@@ -222,10 +299,19 @@ Future<List<EntityEntry>> loadEntities(
   if (kind == EntityKind.roles) {
     final roles = await loadRoles(q);
     if (roles.isNotEmpty) {
-      return [
-        for (final r in roles)
-          EntityEntry(id: r.id, name: r.name, thumbKey: r.portrait),
-      ];
+      final byId = <String, RoleEntry>{for (final r in roles) r.id: r};
+      final mainAlias = byId['0'];
+      final out = <EntityEntry>[];
+      for (final r in roles) {
+        final cands = _roleThumbChain(r, mainAlias);
+        out.add(EntityEntry(
+          id: r.id,
+          name: r.name,
+          thumbKey: cands.isNotEmpty ? cands.first : r.portrait,
+          thumbCandidates: cands,
+        ));
+      }
+      return out;
     }
     // 后端不可达 / 搜索无结果：退回原版字典（搜索在客户端做）。
   }
@@ -250,7 +336,7 @@ Future<List<String>?> showEntityPicker(
     builder: (ctx) => _EntityPickerDialog(
       kind: kind,
       multi: multi,
-      title: title ?? ('选择' + kind.label),
+      title: title ?? ('选择${kind.label}'),
       exclude: exclude,
       gameDicts: gameDicts,
       modRecords: modRecords,
@@ -295,15 +381,40 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
         if (mounted) setState(() {});
       });
     }
+    // 人物立绘：合并元数据（/api/preview/meta 的 charKeys）与 /api/roles 是两个
+    // 独立的异步源，任一后到都要刷新首屏卡片；元数据到达后若仍无立绘（后端冷
+    // 启动 / 瞬时失败），再补拉一次目录。
+    if (widget.kind == EntityKind.roles) {
+      ensureMergedMeta();
+      mergedMetaRevision.addListener(_onMetaChanged);
+    }
     _fetch('');
   }
 
   @override
   void dispose() {
+    if (widget.kind == EntityKind.roles) {
+      mergedMetaRevision.removeListener(_onMetaChanged);
+    }
     _debounce?.cancel();
     _q.dispose();
     super.dispose();
   }
+
+  bool _metaRetried = false;
+
+  /// 合并元数据到达/刷新：重建首屏卡片；若仍无立绘则补拉一次目录。
+  void _onMetaChanged() {
+    if (!mounted) return;
+    setState(() {});
+    if (!_metaRetried && !_hasAnyThumb()) {
+      _metaRetried = true;
+      _fetch(_q.text);
+    }
+  }
+
+  bool _hasAnyThumb() =>
+      _items.any((e) => e.thumbCandidates.isNotEmpty || e.thumbKey.isNotEmpty);
 
   Future<void> _fetch(String q) async {
     final items = await loadEntities(
@@ -370,7 +481,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
           children: [
             fluent.TextBox(
               controller: _q,
-              placeholder: '搜索' + widget.kind.label + '（中文名或 ID）…',
+              placeholder: '搜索${widget.kind.label}（中文名或 ID）…',
               style: const TextStyle(fontSize: 12),
               onChanged: _onQuery,
             ),
@@ -379,10 +490,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
               child: _loading
                   ? const Center(child: fluent.ProgressRing())
                   : _items.isEmpty
-                      ? Center(
-                          child: Text('没有匹配的' + widget.kind.label,
-                              style: TextStyle(
-                                  fontSize: 12, color: palette.textMuted)))
+                      ? EmptyState('没有匹配的${widget.kind.label}')
                       : widget.kind.hasThumb
                           ? _thumbGrid()
                           : _plainList(),
@@ -391,7 +499,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
         ),
       ),
       actions: [
-        Text(_picked.isEmpty ? '' : '已选 ' + _picked.length.toString() + ' 项',
+        Text(_picked.isEmpty ? '' : '已选 ${_picked.length} 项',
             style: TextStyle(fontSize: 11, color: palette.textMuted)),
         fluent.Button(
             onPressed: () => Navigator.pop(context), child: const Text('取消')),
@@ -407,6 +515,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
   /// 人物 / 背景：缩略图网格。
   Widget _thumbGrid() {
     return GridView.builder(
+      scrollCacheExtent: const ScrollCacheExtent.pixels(210),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 110,
         mainAxisSpacing: 8,
@@ -429,11 +538,16 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
                   borderRadius: BorderRadius.circular(4),
                   child: widget.kind == EntityKind.bgs
                       ? BgIdThumb(id: e.id, width: double.infinity, height: 60)
-                      : (e.thumbKey.isEmpty
+                      : (e.thumbCandidates.isEmpty && e.thumbKey.isEmpty
                           ? Center(
                               child: Icon(Icons.person_outline,
                                   size: 28, color: palette.textHint))
-                          : TexThumb(keyName: e.thumbKey, fit: BoxFit.contain)),
+                          : TexThumb(
+                              key: ValueKey('entity-role-${e.id}-${e.thumbKey}'),
+                              keyName: e.thumbKey,
+                              keyCandidates: e.thumbCandidates,
+                              fit: BoxFit.contain,
+                            )),
                 ),
               ),
               const SizedBox(height: 2),
@@ -444,7 +558,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
                 style: const TextStyle(fontSize: 11),
               ),
               Text(
-                'ID ' + e.id,
+                'ID ${e.id}',
                 maxLines: 1,
                 style: TextStyle(fontSize: 9.5, color: palette.textSecondary),
               ),
@@ -476,7 +590,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 decoration: BoxDecoration(
                   color: selected ? palette.tintAccent : palette.card,
-                  borderRadius: BorderRadius.circular(AppRadius.xs),
+                  borderRadius: BorderRadius.circular(AppRadius.xxs),
                   border: Border.all(
                     color: selected ? accentColor : palette.border,
                     width: selected ? 2 : 1,
@@ -486,7 +600,7 @@ class _EntityPickerDialogState extends State<_EntityPickerDialog> {
                   children: [
                     SizedBox(
                       width: 64,
-                      child: Text('ID ' + e.id,
+                      child: Text('ID ${e.id}',
                           style: TextStyle(
                               fontSize: 11, color: palette.textSecondary)),
                     ),

@@ -281,6 +281,63 @@ TEST_CASE("gateway config: backgrounds defaults + parse", "[gateway]") {
     CHECK(err.find("backgrounds") != std::string::npos);
 }
 
+TEST_CASE("gateway config: media relay (TTS/image) defaults + parse", "[gateway]") {
+    sa::json base;
+    base["user_data_root"] = "/srv/data";
+    sa::json acc = sa::json::array();
+    acc.push_back({{"name", "a"},
+                   {"salt", std::string(32, '0')},
+                   {"password_sha256", std::string(64, '0')}});
+    base["accounts"] = acc;
+
+    // 默认关闭：媒体转发是显式 opt-in。
+    gw::Config cfg;
+    std::string err;
+    REQUIRE(gw::parse_config(base, &cfg, &err));
+    CHECK_FALSE(cfg.ai.media_enabled);
+    CHECK(cfg.ai.media_daily_limit == 0);
+    CHECK(cfg.ai.tts_api_key.empty());
+    CHECK(cfg.ai.image_api_key.empty());
+
+    sa::json j = base;
+    j["ai_relay"] = {
+        {"media_relay",
+         {{"enabled", true},
+          {"daily_limit", 20},
+          {"tts",
+           {{"provider", "minimax"},
+            {"base_url", "https://tts.example"},
+            {"api_key", "sk-tts"},
+            {"model", "speech-02-hd"},
+            {"voice", "female-1"},
+            {"format", "mp3"}}},
+          {"image",
+           {{"base_url", "https://img.example/v1"},
+            {"api_key", "sk-img"},
+            {"model", "gpt-image-1"}}}}}};
+    gw::Config cfg2;
+    REQUIRE(gw::parse_config(j, &cfg2, &err));
+    CHECK(cfg2.ai.media_enabled);
+    CHECK(cfg2.ai.media_daily_limit == 20);
+    CHECK(cfg2.ai.tts_provider == "minimax");
+    CHECK(cfg2.ai.tts_api_key == "sk-tts");
+    CHECK(cfg2.ai.image_api_key == "sk-img");
+    CHECK(cfg2.ai.image_model == "gpt-image-1");
+
+    // 开启但没有任何 key：只警告，不阻断启动（部署后再补 key）。
+    sa::json w = base;
+    w["ai_relay"] = {{"media_relay", {{"enabled", true}}}};
+    gw::Config cfg3;
+    REQUIRE(gw::parse_config(w, &cfg3, &err));
+    CHECK_FALSE(cfg3.warnings.empty());
+
+    // 负额度 / 非对象子项都是配置错误。
+    sa::json bad = base;
+    bad["ai_relay"] = {{"media_relay", {{"enabled", true}, {"daily_limit", -1}}}};
+    gw::Config cfg4;
+    CHECK_FALSE(gw::parse_config(bad, &cfg4, &err));
+}
+
 TEST_CASE("gateway config: web_root missing is a warning not an error", "[gateway]") {
     sa::json j;
     j["user_data_root"] = "/srv/data";
@@ -568,6 +625,12 @@ TEST_CASE("gateway ban table", "[gateway]") {
     // 扩展合并：统一安装的本机路径端点同样是托管模式下的本机文件读取原语。
     CHECK(gw::endpoint_banned("POST", "/api/extensions/install_path"));
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/extensions/install"));
+    // 模组 zip 本机路径导入：真·路径原语，托管态封禁。
+    CHECK(gw::endpoint_banned("POST", "/api/mods/import_path"));
+    // /api/mod/import_files 只吃内联 base64（不接受本机路径），是网页端
+    // 「从电脑导入图片」的唯一通道——托管态 **不得** 封禁，否则导入的图片
+    // 直接 403 不显示。
+    CHECK_FALSE(gw::endpoint_banned("POST", "/api/mod/import_files"));
 
     // POST /api/workspace banned; GET /api/workspace/status allowed.
     CHECK(gw::endpoint_banned("POST", "/api/workspace"));
@@ -588,6 +651,26 @@ TEST_CASE("gateway ban table", "[gateway]") {
     CHECK_FALSE(gw::endpoint_banned("GET", "/api/auth/registration"));
     CHECK_FALSE(gw::endpoint_banned("GET", "/api/ai/policy"));
     CHECK_FALSE(gw::endpoint_banned("POST", "/api/ai/relay/chat"));
+}
+
+TEST_CASE("gateway ban table: media relay is explicit opt-in", "[gateway]") {
+    // 默认（media_relay 未开启）保持托管封禁。
+    gw::Config off;
+    CHECK(gw::endpoint_banned("POST", "/api/tts/synthesize", off));
+    CHECK(gw::endpoint_banned("PUT", "/api/tts/settings", off));
+    CHECK(gw::endpoint_banned("POST", "/api/ai/image/generate", off));
+
+    // 管理员显式开启后放行媒体端点，但其余封禁不变。
+    gw::Config on;
+    on.ai.media_enabled = true;
+    CHECK_FALSE(gw::endpoint_banned("POST", "/api/tts/synthesize", on));
+    CHECK_FALSE(gw::endpoint_banned("GET", "/api/tts/settings", on));
+    CHECK_FALSE(gw::endpoint_banned("POST", "/api/ai/image/edit", on));
+    CHECK(gw::endpoint_banned("POST", "/api/shutdown", on));
+    CHECK(gw::endpoint_banned("GET", "/api/ai/settings", on));
+    CHECK(gw::endpoint_banned("POST", "/api/plugins/service/x", on));
+    // 前缀边界不受影响。
+    CHECK_FALSE(gw::endpoint_banned("GET", "/api/ttswatch", on));
 }
 
 // ---------------------------------------------------------------------------

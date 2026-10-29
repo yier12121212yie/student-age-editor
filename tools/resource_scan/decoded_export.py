@@ -74,7 +74,7 @@ _BACKGROUND_BUNDLE_TOKENS = ("bg",)
 
 # --from-dir 直接成包时可识别的图片扩展名（解码后素材，如 参考资料/背景）。
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".gif",
-               ".tif", ".tiff")
+               ".tif", ".tiff", ".avif")
 
 
 def _safe_name(key):
@@ -239,7 +239,23 @@ def _to_webp_bytes(img, max_side, quality):
         return None
 
 
-def export_tex(idx, key, out_dir, max_side, quality):
+def _to_avif_bytes(img, max_side, quality):
+    from PIL import Image
+    try:
+        if img.mode in ("1", "P"):
+            img = img.convert("RGBA")
+        elif img.mode not in ("RGB", "RGBA", "LA", "L"):
+            img = img.convert("RGB")
+        if max_side and max_side > 0 and max(img.size) > max_side:
+            img.thumbnail((max_side, max_side), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "AVIF", quality=quality)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def export_tex(idx, key, out_dir, max_side, quality, fmt="webp"):
     try:
         item = idx._tex.get(_norm_key(key))
         if not item:
@@ -250,11 +266,15 @@ def export_tex(idx, key, out_dir, max_side, quality):
         if obj is None:
             _warn("tex %s 对象未找到" % key)
             return None
-        data = _to_webp_bytes(obj.read().image, max_side, quality)
+        out_ext = ".avif" if fmt == "avif" else ".webp"
+        if fmt == "avif":
+            data = _to_avif_bytes(obj.read().image, max_side, quality)
+        else:
+            data = _to_webp_bytes(obj.read().image, max_side, quality)
         if not data:
-            _warn("tex %s WebP 编码失败" % key)
+            _warn("tex %s %s 编码失败" % (key, fmt.upper()))
             return None
-        path = os.path.join(out_dir, _safe_name(key) + ".webp")
+        path = os.path.join(out_dir, _safe_name(key) + out_ext)
         with open(path, "wb") as f:
             f.write(data)
         return path
@@ -396,14 +416,15 @@ def build_staging(idx, args):
     for d in (tex_dir, aud_dir, cfgs_dir):
         os.makedirs(d, exist_ok=True)
 
+    tex_fmt = args.format if getattr(args, "format", "auto") != "auto" else "webp"
     tex_keys = select_tex_keys(idx, args.tier, args.limit)
-    print("== 纹理 (tier=%s) 待导出 %d 键 ==" % (args.tier, len(tex_keys)))
+    print("== 纹理 (tier=%s, fmt=%s) 待导出 %d 键 ==" % (args.tier, tex_fmt, len(tex_keys)))
     exported_tex = []
     tex_bytes = 0
     for i, key in enumerate(tex_keys, 1):
         if i % 100 == 0 or i == len(tex_keys):
             print("  ... tex %d/%d" % (i, len(tex_keys)))
-        path = export_tex(idx, key, tex_dir, args.max_side, args.quality)
+        path = export_tex(idx, key, tex_dir, args.max_side, args.quality, fmt=tex_fmt)
         if path:
             exported_tex.append(_norm_key(key))
             tex_bytes += os.path.getsize(path)
@@ -497,21 +518,22 @@ def build_staging(idx, args):
 # 背景/立绘等「已解码图片」目录（如 参考资料/背景）直接转 WebP 打图片扩展包：
 # 与 decoded_export 的 tex/ 布局、aa_index.json v3、manifest 完全一致，只是
 # 纹理来源从 game bundle 换成磁盘目录，供无游戏环境的机器离线成包。
-def _kind_label(tier):
+def _kind_label(tier, fmt="webp"):
+    fmt_str = fmt.upper()
     if tier == "backgrounds":
         return ("backgrounds", "StudentAge Background Pack",
-                "背景图片资源扩展包（场景背景，预解码 WebP）")
+                "背景图片资源扩展包（场景背景，预解码 %s）" % fmt_str)
     if tier == "portraits":
         return ("portraits", "StudentAge Portrait Pack",
-                "人物图片资源扩展包（角色立绘，预解码 WebP）")
-    return ("textures", "StudentAge Image Pack", "图片资源扩展包（预解码 WebP）")
+                "人物图片资源扩展包（角色立绘，预解码 %s）" % fmt_str)
+    return ("textures", "StudentAge Image Pack", "图片资源扩展包（预解码 %s）" % fmt_str)
 
 
 def build_staging_from_dir(args):
-    """把一个已解码图片目录直接转 WebP 打成图片扩展包。
+    """把一个已解码图片目录直接成包（支持 WebP / AVIF）。
 
     不读游戏 bundle / 索引：遍历 `--from-dir` 顶层图片文件，按 `_norm_key`
-    取键（去扩展名、小写）→ `tex/<safe_name>.webp`；写出 aa_index.json v3 与
+    取键（去扩展名、小写）→ `tex/<safe_name>.<ext>`；写出 aa_index.json v3 与
     manifest.json，与 bundle 路径产物逐字段同构，`_kind_label` 决定 kind。
     """
     from_dir = os.path.abspath(args.from_dir)
@@ -524,39 +546,78 @@ def build_staging_from_dir(args):
     tex_dir = os.path.join(staging, "tex")
     os.makedirs(tex_dir)
 
-    files = []
+    # 按规范键预分组，存在多个切图时优先选用体积最大的全身高清立绘（避免头像小图覆盖立绘）
+    grouped = {}
     for fn in sorted(os.listdir(from_dir)):
         fp = os.path.join(from_dir, fn)
         if os.path.isfile(fp) and os.path.splitext(fn)[1].lower() in _IMAGE_EXTS:
-            files.append(fp)
-    print("== 图片 (from-dir=%s) 待导出 %d 张 ==" % (from_dir, len(files)))
+            k = _norm_key(fn)
+            if not k:
+                continue
+            try:
+                sz = os.path.getsize(fp)
+            except OSError:
+                sz = 0
+            if k not in grouped or sz > grouped[k][0]:
+                grouped[k] = (sz, fp)
+
+    files = [fp for (sz, fp) in sorted(grouped.values(), key=lambda x: x[1])]
+    if getattr(args, "limit", None) and args.limit > 0:
+        files = files[:args.limit]
+
+    # 决定输出格式
+    target_fmt = getattr(args, "format", "auto")
+    if target_fmt == "auto":
+        # 如果来源图片多数或含有 avif，则默认 avif；否则 webp
+        has_avif = any(f.lower().endswith(".avif") for f in files)
+        effective_fmt = "avif" if has_avif else "webp"
+    else:
+        effective_fmt = target_fmt
+
+    out_ext = "." + effective_fmt
+    print("== 图片 (from-dir=%s, fmt=%s) 待导出 %d 张 ==" % (from_dir, effective_fmt, len(files)), flush=True)
     exported = []
     tex_bytes = 0
     failed = 0
     for i, fp in enumerate(files, 1):
-        if i % 100 == 0 or i == len(files):
-            print("  ... img %d/%d" % (i, len(files)))
+        if i % 50 == 0 or i == len(files):
+            print("  ... img %d/%d" % (i, len(files)), flush=True)
         key = _norm_key(os.path.basename(fp))
         if not key:
             continue
-        try:
-            from PIL import Image
-            with Image.open(fp) as im:
-                data = _to_webp_bytes(im, args.max_side, args.quality)
-        except Exception as e:
-            _warn("img %s 解码失败: %s" % (os.path.basename(fp), e))
-            failed += 1
-            continue
+        ext = os.path.splitext(fp)[1].lower()
+        data = None
+        # 若源格式已是目标格式且无需缩放，直接无损透传原始字节（极速，保留 QSV AV1 等硬件编码）
+        if ext == out_ext and not (getattr(args, "max_side", None) and args.max_side > 0):
+            try:
+                with open(fp, "rb") as f:
+                    data = f.read()
+            except Exception as e:
+                _warn("img %s 读取失败: %s" % (os.path.basename(fp), e))
+                failed += 1
+                continue
+        else:
+            try:
+                from PIL import Image
+                with Image.open(fp) as im:
+                    if effective_fmt == "avif":
+                        data = _to_avif_bytes(im, args.max_side, args.quality)
+                    else:
+                        data = _to_webp_bytes(im, args.max_side, args.quality)
+            except Exception as e:
+                _warn("img %s 解码失败: %s" % (os.path.basename(fp), e))
+                failed += 1
+                continue
         if not data:
-            _warn("img %s WebP 编码失败" % os.path.basename(fp))
+            _warn("img %s %s 编码失败" % (os.path.basename(fp), effective_fmt.upper()))
             failed += 1
             continue
-        with open(os.path.join(tex_dir, _safe_name(key) + ".webp"), "wb") as f:
+        with open(os.path.join(tex_dir, _safe_name(key) + out_ext), "wb") as f:
             f.write(data)
         exported.append(_norm_key(key))
         tex_bytes += len(data)
 
-    kind, name, description = _kind_label(args.tier)
+    kind, name, description = _kind_label(args.tier, fmt=effective_fmt)
     aa_v3 = {"v": 3, "decoded": True,
              "tex": sorted(set(exported)), "aud": [], "txt": []}
     with open(os.path.join(staging, "aa_index.json"), "w", encoding="utf-8") as f:
@@ -618,8 +679,10 @@ def build_parser():
                     help="跳过音频导出（FSB→WAV 体积过大，内置 APK 建议关闭）")
     ap.add_argument("--no-zip", action="store_true",
                     help="只生成目录不打包 zip（保留在 dist/ 下）")
+    ap.add_argument("--format", choices=("auto", "webp", "avif"), default="auto",
+                    help="纹理编码格式（auto/webp/avif，默认 auto：源为 .avif/.webp 时直通保留，否则按需编码）")
     ap.add_argument("--from-dir", default="",
-                    help="直接吃一个已解码图片目录（如 参考资料/背景）转 WebP 成包，"
+                    help="直接吃一个已解码图片目录（如 Tex2D/bg 或 参考资料/背景）成包，"
                          "不读游戏 bundle / 索引")
     ap.add_argument("--index", default="",
                     help="已产出的 aa_index.json 路径（默认 $SA_AA_INDEX / "

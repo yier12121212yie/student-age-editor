@@ -6,6 +6,26 @@
       {
         "code": "[0, 1, V]",
         "desc": "发生概率为 V(1为100%)",
+        "description": "发生概率为 V(1为100%)",
+        "family": "0|发生概率为 1为100%",
+        "family_label": "发生概率为",
+        "op": "",
+        "ops": [
+          {
+            "code": "[0, 1, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "发生概率为",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[0, 1, V]",
         "raw_desc": "发生概率为 V(1为100%)",
         "score": 10,
@@ -13,13 +33,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "发生概率为",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[0, 2, @ATTR@, V]",
         "desc": "属性 @ATTR@ 的 V 概率(1为100%)",
+        "description": "属性 @ATTR@ 的 V 概率(1为100%)",
+        "family": "0|属性 @ATTR@ 的 概率 1为100%",
+        "family_label": "属性 @ATTR@ 的 概率",
+        "op": "",
+        "ops": [
+          {
+            "code": "[0, 2, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "属性",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[0, 2, @ATTR@, V]",
         "raw_desc": "属性 @ATTR@ 的 V 概率(1为100%)",
         "score": 10,
@@ -34,13 +84,70 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "属性",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 1, V]",
         "desc": "年龄 >= V",
+        "description": "年龄 >= V",
+        "family": "1|年龄",
+        "family_label": "年龄",
+        "op": "≥",
+        "ops": [
+          {
+            "code": "[1, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年龄",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          },
+          {
+            "code": "[1, 2, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年龄",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          },
+          {
+            "code": "[1, 3, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 3,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 1, V]",
         "raw_desc": "年龄 >= V",
         "score": 10,
@@ -48,13 +155,70 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "年龄",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 2, V]",
         "desc": "年龄 <= V",
+        "description": "年龄 <= V",
+        "family": "1|年龄",
+        "family_label": "年龄",
+        "op": "≤",
+        "ops": [
+          {
+            "code": "[1, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年龄",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          },
+          {
+            "code": "[1, 2, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年龄",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          },
+          {
+            "code": "[1, 3, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 3,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 2, V]",
         "raw_desc": "年龄 <= V",
         "score": 10,
@@ -62,13 +226,70 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "年龄",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 3, X, Y]",
         "desc": "X <= 年龄 <= Y",
+        "description": "X <= 年龄 <= Y",
+        "family": "1|年龄",
+        "family_label": "年龄",
+        "op": "范围",
+        "ops": [
+          {
+            "code": "[1, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年龄",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          },
+          {
+            "code": "[1, 2, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年龄",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          },
+          {
+            "code": "[1, 3, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 3,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 3, X, Y]",
         "raw_desc": "X <= 年龄 <= Y",
         "score": 10,
@@ -76,18 +297,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "下限",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "上限",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": 3,
+        "value_index": 2
       },
       {
         "code": "[1, 0, X, Y]",
         "desc": "X岁Y月",
+        "description": "X岁Y月",
+        "family": "1|X岁Y月",
+        "family_label": "X岁Y月",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 0, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 0, X, Y]",
         "raw_desc": "X岁Y月",
         "score": 10,
@@ -95,18 +346,90 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 12, 0, V]",
         "desc": "年级 = V",
+        "description": "年级 = V",
+        "family": "1|年级",
+        "family_label": "年级",
+        "op": "=",
+        "ops": [
+          {
+            "code": "[1, 12, 0, V]",
+            "op": "=",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, -1, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 101, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 4,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 12, 0, V]",
         "raw_desc": "年级 = V",
         "score": 10,
@@ -114,13 +437,84 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "年级",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 12, 1, V]",
         "desc": "年级 >= V",
+        "description": "年级 >= V",
+        "family": "1|年级",
+        "family_label": "年级",
+        "op": "≥",
+        "ops": [
+          {
+            "code": "[1, 12, 0, V]",
+            "op": "=",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, -1, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 101, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 4,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 12, 1, V]",
         "raw_desc": "年级 >= V",
         "score": 10,
@@ -128,13 +522,84 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "年级",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 12, -1, V]",
         "desc": "年级 <= V",
+        "description": "年级 <= V",
+        "family": "1|年级",
+        "family_label": "年级",
+        "op": "≤",
+        "ops": [
+          {
+            "code": "[1, 12, 0, V]",
+            "op": "=",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, -1, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 101, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 4,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 12, -1, V]",
         "raw_desc": "年级 <= V",
         "score": 10,
@@ -142,13 +607,84 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "年级",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 12, 101, X, Y]",
         "desc": "X <= 年级 <= Y",
+        "description": "X <= 年级 <= Y",
+        "family": "1|年级",
+        "family_label": "年级",
+        "op": "范围",
+        "ops": [
+          {
+            "code": "[1, 12, 0, V]",
+            "op": "=",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 1, V]",
+            "op": "≥",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, -1, V]",
+            "op": "≤",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年级",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          },
+          {
+            "code": "[1, 12, 101, X, Y]",
+            "op": "范围",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "下限",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "上限",
+                "name": "Y"
+              }
+            ],
+            "upper_index": 4,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 12, 101, X, Y]",
         "raw_desc": "X <= 年级 <= Y",
         "score": 10,
@@ -156,18 +692,42 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "下限",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "上限",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": 4,
+        "value_index": 3
       },
       {
         "code": "[1, 99, V]",
         "desc": "性别要求 (1男 2女)",
+        "description": "性别要求 (1男 2女)",
+        "family": "1|性别要求 1男 2女",
+        "family_label": "性别要求",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 99, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 99, V]",
         "raw_desc": "性别要求 (1男 2女)",
         "score": 10,
@@ -175,13 +735,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 98, V]",
         "desc": "文科/理科生 (1文 2理)",
+        "description": "文科/理科生 (1文 2理)",
+        "family": "1|文科/理科生 1文 2理",
+        "family_label": "文科/理科生",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 98, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 98, V]",
         "raw_desc": "文科/理科生 (1文 2理)",
         "score": 10,
@@ -189,13 +772,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, -98, V]",
         "desc": "非文科/非理科生 (1文 2理)",
+        "description": "非文科/非理科生 (1文 2理)",
+        "family": "1|非文科/非理科生 1文 2理",
+        "family_label": "非文科/非理科生",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, -98, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, -98, V]",
         "raw_desc": "非文科/非理科生 (1文 2理)",
         "score": 10,
@@ -203,45 +809,128 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 97, 1]",
         "desc": "已经文理分班",
+        "description": "已经文理分班",
+        "family": "1|已经文理分班",
+        "family_label": "已经文理分班",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 97, 1]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[1, 97, 1]",
         "raw_desc": "已经文理分班",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[1, 97, -1]",
         "desc": "未文理分班",
+        "description": "未文理分班",
+        "family": "1|未文理分班",
+        "family_label": "未文理分班",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 97, -1]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[1, 97, -1]",
         "raw_desc": "未文理分班",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[1, 20, 1]",
         "desc": "小学毕业之前",
+        "description": "小学毕业之前",
+        "family": "1|小学毕业之前",
+        "family_label": "小学毕业之前",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 20, 1]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[1, 20, 1]",
         "raw_desc": "小学毕业之前",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[1, 20, 2]",
         "desc": "小学毕业之后",
+        "description": "小学毕业之后",
+        "family": "1|小学毕业之后",
+        "family_label": "小学毕业之后",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 20, 2]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[1, 20, 2]",
         "raw_desc": "小学毕业之后",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[2, 0, V]",
         "desc": "当前为第 V 回合",
+        "description": "当前为第 V 回合",
+        "family": "2|当前为第 回合",
+        "family_label": "当前为第 回合",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 0, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前为第",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 0, V]",
         "raw_desc": "当前为第 V 回合",
         "score": 10,
@@ -249,13 +938,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前为第",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 100, V]",
         "desc": "第 V 回合或以后",
+        "description": "第 V 回合或以后",
+        "family": "2|第 回合或以后",
+        "family_label": "第 回合或以后",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 100, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "第",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 100, V]",
         "raw_desc": "第 V 回合或以后",
         "score": 10,
@@ -263,13 +975,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "第",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, -100, V]",
         "desc": "当前未到第 V 回合",
+        "description": "当前未到第 V 回合",
+        "family": "2|当前未到第 回合",
+        "family_label": "当前未到第 回合",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, -100, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前未到第",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, -100, V]",
         "raw_desc": "当前未到第 V 回合",
         "score": 10,
@@ -277,13 +1012,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前未到第",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 1, V]",
         "desc": "当前为 V 月",
+        "description": "当前为 V 月",
+        "family": "2|当前为 月",
+        "family_label": "当前为 月",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 1, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前为",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 1, V]",
         "raw_desc": "当前为 V 月",
         "score": 10,
@@ -291,13 +1049,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前为",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 4, V]",
         "desc": "当前是 V 季",
+        "description": "当前是 V 季",
+        "family": "2|当前是 季",
+        "family_label": "当前是 季",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 4, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前是",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 4, V]",
         "raw_desc": "当前是 V 季",
         "score": 10,
@@ -305,13 +1086,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前是",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 10, V]",
         "desc": "当前是 V 年",
+        "description": "当前是 V 年",
+        "family": "2|当前是 年",
+        "family_label": "当前是 年",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 10, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前是",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 10, V]",
         "raw_desc": "当前是 V 年",
         "score": 10,
@@ -319,13 +1123,42 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前是",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 11, X, Y]",
         "desc": "当前是 X 年 Y 月",
+        "description": "当前是 X 年 Y 月",
+        "family": "2|当前是 年 月",
+        "family_label": "当前是 年 月",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 11, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前是",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 11, X, Y]",
         "raw_desc": "当前是 X 年 Y 月",
         "score": 10,
@@ -333,18 +1166,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前是",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 110, X, Y]",
         "desc": "当前是 X 年 Y 月或以后",
+        "description": "当前是 X 年 Y 月或以后",
+        "family": "2|当前是 年 月或以后",
+        "family_label": "当前是 年 月或以后",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 110, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前是",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 110, X, Y]",
         "raw_desc": "当前是 X 年 Y 月或以后",
         "score": 10,
@@ -352,18 +1215,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前是",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 20, X, Y]",
         "desc": "X 到 Y 年",
+        "description": "X 到 Y 年",
+        "family": "2|到 年",
+        "family_label": "到 年",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 20, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 20, X, Y]",
         "raw_desc": "X 到 Y 年",
         "score": 10,
@@ -371,18 +1264,42 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 12, X]",
         "desc": "当前是偶数年",
+        "description": "当前是偶数年",
+        "family": "2|当前是偶数年",
+        "family_label": "当前是偶数年",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 12, X]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 12, X]",
         "raw_desc": "当前是偶数年",
         "score": 10,
@@ -390,13 +1307,42 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 3, X, Y]",
         "desc": "当前为 X 年 Y 季",
+        "description": "当前为 X 年 Y 季",
+        "family": "2|当前为 年 季",
+        "family_label": "当前为 年 季",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 3, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前为",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 3, X, Y]",
         "raw_desc": "当前为 X 年 Y 季",
         "score": 10,
@@ -404,18 +1350,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前为",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 30, X, Y]",
         "desc": "当前为 X 年 Y 季或以后",
+        "description": "当前为 X 年 Y 季或以后",
+        "family": "2|当前为 年 季或以后",
+        "family_label": "当前为 年 季或以后",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 30, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前为",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[2, 30, X, Y]",
         "raw_desc": "当前为 X 年 Y 季或以后",
         "score": 10,
@@ -423,18 +1399,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前为",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 12, X, Y]",
         "desc": "当前时间是 X 年 Y 月以后",
+        "description": "当前时间是 X 年 Y 月以后",
+        "family": "1|当前时间是 年 月以后",
+        "family_label": "当前时间是 年 月以后",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 12, X, Y]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当前时间是",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "年",
+                "name": "Y"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 12, X, Y]",
         "raw_desc": "当前时间是 X 年 Y 月以后",
         "score": 10,
@@ -442,42 +1448,111 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当前时间是",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "年",
             "name": "Y"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[2, 101, 1]",
         "desc": "当前是主角生日的回合",
+        "description": "当前是主角生日的回合",
+        "family": "2|当前是主角生日的回合",
+        "family_label": "当前是主角生日的回合",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 101, 1]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[2, 101, 1]",
         "raw_desc": "当前是主角生日的回合",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[2, 8, 1]",
         "desc": "当前回合是寒暑假",
+        "description": "当前回合是寒暑假",
+        "family": "2|当前回合是寒暑假",
+        "family_label": "当前回合是寒暑假",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 8, 1]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[2, 8, 1]",
         "raw_desc": "当前回合是寒暑假",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[2, 8, -1]",
         "desc": "当前回合不是寒暑假",
+        "description": "当前回合不是寒暑假",
+        "family": "2|当前回合不是寒暑假",
+        "family_label": "当前回合不是寒暑假",
+        "op": "",
+        "ops": [
+          {
+            "code": "[2, 8, -1]",
+            "op": "",
+            "slots": [],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[2, 8, -1]",
         "raw_desc": "当前回合不是寒暑假",
         "score": 10,
-        "slots": []
+        "slots": [],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[3, 1, V]",
         "desc": "事件 V 已发生",
+        "description": "事件 V 已发生",
+        "family": "3|事件 已发生",
+        "family_label": "事件 已发生",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, 1, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "事件",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, 1, V]",
         "raw_desc": "事件 V 已发生",
         "score": 10,
@@ -485,13 +1560,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "事件",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[3, -1, V]",
         "desc": "事件 V 未发生",
+        "description": "事件 V 未发生",
+        "family": "3|事件 未发生",
+        "family_label": "事件 未发生",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, -1, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "事件",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, -1, V]",
         "raw_desc": "事件 V 未发生",
         "score": 10,
@@ -499,13 +1597,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "事件",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[3, 2, V]",
         "desc": "选项 V 已激活",
+        "description": "选项 V 已激活",
+        "family": "3|选项 已激活",
+        "family_label": "选项 已激活",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, 2, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "选项",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, 2, V]",
         "raw_desc": "选项 V 已激活",
         "score": 10,
@@ -513,13 +1634,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "选项",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[3, -2, V]",
         "desc": "选项 V 未激活",
+        "description": "选项 V 未激活",
+        "family": "3|选项 未激活",
+        "family_label": "选项 未激活",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, -2, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "选项",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, -2, V]",
         "raw_desc": "选项 V 未激活",
         "score": 10,
@@ -527,13 +1671,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "选项",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[3, 3, V]",
         "desc": "对话 V 已激活",
+        "description": "对话 V 已激活",
+        "family": "3|对话 已激活",
+        "family_label": "对话 已激活",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, 3, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "对话",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, 3, V]",
         "raw_desc": "对话 V 已激活",
         "score": 10,
@@ -541,13 +1708,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "对话",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[3, -3, V]",
         "desc": "对话 V 未激活",
+        "description": "对话 V 未激活",
+        "family": "3|对话 未激活",
+        "family_label": "对话 未激活",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, -3, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "对话",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, -3, V]",
         "raw_desc": "对话 V 未激活",
         "score": 10,
@@ -555,13 +1745,36 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "对话",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[3, 30, V]",
         "desc": "本回合已发生对话 V",
+        "description": "本回合已发生对话 V",
+        "family": "3|本回合已发生对话",
+        "family_label": "本回合已发生对话",
+        "op": "",
+        "ops": [
+          {
+            "code": "[3, 30, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "本回合已发生对话",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[3, 30, V]",
         "raw_desc": "本回合已发生对话 V",
         "score": 10,
@@ -569,9 +1782,12 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "本回合已发生对话",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       }
     ],
     "mode": "condition",

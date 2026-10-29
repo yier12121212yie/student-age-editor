@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/debouncer.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
-import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
@@ -43,12 +47,21 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
   static const _cfg = 'InteractCfg';
   static const _talkCfg = 'TalkCfg';
 
-  Map<String, dynamic> _rows = {};
-  Map<String, dynamic> _talks = {};
-  String _snap = '';
-  String _talkSnap = '';
-  int? _mtime;
-  int? _talkMtime;
+  /// A3：两张表的 load/save/dirty/乐观锁 409 交给公共控制器。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_cfg, _talkCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  Map<String, dynamic> get _rows => _ctl.table(_cfg).data;
+  Map<String, dynamic> get _talks => _ctl.table(_talkCfg).data;
 
   bool _loading = true;
   bool _saving = false;
@@ -62,34 +75,38 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
   Map<String, dynamic> _maps = const {};
 
   final TextEditingController _searchCtrl = TextEditingController();
+  final Debouncer _searchDebounce = Debouncer();
 
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _maps = (widget.state.gameDicts['maps'] as Map?)?.cast<String, dynamic>() ??
         const {};
     _loadAll();
   }
 
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
+  }
+
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
+    _searchDebounce.dispose();
     super.dispose();
   }
 
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -106,35 +123,17 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
   String get guardSubject => '闲聊与对白';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
-      final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_cfg'),
-        ApiClient.instance.get('/api/cfg/$_talkCfg'),
-      ]);
+      await _ctl.load();
       if (!mounted) return;
-      _rows = _dataOf(res[0]);
-      _talks = _dataOf(res[1]);
-      _mtime = _mtimeOf(res[0]);
-      _talkMtime = _mtimeOf(res[1]);
-      _snap = jsonEncode(_rows);
-      _talkSnap = jsonEncode(_talks);
       final ids = _sortedIds;
       if (_selected == null || !_rows.containsKey(_selected)) {
         _selected = ids.isNotEmpty ? ids.first : null;
       }
       _line = _chain().isNotEmpty ? _chain().first : null;
-      setState(() => _loading = false);
       _loadRoles();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error。
     }
   }
 
@@ -144,123 +143,25 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
     setState(() => _roles = list);
   }
 
-  bool get _dirty =>
-      _snap != jsonEncode(_rows) || _talkSnap != jsonEncode(_talks);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      final ok1 = await _saveTable(_cfg, _rows, _snap, _mtime, (m, s) {
-        _mtime = m;
-        _snap = s;
-      });
-      if (!ok1) return;
-      final ok2 = await _saveTable(_talkCfg, _talks, _talkSnap, _talkMtime,
-          (m, s) {
-        _talkMtime = m;
-        _talkSnap = s;
-      });
-      if (!ok2) return;
-      if (mounted) _info('闲聊与对白已保存', fluent.InfoBarSeverity.success);
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  /// 整表写回；返回是否写入成功（409 由用户选择）。回调更新 mtime 与快照。
-  Future<bool> _saveTable(
-    String name,
-    Map<String, dynamic> data,
-    String snap,
-    int? mtime,
-    void Function(int?, String) onSaved,
-  ) async {
-    if (jsonEncode(data) == snap) return true;
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': data,
-          if (!force) 'expect_mtime_ns': mtime,
-          if (force) 'force': true,
-        };
-        final r = await ApiClient.instance.put('/api/cfg/$name', body: body);
-        if (!mounted) return false;
-        onSaved(_mtimeOf(r), jsonEncode(data));
-        return true;
-      } on ApiException catch (e) {
-        if (!mounted) return false;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(name);
-          if (!mounted) return false;
-          if (act == 'reload') {
-            await _loadAll();
-            return false;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return false;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      } catch (e) {
-        if (!mounted) return false;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      }
-    }
+    final ok = await _ctl.save();
+    if (mounted && ok) AppFeedback.success(context, '闲聊与对白已保存');
   }
 
   void _discard() {
-    setState(() {
-      _rows = (jsonDecode(_snap) as Map).cast<String, dynamic>();
-      _talks = (jsonDecode(_talkSnap) as Map).cast<String, dynamic>();
-      final ids = _sortedIds;
-      if (_selected == null || !_rows.containsKey(_selected)) {
-        _selected = ids.isNotEmpty ? ids.first : null;
-      }
-      _line = _chain().isNotEmpty ? _chain().first : null;
-    });
+    _ctl.discard();
+    final ids = _sortedIds;
+    if (_selected == null || !_rows.containsKey(_selected)) {
+      _selected = ids.isNotEmpty ? ids.first : null;
+    }
+    _line = _chain().isNotEmpty ? _chain().first : null;
   }
 
-  Future<String?> _conflictDialog(String name) {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$name 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
   // ------------------------------------------------------------------
   // 行访问
@@ -280,11 +181,19 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
   }
 
   List<String> get _sortedIds {
+    // 排序结果按源表版本号缓存：源表一变才重算，避免每次 build 全表 O(n log n)。
+    final rev = _ctl.table(_cfg).revision;
+    if (rev == _sortRev) return _sortedIdsCache;
     final ids = _rows.keys.toList();
     ids.sort((a, b) =>
         (int.tryParse(a) ?? 0).compareTo(int.tryParse(b) ?? 0));
+    _sortRev = rev;
+    _sortedIdsCache = ids;
     return ids;
   }
+
+  int _sortRev = -1;
+  List<String> _sortedIdsCache = const [];
 
   int _intOf(Map<String, dynamic>? row, String field) {
     final v = row?[field];
@@ -310,11 +219,22 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
   }
 
   String _roleName(int id) {
-    for (final r in _roles) {
-      if (r.id == id.toString()) return r.name.isEmpty ? '角色 $id' : r.name;
+    // 角色名索引：原实现对每行线性扫 _roles（O(可见行 × 角色数)）。
+    if (!identical(_roleIndexSrc, _roles)) {
+      final m = <String, String>{};
+      for (final r in _roles) {
+        m[r.id] = r.name.isEmpty ? '角色 ${r.id}' : r.name;
+      }
+      _roleIndexSrc = _roles;
+      _roleNameIndex = m;
     }
+    final n = _roleNameIndex[id.toString()];
+    if (n != null) return n;
     return id == 0 ? '白雨' : '角色 $id';
   }
+
+  List<RoleEntry>? _roleIndexSrc;
+  Map<String, String> _roleNameIndex = const {};
 
   String _placeName(int id) {
     final v = _maps[id.toString()];
@@ -621,36 +541,15 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('闲聊数据加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '闲聊数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -685,7 +584,8 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
                 fluent.TextBox(
                   controller: _searchCtrl,
                   placeholder: '搜索闲聊或人物',
-                  onChanged: (v) => setState(() => _search = v),
+                  onChanged: (v) =>
+                      _searchDebounce.run(() => setState(() => _search = v)),
                 ),
                 const SizedBox(height: 10),
                 fluent.FilledButton(
@@ -694,7 +594,7 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
                       style: TextStyle(fontSize: 12.5)),
                 ),
                 const SizedBox(height: 6),
-                _MiniBtn(
+                WorkbenchMiniButton(
                   label: '删除此闲聊',
                   danger: true,
                   enabled: _selected != null,
@@ -779,7 +679,7 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
       title: '闲聊设置',
       icon: FluentIcons.settings_24_regular,
       children: [
-        _labeled('进度文字', _SyncedText(
+        _labeled('进度文字', SyncedTextField(
           value: row['text']?.toString() ?? '',
           hint: '正在和谁……',
           onChanged: (v) => setState(() => row['text'] = v),
@@ -855,8 +755,8 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
           spacing: 8,
           runSpacing: 8,
           children: [
-            _MiniBtn(label: '＋ 白雨对白', onTap: () => _addLine(0)),
-            _MiniBtn(
+            WorkbenchMiniButton(label: '＋ 白雨对白', onTap: () => _addLine(0)),
+            WorkbenchMiniButton(
               label: '＋ ${npc == 0 ? '人物' : _roleName(npc)}对白',
               onTap: () => _addLine(npc),
             ),
@@ -928,7 +828,7 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
                   ],
                 ),
                 const SizedBox(height: 4),
-                _SyncedText(
+                SyncedTextField(
                   value: talk['content']?.toString() ?? '',
                   hint: '输入对白内容',
                   maxLines: 2,
@@ -943,55 +843,13 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1238,57 +1096,20 @@ class _IdleChatWorkbenchState extends State<IdleChatWorkbench>
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
+/// 事件 / 闲聊工作台的历史形态：卡片型分区（`palette.card` + 可选前置图标）。
+class _SectionCard extends WorkbenchSectionCard {
   const _SectionCard({
-    required this.title,
-    required this.children,
-    this.icon,
-    this.subtitle,
-  });
-
-  final String title;
-  final IconData? icon;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-      decoration: BoxDecoration(
-        color: palette.card,
-        borderRadius: BorderRadius.circular(11),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 14, color: palette.goldText),
-                const SizedBox(width: 6),
-              ],
-              Text(title,
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: palette.textHigh)),
-            ],
-          ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 12),
-          for (final c in children) c,
-        ],
-      ),
-    );
-  }
+    required String title,
+    IconData? icon,
+    String? subtitle,
+    required List<Widget> children,
+  }) : super(
+          title: title,
+          icon: icon,
+          subtitle: subtitle,
+          children: children,
+          tone: SectionCardTone.card,
+        );
 }
 
 class _SpeakerChip extends StatelessWidget {
@@ -1419,115 +1240,6 @@ class _ChatListItemState extends State<_ChatListItem> {
                   style:
                       TextStyle(fontSize: 10, color: palette.textHint)),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
           ),
         ),
       ),

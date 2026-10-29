@@ -77,25 +77,28 @@ const ActionDef* find_action(long long tid) {
     return nullptr;
 }
 
+// 表情 ID → 名称（0..26）。22=喜极而泣、26=尴尬。
+//
+// 22 号曾误写为「尴尬」（与 26 重名），导致 `get_stage_dicts()` 输出的表达式表
+// 里出现两个「尴尬」、且「喜极而泣」无处可寻。口径依据游戏本体 TalkCfg 实测：
+// 带 `[role,3000,22]` 指令的台词正文为「肖清雅流出了开心的泪水。/肖清雅开始
+// 抹眼泪。」，即 22 号表情语义为「喜极而泣」；而 26 号与台词标注「（尴尬）」
+// 共现。故 22=喜极而泣、26=尴尬，与 semantic_core.expression_dict() 一致。
 const char* kExpressionNames[27] = {
     "默认", "开心", "生气", "伤心", "害羞", "喜欢", "认真", "疑惑", "惊讶", "得意", "微笑",
     "坏笑", "担心", "害怕", "难过", "咆哮", "窘迫", "不满", "冷笑", "无语", "苦笑", "挫败",
-    "尴尬", "迷茫", "嫌弃", "俏皮", "尴尬"};
+    "喜极而泣", "迷茫", "嫌弃", "俏皮", "尴尬"};
 
 bool is_known_expr_id(long long id) { return id >= 0 && id <= 26; }
 
-// _EXPR_NAME_MAP：按 "0".."26" 插入序，重名 尴尬 被 26 覆盖。
+// _EXPR_NAME_MAP：按 "0".."26" 插入序建表，无重名（22=喜极而泣、26=尴尬）。
 long long expr_by_name(const std::string& name, bool* found) {
     *found = false;
-    for (int i = 0; i <= 25; ++i) {
+    for (int i = 0; i <= 26; ++i) {
         if (name == kExpressionNames[i]) {
             *found = true;
-            return i;  // 尴尬命中 22，但下面覆写语义等价（最后命中 26）
+            return i;
         }
-    }
-    if (name == "尴尬") {
-        *found = true;
-        return 26;
     }
     return 0;
 }

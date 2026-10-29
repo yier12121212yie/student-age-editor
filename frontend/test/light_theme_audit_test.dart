@@ -75,6 +75,8 @@ const allowedMaterialColorsInFiles = <String, List<String>>{
     // 同「模拟游戏画面」：黑底 + 白字/白描边，两模式同值。
     'black',
     'white',
+    // 「延续背景预览」胶囊：压在舞台截图的黑场遮罩上，两模式同值。
+    'white70',
   ],
 };
 
@@ -105,19 +107,19 @@ void main() {
         final line = lines[i];
         final trimmed = line.trimLeft();
         if (trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
-        final where = rel + ':' + (i + 1).toString();
+        final where = '$rel:${i + 1}';
         for (final m in literalRe.allMatches(line)) {
           if (!allowed.contains(m.group(0))) {
-            violations.add(where + '  ' + m.group(0)!);
+            violations.add('$where  ${m.group(0)!}');
           }
         }
         for (final m in materialRe.allMatches(line)) {
           if (!matAllowed.contains(m.group(1))) {
-            violations.add(where + '  Colors.' + m.group(1)!);
+            violations.add('$where  Colors.${m.group(1)!}');
           }
         }
         if (brightnessRe.hasMatch(line)) {
-          violations.add(where + '  Theme.of(context).brightness');
+          violations.add('$where  Theme.of(context).brightness');
         }
       }
     }
@@ -125,8 +127,7 @@ void main() {
     expect(
       violations,
       isEmpty,
-      reason: '自定义控件必须走 palette token，两套外观才会自动生效。违规 '
-          + violations.length.toString() + ' 处：\\n  ' + violations.join('\\n  '),
+      reason: '自定义控件必须走 palette token，两套外观才会自动生效。违规 ${violations.length} 处：\\n  ${violations.join('\\n  ')}',
     );
   });
 }

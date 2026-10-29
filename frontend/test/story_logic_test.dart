@@ -360,5 +360,277 @@ void main() {
       expect(allocEventId(const ['8000', '8002'], min: 8000, max: 8999),
           '8003');
     });
+
+    test('上界被占用时从 min 回绕取首个空闲 ID（不再误返 null）', () {
+      // 家族内最大已用就是上界 → max+1 越界，应回绕扫描 [min, max]。
+      expect(
+        allocEventId(const ['1000000', '1000002'], min: 1000000, max: 1000002),
+        '1000001',
+      );
+      // 只占用上界：回绕到 min。
+      expect(
+        allocEventId(const ['1000002'], min: 1000000, max: 1000002),
+        '1000000',
+      );
+    });
+
+    test('家族全占时按 fallbackStart 向上分配', () {
+      expect(
+        allocEventId(
+          const ['8000', '8001'],
+          min: 8000,
+          max: 8001,
+          fallbackStart: 9000,
+        ),
+        '9000',
+      );
+      // fallback 起点也被占用 → 继续上探。
+      expect(
+        allocEventId(
+          const ['8000', '8001', '9000'],
+          min: 8000,
+          max: 8001,
+          fallbackStart: 9000,
+        ),
+        '9001',
+      );
+      // 未给 fallbackStart：区间全占仍返回 null（旧行为不变）。
+      expect(
+        allocEventId(const ['8000', '8001'], min: 8000, max: 8001),
+        isNull,
+      );
+    });
+  });
+
+  group('舞台指令（TalkCfg.roles）', () {
+    test('parseStageChars：入场指令的第二项是指令码，不是角色', () {
+      // [[角色, 1001(滑动入场), 1, pos=1(左)]] —— 角色是 0，不是 1001。
+      final chars = parseStageChars([
+        [0, 1001, 1, 1],
+      ]);
+      expect(chars, hasLength(1));
+      expect(chars.first.roleId, '0');
+      expect(chars.first.pos, 1);
+    });
+
+    test('parseStageChars：退场后不再在场，表情/镜像累积到该角色', () {
+      final chars = parseStageChars([
+        [100, 1002, 1, 3], // 直接入场 居中
+        [100, 3000, 5], // 表情 5
+        [200, 1001, 1, 2], // 另一角色 右
+        [100, 2001], // 100 退场
+      ]);
+      expect(chars.map((c) => c.roleId), ['200']);
+      expect(chars.first.pos, 2);
+
+      final only100 = parseStageChars([
+        [100, 1002, 1, 3],
+        [100, 3000, 5],
+        [100, 3007], // 镜像一次
+      ]);
+      expect(only100.first.expr, 5);
+      expect(only100.first.flip, isTrue);
+    });
+
+    test('parseStageChars：单条表情/换装/镜像指令也保持在場（回归）', () {
+      // 历史 bug：applyStageCommands 只对 1001/1002/1003 置 present=true，
+      // 单句对白若只写了 [role, 3000, expr]，角色会被判定为不在场而整条丢弃。
+      final onlyExpr = parseStageChars([
+        [101, 3000, 2],
+      ]);
+      expect(onlyExpr, hasLength(1));
+      expect(onlyExpr.first.roleId, '101');
+      expect(onlyExpr.first.expr, 2);
+
+      final onlyCloth = parseStageChars([
+        [101, 3006],
+      ]);
+      expect(onlyCloth.map((c) => c.roleId), ['101']);
+
+      final onlyFlip = parseStageChars([
+        [101, 3007],
+      ]);
+      expect(onlyFlip.map((c) => c.roleId), ['101']);
+      expect(onlyFlip.first.flip, isTrue);
+    });
+
+    test('effectiveStages：选项分支状态隔离，互不污染（回归）', () {
+      // 800001 登场角色 10；选项分出 A(800002) / B(800003) 两条线。
+      // 分支 A 改表情为 2，分支 B 不改——B 不得被 A 的表情串扰。
+      final talks = <String, dynamic>{
+        '800001': {
+          'id': 800001,
+          'roles': [
+            [10, 1001, 1, 1],
+          ],
+          'option': ['80001'],
+          'nextTalk': <dynamic>[],
+        },
+        '800002': {
+          'id': 800002,
+          'roles': [
+            [10, 3000, 2],
+          ],
+          'nextTalk': <dynamic>[],
+        },
+        '800003': {
+          'id': 800003,
+          'content': '分支 B 保持默认表情',
+          'nextTalk': <dynamic>[],
+        },
+      };
+      final options = <String, dynamic>{
+        '80001': {
+          'id': 80001,
+          'talkId': [800002],
+          'talkId2': [800003],
+        },
+      };
+      final evt = <String, dynamic>{
+        '8000': {'id': 8000, 'talkId': [800001]},
+      };
+      final eff = effectiveStages(
+        evtId: '8000',
+        evtCfg: evt,
+        talks: talks,
+        options: options,
+      );
+      expect(eff['800002']!.single.expr, 2, reason: '分支 A 表情应为 2');
+      expect(eff['800003']!.single.expr, 0,
+          reason: '分支 B 不得继承分支 A 的表情（BFS 状态交叉污染回归）');
+    });
+
+    test('effectiveStages：跨对白继承出场角色', () {
+      final talks = <String, dynamic>{
+        '800001': {
+          'id': 800001,
+          'roles': [
+            [0, 1001, 1, 1],
+          ],
+          'nextTalk': [800002],
+        },
+        '800002': {'id': 800002, 'content': '继承上一句'},
+      };
+      final evt = <String, dynamic>{
+        '8000': {'talkId': [800001]},
+      };
+      final eff = effectiveStages(
+        evtId: '8000',
+        evtCfg: evt,
+        talks: talks,
+        options: const {},
+      );
+      expect(eff['800001']!.map((c) => c.roleId), ['0']);
+      // 800002 没有自己的 roles，但继承 800001 的在场角色
+      expect(eff['800002']!.map((c) => c.roleId), ['0']);
+    });
+
+    test('setStagePos：已有入场指令改 pos，否则追加', () {
+      final out = setStagePos([
+        [0, 1001, 1, 1],
+      ], '0', 2);
+      expect(out, [
+        [0, 1001, 1, 2],
+      ]);
+      final added = setStagePos(const <dynamic>[], '10', 3);
+      expect(added, [
+        [10, 1001, 1, 3],
+      ]);
+    });
+
+    test('setStageExpr / removeStageRole 写回指令行', () {
+      final expr = setStageExpr([
+        [10, 1001, 1, 3],
+      ], '10', 8);
+      expect(expr, [
+        [10, 1001, 1, 3],
+        [10, 3000, 8],
+      ]);
+      final removed = removeStageRole([
+        [10, 1001, 1, 3],
+        [10, 3000, 8],
+      ], '10');
+      expect(removed, [
+        [10, 2001],
+      ]);
+      // 不影响其它角色
+      final keep = removeStageRole([
+        [10, 1001, 1, 3],
+        [11, 1002, 1, 1],
+      ], '10');
+      expect(keep, [
+        [11, 1002, 1, 1],
+        [10, 2001],
+      ]);
+    });
+
+    test('effectiveBackgrounds：跨对白继承背景并支持分支重置', () {
+      final talks = <String, dynamic>{
+        '800001': {
+          'id': 800001,
+          'bg': '100',
+          'nextTalk': [800002],
+          'option': ['8001'],
+        },
+        '800002': {
+          'id': 800002,
+          'content': '继承背景100',
+          'nextTalk': [800003],
+        },
+        '800003': {
+          'id': 800003,
+          'bg': '200',
+          'content': '切换到新背景200',
+        },
+        '800004': {
+          'id': 800004,
+          'content': '选项分支继承100',
+        },
+        '999999': {
+          'id': 999999,
+          'bg': '300',
+          'content': '游离对白自带背景',
+        },
+      };
+      final options = <String, dynamic>{
+        '8001': {
+          'id': 8001,
+          'talkId': [800004],
+        },
+      };
+      final evt = <String, dynamic>{
+        '8000': {'talkId': [800001]},
+      };
+      final eff = effectiveBackgrounds(
+        evtId: '8000',
+        evtCfg: evt,
+        talks: talks,
+        options: options,
+      );
+
+      // 800001: 显式切换为 100
+      expect(eff['800001']!.bgId, '100');
+      expect(eff['800001']!.isInherited, isFalse);
+      expect(eff['800001']!.sourceTalkId, '800001');
+
+      // 800002: 留空，继承自 800001 的 100
+      expect(eff['800002']!.bgId, '100');
+      expect(eff['800002']!.isInherited, isTrue);
+      expect(eff['800002']!.sourceTalkId, '800001');
+
+      // 800003: 显式切换为 200
+      expect(eff['800003']!.bgId, '200');
+      expect(eff['800003']!.isInherited, isFalse);
+      expect(eff['800003']!.sourceTalkId, '800003');
+
+      // 800004: 选项分支继承自 800001 的 100
+      expect(eff['800004']!.bgId, '100');
+      expect(eff['800004']!.isInherited, isTrue);
+      expect(eff['800004']!.sourceTalkId, '800001');
+
+      // 999999: 游离显式背景
+      expect(eff['999999']!.bgId, '300');
+      expect(eff['999999']!.isInherited, isFalse);
+    });
   });
 }

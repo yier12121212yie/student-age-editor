@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/empty_state.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
-import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
@@ -57,18 +61,29 @@ class _EventWorkbenchState extends State<EventWorkbench>
     with WorkbenchLeaveGuard<EventWorkbench> {
   static const _cfg = 'EvtCfg';
 
-  Map<String, dynamic> _rows = {};
-  String _snap = '';
-  int? _mtime;
+  /// A3：`EvtCfg` 的整表 load/save/dirty/乐观锁 409 交给公共控制器；
+  /// `EvtTypeCfg` / `TalkCfg` / `OptionCfg` 是**只读引用表**，单独加载。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_cfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {
+      if (mounted) AppFeedback.success(context, '事件已保存');
+    },
+  );
+
+  Map<String, dynamic> get _rows => _ctl.table(_cfg).data;
 
   Map<String, dynamic> _types = {};
   Map<String, dynamic> _talks = {};
   Map<String, dynamic> _options = {};
 
-  bool _loading = true;
-  bool _saving = false;
   bool _refsLoading = false;
-  String? _error;
 
   String? _selected;
   String _filter = 'all';
@@ -82,11 +97,19 @@ class _EventWorkbenchState extends State<EventWorkbench>
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -94,16 +117,6 @@ class _EventWorkbenchState extends State<EventWorkbench>
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -120,33 +133,23 @@ class _EventWorkbenchState extends State<EventWorkbench>
   String get guardSubject => '事件';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
-      final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_cfg'),
+      // 主表与只读类型表并行读。
+      final futures = <Future>[
+        _ctl.load(),
         ApiClient.instance.get('/api/cfg/EvtTypeCfg'),
-      ]);
+      ];
+      final res = await Future.wait(futures);
       if (!mounted) return;
-      _rows = _dataOf(res[0]);
-      _types = _dataOf(res[1]);
-      _mtime = _mtimeOf(res[0]);
-      _snap = jsonEncode(_rows);
+      _types = WorkbenchController.extractData(res[1]);
       final ids = _sortedIds;
       if (_selected == null || !_rows.containsKey(_selected)) {
         _selected = ids.isNotEmpty ? ids.first : null;
       }
-      setState(() => _loading = false);
       _loadRoles();
       _loadRefs();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _ctl.error。
     }
   }
 
@@ -167,8 +170,8 @@ class _EventWorkbenchState extends State<EventWorkbench>
       ]);
       if (!mounted) return;
       setState(() {
-        _talks = _dataOf(res[0]);
-        _options = _dataOf(res[1]);
+        _talks = WorkbenchController.extractData(res[0]);
+        _options = WorkbenchController.extractData(res[1]);
       });
     } catch (_) {
       // 引用表读不到：预览退化为「对话 <id>」。
@@ -177,104 +180,22 @@ class _EventWorkbenchState extends State<EventWorkbench>
     }
   }
 
-  bool get _dirty => _snap != jsonEncode(_rows);
+  bool get _dirty => _ctl.dirtyDeep;
 
-  Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      var force = false;
-      for (;;) {
-        if (jsonEncode(_rows) == _snap) break;
-        try {
-          final body = <String, dynamic>{
-            'data': _rows,
-            if (!force) 'expect_mtime_ns': _mtime,
-            if (force) 'force': true,
-          };
-          final r = await ApiClient.instance.put('/api/cfg/$_cfg', body: body);
-          if (!mounted) return;
-          setState(() {
-            _mtime = _mtimeOf(r);
-            _snap = jsonEncode(_rows);
-          });
-          break;
-        } on ApiException catch (e) {
-          if (!mounted) return;
-          if (e.statusCode == 409 && !force) {
-            final act = await _conflictDialog();
-            if (!mounted) return;
-            if (act == 'reload') {
-              await _loadAll();
-              return;
-            }
-            if (act == 'force') {
-              force = true;
-              continue;
-            }
-            return;
-          }
-          _info('保存失败：$e', fluent.InfoBarSeverity.error);
-          return;
-        } catch (e) {
-          if (!mounted) return;
-          _info('保存失败：$e', fluent.InfoBarSeverity.error);
-          return;
-        }
-      }
-      if (mounted) {
-        _info('事件已保存', fluent.InfoBarSeverity.success);
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
+  Future<void> _saveAll() => _ctl.save();
+
+  void _discard() {
+    _ctl.discard();
+    final ids = _sortedIds;
+    if (_selected == null || !_rows.containsKey(_selected)) {
+      _selected = ids.isNotEmpty ? ids.first : null;
     }
   }
 
-  void _discard() {
-    setState(() {
-      _rows = (jsonDecode(_snap) as Map).cast<String, dynamic>();
-      final ids = _sortedIds;
-      if (_selected == null || !_rows.containsKey(_selected)) {
-        _selected = ids.isNotEmpty ? ids.first : null;
-      }
-    });
-  }
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
-  Future<String?> _conflictDialog() {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$_cfg 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
 
   // ------------------------------------------------------------------
   // 行访问
@@ -342,11 +263,23 @@ class _EventWorkbenchState extends State<EventWorkbench>
   }
 
   String _roleName(int id) {
-    for (final r in _roles) {
-      if (r.id == id.toString()) return r.name.isEmpty ? '角色 $id' : r.name;
+    // 角色名索引：原实现对每个可见行线性扫 _roles（O(可见行 × 角色数)）。
+    // _roles 重新加载后（身份变化）重建一次。
+    if (!identical(_roleIndexSrc, _roles)) {
+      final m = <String, String>{};
+      for (final r in _roles) {
+        m[r.id] = r.name.isEmpty ? '角色 ${r.id}' : r.name;
+      }
+      _roleIndexSrc = _roles;
+      _roleNameIndex = m;
     }
+    final n = _roleNameIndex[id.toString()];
+    if (n != null) return n;
     return id == 0 ? '无' : '角色 $id';
   }
+
+  List<RoleEntry>? _roleIndexSrc;
+  Map<String, String> _roleNameIndex = const {};
 
   String _talkSummary(int id) {
     final row = _talks[id.toString()];
@@ -369,9 +302,12 @@ class _EventWorkbenchState extends State<EventWorkbench>
   }
 
   String _plain(String s) {
-    final t = s.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+    // 正则在 build/itemBuilder 里被逐行调用，提到 static 只编译一次。
+    final t = s.replaceAll(_tagRe, '').trim();
     return t.length > 48 ? '${t.substring(0, 48)}…' : t;
   }
+
+  static final RegExp _tagRe = RegExp(r'<[^>]*>');
 
   int _newId() {
     var max = 0;
@@ -399,6 +335,25 @@ class _EventWorkbenchState extends State<EventWorkbench>
     final ids = spec[2] as List<int>?;
     return ids == null || ids.contains(type);
   }
+
+  /// 可达对白**条数**的缓存入口。itemBuilder 对每个可见行都会算一次，右侧栏与
+  /// 对白区块还会再算，原实现每次都要重走对白图。这里以「入口列表内容」为键缓存，
+  /// 并在 `_talks` / `_options` 重新加载（身份变化）时整体失效。
+  int _reachableCount(List<int> starts) {
+    if (_talks.isEmpty) return starts.length;
+    if (!identical(_reachSrcTalks, _talks) ||
+        !identical(_reachSrcOptions, _options)) {
+      _reachSrcTalks = _talks;
+      _reachSrcOptions = _options;
+      _reachCountCache.clear();
+    }
+    return _reachCountCache.putIfAbsent(
+        starts.join(','), () => _reachableTalks(starts).length);
+  }
+
+  Map<String, dynamic>? _reachSrcTalks;
+  Map<String, dynamic>? _reachSrcOptions;
+  final Map<String, int> _reachCountCache = <String, int>{};
 
   /// 从对白入口出发可达的对白集合（含选项跳转）。
   Set<int> _reachableTalks(List<int> starts) {
@@ -608,10 +563,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
                   const SizedBox(height: 10),
                   Expanded(
                     child: list.isEmpty
-                        ? Center(
-                            child: Text('没有匹配的条目',
-                                style: TextStyle(
-                                    fontSize: 12, color: palette.textHint)))
+                        ? const EmptyState('没有匹配的条目')
                         : ListView.builder(
                             itemCount: list.length,
                             itemBuilder: (c, i) {
@@ -692,36 +644,15 @@ class _EventWorkbenchState extends State<EventWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('事件数据加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '事件数据加载失败',
+      status: _ctl.loading
+          ? WorkbenchStatus.loading
+          : _ctl.error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _ctl.error?.toString(),
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -770,7 +701,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
                 Row(
                   children: [
                     Expanded(
-                      child: _MiniBtn(
+                      child: WorkbenchMiniButton(
                         label: _sort == 'id' ? '按 ID 排序' : '按名称排序',
                         onTap: () => setState(
                             () => _sort = _sort == 'id' ? 'name' : 'id'),
@@ -778,7 +709,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
                     ),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: _MiniBtn(
+                      child: WorkbenchMiniButton(
                         label: '删除事件',
                         danger: true,
                         enabled: _selected != null,
@@ -827,8 +758,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
                       final id = ids[i];
                       final row = _rowOf(id);
                       final talks = _intList(row, 'talkId');
-                      final count =
-                          _talks.isEmpty ? talks.length : _reachableTalks(talks).length;
+                      final count = _reachableCount(talks);
                       return _EventListItem(
                         id: id,
                         title: _title(id),
@@ -888,7 +818,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
       title: '基本信息',
       icon: FluentIcons.info_24_regular,
       children: [
-        _labeled('事件标题', _SyncedText(
+        _labeled('事件标题', SyncedTextField(
           value: row['title']?.toString() ?? '',
           hint: '事件标题',
           onChanged: (v) => setState(() => row['title'] = v),
@@ -900,7 +830,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
               child: _labeled(
                 '事件类型',
                 _types.isEmpty
-                    ? _NumBox(
+                    ? NumBox(
                         value: _intOf(row, 'type'),
                         hint: '事件类型编号',
                         onChanged: (v) =>
@@ -915,7 +845,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _labeled('显示方式', _NumBox(
+              child: _labeled('显示方式', NumBox(
                 value: _intOf(row, 'displayType'),
                 hint: 'displayType',
                 onChanged: (v) =>
@@ -928,7 +858,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: _labeled('触发概率', _NumBox(
+              child: _labeled('触发概率', NumBox(
                 value: _rateOf(row),
                 hint: '0~1，1 为 100%',
                 onChanged: (v) => setState(() => row['rate'] = v ?? 0),
@@ -936,7 +866,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _labeled('次数上限', _NumBox(
+              child: _labeled('次数上限', NumBox(
                 value: _intOf(row, 'maxcount'),
                 hint: '0 表示不限',
                 onChanged: (v) =>
@@ -970,7 +900,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _labeled('权重', _NumBox(
+              child: _labeled('权重', NumBox(
                 value: _intOf(row, 'weight'),
                 hint: '同组抽取使用',
                 onChanged: (v) =>
@@ -983,7 +913,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: _labeled('地图编号', _NumBox(
+              child: _labeled('地图编号', NumBox(
                 value: _intOf(row, 'mapId'),
                 hint: 'mapId',
                 onChanged: (v) =>
@@ -992,7 +922,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _labeled('最大选项数', _NumBox(
+              child: _labeled('最大选项数', NumBox(
                 value: _intOf(row, 'maxoptions'),
                 hint: 'maxoptions',
                 onChanged: (v) =>
@@ -1036,7 +966,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
 
   Widget _talkSection(Map<String, dynamic> row) {
     final talks = _intList(row, 'talkId');
-    final reachable = _talks.isEmpty ? talks.length : _reachableTalks(talks).length;
+    final reachable = _reachableCount(talks);
     return _SectionCard(
       title: '对白入口',
       icon: FluentIcons.chat_24_regular,
@@ -1058,7 +988,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
             onRemove: () => setState(() => _removeFromIntList(row, 'talkId', i)),
           ),
         const SizedBox(height: 6),
-        _MiniBtn(
+        WorkbenchMiniButton(
           label: '＋ 添加对白入口',
           onTap: () async {
             final id = await _pickFromTable('TalkCfg');
@@ -1092,7 +1022,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
                 setState(() => _removeFromIntList(row, 'options', i)),
           ),
         const SizedBox(height: 6),
-        _MiniBtn(
+        WorkbenchMiniButton(
           label: '＋ 添加选项',
           onTap: () async {
             final id = await _pickFromTable('OptionCfg');
@@ -1150,13 +1080,13 @@ class _EventWorkbenchState extends State<EventWorkbench>
       title: '内容与说明',
       icon: FluentIcons.text_description_24_regular,
       children: [
-        _labeled('事件内容', _SyncedText(
+        _labeled('事件内容', SyncedTextField(
           value: row['content']?.toString() ?? '',
           hint: '无对白事件的正文 / 通知文本',
           maxLines: 4,
           onChanged: (v) => setState(() => row['content'] = v),
         )),
-        _labeled('内部说明', _SyncedText(
+        _labeled('内部说明', SyncedTextField(
           value: row['desc']?.toString() ?? '',
           hint: '给自己看的说明，不影响游戏',
           maxLines: 3,
@@ -1167,55 +1097,13 @@ class _EventWorkbenchState extends State<EventWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _ctl.saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1248,7 +1136,7 @@ class _EventWorkbenchState extends State<EventWorkbench>
                   _railCard('概览', [
                     '类型：${_typeName(row['type'])}',
                     '对白入口：${_intList(row, 'talkId').length} 个',
-                    '可达对白：${_talks.isEmpty ? _intList(row, 'talkId').length : _reachableTalks(_intList(row, 'talkId')).length} 句',
+                    '可达对白：${_reachableCount(_intList(row, 'talkId'))} 句',
                     '选项：${_intList(row, 'options').length} 个',
                     '触发概率：${_formatRate(_rateOf(row))}',
                   ]),
@@ -1440,151 +1328,21 @@ extension _Let<T> on T {
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
+/// 事件 / 闲聊工作台的历史形态：卡片型分区（`palette.card` + 可选前置图标）。
+class _SectionCard extends WorkbenchSectionCard {
   const _SectionCard({
-    required this.title,
-    required this.children,
-    this.icon,
-    this.subtitle,
-  });
-
-  final String title;
-  final IconData? icon;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-      decoration: BoxDecoration(
-        color: palette.card,
-        borderRadius: BorderRadius.circular(11),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 14, color: palette.goldText),
-                const SizedBox(width: 6),
-              ],
-              Text(title,
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: palette.textHigh)),
-            ],
-          ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 12),
-          for (final c in children) c,
-        ],
-      ),
-    );
-  }
+    required String title,
+    IconData? icon,
+    String? subtitle,
+    required List<Widget> children,
+  }) : super(
+          title: title,
+          icon: icon,
+          subtitle: subtitle,
+          children: children,
+          tone: SectionCardTone.card,
+        );
 }
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({required this.value, required this.onChanged, this.hint});
-  final num? value;
-  final ValueChanged<num?> onChanged;
-  final String? hint;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value?.toString() ?? '');
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = widget.value?.toString() ?? '';
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) {
-        final t = v.trim();
-        widget.onChanged(t.isEmpty ? null : num.tryParse(t));
-      },
-    );
-  }
-}
-
 class _TypeDropdown extends StatelessWidget {
   const _TypeDropdown({
     required this.value,
@@ -1849,66 +1607,6 @@ class _MiniChip extends StatelessWidget {
           ),
           child: Text(label,
               style: TextStyle(fontSize: 11, color: accentColor)),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
-          ),
         ),
       ),
     );

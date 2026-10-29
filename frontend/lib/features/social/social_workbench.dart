@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/empty_state.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
-import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
 import '../resources/image_asset_picker.dart'
     show TexThumb, showImageAssetPicker;
@@ -43,12 +47,22 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
   static const _postCfg = 'KZoneContentCfg';
   static const _commentCfg = 'KZoneCommentCfg';
 
-  Map<String, dynamic> _posts = {};
-  Map<String, dynamic> _comments = {};
-  String _postsSnap = '';
-  String _commentsSnap = '';
-  int? _postsM;
-  int? _commentsM;
+  /// A3 试点：两张表的 load/save/dirty/乐观锁 409 交给公共控制器，
+  /// `_posts` / `_comments` 作为控制器数据的转发 getter。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_postCfg, _commentCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  Map<String, dynamic> get _posts => _ctl.table(_postCfg).data;
+  Map<String, dynamic> get _comments => _ctl.table(_commentCfg).data;
 
   bool _loading = true;
   bool _saving = false;
@@ -65,11 +79,23 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -77,16 +103,6 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -103,163 +119,46 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
   String get guardSubject => '动态与评论';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
-      final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_postCfg'),
-        ApiClient.instance.get('/api/cfg/$_commentCfg'),
-      ]);
+      await _ctl.load();
       if (!mounted) return;
-      _posts = _dataOf(res[0]);
-      _comments = _dataOf(res[1]);
-      _postsM = _mtimeOf(res[0]);
-      _commentsM = _mtimeOf(res[1]);
-      _postsSnap = jsonEncode(_posts);
-      _commentsSnap = jsonEncode(_comments);
       final ids = _sortedPostIds;
       if (_selected == null || !_posts.containsKey(_selected)) {
         _selected = ids.isNotEmpty ? ids.first : null;
       }
       _target = null;
-      setState(() => _loading = false);
       _loadRoles();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error。
     }
   }
-
   Future<void> _loadRoles() async {
     final list = await loadRoles('');
     if (!mounted) return;
     setState(() => _roles = list);
   }
 
-  bool get _dirty =>
-      _postsSnap != jsonEncode(_posts) ||
-      _commentsSnap != jsonEncode(_comments);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      await _saveOne(_postCfg, _posts, _postsSnap);
-      await _saveOne(_commentCfg, _comments, _commentsSnap);
-      if (mounted) {
-        _info('动态、评论和回复已一起保存', fluent.InfoBarSeverity.success);
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _saveOne(
-    String name,
-    Map<String, dynamic> data,
-    String snap,
-  ) async {
-    if (jsonEncode(data) == snap) return;
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': data,
-          if (force) 'force': true,
-        };
-        if (!force) {
-          body['expect_mtime_ns'] = name == _postCfg ? _postsM : _commentsM;
-        }
-        final r = await ApiClient.instance.put('/api/cfg/$name', body: body);
-        final freshSnap = jsonEncode(data);
-        if (!mounted) return;
-        setState(() {
-          if (name == _postCfg) {
-            _postsM = _mtimeOf(r);
-            _postsSnap = freshSnap;
-          } else {
-            _commentsM = _mtimeOf(r);
-            _commentsSnap = freshSnap;
-          }
-        });
-        return;
-      } on ApiException catch (e) {
-        if (!mounted) return;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(name);
-          if (!mounted) return;
-          if (act == 'reload') {
-            await _loadAll();
-            return;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return;
-      } catch (e) {
-        if (!mounted) return;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return;
-      }
+    final ok = await _ctl.save();
+    if (mounted && ok) {
+      AppFeedback.success(context, '动态、评论和回复已一起保存');
     }
   }
 
   void _discard() {
-    setState(() {
-      _posts = (jsonDecode(_postsSnap) as Map).cast<String, dynamic>();
-      _comments = (jsonDecode(_commentsSnap) as Map).cast<String, dynamic>();
-      final ids = _sortedPostIds;
-      if (_selected == null || !_posts.containsKey(_selected)) {
-        _selected = ids.isNotEmpty ? ids.first : null;
-      }
-      _target = null;
-    });
+    _ctl.discard();
+    final ids = _sortedPostIds;
+    if (_selected == null || !_posts.containsKey(_selected)) {
+      _selected = ids.isNotEmpty ? ids.first : null;
+    }
+    _target = null;
   }
 
-  Future<String?> _conflictDialog(String name) {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$name 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
   // ------------------------------------------------------------------
   // 行访问
@@ -374,12 +273,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                           _roleRow(int.tryParse(r.id) ?? 0, r.name, ctx,
                               rawId: r.id),
                         if (!includeBaiyu && rows.isEmpty)
-                          Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text('没有匹配的人物',
-                                style: TextStyle(
-                                    fontSize: 12, color: palette.textHint)),
-                          ),
+                          const EmptyState('没有匹配的人物', dense: true),
                       ],
                     ),
                   ),
@@ -568,36 +462,15 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('社交数据加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '社交数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -644,7 +517,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                       style: TextStyle(fontSize: 12.5)),
                 ),
                 const SizedBox(height: 6),
-                _MiniBtn(
+                WorkbenchMiniButton(
                   label: '删除这条动态',
                   danger: true,
                   enabled: _selected != null,
@@ -773,13 +646,13 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                 ],
               ),
               const SizedBox(height: 14),
-              _SyncedText(
+              SyncedTextField(
                 value: post['title']?.toString() ?? '',
                 hint: '说说标题（可留空）',
                 onChanged: (v) => setState(() => post['title'] = v),
               ),
               const SizedBox(height: 10),
-              _SyncedText(
+              SyncedTextField(
                 value: post['content']?.toString() ?? '',
                 hint: '输入动态内容',
                 maxLines: 5,
@@ -831,7 +704,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                     fontWeight: FontWeight.w600,
                     color: palette.textHigh)),
             const Spacer(),
-            _MiniBtn(label: '＋ 添加评论', onTap: () => _addComment()),
+            WorkbenchMiniButton(label: '＋ 添加评论', onTap: () => _addComment()),
           ],
         ),
         const SizedBox(height: 10),
@@ -930,8 +803,10 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
+                // 窄屏（手机编辑页）下「角色名 + 标签 + 4 个操作按钮」同排会溢出，
+                // 故窄屏改为可换行的 Wrap，宽屏维持原「左信息 + 右对齐操作」。
+                LayoutBuilder(builder: (ctx, c) {
+                  final left = <Widget>[
                     RoleAvatar(seed: author, name: _roleName(author), size: 30),
                     const SizedBox(width: 8),
                     Text(_roleName(author),
@@ -952,32 +827,42 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                       const SizedBox(width: 8),
                       _Tag(text: '等待 $delay 秒', color: palette.statusWarn),
                     ],
-                    const Spacer(),
-                    _MiniBtn(
+                  ];
+                  final right = <Widget>[
+                    WorkbenchMiniButton(
                       label: '设置',
                       onTap: () => setState(() => _target = id),
                     ),
                     const SizedBox(width: 6),
-                    _MiniBtn(
+                    WorkbenchMiniButton(
                       label: '回复',
                       onTap: () => _addComment(parentId: id),
                     ),
                     const SizedBox(width: 6),
                     if (!option)
-                      _MiniBtn(
+                      WorkbenchMiniButton(
                         label: '白雨可选',
                         onTap: () => _addComment(parentId: id, player: true),
                       ),
                     const SizedBox(width: 6),
-                    _MiniBtn(
+                    WorkbenchMiniButton(
                       label: '删除',
                       danger: true,
                       onTap: () => _deleteComment(id),
                     ),
-                  ],
-                ),
+                  ];
+                  if (c.maxWidth < 380) {
+                    return Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [...left, ...right],
+                    );
+                  }
+                  return Row(children: [...left, const Spacer(), ...right]);
+                }),
                 const SizedBox(height: 8),
-                _SyncedText(
+                SyncedTextField(
                   value: row['content']?.toString() ?? '',
                   hint: '输入评论内容',
                   maxLines: 3,
@@ -1012,55 +897,13 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1088,7 +931,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _PanelTitle('动态设置', 'ID $id'),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '点赞人物',
           subtitle: '首次查看动态后等待指定秒数点赞；0 表示立即点赞。',
           children: [
@@ -1111,8 +954,8 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                     ),
                     SizedBox(
                       width: 70,
-                      child: _NumBox(
-                        value: _thumbDelay(thumbs[i]),
+                      child: NumBox(
+                        intOnly: true, value: _thumbDelay(thumbs[i]),
                         hint: '延迟秒',
                         onChanged: (v) => setState(() {
                           final list = _listOf(post, 'thumbs');
@@ -1125,7 +968,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                       ),
                     ),
                     const SizedBox(width: 6),
-                    _MiniBtn(
+                    WorkbenchMiniButton(
                       label: '移除',
                       danger: true,
                       onTap: () => setState(() {
@@ -1136,7 +979,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                   ],
                 ),
               ),
-            _MiniBtn(
+            WorkbenchMiniButton(
               label: '＋ 选择点赞人物',
               onTap: () async {
                 final picked = await _pickRole();
@@ -1152,7 +995,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
             ),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '白雨可选评论',
           subtitle: '玩家从这些评论中选择一条；在左侧评论卡片上点「白雨可选」添加。',
           children: [
@@ -1174,7 +1017,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
               ),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '发布条件',
           subtitle: '全部满足后才发布这条动态；空列表表示由剧情效果发布。',
           children: [
@@ -1208,13 +1051,13 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
           children: [
             _PanelTitle('评论设置', 'ID $id'),
             const Spacer(),
-            _MiniBtn(
+            WorkbenchMiniButton(
               label: '返回动态',
               onTap: () => setState(() => _target = null),
             ),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '发言者',
           children: [
             MouseRegion(
@@ -1248,7 +1091,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
             ),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '白雨可回复',
           subtitle: '在这条评论后，玩家可从这些回复中选一条。',
           children: [
@@ -1269,13 +1112,13 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
                 ],
               ),
             const SizedBox(height: 8),
-            _MiniBtn(
+            WorkbenchMiniButton(
               label: '＋ 添加白雨可选回复',
               onTap: () => _addComment(parentId: id, player: true),
             ),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '条件与效果',
           children: [
             Text('出现条件：${cond.length} 条　评论效果：${effect.length} 条',
@@ -1290,7 +1133,7 @@ class _SocialWorkbenchState extends State<SocialWorkbench>
           ],
         ),
         const SizedBox(height: 6),
-        _MiniBtn(
+        WorkbenchMiniButton(
           label: '删除这条评论',
           danger: true,
           onTap: () => _deleteComment(id),
@@ -1615,198 +1458,3 @@ class _PanelTitle extends StatelessWidget {
   }
 }
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({required this.value, required this.onChanged, this.hint});
-  final num? value;
-  final ValueChanged<num?> onChanged;
-  final String? hint;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value?.toString() ?? '');
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = widget.value?.toString() ?? '';
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) => widget.onChanged(
-          v.trim().isEmpty ? null : int.tryParse(v)),
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
-          ),
-        ),
-      ),
-    );
-  }
-}

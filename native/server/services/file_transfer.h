@@ -27,6 +27,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "server/httpd.h"
 
@@ -129,6 +131,24 @@ std::string download_url(const CosConfig& cfg, const std::string& key,
                          long long now_unix = 0);
 
 // ---------------------------------------------------------------------------
+// 分片上传（COS Multipart Upload）——超大模组包/资源的分片流式直传。
+//
+// 浏览器只拿「每一片的预签名 PUT URL」逐片直传对象存储（Blob.slice + XHR，
+// 单片内存可控），最后把每片 ETag 交回后端调 complete 合并；后端只在中转时
+// 走 1 次 initiate / 1 次 complete，不搬运正文字节。分片 PUT URL 的 query
+// 必须带 partNumber/uploadId，且二者都要进 SigV4 规范请求，故单列本函数。
+// ---------------------------------------------------------------------------
+
+// 单片大小：默认 8 MiB，并按总大小自适应放大以满足 S3/COS「片数 <= 10000」，
+// 上限 512 MiB。
+long long multipart_part_size(long long total_size);
+
+// 第 part_number 片的公网预签名 PUT URL（1 起）。expires_seconds<=0 取 900。
+std::string presign_part_url(const CosConfig& cfg, const std::string& key,
+                             const std::string& upload_id, int part_number,
+                             long long expires_seconds, long long now_unix = 0);
+
+// ---------------------------------------------------------------------------
 // 内网传输（真实实现走 sa_core::http；测试经 CosOps 注入）
 // ---------------------------------------------------------------------------
 struct CosOps {
@@ -140,6 +160,16 @@ struct CosOps {
     std::function<bool(const CosConfig&, const std::string&, std::string*)> remove;
     // put_cors(cfg, origins_csv, err) —— 写桶 CORS 规则（浏览器直传前置条件）
     std::function<bool(const CosConfig&, const std::string&, std::string*)> put_cors;
+    // multipart_initiate(cfg, key, err) -> upload_id（空 = 失败）
+    std::function<std::string(const CosConfig&, const std::string&, std::string*)>
+        multipart_initiate;
+    // multipart_complete(cfg, key, upload_id, [(part_number, etag)...], err)
+    std::function<bool(const CosConfig&, const std::string&, const std::string&,
+                       const std::vector<std::pair<long long, std::string>>&, std::string*)>
+        multipart_complete;
+    // multipart_abort(cfg, key, upload_id, err) —— best-effort 取消
+    std::function<bool(const CosConfig&, const std::string&, const std::string&, std::string*)>
+        multipart_abort;
 };
 
 bool default_download(const CosConfig& cfg, const std::string& key,
@@ -185,6 +215,10 @@ bool warm_now(const std::string& data_root, const std::string& id, std::string* 
 //                    GET /api/v1/files/:id/download 触发预热换下载直链。
 // ---------------------------------------------------------------------------
 bool mark_linked(const std::string& data_root, const std::string& id, std::string* err);
+// 本地分片上传记录被「复制进模组」后，删除记录与本地对象，避免同一份资源
+// 在 _cache 与模组目录各存一份。
+bool discard_local_record(const std::string& data_root, const std::string& id,
+                          std::string* err);
 bool materialize(const std::string& data_root, const std::string& id,
                  const std::string& dst_path, std::string* err);
 std::string register_local_artifact(const std::string& data_root, const std::string& name,

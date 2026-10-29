@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
   <!--
     If you are serving your web app in a path other than the root, change the
@@ -18,12 +18,19 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- viewport-fit=cover：iPad/iPhone 上让背景铺满刘海与圆角区域；
+       Flutter 侧的 SafeArea 负责把内容让开。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <meta name="description" content="学生时代模组编辑器 —— 面向《学生时代》模组作者的可视化编辑工具">
+  <!-- 浏览器 UI 配色：与加载屏、Flutter 主题的浅/深底色对齐，避免打开时先闪别的颜色。 -->
+  <meta name="theme-color" content="#F5F5F8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1b1b2e" media="(prefers-color-scheme: dark)">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="学生时代模组编辑器">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
@@ -33,19 +40,202 @@
 
   <title>学生时代模组编辑器</title>
   <link rel="manifest" href="manifest.json">
+  <!-- flutter_bootstrap.js 只有几 KB；提前拉取 ~6 MB 的主包，省掉一次串行往返。
+       字体/CanvasKit 不做 preload：它们由 bootstrap 以 fetch/XHR 取，as= 不匹配
+       的 preload 会被丢弃、反而多下一遍。 -->
+  <link rel="preload" href="main.dart.js" as="script">
+
+  <style>
+    :root {
+      --brand: #4F6EF7;
+      --bg: #F5F5F8;
+      --text: #4F6EF7;
+      --muted: #6F6F79;
+      --track: rgba(79, 110, 247, .16);
+      --error: #C4423A;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1b1b2e;
+        --text: #A9B6FF;
+        --muted: #A6A6B4;
+        --track: rgba(169, 182, 255, .18);
+        --error: #FF8A80;
+      }
+    }
+    html, body { margin: 0; background: var(--bg); }
+    #loading {
+      position: fixed; inset: 0; z-index: 1;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 24px; box-sizing: border-box; text-align: center;
+      background: var(--bg); color: var(--text);
+      font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+    }
+    #loading-title { font-size: 20px; letter-spacing: 2px; }
+    #loading-stage { color: var(--muted); font-size: 13px; margin-top: 12px; }
+    #loading-track {
+      width: 180px; height: 3px; border-radius: 2px; margin-top: 18px;
+      background: var(--track); overflow: hidden;
+    }
+    #loading-bar {
+      width: 35%; height: 100%; border-radius: 2px; background: var(--brand);
+      transition: transform .6s ease;
+    }
+    #loading-hint {
+      display: none; color: var(--muted); font-size: 12px;
+      margin-top: 16px; line-height: 1.7; max-width: 420px;
+    }
+    #loading-retry {
+      display: none; margin-top: 16px; padding: 8px 22px; border: 0; border-radius: 6px;
+      background: var(--brand); color: #fff; font-size: 13px; cursor: pointer;
+      font-family: inherit;
+    }
+    #update-banner {
+      display: none; position: fixed; z-index: 2147483647; top: 12px; left: 50%;
+      transform: translateX(-50%); align-items: center; gap: 12px;
+      max-width: calc(100vw - 32px); padding: 10px 14px; border-radius: 8px;
+      background: #2b2b3d; color: #fff; box-shadow: 0 6px 22px rgba(0, 0, 0, .28);
+      font: 13px/1.4 'Microsoft YaHei', sans-serif;
+    }
+    #update-reload {
+      padding: 5px 14px; border: 0; border-radius: 5px; background: var(--brand);
+      color: #fff; font-size: 13px; cursor: pointer; font-family: inherit;
+    }
+    #update-dismiss {
+      padding: 2px 6px; border: 0; background: transparent;
+      color: #c8c8d4; font-size: 15px; cursor: pointer;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #loading-bar { transition: none; }
+    }
+  </style>
 </head>
-<body style="margin:0;background:#F5F5F8">
-  <!-- 加载屏：Flutter 首帧渲染前显示中文提示，首帧后自动移除 -->
-  <div id="loading" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;font-family:'Microsoft YaHei',sans-serif">
-    <div style="color:#4F6EF7;font-size:20px;letter-spacing:2px">学生时代模组编辑器</div>
-    <div style="color:#6F6F79;font-size:13px;margin-top:12px">正在加载…</div>
+<body>
+  <noscript>
+    <div style="padding:24px;font-family:sans-serif;color:#4F6EF7">
+      学生时代模组编辑器需要启用 JavaScript 才能运行。
+    </div>
+  </noscript>
+
+  <!-- 加载屏：Flutter 首帧 + 内置中文字体就位后才移除（见下方脚本）。
+       纯 HTML/CSS，不依赖 Flutter 引擎，弱网 / 旧缓存下也有明确反馈。 -->
+  <div id="loading">
+    <div id="loading-title">学生时代模组编辑器</div>
+    <div id="loading-stage">正在加载…</div>
+    <div id="loading-track"><div id="loading-bar"></div></div>
+    <div id="loading-hint"></div>
+    <button id="loading-retry" type="button">重新加载</button>
   </div>
+
+  <!-- 新版本提示：前端产物被重新部署后（version.json 的 build 变了），
+       已打开的旧标签页会一直跑旧代码——给一条明确的刷新入口。 -->
+  <div id="update-banner">
+    <span>编辑器已更新，刷新后使用新版本</span>
+    <button type="button" id="update-reload">刷新</button>
+    <button type="button" id="update-dismiss" aria-label="稍后再说">✕</button>
+  </div>
+
   <script>
-    window.addEventListener('flutter-first-frame', function () {
-      var el = document.getElementById('loading');
-      if (el) el.remove();
-    });
+    (function () {
+      var loading = document.getElementById('loading');
+      var stage = document.getElementById('loading-stage');
+      var hint = document.getElementById('loading-hint');
+      var retry = document.getElementById('loading-retry');
+      var bar = document.getElementById('loading-bar');
+
+      var startedAt = Date.now();
+      var firstFrame = false;
+      var fontReady = false;
+      var removed = false;
+      var failed = false;
+
+      retry.onclick = function () { location.reload(); };
+
+      // 进度条只表达「有在动」，不做真实百分比（Flutter 首帧前拿不到）。
+      var tick = 0;
+      var barTimer = setInterval(function () {
+        tick = (tick + 1) % 4;
+        bar.style.transform = 'translateX(' + (tick * 55) + '%)';
+      }, 700);
+
+      function maybeRemove() {
+        if (removed || failed || !firstFrame) return;
+        // 字体就位立即让位；否则最多再等 2.5s——宁可先显示 Flutter 首帧，
+        // 也不让加载屏无限停留（字体晚到由引擎的 fontsChange 重排文本）。
+        if (!fontReady && Date.now() - startedAt < 2500) return;
+        removed = true;
+        clearInterval(barTimer);
+        clearInterval(fontPoll);
+        if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+      }
+
+      var fontPoll = setInterval(function () {
+        if (window.__editorFontReady) {
+          fontReady = true;
+          maybeRemove();
+        }
+      }, 100);
+
+      window.addEventListener('flutter-first-frame', function () {
+        firstFrame = true;
+        maybeRemove();
+      });
+
+      // 弱网：8s 还没起来就说明白「在等什么」，别让用户以为卡死。
+      setTimeout(function () {
+        if (removed || failed) return;
+        hint.style.display = 'block';
+        hint.textContent = '首次打开需要下载编辑器资源，网络较慢时可能要等一会儿。';
+      }, 8000);
+
+      // 15s 仍无首帧：不当作致命错误（可能只是很慢），但给出可点的出口。
+      setTimeout(function () {
+        if (removed || failed) return;
+        hint.style.display = 'block';
+        hint.textContent = '仍在加载…如果长时间没有反应，请点击下方按钮重新加载。';
+        retry.style.display = 'inline-block';
+      }, 15000);
+
+      // 启动脚本加载失败（离线 / 部署目录缺文件 / 旧缓存）→ 明确报错 + 重试。
+      window.__editorBootFail = function (reason) {
+        if (failed) return;
+        failed = true;
+        clearInterval(barTimer);
+        clearInterval(fontPoll);
+        stage.textContent = '加载失败';
+        stage.style.color = 'var(--error)';
+        hint.style.display = 'block';
+        hint.textContent = (reason ? reason + '。' : '') +
+          '请检查网络连接后重试；若刚升级过版本，请按 Ctrl+F5 强制刷新。';
+        retry.style.display = 'inline-block';
+      };
+    })();
+
+    // 前端产物更新检测：每 2 分钟比对 version.json 的 build 指纹。
+    // 首次请求只记录基线（本页加载时的版本），之后变化才提示。
+    (function () {
+      var bootBuild = null;
+      var banner = document.getElementById('update-banner');
+      document.getElementById('update-reload').onclick = function () { location.reload(); };
+      document.getElementById('update-dismiss').onclick = function () {
+        banner.style.display = 'none';
+      };
+
+      function check() {
+        fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (v) {
+            if (!v || !v.build) return;
+            if (bootBuild === null) { bootBuild = v.build; return; }
+            if (v.build !== bootBuild) banner.style.display = 'flex';
+          })
+          .catch(function () { /* 离线 / 旧后端没有该文件：静默 */ });
+      }
+      check();
+      setInterval(check, 120000);
+    })();
   </script>
-  <script src="flutter_bootstrap.js" async></script>
+  <script src="flutter_bootstrap.js" async
+          onerror="window.__editorBootFail && window.__editorBootFail('无法加载启动脚本')"></script>
 </body>
 </html>

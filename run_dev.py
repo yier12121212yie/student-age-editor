@@ -88,9 +88,17 @@ def wait_ready(deadline_s=60):
 
 def start_backend(exe, build_dir):
     log(f"拉起后端: {exe} --port {PORT}")
+    env = os.environ.copy()
+    tex2d_role = os.path.join(REPO_ROOT, "Tex2D", "role")
+    tex2d_bg = os.path.join(REPO_ROOT, "Tex2D", "bg")
+    if os.path.isdir(tex2d_role):
+        env.setdefault("EDITOR_PORTRAIT_DIR", tex2d_role)
+    if os.path.isdir(tex2d_bg):
+        env.setdefault("EDITOR_BG_DIR", tex2d_bg)
     return subprocess.Popen(
         [exe, "--port", str(PORT)],
         cwd=os.path.join(NATIVE_DIR, build_dir, "bin"),
+        env=env,
     )
 
 
@@ -144,16 +152,19 @@ def main():
     elif probe():
         log(f"端口 {PORT} 已有在线后端,直接复用")
     else:
+        t0 = time.monotonic()
         proc = start_backend(exe, build_dir)
         try:
             if not wait_ready():
                 proc.terminate()
                 sys.exit(f"[run_dev] 后端启动超时(60s 未就绪),请手动运行 {exe} 查看报错")
+            log(f"后端已就绪 (耗时 {time.monotonic() - t0:.1f}s, 端口 {PORT})")
         except Exception:
             shutdown_backend(proc)
             raise
 
-    log(f"flutter run {' '.join(flutter_extra)}(Ctrl+C 退出)")
+    extra_str = f" {' '.join(flutter_extra)}" if flutter_extra else ""
+    log(f"正在从源码启动前端: flutter run{extra_str} (Ctrl+C 退出)")
     try:
         rc = subprocess.run([flutter_cmd(), "run", *flutter_extra], cwd=FRONTEND_DIR).returncode
     except FileNotFoundError:

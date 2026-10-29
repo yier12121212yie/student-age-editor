@@ -87,6 +87,15 @@ struct Request {
     // false 以 Error::Other 中止。防止「首跳已验、次跳 302 绕过护栏」的 SSRF
     // 旁路——cloud_sync 用它把 cloud-public-only 校验延伸到重定向链每一跳。
     std::function<bool(const std::string& redirect_url)> redirect_allowed;
+
+    // 响应头到达时回调（status + 已解析的 headers），在首个 body 块之前触发。
+    // SSE 透传用它在流开始前确定下游状态码 / Content-Type。
+    std::function<void(int, const std::vector<std::pair<std::string, std::string>>&)>
+        on_response;
+
+    // 只关心 on_chunk、不需要在内存里保留完整响应体时置 true（AI SSE / 大文件
+    // 转发）。默认 false 保持既有 request()/request_stream() 的累积语义。
+    bool discard_body = false;
 };
 
 struct Response {

@@ -5,6 +5,7 @@
 //   生命周期阈值、CDN 直链、文件名清洗与配置读取。
 #include <catch_amalgamated.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <filesystem>
@@ -125,6 +126,23 @@ sa::file_transfer::CosOps mem_ops(const std::shared_ptr<MemCos>& m) {
         m->objects.erase(key);
         return true;
     };
+    // 分片上传 seam：initiate 返回固定 id；complete/abort 只校验入参形状，
+    // 测试自行把「各片 PUT 后的合并结果」塞进 objects[key] 模拟浏览器直传。
+    ops.multipart_initiate = [](const CosConfig&, const std::string&, std::string*) -> std::string {
+        return "UPLOAD-TEST-1";
+    };
+    ops.multipart_complete =
+        [](const CosConfig&, const std::string&, const std::string&,
+           const std::vector<std::pair<long long, std::string>>& parts,
+           std::string* err) -> bool {
+        if (parts.empty()) {
+            if (err) *err = "no parts";
+            return false;
+        }
+        return true;
+    };
+    ops.multipart_abort = [](const CosConfig&, const std::string&, const std::string&,
+                             std::string*) -> bool { return true; };
     return ops;
 }
 
@@ -175,6 +193,48 @@ TEST_CASE("file_transfer: presign PUT url is well-formed and time-sensitive",
     REQUIRE(url == again);
     const std::string other_ttl = presign_url(cfg, "PUT", key, 900, 1700000000);
     REQUIRE(signature_of(other_ttl) != signature_of(url));
+}
+
+TEST_CASE("file_transfer: multipart part presign carries partNumber/uploadId",
+          "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosConfig cfg;
+    cfg.secret_id = "AKIDTEST";
+    cfg.secret_key = "SECRETKEY";
+    cfg.bucket = "testbucket-1250000000";
+    cfg.region = "ap-guangzhou";
+    cfg.public_endpoint = "https://cos.ap-guangzhou.myqcloud.com";
+
+    const std::string key = "editor-files/staging/abc/big.bin";
+    const std::string up = "UPLOAD+ID/with=chars";
+    const std::string url = presign_part_url(cfg, key, up, 7, 1800, 1700000000);
+    REQUIRE(url.rfind("https://cos.ap-guangzhou.myqcloud.com/testbucket-1250000000/" + key +
+                          "?",
+                      0) == 0);
+    REQUIRE(url.find("partNumber=7") != std::string::npos);
+    // uploadId 值里的 '/' '=' 必须按 RFC3986 编码进 query 与签名。
+    REQUIRE(url.find("uploadId=UPLOAD%2BID%2Fwith%3Dchars") != std::string::npos);
+    REQUIRE(is_hex64(signature_of(url)));
+    REQUIRE(url == presign_part_url(cfg, key, up, 7, 1800, 1700000000));  // 确定性
+    // 不同片 -> 不同签名。
+    const std::string p8 = presign_part_url(cfg, key, up, 8, 1800, 1700000000);
+    REQUIRE(signature_of(p8) != signature_of(url));
+    // part_number <= 0 直接拒绝。
+    REQUIRE(presign_part_url(cfg, key, up, 0, 1800, 1700000000).empty());
+}
+
+TEST_CASE("file_transfer: multipart part size adapts to keep <= 10000 parts",
+          "[file_transfer]") {
+    using namespace sa::file_transfer;
+    constexpr long long kMiB = 1024 * 1024;
+    REQUIRE(multipart_part_size(0) == 8 * kMiB);
+    REQUIRE(multipart_part_size(10 * kMiB) == 8 * kMiB);
+    // 100 GiB / 8 MiB 超过 10000 片 -> 放大到 >= 100 GiB/10000，且对齐 MiB。
+    const long long big = 100LL * 1024 * kMiB;
+    const long long ps = multipart_part_size(big);
+    REQUIRE(ps >= (big + 9999) / 10000);
+    REQUIRE((big + ps - 1) / ps <= 10000);
+    REQUIRE(ps % kMiB == 0);
 }
 
 TEST_CASE("file_transfer: sanitize_name strips paths and rejects dot-only",
@@ -290,6 +350,208 @@ TEST_CASE("file_transfer: end-to-end state machine over routes and workers",
                                          json());
     REQUIRE(dl3.status == 202);
     REQUIRE(dl3.json_payload.value("status", std::string()) == "warming_up");
+}
+
+TEST_CASE("file_transfer: multipart init/sign/complete/abort over routes",
+          "[file_transfer]") {
+    using namespace sa::file_transfer;
+    CosEnv env;
+    auto mem = std::make_shared<MemCos>();
+    g_mem = mem;
+    set_cos_ops_for_test(mem_ops(mem));
+    struct Reset {
+        ~Reset() { reset_cos_ops_for_test(); }
+    } reset;
+    const std::string root = env.root();
+    sa::Router r = make_router();
+
+    const std::string payload(3u * 1024 * 1024, 'z');
+    auto init = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/multipart/init", {},
+        json{{"name", "大模组.zip"}, {"size", static_cast<long long>(payload.size())}});
+    REQUIRE(init.status == 200);
+    const std::string id = init.json_payload.value("file_id", std::string());
+    REQUIRE(id.size() == 32);
+    REQUIRE(init.json_payload.value("upload_mode", std::string()) == "multipart");
+    REQUIRE(init.json_payload.value("part_size", 0LL) > 0);
+    REQUIRE(init.json_payload.value("part_count", 0LL) == 1);
+    const json rec0 = find_record(root, id);
+    REQUIRE(rec0.value("status", std::string()) == "pending_upload");
+    REQUIRE(rec0.value("multipart", false) == true);
+    REQUIRE(rec0.value("upload_id", std::string()) == "UPLOAD-TEST-1");
+    const std::string key = rec0.value("key", std::string());
+    REQUIRE(key.find("/staging/") != std::string::npos);
+
+    // 每片签名：URL 带 partNumber/uploadId；越界/未知 id 拒绝。
+    auto sign = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/multipart/sign", {},
+        json{{"file_id", id}, {"part_number", 1}});
+    REQUIRE(sign.status == 200);
+    const std::string part_url =
+        sign.json_payload["parts"][0].value("part_url", std::string());
+    REQUIRE(part_url.find("partNumber=1") != std::string::npos);
+    REQUIRE(part_url.find("uploadId=UPLOAD-TEST-1") != std::string::npos);
+    CHECK(sa::sa_test::dispatch_in_proc(
+              r, "POST", "/api/v1/files/upload/multipart/sign", {},
+              json{{"file_id", id}, {"part_number", 2}})
+              .status == 400);
+    CHECK(sa::sa_test::dispatch_in_proc(
+              r, "POST", "/api/v1/files/upload/multipart/sign", {},
+              json{{"file_id", "0000000000000000000000000000dead"}, {"part_number", 1}})
+              .status == 404);
+
+    // 模拟浏览器逐片 PUT 后的合并结果，再 complete。
+    mem->objects[key] = payload;
+    json parts = json::array();
+    parts.push_back(json{{"part_number", 1}, {"etag", "\"abc123\""}});
+    auto done = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/multipart/complete", {},
+        json{{"file_id", id}, {"parts", parts}});
+    REQUIRE(done.status == 202);
+    REQUIRE(find_record(root, id).value("status", std::string()) == "archiving");
+    CHECK(sa::sa_test::dispatch_in_proc(
+              r, "POST", "/api/v1/files/upload/multipart/complete", {},
+              json{{"file_id", id}, {"parts", parts}})
+              .status == 202);  // 幂等
+
+    // 与单次直传同款落盘管线。
+    std::string err;
+    REQUIRE(archive_now(root, id, &err));
+    REQUIRE(find_record(root, id).value("status", std::string()) == "archived");
+
+    // abort：新的 pending 分片记录取消后标记失败（幂等返回已归档记录）。
+    auto init2 = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/multipart/init", {},
+        json{{"name", "再传.zip"}, {"size", 1024}});
+    REQUIRE(init2.status == 200);
+    const std::string id2 = init2.json_payload.value("file_id", std::string());
+    auto abort = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/multipart/abort", {}, json{{"file_id", id2}});
+    REQUIRE(abort.status == 200);
+    REQUIRE(abort.json_payload.value("ok", false) == true);
+    REQUIRE(find_record(root, id2).value("status", std::string()) == "failed");
+    // 已归档记录再 abort：幂等 200，不改状态。
+    CHECK(sa::sa_test::dispatch_in_proc(
+              r, "POST", "/api/v1/files/upload/multipart/abort", {}, json{{"file_id", id}})
+              .status == 200);
+    REQUIRE(find_record(root, id).value("status", std::string()) == "archived");
+}
+
+TEST_CASE("file_transfer: local chunk upload works without COS", "[file_transfer]") {
+    using namespace sa::file_transfer;
+    TempDir td;
+    EnvGuard data_root("EDITOR_DATA_ROOT", td.str());
+    // 本用例验证「没有任何对象存储」的部署：显式清空两套别名，避免开发机
+    // 上残留的 COS 环境变量把 modes 探测变成 cos=true。
+    EnvGuard sid("EDITOR_FILE_COS_SECRET_ID", "");
+    EnvGuard skey("EDITOR_FILE_COS_SECRET_KEY", "");
+    EnvGuard bucket("EDITOR_FILE_COS_BUCKET", "");
+    EnvGuard sid2("EDITOR_COS_SECRET_ID", "");
+    EnvGuard skey2("EDITOR_COS_SECRET_KEY", "");
+    EnvGuard bucket2("EDITOR_COS_BUCKET", "");
+    const std::string root = td.str();
+
+    sa::Router r = make_router();
+
+    auto modes =
+        sa::sa_test::dispatch_in_proc(r, "GET", "/api/v1/files/upload/modes", {}, json{});
+    REQUIRE(modes.status == 200);
+    REQUIRE(modes.json_payload["cos"] == false);
+    REQUIRE(modes.json_payload["local"] == true);
+    const long long part_size = modes.json_payload.value("part_size", 0LL);
+    REQUIRE(part_size == 8LL * 1024 * 1024);
+
+    // 跨分片边界：8 MiB + 123 字节 -> 2 片。
+    const std::string payload(static_cast<size_t>(part_size) + 123, 'q');
+    auto init = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/local/init", {},
+        json{{"name", "大包.zip"}, {"size", static_cast<long long>(payload.size())}});
+    REQUIRE(init.status == 200);
+    const std::string id = init.json_payload.value("file_id", std::string());
+    REQUIRE(init.json_payload.value("part_size", 0LL) == part_size);
+    REQUIRE(init.json_payload.value("part_count", 0LL) == 2);
+
+    // 逐片 PUT：Req::raw_body 模拟 httpd 保留的原始字节（不经 JSON）。
+    for (long long n = 1; n <= 2; ++n) {
+        const long long offset = (n - 1) * part_size;
+        const long long len =
+            std::min<long long>(part_size, static_cast<long long>(payload.size()) - offset);
+        sa::Req req;
+        req.method = "PUT";
+        req.path = "/api/v1/files/upload/local/" + id + "/part/" + std::to_string(n);
+        req.body = json{};
+        req.raw_body = payload.substr(static_cast<size_t>(offset), static_cast<size_t>(len));
+        REQUIRE(r.dispatch(req).status == 200);
+    }
+
+    // 片大小不符 -> 400（防止半包落盘）。
+    {
+        sa::Req bad;
+        bad.method = "PUT";
+        bad.path = "/api/v1/files/upload/local/" + id + "/part/2";
+        bad.raw_body = "short";
+        CHECK(r.dispatch(bad).status == 400);
+    }
+
+    auto done = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/local/complete", {}, json{{"file_id", id}});
+    REQUIRE(done.status == 200);
+    REQUIRE(done.json_payload.value("status", std::string()) == "archived");
+    const json rec = find_record(root, id);
+    REQUIRE(rec.value("storage_type", std::string()) == "local");
+    REQUIRE(rec.value("local_upload", false) == true);
+    const std::string local_path = rec.value("local_path", std::string());
+    REQUIRE(sa_core::paths::read_bytes(local_path) == payload);
+
+    // 没有 COS 时下载直接给本地 /raw 地址。
+    auto dl = sa::sa_test::dispatch_in_proc(r, "GET", "/api/v1/files/" + id + "/download",
+                                            {}, json{});
+    REQUIRE(dl.status == 200);
+    REQUIRE(dl.json_payload.value("local", false) == true);
+    REQUIRE(dl.json_payload.value("url", std::string()) == "/api/v1/files/" + id + "/raw");
+
+    // /raw 是 chunked 流：逐块取回后应与原字节一致。
+    struct Collect : sa::StreamEmitter {
+        std::string body;
+        int status = 0;
+        bool start(int s, std::string,
+                   std::vector<std::pair<std::string, std::string>>) override {
+            status = s;
+            return true;
+        }
+        bool write(std::string_view c) override {
+            body.append(c.data(), c.size());
+            return true;
+        }
+    } emitter;
+    sa::Req raw_req;
+    raw_req.method = "GET";
+    raw_req.path = "/api/v1/files/" + id + "/raw";
+    auto raw = r.dispatch(raw_req);
+    REQUIRE(raw.body_stream);
+    REQUIRE(raw.body_stream(emitter));
+    REQUIRE(emitter.status == 200);
+    REQUIRE(emitter.body == payload);
+
+    // add_ref 的本地分支：复制进模组目录后删除暂存记录与对象。
+    std::string err;
+    const std::string copy = td.str() + "/copied.zip";
+    REQUIRE(materialize(root, id, copy, &err));
+    REQUIRE(sa_core::paths::read_bytes(copy) == payload);
+    REQUIRE(discard_local_record(root, id, &err));
+    REQUIRE_FALSE(find_record(root, id).is_object());
+    REQUIRE_FALSE(sa_core::paths::exists(local_path));
+
+    // abort：待上传记录标记失败并清掉暂存分片目录。
+    auto init2 = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/local/init", {},
+        json{{"name", "另起.zip"}, {"size", 1024}});
+    REQUIRE(init2.status == 200);
+    const std::string id2 = init2.json_payload.value("file_id", std::string());
+    auto abort = sa::sa_test::dispatch_in_proc(
+        r, "POST", "/api/v1/files/upload/local/abort", {}, json{{"file_id", id2}});
+    REQUIRE(abort.status == 200);
+    REQUIRE(find_record(root, id2).value("status", std::string()) == "failed");
 }
 
 TEST_CASE("file_transfer: archive size mismatch fails and keeps staging",

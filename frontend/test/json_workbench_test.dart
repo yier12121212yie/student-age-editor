@@ -90,14 +90,14 @@ void main() {
 
   testWidgets('JSON 侧栏：选表后渲染记录与 JSON', (tester) async {
     await pumpWorkbench(tester, const Size(1500, 950));
-    expect(find.text('选择左侧一张配置表，查看与编辑其原始 JSON。'), findsOneWidget);
+    expect(find.text('选择左侧一张配置表，查看与编辑其原始数据。'), findsOneWidget);
 
     await openEvt(tester);
     expect(tester.takeException(), isNull, reason: 'JSON 侧栏渲染不应异常');
     expect(find.text('记录 #1'), findsOneWidget);
     expect(find.text('事件A'), findsWidgets);
-    expect(find.text('JSON 有效'), findsOneWidget);
-    expect(find.text('2 条记录 · JSON 原始编辑'), findsOneWidget);
+    expect(find.text('格式正确'), findsOneWidget);
+    expect(find.text('2 条记录 · 原始数据编辑'), findsOneWidget);
   });
 
   testWidgets('JSON 侧栏：非法 JSON 提示且禁止保存', (tester) async {
@@ -106,7 +106,7 @@ void main() {
 
     await tester.enterText(find.byType(EditableText).last, '不是 JSON');
     await tester.pump();
-    expect(find.text('JSON 有误'), findsOneWidget);
+    expect(find.text('格式有误'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -117,7 +117,7 @@ void main() {
     await tester.enterText(
         find.byType(EditableText).last, '{"id":1,"title":"改过了"}');
     await tester.pump();
-    expect(find.text('JSON 有效'), findsOneWidget);
+    expect(find.text('格式正确'), findsOneWidget);
     expect(find.text('有未保存的修改'), findsOneWidget);
 
     await tester.tap(find.text('保存修改'));
@@ -134,7 +134,7 @@ void main() {
     expect(tester.takeException(), isNull, reason: '窄窗不应溢出');
   });
 
-  testWidgets('导演主页「JSON 侧栏」卡片进入', (tester) async {
+  testWidgets('导演主页「模组管理 · 高级配置」进入 JSON 工作台', (tester) async {
     tester.view.physicalSize = const Size(1500, 950);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -154,12 +154,14 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    await tester.ensureVisible(find.text('JSON 侧栏').first);
+    // 主页卡片网格已按对标产品净化为 52 张业务卡片，JSON 编辑器入口移至
+    // 主页「模组管理」按钮组的「高级配置」（见 plan/director_mode_sync_plan.md）。
+    await tester.ensureVisible(find.text('高级配置').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('JSON 侧栏').first);
+    await tester.tap(find.text('高级配置').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.text('搜索配置表名（如 EvtCfg）'), findsOneWidget);
+    expect(find.text('搜索配置表名'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

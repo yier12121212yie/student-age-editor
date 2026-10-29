@@ -1,12 +1,17 @@
 {
     "name": "学生时代模组编辑器",
     "short_name": "学生时代编辑器",
+    "id": "./",
     "start_url": ".",
+    "scope": "./",
     "display": "standalone",
+    "orientation": "any",
+    "lang": "zh-CN",
+    "dir": "ltr",
     "background_color": "#1b1b2e",
     "theme_color": "#4F6EF7",
-    "description": "面向《学生时代》模组作者的可视化编辑工具：AI 对话式改模、剧情图节点编排、多网盘云同步、TTS 配音。",
-    "orientation": "portrait-primary",
+    "description": "面向《学生时代》模组作者的可视化编辑工具：AI 对话式改模、剧情图节点编排、多网盘云同步。",
+    "categories": ["productivity", "developer"],
     "prefer_related_applications": false,
     "icons": [
         {

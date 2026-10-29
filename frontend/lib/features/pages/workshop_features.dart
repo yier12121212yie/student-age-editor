@@ -19,6 +19,10 @@ class WorkshopFeature {
     this.resourceOnly = false,
     this.defaultFavorite = false,
     this.favoriteOrder = 0,
+    this.homeTables = false,
+    this.native = true,
+    this.tableLabels = const {},
+    this.library,
   });
 
   final String id;
@@ -34,6 +38,37 @@ class WorkshopFeature {
   final bool resourceOnly;
   final bool defaultFavorite;
   final int favoriteOrder;
+
+  /// 是否在主页直接以表卡片形式展开。
+  final bool homeTables;
+
+  /// 是否为「素材目录」卡片（素材库分区、不可收藏、点击直达对应素材分类）。
+  bool get isLibrary => library != null;
+
+  /// 素材卡片对应的素材分类：background / cg / audio / avatar。
+  final String? library;
+
+  /// 是否作为配置项出现在主页卡片网格。`false` 表示归属于「模组管理」工具栏。
+  final bool native;
+
+  /// 多表功能的分类标签：表名 -> 友好名称（对标参考产品的 `tableLabels`）。
+  final Map<String, String> tableLabels;
+}
+
+/// 按 id 查找主页功能（找不到返回 null）。
+WorkshopFeature? featureById(String id) {
+  for (final f in kWorkshopFeatures) {
+    if (f.id == id) return f;
+  }
+  return null;
+}
+
+/// 按配置表名查找所属功能（找不到返回 null）。
+WorkshopFeature? featureByTable(String tableName) {
+  for (final f in kWorkshopFeatures) {
+    if (f.tables.contains(tableName)) return f;
+  }
+  return null;
 }
 
 const kWorkshopFeatures = <WorkshopFeature>[
@@ -48,6 +83,11 @@ const kWorkshopFeatures = <WorkshopFeature>[
     entryKind: 'story',
     createLabel: '新建剧情',
     defaultFavorite: true,
+    tableLabels: {
+      'EvtCfg': '事件',
+      'TalkCfg': '对白',
+      'OptionCfg': '选项',
+    },
   ),
   WorkshopFeature(
     id: 'persons',
@@ -61,6 +101,11 @@ const kWorkshopFeatures = <WorkshopFeature>[
     createLabel: '添加人物',
     defaultFavorite: true,
     favoriteOrder: 1,
+    tableLabels: {
+      'PersonCfg': '人物',
+      'PersonGrowCfg': '成长喜好',
+      'ModFaceCfg': '自定义表情',
+    },
   ),
   WorkshopFeature(
     id: 'items',
@@ -74,6 +119,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     createLabel: '添加物品',
     defaultFavorite: true,
     favoriteOrder: 3,
+    tableLabels: {'ItemCfg': '物品', 'BookCfg': '书籍'},
   ),
   WorkshopFeature(
     id: 'posts',
@@ -132,6 +178,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     entryKind: 'table',
     createLabel: '添加背景',
     resourceOnly: true,
+    library: 'background',
   ),
   WorkshopFeature(
     id: 'cgs',
@@ -144,6 +191,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     entryKind: 'table',
     createLabel: '添加 CG',
     resourceOnly: true,
+    library: 'cg',
   ),
   WorkshopFeature(
     id: 'memories',
@@ -177,8 +225,6 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'IntentCfg',
     entryKind: 'table',
     createLabel: '添加目标',
-    defaultFavorite: true,
-    favoriteOrder: 4,
   ),
   WorkshopFeature(
     id: 'shops',
@@ -190,8 +236,6 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'ShopCfg',
     entryKind: 'table',
     createLabel: '添加商品',
-    defaultFavorite: true,
-    favoriteOrder: 5,
   ),
   WorkshopFeature(
     id: 'audio',
@@ -204,6 +248,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     entryKind: 'table',
     createLabel: '添加声音',
     resourceOnly: true,
+    library: 'audio',
   ),
   WorkshopFeature(
     id: 'comments',
@@ -227,6 +272,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     entryKind: 'table',
     createLabel: '添加头像',
     resourceOnly: true,
+    library: 'avatar',
   ),
   WorkshopFeature(
     id: 'profiles',
@@ -260,6 +306,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'InteractCfg',
     entryKind: 'idle-chats',
     createLabel: '添加闲聊',
+    tableLabels: {'InteractCfg': '闲聊', 'TalkCfg': '闲聊对白'},
   ),
   WorkshopFeature(
     id: 'external-dialogues',
@@ -313,6 +360,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     group: '模组工具',
     entryKind: 'manifest',
     createLabel: '打开',
+    native: false,
   ),
   WorkshopFeature(
     id: 'resources',
@@ -322,6 +370,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     group: '模组工具',
     entryKind: 'resources',
     createLabel: '打开',
+    native: false,
   ),
   WorkshopFeature(
     id: 'movies',
@@ -366,6 +415,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'JobCfg',
     entryKind: 'table',
     createLabel: '添加职业',
+    tableLabels: {'JobCfg': '职业', 'JobUnlockCfg': '职业解锁'},
   ),
   WorkshopFeature(
     id: 'negotiation-players',
@@ -410,6 +460,12 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'ExploreCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'ExploreCfg': '集市',
+      'ActionCfg': '市场行动',
+      'ItemCfg': '物品售价',
+      'BookCfg': '书籍售价',
+    },
   ),
   WorkshopFeature(
     id: 'news',
@@ -421,6 +477,11 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'NewsCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'NewsCfg': '早报新闻',
+      'NewsCommentCfg': '新闻评论',
+      'NewsTypeCfg': '新闻分类',
+    },
   ),
   WorkshopFeature(
     id: 'anime',
@@ -432,6 +493,18 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'AnimationCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'AnimationCfg': '番剧',
+      'AnimeConCfg': '漫展活动',
+      'AnimationTypeCfg': '番剧分类',
+      'AnimationWifeCfg': '本命角色',
+      'AnimationRankCfg': '追番评级',
+      'AnimationCostCfg': '追番消耗',
+      'AnimeConExpCfg': '漫展经验',
+      'AnimeKzoneContentCfg': '追番动态',
+      'AnimeMarkCntCfg': '追番标记',
+      'TalkAnimeCfg': '追番对白',
+    },
   ),
   WorkshopFeature(
     id: 'fishing',
@@ -443,6 +516,12 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'FishCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'FishCfg': '鱼类',
+      'FishBaitCfg': '鱼饵',
+      'FishTypeCfg': '鱼类分类',
+      'FishDiffCfg': '难度',
+    },
   ),
   WorkshopFeature(
     id: 'travel',
@@ -454,6 +533,12 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'TripSpotCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'TripSpotCfg': '景点',
+      'TripTypeCfg': '旅游分类',
+      'TripLevelCfg': '旅游等级',
+      'TripEffectCfg': '游览效果',
+    },
   ),
   WorkshopFeature(
     id: 'expo',
@@ -465,6 +550,11 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'ExpoSiteCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'ExpoSiteCfg': '展馆',
+      'ExpoAttrCfg': '展会属性',
+      'ExpoEvtCfg': '游览事件',
+    },
   ),
   WorkshopFeature(
     id: 'detective-club',
@@ -476,6 +566,15 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'ClubActivityCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'ClubActivityCfg': '社团活动',
+      'ClubMemberCfg': '社团成员',
+      'ClubDepartmentCfg': '部门',
+      'ClubDailyCfg': '日常事务',
+      'ClueRumorCfg': '流言线索',
+      'ClubMemeberCntCfg': '成员计数',
+      'ClubFundsCfg': '社团经费',
+    },
   ),
   WorkshopFeature(
     id: 'crafts',
@@ -487,6 +586,11 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'DIYCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'DIYCfg': '手工作品',
+      'DIYRankCfg': '作品评级',
+      'HandicraftMiniGameCfg': '拼装判定点',
+    },
   ),
   WorkshopFeature(
     id: 'birthday-party',
@@ -498,6 +602,14 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'BirthdayPaintCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'BirthdayPaintCfg': '猜画题目',
+      'LineMatchMinigameCfg': '连线题目',
+      'BirthdayPaintGuessCfg': '猜画反应',
+      'BirthdayRewardCfg': '派对奖励',
+      'BirthdayLvCfg': '派对等级',
+      'BirthdayScoreCfg': '派对计分',
+    },
   ),
   WorkshopFeature(
     id: 'negotiation-teams',
@@ -509,6 +621,11 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'NegotiationTeamCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'NegotiationTeamCfg': '交涉队伍',
+      'NegotiationTeammateCfg': '可招募队友',
+      'NegotiationPlayerCfg': '对手',
+    },
   ),
   WorkshopFeature(
     id: 'negotiation-topics',
@@ -520,6 +637,13 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'NegotiationTopicCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'NegotiationTopicCfg': '交涉话题',
+      'NegotiationCfg': '交涉对局',
+      'NegotiationTalkCfg': '交涉对话',
+      'NegotiationChatCfg': '交涉闲聊',
+      'NegotiationInvolvedCfg': '涉及人物',
+    },
   ),
   WorkshopFeature(
     id: 'negotiation-decks',
@@ -531,6 +655,15 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'NegotiationMiniGameCardCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {
+      'NegotiationMiniGameCardCfg': '普通牌',
+      'NegotiationUniqueCardCfg': '特殊牌',
+      'NegotiationMiniGameCardTypeCfg': '牌型与克制',
+      'NegotiationSkillCfg': '技能',
+      'NegotiationBuffCfg': '增益',
+      'NegotiationMiniGameCfg': '对局规则',
+      'MomPowerCfg': '妈妈之力',
+    },
   ),
   WorkshopFeature(
     id: 'job-unlocks',
@@ -542,6 +675,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'JobUnlockCfg',
     entryKind: 'table',
     createLabel: '添加内容',
+    tableLabels: {'JobUnlockCfg': '职业解锁', 'JobCfg': '职业'},
   ),
   WorkshopFeature(
     id: 'minigames',
@@ -552,6 +686,15 @@ const kWorkshopFeatures = <WorkshopFeature>[
     group: '玩法与配置',
     primaryTable: 'MinigameCfg',
     entryKind: 'table',
+    tableLabels: {
+      'MinigameCfg': '小游戏',
+      'MinigameActionCfg': '社交关卡',
+      'HandicraftMiniGameCfg': '手工拼装',
+      'LineMatchMinigameCfg': '连线',
+      'NegotiationMiniGameCfg': '交涉规则',
+      'NegotiationMiniGameCardCfg': '交涉牌组',
+      'NegotiationMiniGameCardTypeCfg': '牌型与克制',
+    },
   ),
   WorkshopFeature(
     id: 'television',
@@ -574,6 +717,10 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'LoveVindicateCfg',
     entryKind: 'table',
     createLabel: '添加表白',
+    tableLabels: {
+      'LoveVindicateCfg': '告白提示',
+      'LoveVindicateRateCfg': '人物成功率',
+    },
   ),
   WorkshopFeature(
     id: 'love-actions',
@@ -629,6 +776,7 @@ const kWorkshopFeatures = <WorkshopFeature>[
     primaryTable: 'LoveRibbonCfg',
     entryKind: 'table',
     createLabel: '添加祈福',
+    tableLabels: {'LoveRibbonCfg': '恋爱飘带', 'WishCfg': '许愿内容'},
   ),
   WorkshopFeature(
     id: 'gift-events',

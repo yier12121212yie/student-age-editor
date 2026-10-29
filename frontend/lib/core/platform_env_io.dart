@@ -8,3 +8,8 @@ bool get isAndroidPlatform => Platform.isAndroid;
 
 /// 读取环境变量（Web 上恒 null）。
 String? envValue(String name) => Platform.environment[name];
+
+/// 诊断页用的桌面环境摘要（Web 上为空串）。
+String desktopEnvironmentSummary() =>
+    '${Platform.operatingSystem} ${Platform.operatingSystemVersion}'
+    ' · ${Platform.numberOfProcessors} cores';

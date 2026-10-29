@@ -23,6 +23,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -79,6 +80,7 @@ class BaseStore final : public BaseStoreApi {
     };
 
     void build_evt_index_locked() const;
+    void build_evt_key_index_locked() const;
     std::shared_ptr<const json> table_shared_locked(const std::string& cfg) const;
 
     mutable std::mutex mu_;
@@ -96,6 +98,14 @@ class BaseStore final : public BaseStoreApi {
     mutable std::map<std::string, std::shared_ptr<const std::set<int64_t>>> ids_cache_;
     // Lazy EvtCfg search index (invalidated on load).
     mutable std::shared_ptr<const std::vector<RowIndex>> evt_index_;
+
+    // Lazy `evt_id -> TalkCfg / OptionCfg 行键` 前缀索引（load 时失效）。
+    // TalkCfg / OptionCfg 都是数万行的大表，extract_event 原先**每次请求都把
+    // 两张表各全量遍历一遍**（O(10 万)）只为挑出某个事件的那几行。建一次索引后
+    // 命中成本降为 O(匹配数)。索引按源表插入序构建，输出顺序与原全表扫描一致。
+    mutable std::unordered_map<std::string, std::vector<std::string>> evt_talk_keys_;
+    mutable std::unordered_map<std::string, std::vector<std::string>> evt_opt_keys_;
+    mutable bool evt_key_index_ready_ = false;
 };
 
 // Process singleton + registration helper. register_p4_base_store() creates the

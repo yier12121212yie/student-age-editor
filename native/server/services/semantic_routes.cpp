@@ -244,60 +244,9 @@ std::string norm_for_match(const std::string& s) {
     return t;
 }
 
-// Parameter slots inside a raw code template, so every frontend can build a
-// fill-in form instead of forcing the user to hand-edit "@ATTR@"/"V":
-//   "@NAME@"  -> {"kind":"dict", "name":NAME, "dict":<pool>, "label":<中文>}
-//                 (resolved via SECONDARY_PLACEHOLDER_MAP; unknown pools get
-//                  "dict":"" so the caller can still show the raw name)
-//   lone A-Z  -> {"kind":"number", "name":<letter>}
-// Repeated letters merge into one slot with a count (they take the same
-// value when the row is assembled).
-json parse_code_slots(const std::string& code) {
-    json slots = json::array();
-    std::map<std::string, size_t> index;  // slot name -> position in `slots`
-    for (size_t i = 0; i < code.size();) {
-        char c = code[i];
-        if (c == '@') {
-            size_t j = i + 1;
-            std::string name;
-            while (j < code.size() && ((code[j] >= 'A' && code[j] <= 'Z') || code[j] == '_'))
-                name += code[j++];
-            if (j < code.size() && code[j] == '@' && !name.empty()) {
-                std::string key = "@" + name + "@";
-                std::string dict, label;
-                const json& sp = p1::secondary_placeholder_map();
-                if (sp.contains(key) && sp[key].is_array() && sp[key].size() >= 2) {
-                    if (sp[key][0].is_string()) dict = sp[key][0].get<std::string>();
-                    if (sp[key][1].is_string()) label = sp[key][1].get<std::string>();
-                }
-                auto it = index.find(name);
-                if (it == index.end()) {
-                    index[name] = slots.size();
-                    slots.push_back(json{{"kind", "dict"}, {"name", name},
-                                         {"dict", dict}, {"label", label}, {"count", 1}});
-                } else {
-                    slots[it->second]["count"] = slots[it->second]["count"].get<int>() + 1;
-                }
-                i = j + 1;
-                continue;
-            }
-        }
-        if (c >= 'A' && c <= 'Z') {
-            std::string name(1, c);
-            auto it = index.find(name);
-            if (it == index.end()) {
-                index[name] = slots.size();
-                slots.push_back(json{{"kind", "number"}, {"name", name}, {"count", 1}});
-            } else {
-                slots[it->second]["count"] = slots[it->second]["count"].get<int>() + 1;
-            }
-            ++i;
-            continue;
-        }
-        ++i;
-    }
-    return slots;
-}
+// Parameter slots inside a raw code template moved to semantic_assets.cpp
+// (`p1::code_slots`) so /api/effect_suggest and the A1 ops metadata share one
+// implementation.
 
 json effect_suggest_body(const std::string& q_in, const std::string& mode_in, int limit_in) {
     std::string mode = str::lower(str::trim(mode_in));
@@ -305,12 +254,7 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in, in
     static const std::set<std::string> kModes = {"effect", "condition", "cost", "action", "screen"};
     if (!kModes.count(mode)) mode = "effect";
 
-    const json* db = nullptr;
-    if (mode == "condition") db = &p1::condition_db();
-    else if (mode == "cost") db = &p1::cost_db();
-    else if (mode == "action") db = &p1::action_cmd_db();
-    else if (mode == "screen") db = &p1::screen_effect_db();
-    else db = &p1::effect_editor_db();
+    const json& db = p1::mode_db(mode);
 
     // 默认 40（typeahead 够用、payload 小）；目录浏览器传 limit=1000 取全量。
     int limit = limit_in;
@@ -349,7 +293,7 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in, in
         return 0;
     };
 
-    for (const auto& item : *db) {
+    for (const auto& item : db) {
         std::string desc = item.value("desc", "");
         std::string code = item.value("code", "");
         std::string target = ascii_upper(desc + code);
@@ -424,8 +368,8 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in, in
         }
     }
     if (picked.empty() && !empty_q) {
-        for (size_t i = 0; i < db->size() && i < 15; ++i)
-            picked.push_back({0, &(*db)[i]});  // 未命中回落：前 15 条目录
+        for (size_t i = 0; i < db.size() && i < 15; ++i)
+            picked.push_back({0, &db[i]});  // 未命中回落：前 15 条目录
     }
 
     bool skip_render = (mode == "action" || mode == "screen");
@@ -441,10 +385,25 @@ json effect_suggest_body(const std::string& q_in, const std::string& mode_in, in
                 td = sub_first_upper(td, nums[i]);
             }
         }
+        // A1 元数据：概念折叠键/标题 + 行内算符变体 + 数字槽模板级标签。
+        const std::string raw_desc = mi.value("desc", "");
+        const std::string raw_code = mi.value("code", "");
+        json meta = p1::template_meta(raw_desc, raw_code);
+        json slots = p1::code_slots(raw_code);
+        for (auto& s : slots)
+            if (s.value("kind", "") == "number")
+                s["label"] = meta["labels"].value(s.value("name", ""), "\xE6\x95\xB0\xE5\x80\xBC");
         json r;
         r["desc"] = td; r["code"] = tc;
-        r["raw_code"] = mi.value("code", ""); r["raw_desc"] = mi.value("desc", "");
-        r["slots"] = parse_code_slots(mi.value("code", ""));
+        r["raw_code"] = raw_code; r["raw_desc"] = raw_desc;
+        r["family"] = meta["family"];
+        r["family_label"] = meta["family_label"];
+        r["description"] = meta["description"];
+        r["op"] = meta["op"];
+        r["value_index"] = meta["value_index"];
+        r["upper_index"] = meta["upper_index"];
+        r["slots"] = std::move(slots);
+        r["ops"] = p1::family_ops(mode, raw_desc, raw_code);
         r["score"] = h.score;
         rendered.push_back(r);
     }
@@ -463,12 +422,19 @@ json norm_effect_rows(const json& arr) {
     return arr;
 }
 
-AvailableMap game_pools() {
-    AvailableMap av;
-    for (const char* key : {"ROLE", "ATTR", "ITEM", "RELATION", "MAP", "JOB", "STATE", "TEXT",
-                            "NEGOTIATION_SKILL", "NEGOTIATION_BUFF", "GAME", "KZONE_POST",
-                            "KZONE_MESSAGE", "PHONE_MSG"})
-        for (const auto& kv : p1::pool_by_key(key)) av[key][kv.first] = kv.second;
+// /api/effect_validate 同款字典池（ROLE/ATTR/…静态池）。
+//
+// 返回**静态单例引用**：`pool_by_key` 指向只读静态池，聚合结果不会变化；
+// 改前每次调用都要重新构造并拷贝 14 张字典池。
+const AvailableMap& game_pools() {
+    static const AvailableMap av = [] {
+        AvailableMap m;
+        for (const char* key : {"ROLE", "ATTR", "ITEM", "RELATION", "MAP", "JOB", "STATE", "TEXT",
+                                "NEGOTIATION_SKILL", "NEGOTIATION_BUFF", "GAME", "KZONE_POST",
+                                "KZONE_MESSAGE", "PHONE_MSG"})
+            for (const auto& kv : p1::pool_by_key(key)) m[key][kv.first] = kv.second;
+        return m;
+    }();
     return av;
 }
 
@@ -931,8 +897,15 @@ void register_semantic_routes(Router& r) {
             add_person_layer(*mod);
         {
             auto first_str = [](const json& v) -> std::string {
-                if (v.is_array() && !v.empty() && v[0].is_string()) return v[0].get<std::string>();
-                return "";
+                std::string s;
+                if (v.is_array() && !v.empty()) {
+                    if (v[0].is_string()) s = v[0].get<std::string>();
+                } else if (v.is_string()) {
+                    s = v.get<std::string>();
+                }
+                s = str::trim(s);
+                if (s == "[]" || s == "null" || s == "None" || s == "{}") return "";
+                return s;
             };
             for (auto& kv : merged) {
                 const json& row = kv.second;
@@ -1055,7 +1028,7 @@ void register_semantic_routes(Router& r) {
         }
         const p1::SecondaryIndex& idx =
             mode == "effect" ? p1::effect_editor_secondary_index() : p1::condition_secondary_index();
-        AvailableMap av = game_pools();
+        const AvailableMap& av = game_pools();
         size_t i = 0;
         for (auto& item : arr) {
             ++i;
@@ -1160,7 +1133,15 @@ void register_semantic_routes(Router& r) {
 
         long long fixed = 0;
         for (const json* mbug : matched) {
-            if (p1::apply_fix(private_tables, *mbug)) {
+            // 单条修复内部若抛异常（例如非法 id 解析），不得让整个请求兜底成
+            // HTTP 500：跳过该条，其余条照常修复。
+            bool ok = false;
+            try {
+                ok = p1::apply_fix(private_tables, *mbug);
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (ok) {
                 fixed++;
                 std::string c = mbug->value("cfg", "");
                 if (!c.empty()) touched.insert(c);

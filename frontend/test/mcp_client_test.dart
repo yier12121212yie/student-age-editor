@@ -1,8 +1,11 @@
 // MCP 客户端核心单元测试：用内存 FakeTransport 按脚本应答
 // initialize / tools/list / tools/call，不拉起真实进程、不发真实网络请求。
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:student_age_editor/features/ai/mcp/mcp_client.dart';
 import 'package:student_age_editor/features/ai/mcp/mcp_stdio_transport.dart';
 import 'package:student_age_editor/features/ai/mcp/mcp_types.dart';
@@ -399,6 +402,57 @@ void main() {
       addTearDown(transport.close);
       expect(() => transport.send({'jsonrpc': '2.0'}),
           throwsA(isA<McpException>()));
+    });
+
+    test('HttpTransport 自动附带配置的鉴权请求头与 Mcp-Session-Id', () async {
+      final capturedHeaders = <Map<String, String>>[];
+      final mockHttp = MockClient((request) async {
+        capturedHeaders.add(Map<String, String>.from(request.headers));
+        return http.Response(
+          jsonEncode({
+            'jsonrpc': '2.0',
+            'id': 1,
+            'result': {'ok': true},
+          }),
+          200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'sess_42',
+          },
+        );
+      });
+
+      final transport = HttpTransport(
+        McpServerConfig(
+          id: 'remote',
+          transport: 'http',
+          url: 'https://example.com/api/mcp',
+          headers: const {
+            'Authorization': 'Bearer sa_mcp_secret',
+            'X-Custom-Header': 'custom-val',
+          },
+        ),
+        client: mockHttp,
+      );
+      await transport.start();
+
+      final received = <Map<String, dynamic>>[];
+      final sub = transport.incoming.listen(received.add);
+      transport.send({'jsonrpc': '2.0', 'id': 1, 'method': 'ping'});
+      await pumpEventQueue();
+      // 第二次发送应额外带上服务端返回的 Mcp-Session-Id
+      transport.send({'jsonrpc': '2.0', 'id': 2, 'method': 'ping'});
+      await pumpEventQueue();
+
+      expect(capturedHeaders, hasLength(2));
+      expect(capturedHeaders[0]['Authorization'], 'Bearer sa_mcp_secret');
+      expect(capturedHeaders[0]['X-Custom-Header'], 'custom-val');
+      expect(capturedHeaders[1]['Authorization'], 'Bearer sa_mcp_secret');
+      expect(capturedHeaders[1]['mcp-session-id'], 'sess_42');
+      expect(received, hasLength(2));
+
+      await sub.cancel();
+      await transport.close();
     });
   });
 }

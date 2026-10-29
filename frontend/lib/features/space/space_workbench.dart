@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
 import '../resources/image_asset_picker.dart' show TexThumb;
 
@@ -47,16 +51,25 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
   static const _profileCfg = 'KZoneProfileCfg';
   static const _messageCfg = 'KZoneMessageBoardCfg';
 
-  Map<String, dynamic> _profiles = {};
-  Map<String, dynamic> _messages = {};
+  // 可写主表由公共控制器管理（A3）；只读引用表仍是普通字段。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_profileCfg, _messageCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  Map<String, dynamic> get _profiles => _ctl.table(_profileCfg).data;
+  Map<String, dynamic> get _messages => _ctl.table(_messageCfg).data;
+
   Map<String, dynamic> _avatars = {};
   Map<String, dynamic> _themes = {};
   Map<String, dynamic> _fonts = {};
-
-  String _profileSnap = '';
-  String _messageSnap = '';
-  int? _profileM;
-  int? _messageM;
 
   bool _loading = true;
   bool _saving = false;
@@ -74,11 +87,23 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -86,16 +111,6 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -112,40 +127,25 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
   String get guardSubject => '空间资料与留言板';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
       final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_profileCfg'),
-        ApiClient.instance.get('/api/cfg/$_messageCfg'),
+        _ctl.load(),
         ApiClient.instance.get('/api/cfg/KZoneAvatarCfg'),
         ApiClient.instance.get('/api/cfg/KZoneColorCfg'),
         ApiClient.instance.get('/api/cfg/KZoneFontCfg'),
       ]);
       if (!mounted) return;
-      _profiles = _dataOf(res[0]);
-      _messages = _dataOf(res[1]);
-      _avatars = _dataOf(res[2]);
-      _themes = _dataOf(res[3]);
-      _fonts = _dataOf(res[4]);
-      _profileM = _mtimeOf(res[0]);
-      _messageM = _mtimeOf(res[1]);
-      _profileSnap = jsonEncode(_profiles);
-      _messageSnap = jsonEncode(_messages);
+      _avatars = WorkbenchController.extractData(res[1]);
+      _themes = WorkbenchController.extractData(res[2]);
+      _fonts = WorkbenchController.extractData(res[3]);
       final ids = _sortedIds;
       if (_selected == null || !_profiles.containsKey(_selected)) {
         _selected = ids.isNotEmpty ? ids.first : null;
       }
-      setState(() => _loading = false);
+      setState(() {});
       _loadRoles();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error / WorkbenchStatus.error。
     }
   }
 
@@ -155,81 +155,22 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
     setState(() => _roles = list);
   }
 
-  bool get _dirty =>
-      _profileSnap != jsonEncode(_profiles) ||
-      _messageSnap != jsonEncode(_messages);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      final ok1 = await _saveTable(_profileCfg, _profiles, _profileSnap,
-          _profileM, (m, s) {
-        _profileM = m;
-        _profileSnap = s;
-      });
-      if (!ok1) return;
-      final ok2 = await _saveTable(_messageCfg, _messages, _messageSnap,
-          _messageM, (m, s) {
-        _messageM = m;
-        _messageSnap = s;
-      });
-      if (!ok2) return;
-      if (mounted) _info('空间资料与留言板已保存', fluent.InfoBarSeverity.success);
-    } finally {
-      if (mounted) setState(() => _saving = false);
+    final ok = await _ctl.save();
+    if (mounted && ok) {
+      AppFeedback.success(context, '空间资料与留言板已保存');
     }
   }
 
-  Future<bool> _saveTable(
-    String name,
-    Map<String, dynamic> data,
-    String snap,
-    int? mtime,
-    void Function(int?, String) onSaved,
-  ) async {
-    if (jsonEncode(data) == snap) return true;
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': data,
-          if (!force) 'expect_mtime_ns': mtime,
-          if (force) 'force': true,
-        };
-        final r = await ApiClient.instance.put('/api/cfg/$name', body: body);
-        if (!mounted) return false;
-        onSaved(_mtimeOf(r), jsonEncode(data));
-        return true;
-      } on ApiException catch (e) {
-        if (!mounted) return false;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(name);
-          if (!mounted) return false;
-          if (act == 'reload') {
-            await _loadAll();
-            return false;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return false;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      } catch (e) {
-        if (!mounted) return false;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      }
-    }
-  }
+  /// 409 冲突弹窗（复用统一的 [WorkbenchConflictChoice]）。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
   void _discard() {
+    _ctl.discard();
     setState(() {
-      _profiles = (jsonDecode(_profileSnap) as Map).cast<String, dynamic>();
-      _messages = (jsonDecode(_messageSnap) as Map).cast<String, dynamic>();
       final ids = _sortedIds;
       if (_selected == null || !_profiles.containsKey(_selected)) {
         _selected = ids.isNotEmpty ? ids.first : null;
@@ -237,41 +178,6 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
     });
   }
 
-  Future<String?> _conflictDialog(String name) {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$name 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
 
   // ------------------------------------------------------------------
   // 行访问
@@ -612,36 +518,15 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('空间数据加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '空间数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -684,7 +569,7 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
                       style: TextStyle(fontSize: 12.5)),
                 ),
                 const SizedBox(height: 6),
-                _MiniBtn(
+                WorkbenchMiniButton(
                   label: '删除此空间',
                   danger: true,
                   enabled: _selected != null,
@@ -1053,55 +938,13 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1153,15 +996,15 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '资料',
           children: [
-            _labeled('企鹅昵称', _SyncedText(
+            _labeled('企鹅昵称', SyncedTextField(
               value: profile['name']?.toString() ?? '',
               hint: '企鹅昵称',
               onChanged: (v) => setState(() => profile['name'] = v),
             )),
-            _labeled('个性签名', _SyncedText(
+            _labeled('个性签名', SyncedTextField(
               value: profile['desc']?.toString() ?? '',
               hint: '个性签名',
               maxLines: 3,
@@ -1179,12 +1022,12 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
                   onTap: () => setState(() => profile['isVip'] = isVip ? 0 : 1),
                 ),
                 const Spacer(),
-                _MiniBtn(label: '更换头像', onTap: _pickAvatar),
+                WorkbenchMiniButton(label: '更换头像', onTap: _pickAvatar),
               ],
             ),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '个性化',
           subtitle: isVip ? null : '部分主题与字体需要黄钻（预览仍可切换）。',
           children: [
@@ -1231,38 +1074,38 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
                 ),
               ],
             ),
-            _labeled('签名字号', _NumBox(
-              value: _intOf(profile, 'fontSize', 40),
+            _labeled('签名字号', NumBox(
+              intOnly: true, value: _intOf(profile, 'fontSize', 40),
               hint: '40 ~ 80',
               onChanged: (v) => setState(
                   () => profile['fontSize'] = (v ?? 40).toInt().clamp(40, 80)),
             )),
-            _labeled('背景音乐（AudioCfg 编号）', _NumBox(
-              value: _intOf(profile, 'bgm'),
+            _labeled('背景音乐（AudioCfg 编号）', NumBox(
+              intOnly: true, value: _intOf(profile, 'bgm'),
               hint: '0 表示无背景音乐',
               onChanged: (v) => setState(() => profile['bgm'] = (v ?? 0).toInt()),
             )),
           ],
         ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '个人档',
           children: [
-            _labeled('家乡', _SyncedText(
+            _labeled('家乡', SyncedTextField(
               value: profile['hometown']?.toString() ?? '',
               hint: '家乡',
               onChanged: (v) => setState(() => profile['hometown'] = v),
             )),
-            _labeled('现居地', _SyncedText(
+            _labeled('现居地', SyncedTextField(
               value: profile['living']?.toString() ?? '',
               hint: '现居地',
               onChanged: (v) => setState(() => profile['living'] = v),
             )),
-            _labeled('职业', _SyncedText(
+            _labeled('职业', SyncedTextField(
               value: profile['job']?.toString() ?? '',
               hint: '职业',
               onChanged: (v) => setState(() => profile['job'] = v),
             )),
-            _labeled('学校 / 公司', _SyncedText(
+            _labeled('学校 / 公司', SyncedTextField(
               value: profile['school']?.toString() ?? '',
               hint: '学校 / 公司',
               onChanged: (v) => setState(() => profile['school'] = v),
@@ -1299,13 +1142,13 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '留言板（${ids.length}）',
           subtitle: '每一条留言包含留言人、内容与是否私密。',
           children: [
             for (final id in ids) _messageCard(id),
             const SizedBox(height: 4),
-            _MiniBtn(label: '＋ 添加留言', onTap: _addMessage),
+            WorkbenchMiniButton(label: '＋ 添加留言', onTap: _addMessage),
           ],
         ),
       ],
@@ -1362,7 +1205,7 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
               ],
             ),
             const SizedBox(height: 6),
-            _SyncedText(
+            SyncedTextField(
               value: row['content']?.toString() ?? '',
               hint: '输入留言内容',
               maxLines: 2,
@@ -1448,51 +1291,6 @@ class _SpaceWorkbenchState extends State<SpaceWorkbench>
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
 
 class _Tag extends StatelessWidget {
   const _Tag({required this.text, required this.color});
@@ -1710,97 +1508,6 @@ class _SpaceListItemState extends State<_SpaceListItem> {
     );
   }
 }
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({required this.value, required this.onChanged, this.hint});
-  final num? value;
-  final ValueChanged<num?> onChanged;
-  final String? hint;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value?.toString() ?? '');
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = widget.value?.toString() ?? '';
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) =>
-          widget.onChanged(v.trim().isEmpty ? null : int.tryParse(v)),
-    );
-  }
-}
-
 class _SegButton extends StatefulWidget {
   const _SegButton({
     required this.label,
@@ -1853,66 +1560,6 @@ class _SegButtonState extends State<_SegButton> {
               color: selected ? palette.textHigh : palette.textSecondary,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
           ),
         ),
       ),

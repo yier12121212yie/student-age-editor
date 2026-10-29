@@ -100,6 +100,11 @@ class ZipReader {
     std::optional<long long> uncompressed_size(const std::string& name) const;
     // zipfile.read(name); nullopt when the entry is missing or unreadable.
     std::optional<std::string> read(const std::string& name) const;
+    // zipfile.extract(name, path): streams the decompressed entry straight to
+    // `dst` through the UTF-8-safe path helpers — no whole-entry heap buffer,
+    // so a multi-GB 贴图/配乐 entry never lands in memory. Parent dirs must
+    // already exist. Returns false on a missing/unreadable entry or IO error.
+    bool extract_to_file(const std::string& name, const std::string& dst) const;
     // zipfile.extractall(dest): creates directories, skips entry names that
     // would escape dest. Returns false on any IO failure (caller cleans up).
     bool extract_all(const std::string& dest) const;

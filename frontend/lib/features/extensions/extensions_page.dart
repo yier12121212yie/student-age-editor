@@ -6,9 +6,11 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/backend_retry.dart';
+import '../../core/error_text.dart';
 import '../../core/plugin_state.dart';
 import '../../core/zip_staging.dart';
 import '../../core/app_dialogs.dart';
+import '../auth/deployment_caps.dart';
 
 /// 统一的「扩展」管理页（3A）：资源包 + 插件合并为一个列表，多选启用。
 ///
@@ -110,6 +112,7 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
     if (_busy) return;
     const typeGroup = XTypeGroup(label: '扩展包', extensions: ['zip']);
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
+    if (!mounted) return;
     if (file == null) return;
     setState(() => _busy = true);
     StagedZip? staged;
@@ -130,7 +133,7 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
       _showInfo('扩展安装成功');
       await widget.pluginState?.refresh();
     } catch (e) {
-      if (mounted) _showError('安装失败：$e');
+      if (mounted) _showError('安装失败：${humanizeErrorMessage(e)}');
     } finally {
       try {
         await staged?.cleanup();
@@ -167,7 +170,7 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
       if (mounted) _showInfo('已卸载');
       await widget.pluginState?.refresh();
     } catch (e) {
-      if (mounted) _showError('卸载失败：$e');
+      if (mounted) _showError('卸载失败：${humanizeErrorMessage(e)}');
     } finally {
       await _load();
     }
@@ -181,7 +184,7 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
       if (mounted) _showInfo('已重新加载全部扩展');
       await widget.pluginState?.refresh();
     } catch (e) {
-      if (mounted) _showError('重载失败：$e');
+      if (mounted) _showError('重载失败：${humanizeErrorMessage(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
       await _load();
@@ -329,6 +332,35 @@ class _ExtensionsPageState extends State<ExtensionsPage> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
+        if (!DeploymentCaps.pluginServiceAvailable) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: palette.panel,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: palette.border),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(FluentIcons.warning_24_regular,
+                    size: 16, color: accentColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '自托管部署已禁用服务型插件代理：声明型面板、资源包与配置表照常可用，'
+                    '但依赖 /api/plugins/service 的外部服务不会转发。',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: palette.textSecondary,
+                        height: 1.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(

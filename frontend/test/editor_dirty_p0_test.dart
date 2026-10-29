@@ -62,8 +62,15 @@ Future<void> _mount(
   await tester.pump(const Duration(milliseconds: 400));
 }
 
-/// 放行保存链路：putRaw 的后台 isolate 结果只能经真实事件循环送达
-/// （FakeAsync 不接管 ReceivePort），每轮 runAsync 给真实事件机会，
+/// 数据字段的输入框。
+///
+/// 注意：表单顶部现在还有一个「字段查找框」（`_buildSearchBar` 的 TextBox），
+/// 它同样是 `EditableText` 且排在更前，所以不能再用 `.first` 取字段——那会
+/// 往搜索框里打字（只过滤字段，不改文档、不置脏，测试会误判为「dirty 未上报」）。
+/// 本 fixture（DemoCfg）只有 `name` 一个可编辑字段，取最后一个即可。
+Finder _dataField() => find.byType(EditableText).last;
+
+/// 放行保存链路：putRaw 的后台 isolate 结果只能经真实事件循环送达/// （FakeAsync 不接管 ReceivePort），每轮 runAsync 给真实事件机会，
 /// 再 pump 冲刷 faked-zone 微任务推进保存流程，直到 [done] 成立。
 Future<void> _pumpUntilReal(
   WidgetTester tester,
@@ -105,7 +112,7 @@ void main() {
     expect(dirtyCalls, isEmpty);
 
     // 第一次编辑：clean → dirty，应当恰好触发一次全视图重建。
-    await tester.enterText(find.byType(EditableText).first, '第一次编辑');
+    await tester.enterText(_dataField(), '第一次编辑');
     await tester.pump();
     expect(dirtyCalls, [true], reason: 'clean→dirty 转变上报一次');
     expect(SchemaEditorView.debugBuildCount, baseBuilds + 1,
@@ -114,7 +121,7 @@ void main() {
 
     // 已脏状态下连续编辑：只推进编辑代数，不再触发重建与重复上报。
     for (var i = 2; i <= 5; i++) {
-      await tester.enterText(find.byType(EditableText).first, '第$i次编辑');
+      await tester.enterText(_dataField(), '第$i次编辑');
       await tester.pump();
       expect(SchemaEditorView.debugBuildCount, baseBuilds + 1,
           reason: 'dirty 期间第 $i 次编辑不应再触发全视图重建');
@@ -152,7 +159,7 @@ void main() {
     expect(tester.takeException(), isNull);
 
     // 保存前编辑一次 → dirty（代数 1）。
-    await tester.enterText(find.byType(EditableText).first, '在途前的编辑');
+    await tester.enterText(_dataField(), '在途前的编辑');
     await tester.pump();
     expect(dirtyCalls, [true]);
 
@@ -164,7 +171,7 @@ void main() {
         '在途前的编辑');
 
     // 在途期间继续编辑：dirty 必须保持（代数推进到 2）。
-    await tester.enterText(find.byType(EditableText).first, '在途中的编辑');
+    await tester.enterText(_dataField(), '在途中的编辑');
     await tester.pump();
     expect(dirtyCalls, [true], reason: '在途期间的新编辑不得被误标为已落盘');
     expect(find.text('有未保存修改'), findsOneWidget);

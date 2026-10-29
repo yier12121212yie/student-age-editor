@@ -42,9 +42,13 @@ Map<String, Offset> _positions() => {
   _n3: const Offset(560, 40),
 };
 
-/// 卡片底座中部：避开底部端口行与右下角展开箭头。
+/// 卡片中部：正文输入框会让位，但指针按下仍会选中节点。
 Offset _cardCenter(Map<String, Offset> p, String id) =>
     p[id]! + const Offset(60, 40);
+
+/// 标题条左侧拖拽把手：需要真正拖动节点时从这里起手。
+Offset _cardGrip(Map<String, Offset> p, String id) =>
+    p[id]! + const Offset(6, 12);
 
 void main() {
   late _HarnessState host;
@@ -162,7 +166,7 @@ void main() {
     expect(host.selection.nodes, {_n1, _n2});
     final a = p[_n1]!, b = p[_n2]!, c = p[_n3]!;
 
-    final g = await tester.startGesture(_cardCenter(p, _n1));
+    final g = await tester.startGesture(_cardGrip(p, _n1));
     await g.moveBy(const Offset(50, 60));
     await tester.pump();
     await g.up();
@@ -260,10 +264,10 @@ class _HarnessState extends State<_Harness> {
       onAddEdge: (_, _, _) {},
       onDeleteEdge: (_, _, _) {},
       onRequestDelete: () => requestDeleteCalls++,
-      onToggleExpand: (_) {},
       fieldController: (_, _) => null,
       onFieldChanged: (_, _, _) {},
-      onDeleteNode: (_) {},
+      speakerController: (_) => null,
+      onSpeakerSubmitted: (_, _) {},
     );
   }
 }

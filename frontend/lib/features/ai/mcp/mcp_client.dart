@@ -150,6 +150,7 @@ class HttpTransport implements McpTransport {
     try {
       final request = http.Request('POST', Uri.parse(cfg.url.trim()))
         ..headers.addAll({
+          ...cfg.headers,
           'content-type': 'application/json',
           'accept': 'application/json, text/event-stream',
           'mcp-session-id': ?_sessionId,

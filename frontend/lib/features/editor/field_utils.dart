@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../../core/models.dart';
 
 /// 英文 key → 中文翻译（等价于 Python 端 editor/utils.py 的 translate_key）。
@@ -89,6 +91,14 @@ class ValueCodec {
       return n ?? 0;
     }
     if (fieldType == 'String') return t;
+    // 效果码文本（每行 `[a, b]`、行间 `; `，与 `POST /api/effect/parse` 的 `text` 同形）：
+    // 走 JSON 解析，**保留嵌套结构**（998 组 `[998, 2, 0, [[..], ..]]`），避免逗号
+    // 切分把内层数组与行括号切碎（那会让积木编辑器写回的值变成 `'[1'` 之类的碎串）。
+    // 无方括号的文本（老 schema 编辑器的 `1, 2; 3, 4`）不在此列，仍走下方分隔符解析。
+    if (t.contains('[')) {
+      final code = _decodeCodeText(t, fieldType);
+      if (code != null) return code;
+    }
     if (fieldType == '1D Array') {
       return _split1d(t).map(_toNum).toList();
     }
@@ -99,6 +109,39 @@ class ValueCodec {
           .toList();
     }
     return t;
+  }
+
+  /// 码文本 → 值：镜像后端 `effect_parse_body` 的两步——
+  /// ① `json::parse("[" + t + "]")`；② `norm_effect_rows`（单行扁平数组升二维）。
+  /// 复刻这两步才能在 `[1, 1, 3, 5]`（单行）、`[a]; [b]`（多行）、
+  /// `[998, 2, 0, [[..], ..]]`（含嵌套）三种形态下都得到与后端一致的值。
+  /// 解析不动返回 `null`，调用方退回分隔符解析（老文本零回归）。
+  static dynamic _decodeCodeText(String t, String fieldType) {
+    final is2d = fieldType == '2D Array';
+    // ① 整串已是 JSON 数组：多行 `[[..],[..]]` / 单行扁平 `[1, 2, 3]` / 空 `[]`。
+    if (t.startsWith('[')) {
+      final direct = _tryJson(t);
+      if (direct is List) {
+        if (direct.isEmpty) return direct;
+        if (direct.first is List) return direct; // 已是行数组
+        return is2d ? [direct] : direct; // 单行扁平 → 升二维
+      }
+    }
+    // ② 行序列 `[a, b]; [c, d]`：按 `[ t ]` 包裹后再解析（分号/换行视作行分隔）。
+    final wrapped = _tryJson('[${t.replaceAll(';', ',').replaceAll('\n', ',')}]');
+    if (wrapped is List && wrapped.isNotEmpty) {
+      if (wrapped.first is List) return wrapped;
+      return is2d ? [wrapped] : wrapped;
+    }
+    return null;
+  }
+
+  static dynamic _tryJson(String s) {
+    try {
+      return jsonDecode(s);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 现文本与值是否已语义等价（等价则不必回写，保护半截输入与光标）。

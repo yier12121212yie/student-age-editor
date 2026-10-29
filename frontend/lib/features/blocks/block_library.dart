@@ -1,6 +1,6 @@
 /// 条件 / 效果「积木库」的浏览与搭建组件。
 ///
-/// 把无代码模式原来「目录弹窗 + 槽表单」的点选，升级为对标成熟的
+/// 把简易模式原来「目录弹窗 + 槽表单」的点选，升级为对标成熟的
 /// **目录 + 已添加清单** 双栏工作台：
 ///   * 左栏 [BlockCatalogList]：模式标签 / 分类（来自游戏自带类型表）/
 ///     搜索 / 分页，点一条即补参入列；
@@ -18,9 +18,12 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/app_dialogs.dart';
 import '../../core/app_theme.dart';
+import '../../core/design_tokens.dart';
+import '../../core/empty_state.dart';
 import '../../core/mobile_widgets.dart';
 import '../../core/motion.dart';
 import '../../core/responsive.dart';
+import '../../core/status_pill.dart';
 import '../editor/suggestion_text_field.dart';
 import '../nocode/effect_block_editor.dart';
 import '../nocode/effect_slot_form.dart';
@@ -134,6 +137,12 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
   int _page = 0;
   final TextEditingController _searchCtrl = TextEditingController();
 
+  /// A2：每个 family 当前选中的算符（family → op）；空 = 用组内首条。
+  final Map<String, String> _familyOp = {};
+
+  /// A2：每个 family 上次填过的槽值——同行内切算符 / 再次添加时复用。
+  final Map<String, Map<String, String>> _familyValues = {};
+
   @override
   void initState() {
     super.initState();
@@ -165,6 +174,8 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
       _category = '全部';
       _query = '';
       _page = 0;
+      _familyOp.clear();
+      _familyValues.clear();
       _searchCtrl.clear();
     });
     widget.onModeChanged?.call(mode);
@@ -174,11 +185,17 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
   Future<void> _pick(Suggestion s) async {
     String? code;
     if (s.slots.isNotEmpty) {
+      Map<String, String>? filled;
       code = await showEffectSlotForm(
         context,
         suggestion: s,
         gameDicts: widget.gameDicts,
+        initialValues: _familyValues[s.family] ?? const {},
+        onValues: (v) => filled = v,
       );
+      if (filled != null && s.family.isNotEmpty) {
+        _familyValues[s.family] = filled!;
+      }
     } else {
       code = s.code;
     }
@@ -243,9 +260,11 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
         .where((e) =>
             _category == '全部' || engine.categoryFor(_mode, e.code) == _category)
         .toList();
-    final pages = filtered.isEmpty ? 1 : ((filtered.length - 1) ~/ _pageSize) + 1;
+    // A2：同 family 折成一条（行内算符切换）；无 family 的维持一条一行。
+    final groups = groupByFamily(filtered);
+    final pages = groups.isEmpty ? 1 : ((groups.length - 1) ~/ _pageSize) + 1;
     if (_page >= pages) _page = pages - 1;
-    final visible = filtered.skip(_page * _pageSize).take(_pageSize).toList();
+    final visible = groups.skip(_page * _pageSize).take(_pageSize).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -306,24 +325,51 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
           child: _loading && _items.isEmpty
               ? const Center(child: fluent.ProgressRing())
               : visible.isEmpty
-                  ? Center(
-                      child: Text(
-                        '没有匹配的${blockModeFor(_mode).label}',
-                        style: TextStyle(fontSize: 12, color: palette.textHint),
-                      ),
+                  ? EmptyState(
+                      '没有匹配的${blockModeFor(_mode).label}',
                     )
                   : ListView.builder(
                       padding: EdgeInsets.fromLTRB(widget.padding.left, 0,
                           widget.padding.right, 8),
                       itemCount: visible.length,
                       itemBuilder: (c, i) {
-                        final s = visible[i];
+                        final g = visible[i];
+                        final family = g.first.family;
+                        final folded = g.length > 1 && family.isNotEmpty;
+                        final selected = folded
+                            ? blockGroupPick(g, _familyOp[family] ?? '')
+                            : g.first;
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 6),
                           child: BlockCatalogTile(
-                            title: humanizeBlockDesc(s.desc, s.slots),
-                            category: engine.categoryFor(_mode, s.code),
-                            onTap: () => _pick(s),
+                            title: folded
+                                ? blockGroupTitle(g)
+                                : humanizeBlockDesc(
+                                    selected.desc, selected.slots),
+                            subtitle: folded
+                                ? humanizeBlockDesc(
+                                    selected.desc, selected.slots)
+                                : '',
+                            category: engine.categoryFor(_mode, selected.code),
+                            footer: folded
+                                ? BlockOpChips(
+                                    keyPrefix: 'catop-${selected.family}',
+                                    ops: selected.ops.isEmpty
+                                        ? [
+                                            for (final s in g)
+                                              EffectOpVariant(
+                                                  op: s.op,
+                                                  code: s.code,
+                                                  slots: s.slots),
+                                          ]
+                                        : selected.ops,
+                                    current: selected.op,
+                                    onPick: (v) => setState(
+                                        () => _familyOp[family] = v.op),
+                                    dense: true,
+                                  )
+                                : null,
+                            onTap: () => _pick(selected),
                           ),
                         );
                       },
@@ -340,9 +386,9 @@ class _BlockCatalogListState extends State<BlockCatalogList> {
               alignment: WrapAlignment.end,
               children: [
                 _MiniBtn(label: '＋ 自定义', onTap: _custom),
-                Text('${filtered.length} 项 · ${_page + 1}/$pages',
-                    style:
-                        TextStyle(fontSize: 10.5, color: palette.textHint)),
+                Text('${groups.length} 项 · ${_page + 1}/$pages',
+                    style: TextStyle(
+                        fontSize: AppText.dense, color: palette.textHint)),
                 _MiniBtn(
                   label: '上一页',
                   enabled: _page > 0,
@@ -396,6 +442,33 @@ class BlockDraftList extends StatelessWidget {
     controller.onChanged();
   }
 
+  /// A2：行内切换算符——同族变体直接改写模板并**保留已填槽值**；变体需要
+  /// 新槽（如范围的上下限）还没有值时，打开槽表单补填后再切换。
+  Future<void> _switchOp(BuildContext context, EffectBlockRow r, EffectOpVariant v) async {
+    if (r.op == v.op) return;
+    if (switchRowOp(r, v)) {
+      controller.onChanged();
+      return;
+    }
+    if (v.slots.isEmpty) return;
+    final res = await showSlotValueEditor(
+      context,
+      slots: v.slots,
+      initialValues: r.values,
+      gameDicts: gameDicts,
+      templateCode: v.code,
+      templateDesc: r.templateDesc,
+      title: '切换为「${v.displayOp}」',
+    );
+    if (res == null) return;
+    r
+      ..templateCode = v.code
+      ..slots = List<SuggestionSlot>.of(v.slots)
+      ..values = res
+      ..op = v.op;
+    controller.onChanged();
+  }
+
   @override
   Widget build(BuildContext context) {
     final rows = controller.rows;
@@ -423,7 +496,8 @@ class BlockDraftList extends StatelessWidget {
                     human,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11, color: palette.textMuted),
+                    style: TextStyle(
+                        fontSize: AppText.small, color: palette.textMuted),
                   ),
                 ),
             ],
@@ -499,16 +573,13 @@ class BlockDraftList extends StatelessWidget {
                             if (r.negate && r.canNegate)
                               Padding(
                                 padding: const EdgeInsets.only(left: 6),
-                                child: _Badge(
-                                    text: '取反',
-                                    bg: palette.tintWarn,
-                                    fg: palette.statusWarn),
+                                child: StatusPill('取反',
+                                    bg: palette.tintWarn, fg: palette.statusWarn),
                               ),
                             if (hasError)
                               Padding(
                                 padding: const EdgeInsets.only(left: 6),
-                                child: _Badge(
-                                    text: '异常',
+                                child: StatusPill('异常',
                                     bg: palette.tintDanger,
                                     fg: palette.statusDanger),
                               ),
@@ -527,7 +598,7 @@ class BlockDraftList extends StatelessWidget {
                         if (hasError)
                           Text(r.error!,
                               style: TextStyle(
-                                  fontSize: 10.5,
+                                  fontSize: AppText.dense,
                                   color: palette.statusDanger,
                                   height: 1.3)),
                       ],
@@ -539,6 +610,18 @@ class BlockDraftList extends StatelessWidget {
               _actions(r, top),
             ],
           ),
+          // A2：行内算符切换（同 family 多变体时出现）。
+          if (r.ops.length > 1 && !r.unrecognized)
+            Padding(
+              padding: const EdgeInsets.only(top: AppSpace.xs),
+              child: BlockOpChips(
+                keyPrefix: 'blop-$i',
+                ops: r.ops,
+                current: r.op,
+                onPick: (v) => _switchOp(context, r, v),
+                dense: true,
+              ),
+            ),
           // 无模板行（自定义代码 / 解析失败）：给一个原始参数编辑框。
           if (!r.hasTemplate) ...[
             const SizedBox(height: 6),
@@ -749,22 +832,10 @@ class _BlockLibraryPanelState extends State<BlockLibraryPanel> {
     if (!mounted) return;
     setState(() {
       if (rows != null && rows.isNotEmpty) {
-        if (widget.singleRow) {
-          _rows
-            ..clear()
-            ..addAll(rows);
-        } else {
-          _rows.addAll(rows);
-        }
+        applyRowsWithSingleRow(_rows, rows, singleRow: widget.singleRow);
       } else {
-        final row = EffectBlockRow(rawCode: code);
-        if (widget.singleRow) {
-          _rows
-            ..clear()
-            ..add(row);
-        } else {
-          _rows.add(row);
-        }
+        applyRowsWithSingleRow(_rows, [EffectBlockRow(rawCode: code)],
+            singleRow: widget.singleRow);
       }
     });
   }
@@ -946,26 +1017,6 @@ class _ModeTab extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge({required this.text, required this.bg, required this.fg});
-  final String text;
-  final Color bg;
-  final Color fg;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: fg),
-      ),
-      child: Text(text, style: TextStyle(fontSize: 9.5, color: fg)),
     );
   }
 }

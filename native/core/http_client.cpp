@@ -451,6 +451,8 @@ Response do_request_platform(const Request& req, const ChunkHandler* on_chunk) {
         }
     }
 
+    if (req.on_response) req.on_response(resp.status, resp.headers);
+
     for (;;) {
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request_handle.h, &available)) {
@@ -463,9 +465,11 @@ Response do_request_platform(const Request& req, const ChunkHandler* on_chunk) {
             return error_for_last_win32("WinHttpReadData");
         }
         chunk.resize(read);
-        resp.body += chunk;
-        if (resp.body.size() > kMaxTransferBytes) {
-            return fail(Response::Error::Other, "response body too large");
+        if (!req.discard_body) {
+            resp.body += chunk;
+            if (resp.body.size() > kMaxTransferBytes) {
+                return fail(Response::Error::Other, "response body too large");
+            }
         }
         if (on_chunk && !(*on_chunk)(std::string_view(chunk))) break;  // early abort
         if (read == 0) break;
@@ -714,6 +718,10 @@ Response error_for_curl(CurlCode code) {
 struct Ctx {
     Response* resp = nullptr;
     const ChunkHandler* on_chunk = nullptr;
+    const Request* req = nullptr;
+    bool discard = false;
+    bool headers_done = false;
+    int status = 0;
     bool aborted = false;
     bool overflow = false;
 };
@@ -722,12 +730,14 @@ size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* c = static_cast<Ctx*>(userdata);
     const size_t n = size * nmemb;
     if (!c->resp) return n;
-    if (c->resp->body.size() + n > kMaxTransferBytes) {
-        c->overflow = true;
-        c->aborted = true;
-        return 0;   // CURLE_WRITE_ERROR; translated back below via ctx.overflow
+    if (!c->discard) {
+        if (c->resp->body.size() + n > kMaxTransferBytes) {
+            c->overflow = true;
+            c->aborted = true;
+            return 0;   // CURLE_WRITE_ERROR; translated back below via ctx.overflow
+        }
+        c->resp->body.append(ptr, n);
     }
-    c->resp->body.append(ptr, n);
     if (c->on_chunk && !(*c->on_chunk)(std::string_view(ptr, n))) {
         c->aborted = true;
         return 0;   // signals CURLE_WRITE_ERROR; we translate it back below
@@ -747,10 +757,29 @@ size_t header_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
         // win — matches WinHTTP's WINHTTP_QUERY_RAW_HEADERS_CRLF on the resolved
         // (post-redirect) request handle.
         c->resp->headers.clear();
+        c->headers_done = false;
+        // "HTTP/1.1 200 OK" -> status 200 (best effort; a malformed status line
+        // leaves 0 and the caller treats it as a transport-level oddity).
+        const size_t sp = line.find(' ');
+        if (sp != std::string::npos) {
+            int code = 0;
+            for (size_t i = sp + 1; i < line.size() && std::isdigit((unsigned char)line[i]); ++i)
+                code = code * 10 + (line[i] - '0');
+            c->status = code;
+        }
+        return n;
+    }
+    if (line.empty()) {
+        // End of headers: notify once, before the first body byte.
+        if (!c->headers_done) {
+            c->headers_done = true;
+            if (c->req && c->req->on_response)
+                c->req->on_response(c->status, c->resp->headers);
+        }
         return n;
     }
     const size_t colon = line.find(':');
-    if (colon == std::string::npos) return n;   // blank / non-header line
+    if (colon == std::string::npos) return n;   // non-header line
     std::string name = line.substr(0, colon);
     size_t vs = colon + 1;
     while (vs < line.size() && (line[vs] == ' ' || line[vs] == '\t')) vs++;
@@ -828,6 +857,8 @@ Response do_request_platform(const Request& req, const ChunkHandler* on_chunk) {
     Ctx ctx;
     ctx.resp = &resp;
     ctx.on_chunk = on_chunk;
+    ctx.req = &req;
+    ctx.discard = req.discard_body;
 
     // Rebuild the full URL deterministically from the parsed pieces. parse_url
     // already rejected anything that is not http(s), so curl always gets a

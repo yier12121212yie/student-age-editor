@@ -10,11 +10,23 @@ class Breakpoints {
   /// （如 AI 停靠区改为悬浮抽屉），避免「左活动栏 + 侧边栏 + AI 面板」三者
   /// 叠加把编辑区压成负宽 / 溢出——窄 Web 浏览器窗口下最常见。
   static const double compact = 1100;
+
+  /// 手机短边阈值：横屏手机宽度会超过 [mobile]（如 844×390），只按宽度
+  /// 判定会掉进桌面三栏壳；短边小于此值时仍按手机处理。
+  static const double phoneShortSide = 480;
 }
 
-/// 宽度 < 720 视为移动端（手机竖屏 / 折叠屏内屏窄态）。
+/// 按尺寸判定是否为手机/窄屏布局。
+///
+/// 除宽度 < [Breakpoints.mobile] 外，横屏手机（宽 800+、高 360~430）也
+/// 归入移动布局；平板横屏（短边 ≥600）仍走桌面壳。
+bool isMobileLayoutOf(Size size) =>
+    size.width < Breakpoints.mobile ||
+    size.shortestSide < Breakpoints.phoneShortSide;
+
+/// 宽度 < 720 或短边 < 480 视为移动端（手机竖屏 / 横屏 / 折叠屏窄态）。
 bool isMobileWidth(BuildContext context) =>
-    MediaQuery.sizeOf(context).width < Breakpoints.mobile;
+    isMobileLayoutOf(MediaQuery.sizeOf(context));
 
 /// 更语义化的短名。
 bool isMobile(BuildContext context) => isMobileWidth(context);
@@ -56,6 +68,19 @@ class _MobileDetectorState extends State<MobileDetector> {
 
 /// 移动端安全边距包裹，避免刘海/手势条遮挡。
 Widget mobileSafeArea({required Widget child}) => SafeArea(child: child);
+
+/// 壳层 chrome（AppBar / 底部导航 / 页签 / 动作条）的字号上限。
+///
+/// 固定高度的导航条被系统 200% 字号撑破会直接溢出；正文与列表不套这个
+/// 包裹，仍完整遵循系统字体大小。
+Widget clampedChromeText(
+  Widget child, {
+  double maxScaleFactor = 1.3,
+}) =>
+    MediaQuery.withClampedTextScaling(
+      maxScaleFactor: maxScaleFactor,
+      child: child,
+    );
 
 /// 供移动端全屏对话框使用的自适应宽度。
 double dialogWidth(BuildContext context, {double desktopWidth = 760}) {

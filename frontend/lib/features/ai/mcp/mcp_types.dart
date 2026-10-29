@@ -29,12 +29,24 @@ class McpServerConfig {
     this.command = '',
     this.args = const [],
     this.url = '',
+    this.headers = const {},
     this.enabled = true,
   })  : id = sanitizeId(id),
         name = name.trim().isEmpty ? sanitizeId(id) : name.trim();
 
   /// 从 JSON（设置页持久化格式）解析；缺字段全部走默认值。
   factory McpServerConfig.fromJson(Map<String, dynamic> json) {
+    final rawHeaders = json['headers'];
+    final parsedHeaders = <String, String>{};
+    if (rawHeaders is Map) {
+      for (final entry in rawHeaders.entries) {
+        final k = entry.key.toString().trim();
+        final v = entry.value?.toString().trim() ?? '';
+        if (k.isNotEmpty && v.isNotEmpty) {
+          parsedHeaders[k] = v;
+        }
+      }
+    }
     return McpServerConfig(
       id: json['id']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
@@ -44,6 +56,7 @@ class McpServerConfig {
           .map((e) => e.toString())
           .toList(growable: false),
       url: json['url']?.toString() ?? '',
+      headers: Map.unmodifiable(parsedHeaders),
       enabled: json['enabled'] != false,
     );
   }
@@ -52,6 +65,37 @@ class McpServerConfig {
   static String sanitizeId(String raw) {
     final cleaned = raw.trim().replaceAll(_idForbiddenChars, '_');
     return cleaned.isEmpty ? 'mcp_server' : cleaned;
+  }
+
+  /// 解析用户在表单中输入的鉴权头文本：
+  /// - 若某行包含 `:`，按 `Header-Name: Value` 解析；
+  /// - 若单行不含 `:`，自动视为 `Authorization` 头（若未带 `Bearer ` 前缀则自动补齐）。
+  static Map<String, String> parseHeadersInput(String raw) {
+    final out = <String, String>{};
+    for (final line in raw.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final colonIdx = trimmed.indexOf(':');
+      if (colonIdx > 0) {
+        final k = trimmed.substring(0, colonIdx).trim();
+        final v = trimmed.substring(colonIdx + 1).trim();
+        if (k.isNotEmpty && v.isNotEmpty) {
+          out[k] = v;
+        }
+      } else {
+        final val = trimmed.toLowerCase().startsWith('bearer ')
+            ? trimmed
+            : 'Bearer $trimmed';
+        out['Authorization'] = val;
+      }
+    }
+    return Map.unmodifiable(out);
+  }
+
+  /// 将 [headers] 格式化回表单多行文本。
+  static String formatHeadersInput(Map<String, String> headers) {
+    if (headers.isEmpty) return '';
+    return headers.entries.map((e) => '${e.key}: ${e.value}').join('\n');
   }
 
   /// 服务器唯一标识，用作工具命名空间前缀（`mcp__<id>__<tool>`）。
@@ -73,6 +117,9 @@ class McpServerConfig {
   /// http 传输的端点 URL。
   final String url;
 
+  /// http 传输附加的自定义/鉴权请求头（如 `Authorization: Bearer <token>`）。
+  final Map<String, String> headers;
+
   /// 是否启用；接线层应跳过 disabled 的配置。
   final bool enabled;
 
@@ -84,6 +131,7 @@ class McpServerConfig {
         'command': command,
         'args': args,
         'url': url,
+        if (headers.isNotEmpty) 'headers': headers,
         'enabled': enabled,
       };
 }

@@ -41,7 +41,7 @@ namespace {
 
 // 归类用的扩展名集合（小写、无点）。
 bool is_image_ext(const std::string& ext) {
-    static const std::vector<std::string> kExts = {"png", "jpg", "jpeg", "webp", "bmp"};
+    static const std::vector<std::string> kExts = {"png", "jpg", "jpeg", "webp", "avif", "bmp"};
     for (const auto& e : kExts)
         if (e == ext) return true;
     return false;

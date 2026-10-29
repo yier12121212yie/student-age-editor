@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/models.dart';
+import '../../core/design_tokens.dart';
+import '../../core/heavy_task.dart';
+import '../../core/mode_picker.dart';
 import '../../core/ui_mode.dart';
 import '../../core/motion.dart';
 import '../../core/app_theme.dart';
@@ -54,7 +57,7 @@ class StatusBar extends StatelessWidget {
                 child: AnimatedSwitcher(
                   duration: AppMotion.fast,
                   child: Text(
-                    '模组: ${state.modName}',
+                    '模组: ${state.currentModDisplayName}',
                     key: ValueKey(state.modName),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -100,29 +103,54 @@ class StatusBar extends StatelessWidget {
               const SizedBox(width: 14),
               if (uiMode != null && onUiModeChanged != null)
                 _HoverButton(
-                  onTap: () => onUiModeChanged!(uiMode!.nextCycle()),
+                  onTap: () async {
+                    final picked = await showModePicker(context, uiMode!);
+                    if (picked != null) onUiModeChanged!(picked);
+                  },
                   child: Row(
                     children: [
-                      AnimatedSwitcher(
-                        duration: AppMotion.fast,
-                        transitionBuilder: (c, a) =>
-                            RotationTransition(turns: a, child: c),
-                        child: Icon(
-                          key: ValueKey(uiMode),
-                          _nextModeIcon(uiMode!.nextCycle()),
-                          size: 13,
-                          color: palette.textMuted,
-                        ),
+                      Icon(
+                        uiModeIcon(uiMode!),
+                        size: 13,
+                        color: palette.textMuted,
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        '切换${uiMode!.nextCycle().label}布局',
+                        '界面模式：${uiMode!.label}',
                         style: TextStyle(fontSize: 12, color: palette.textMid),
                       ),
                       const SizedBox(width: 14),
                     ],
                   ),
                 ),
+              ValueListenableBuilder<String?>(
+                valueListenable: HeavyTask.message,
+                builder: (context, msg, _) {
+                  if (msg == null) return const SizedBox.shrink();
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(width: AppSpace.s6),
+                      SizedBox.square(
+                        dimension: 11,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: palette.textMuted,
+                        ),
+                      ),
+                      const SizedBox(width: AppSpace.s6),
+                      Text(
+                        msg,
+                        style: TextStyle(
+                          fontSize: AppText.body,
+                          color: palette.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(width: AppSpace.s10),
+                    ],
+                  );
+                },
+              ),
               _HoverButton(
                 onTap: onToggleAi,
                 child: Row(
@@ -150,14 +178,6 @@ class StatusBar extends StatelessWidget {
 
   Widget _text(String s) =>
       Text(s, style: TextStyle(fontSize: 12, color: palette.textSecondary));
-
-  /// 目标模式的图标（循环切换按钮用）：创作=画笔，经典=列表，剧情图=流程图，导演=场记板。
-  IconData _nextModeIcon(UiMode m) => switch (m) {
-    UiMode.creation => FluentIcons.paint_brush_24_regular,
-    UiMode.classic => FluentIcons.list_24_regular,
-    UiMode.storyFlow => FluentIcons.flow_24_regular,
-    UiMode.director => FluentIcons.movies_and_tv_24_regular,
-  };
 }
 
 class _AnimatedText extends StatelessWidget {

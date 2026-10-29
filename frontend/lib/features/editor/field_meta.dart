@@ -104,20 +104,20 @@ const kRuleByCfgField = <String, FieldRule>{
   'NegotiationTopicCfg:buff2': FieldRule(idRefCfg: 'NegotiationBuffCfg'),
   // 目标：前置 / 下一目标自引用。
   // 注意 `reward` 不是物品 ID 而是效果码（帮助文档：「见文档中的“效果”格式」），
-  // 故不在此列规则；它归 kCodeFieldByCfg（无代码模式走积木编辑器）。
+  // 故不在此列规则；它归 kCodeFieldByCfg（简易模式走积木编辑器）。
   'IntentCfg:before': FieldRule(idRefCfg: 'IntentCfg'),
   'IntentCfg:next': FieldRule(idRefCfg: 'IntentCfg'),
   // 生日派对：连线题目左右列无需引用规则（自由文本）
   // 角色 id 列表（1D，非指令行）：原先没有规则，被 isEffectLikeField 的
   // 'roles' 猜中而误走效果补全框；补规则后回到「多值 + 角色候选」，
-  // 无代码模式下接入实体浏览面板。
+  // 简易模式下接入实体浏览面板。
   'ClothTypeCfg:roles': FieldRule(dictName: 'roles'),
   'HairTypeCfg:roles': FieldRule(dictName: 'roles'),
   'KZoneCommentCfg:roles': FieldRule(dictName: 'roles'),
   'KZoneMessageBoardCfg:roles': FieldRule(dictName: 'roles'),
   // 跨表引用补齐（来源：后端权威引用表 native/server/services/semantic_core.cpp
-  // 的 kRules —— 跳转/关联 ID 手写最易错，无代码模式下列为只读 + 浏览选择；
-  // 关闭无代码模式时也让这些字段拿到「ID · 预览」候选）。
+  // 的 kRules —— 跳转/关联 ID 手写最易错，简易模式下列为只读 + 浏览选择；
+  // 切换到高级编辑时也让这些字段拿到「ID · 预览」候选）。
   'ActionCfg:evtId': FieldRule(idRefCfg: 'EvtCfg'),
   'ActionCfg:next': FieldRule(idRefCfg: 'ActionCfg'),
   'ItemCfg:talkId': FieldRule(idRefCfg: 'TalkCfg'),
@@ -133,7 +133,7 @@ const kRuleByCfgField = <String, FieldRule>{
   'MovieCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
   'NegotiationCfg:talks': FieldRule(idRefCfg: 'TalkCfg'),
   // 第三方权威 schema 有说明但未标 range（或 range 是复合目标）的引用/枚举：
-  // 无代码模式下列为「只选不敲」，关闭时也走候选下拉。
+  // 简易模式下列为「只选不敲」，关闭时也走候选下拉。
   'EndingOptionCfg:part': FieldRule(idRefCfg: 'EndingPartCfg'),
   'EndingPartCfg:options': FieldRule(idRefCfg: 'EndingOptionCfg'),
   'EndingPartCfg:evt': FieldRule(idRefCfg: 'EvtCfg'),
@@ -209,7 +209,7 @@ FieldRule? _generatedRuleFor(String cfgName, String key) {
 ///
 /// 生成兜底来自第三方权威 schema 的 `range.table`（见 field_ref_data.dart），
 /// 覆盖那些「本体 schema 里是裸 Number/数组、但语义是另一张表记录 ID」的字段，
-/// 让无代码模式在所有编辑页都能把它们收敛为「只选不敲」的引用形态。
+/// 让简易模式在所有编辑页都能把它们收敛为「只选不敲」的引用形态。
 ///
 /// [kCodeFieldByCfg] 显式登记的效果码**永不**是引用：`reward` 这类全局 key 规则
 /// 会把 IntentCfg 的效果码误当物品 ID，命中即短路成 null，交回效果补全/积木。
@@ -227,15 +227,15 @@ FieldRule? fieldRuleFor(String cfgName, String key) {
 /// key 会原样吐英文，指南里它们又确有名目，所以在前端补一层覆盖表。
 const kGuideFieldLabels = <String, String>{
   'highlights': '高亮词语',
-  'audio': '配音',
+  'audio': '背景音乐',
   'time': '显示时间',
   'showTxt': '悬浮提示文本',
   'replace': '替换对白',
   'maxoptions': '最大选项数',
   'miniGame': '小游戏',
-  'effect': '效果代码',
-  'effect2': '效果代码(失败)',
-  'vocals': '配音(遗留)',
+  'effect': '效果',
+  'effect2': '失败效果',
+  'vocals': '语音(遗留)',
   'roleIds': '说话人',
   'roleName': '自定义名字',
   'content': '台词内容',
@@ -342,7 +342,7 @@ class FieldMeta {
     this.rule,
   });
 
-  /// 字段所属配置表。用于无代码模式的渲染分流（[noCodeShapeFor]）；
+  /// 字段所属配置表。用于简易模式的渲染分流（[noCodeShapeFor]）；
   /// 手搓 meta 的调用方（测试）可留空，空串只影响 cfg 限定的少数判定。
   final String cfg;
 
@@ -405,7 +405,7 @@ const kCodeFieldByCfg = <String>{
   // 成长码
   'PersonGrowCfg:grow',
   // 目标奖励：帮助文档明确是「效果」格式（第三方 schema 亦标 Effect）；
-  // 无代码模式下 key 不含任何码家族词，必须显式登记，否则会被误当物品引用而
+  // 简易模式下 key 不含任何码家族词，必须显式登记，否则会被误当物品引用而
   // 无法积木化。
   'IntentCfg:reward',
   // 以下 key 不含码家族词、第三方 schema 也未标 Effect/Condition，但
@@ -605,9 +605,9 @@ FieldVisual? fieldVisualFor(
   }
 }
 
-/// 无代码模式开启时该字段的渲染形态（三面共用的唯一分流表）。
+/// 简易模式开启时该字段的渲染形态（三面共用的唯一分流表）。
 enum NoCodeShape {
-  /// 普通文本/数值字段：无代码模式不改变渲染（对白正文、名称、描述、数值
+  /// 普通文本/数值字段：简易模式不改变渲染（对白正文、名称、描述、数值
   /// 不是"代码"，禁掉它们编辑器就没法用了）。
   untouched,
 
@@ -635,7 +635,7 @@ enum NoCodeShape {
 ///   5. 其余 → [NoCodeShape.untouched]
 ///
 /// 第 2 步压过第 3 步：[kCodeFieldByCfg] 显式登记的效果码是唯一真源，即使它
-/// 同时也命中某条 range/引用规则，也必须积木化——否则开启无代码后就只剩一个
+/// 同时也命中某条 range/引用规则，也必须积木化——否则开启简易后就只剩一个
 /// "选 ID"的下拉，用户改不了效果（`IntentCfg:reward` 曾被物品引用规则误降级）。
 /// 判定表只决定积木编辑器的 mode（effect/condition/cost/action/screen），
 /// 不再决定"要不要出现"。
@@ -646,7 +646,7 @@ NoCodeShape noCodeShapeFor(
   FieldRule? rule,
 ) {
   final visual = fieldVisualFor(cfg, key, type, rule);
-  // 步进框/滑杆是"填数值"，不是"输代码"：无代码模式不改变它们。
+  // 步进框/滑杆是"填数值"，不是"输代码"：简易模式不改变它们。
   if (visual != null &&
       visual != FieldVisual.numberBox &&
       visual != FieldVisual.numberSlider) {

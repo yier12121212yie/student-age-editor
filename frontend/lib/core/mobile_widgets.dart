@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_theme.dart';
+import 'design_tokens.dart';
 
 /// 统一移动端小工具库：提供触摸友好的 UI 组件和便捷操作。
 
@@ -64,13 +65,13 @@ class MobileIconButton extends StatelessWidget {
       child: Material(
         color: backgroundColor ?? Colors.transparent,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(AppRadius.l),
         ),
         child: InkWell(
           onTap: () {
             MobileHaptic.lightImpact().then((_) => onPressed());
           },
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(AppRadius.l),
           child: SizedBox(
             width: size,
             height: size,
@@ -134,12 +135,12 @@ class MobileButton extends StatelessWidget {
 
     return Material(
       color: color ?? palette.primaryColor,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(AppRadius.l),
       child: InkWell(
         onTap: loading ? null : () {
           MobileHaptic.mediumImpact().then((_) => onPressed());
         },
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(AppRadius.l),
         child: btn,
       ),
     );
@@ -187,9 +188,10 @@ class _MobileTextFieldState extends State<MobileTextField> {
             hintText: widget.hintText,
             filled: true,
             fillColor: palette.overlayMedium,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            contentPadding: const EdgeInsets.symmetric(
+                horizontal: AppSpace.l, vertical: 14),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(AppRadius.l),
               borderSide: BorderSide.none,
             ),
           ),
@@ -200,7 +202,7 @@ class _MobileTextFieldState extends State<MobileTextField> {
       maxLines: widget.maxLines,
       readOnly: widget.readOnly,
       autofocus: widget.autoFocus,
-      style: const TextStyle(fontSize: 16),
+      style: const TextStyle(fontSize: AppText.display),
     );
   }
 }
@@ -210,8 +212,8 @@ class MobileCard extends StatelessWidget {
   const MobileCard({
     super.key,
     required this.child,
-    this.padding = const EdgeInsets.all(16),
-    this.margin = const EdgeInsets.only(bottom: 12),
+    this.padding = const EdgeInsets.all(AppSpace.l),
+    this.margin = const EdgeInsets.only(bottom: AppSpace.m),
     this.title,
     this.onTap,
   });
@@ -233,12 +235,12 @@ class MobileCard extends StatelessWidget {
             Text(
               title!,
               style: TextStyle(
-                fontSize: 14,
+                fontSize: AppText.title,
                 fontWeight: FontWeight.w600,
                 color: palette.textPrimary,
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpace.m),
           ],
           child,
         ],
@@ -250,13 +252,13 @@ class MobileCard extends StatelessWidget {
         onTap: () {
           MobileHaptic.lightImpact().then((_) => onTap!());
         },
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadius.xxl),
         child: Container(
           margin: margin,
           padding: EdgeInsets.zero,
           decoration: BoxDecoration(
             color: palette.overlayWeak,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(AppRadius.xxl),
           ),
           child: content,
         ),
@@ -268,7 +270,7 @@ class MobileCard extends StatelessWidget {
       padding: EdgeInsets.zero,
       decoration: BoxDecoration(
         color: palette.overlayWeak,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadius.xxl),
       ),
       child: content,
     );
@@ -314,60 +316,211 @@ class MobileListItem extends StatelessWidget {
   }
 }
 
-/// 通用底部滑出层：可拖拽（0.5–0.96 屏高），头部带手柄与可选操作按钮，
+/// 通用底部滑出层：可拖动（手柄/标题区），头部可带标题、操作按钮与关闭键；
 /// 底部随软键盘抬升（viewInsets），避免输入法遮挡内容。
 /// 从 MobileShell._showSheet 抽出，供 AI 面板、预览呼出等复用。
+///
+/// [initialSize] 默认 0.92；短内容（搜索、选择器）可传 0.6~0.8，避免
+/// 半屏内容也铺满整屏。[showClose] 默认 true——92% 高度时顶部遮罩只剩
+/// 一条窄缝，没有关闭键用户只能靠系统返回。
 Future<void> showMobileSheet(
   BuildContext context,
   Widget child, {
   List<Widget>? headerActions,
+  String? title,
+  double initialSize = 0.92,
+  double minSize = 0.5,
+  double maxSize = 0.96,
+  bool showClose = true,
 }) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    // 下滑收起由 [_MobileSheetFrame] 的头部手势处理；关掉 modal 自带拖拽，
+    // 否则外层手势会抢走垂直拖动，手柄拖不动。
+    enableDrag: false,
     backgroundColor: palette.panel,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.xxl)),
     ),
     builder: (ctx) => Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-      child: DraggableScrollableSheet(
-        initialChildSize: 0.92,
-        maxChildSize: 0.96,
-        minChildSize: 0.5,
-        expand: false,
-        // SafeArea(top: false)：滑出层贴屏幕底边，AI 输入栏/发送按钮不能被
-        // 手势条（Android 药丸 / iOS home indicator）压住；外层 Padding 只处理
-        // 软键盘 viewInsets，系统底部内边距在此补齐（背景仍延伸到屏幕底部）。
-        builder: (ctx, ctrl) => SafeArea(
-          top: false,
-          child: Column(
-            children: [
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const SizedBox(width: 14),
-                  Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: palette.borderHover,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const Spacer(),
-                  ...?headerActions,
-                  const SizedBox(width: 4),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Expanded(child: child),
-            ],
-          ),
-        ),
+      child: _MobileSheetFrame(
+        initialSize: initialSize,
+        minSize: minSize,
+        maxSize: maxSize,
+        title: title,
+        headerActions: headerActions,
+        showClose: showClose,
+        child: child,
       ),
     ),
   );
+}
+
+/// 滑出层骨架：负责拖拽手势、标题/关闭键与安全区。
+///
+/// 不用 [DraggableScrollableSheet]：它的 controller 只有在子内容使用其
+/// 提供的 ScrollController 时才 attached；本项目滑出层里常是自带滚动条的
+/// 复杂面板（AI 会话、工作台设置），强行接管会和外层滚动打架。这里用
+/// 自己的高度比例 + 头部垂直手势，内容区完全交给调用方。
+class _MobileSheetFrame extends StatefulWidget {
+  const _MobileSheetFrame({
+    required this.child,
+    required this.initialSize,
+    required this.minSize,
+    required this.maxSize,
+    required this.title,
+    required this.headerActions,
+    required this.showClose,
+  });
+
+  final Widget child;
+  final double initialSize;
+  final double minSize;
+  final double maxSize;
+  final String? title;
+  final List<Widget>? headerActions;
+  final bool showClose;
+
+  @override
+  State<_MobileSheetFrame> createState() => _MobileSheetFrameState();
+}
+
+class _MobileSheetFrameState extends State<_MobileSheetFrame> {
+  late double _size = widget.initialSize;
+  bool _dragging = false;
+
+  void _close() {
+    if (!mounted) return;
+    Navigator.of(context).maybePop();
+  }
+
+  void _onDragUpdate(DragUpdateDetails d, double available) {
+    if (available <= 0) return;
+    setState(() {
+      _dragging = true;
+      _size = (_size - d.delta.dy / available)
+          .clamp(widget.minSize, widget.maxSize);
+    });
+  }
+
+  void _onDragEnd(DragEndDetails d) {
+    final v = d.primaryVelocity ?? 0;
+    // 向下快速甩，或已经拖到接近最小高度：直接关闭。
+    if (v > 700 || _size <= widget.minSize + 0.06) {
+      _close();
+      return;
+    }
+    // 向上快速甩：展开到最大；否则吸附到初始/最大中较近者。
+    final target = v < -700
+        ? widget.maxSize
+        : ((_size - widget.initialSize).abs() <
+                (_size - widget.maxSize).abs()
+            ? widget.initialSize
+            : widget.maxSize);
+    setState(() {
+      _dragging = false;
+      _size = target;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, box) {
+        final available = box.maxHeight;
+        return TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: _size, end: _size),
+          duration: _dragging
+              ? Duration.zero
+              : const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          builder: (context, value, child) => SizedBox(
+            height: available * value,
+            child: child,
+          ),
+          child: Material(
+            key: const ValueKey('mobile-sheet'),
+            color: palette.panel,
+            clipBehavior: Clip.antiAlias,
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(AppRadius.xxl),
+            ),
+            // SafeArea(top: false)：滑出层贴屏幕底边，AI 输入栏/发送按钮不能
+            // 被手势条压住；外层 Padding 只处理软键盘 viewInsets。
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  const SizedBox(height: AppSpace.xs),
+                  SizedBox(
+                    height: 44,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onVerticalDragUpdate: (d) =>
+                                _onDragUpdate(d, available),
+                            onVerticalDragEnd: _onDragEnd,
+                            child: Row(
+                              children: [
+                                const SizedBox(width: 14),
+                                Container(
+                                  width: 36,
+                                  height: 4,
+                                  decoration: BoxDecoration(
+                                    color: palette.borderHover,
+                                    borderRadius:
+                                        BorderRadius.circular(AppRadius.xxs),
+                                  ),
+                                ),
+                                if (widget.title != null) ...[
+                                  const SizedBox(width: AppSpace.m),
+                                  Flexible(
+                                    child: Text(
+                                      widget.title!,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: AppText.subhead,
+                                        fontWeight: FontWeight.w600,
+                                        color: palette.textHigh,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                const Spacer(),
+                              ],
+                            ),
+                          ),
+                        ),
+                        ...?widget.headerActions,
+                        if (widget.showClose)
+                          IconButton(
+                            tooltip: '关闭',
+                            icon: Icon(
+                              Icons.close_rounded,
+                              size: 18,
+                              color: palette.textSecondary,
+                            ),
+                            onPressed: _close,
+                          ),
+                        const SizedBox(width: AppSpace.xs),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AppSpace.xs),
+                  Expanded(child: widget.child),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 /// 移动端全屏对话框包装器。

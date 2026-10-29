@@ -6,23 +6,37 @@
 /// mergeStageBack 并回、PUT 带 expect_mtime_ns 乐观锁，纯函数全部走 story_logic。
 library;
 
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
-import '../ai/tts_panel.dart';
 import '../editor/field_utils.dart';
 import '../editor/id_ref_picker.dart' show showIdBrowseDialog;
 import '../nocode/no_code_exit.dart';
 import '../nocode/no_code_ref_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
-import '../resources/image_asset_picker.dart' show BgIdThumb, TexThumb;
+import '../resources/image_asset_picker.dart'
+    show
+        BgIdThumb,
+        TexThumb,
+        refreshBgIdKeyMap,
+        bgIdKeyMapOrNull,
+        ensureMergedMeta,
+        mergedMetaUsable,
+        charKeysMapOrNull,
+        MergedMetaAutoRetry,
+        mergedMetaRevision;
 import '../resources/local_import.dart'
     show importLocalAssets, texKeyOfImportedPath;
+import 'portrait_keys.dart';
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_dialogs.dart';
@@ -67,6 +81,19 @@ class StudioTreeItem {
 
 /// 对话链最大嵌套层数：超过后以引用呈现，防御脏数据造成的深递归/环。
 const int _kStudioMaxDepth = 12;
+
+/// 台词卡左侧「说话人圆点头像」的直径（逻辑像素）。
+const double _kSpeakerDotSize = 22;
+
+/// 圆点头像的纵向取景点（`Alignment.y`，-1 贴顶 / 0 居中 / 1 贴底）。
+///
+/// ⚠ 方向（曾调反过）：`Alignment.y` 是**取景框在源图上的锚点**——
+/// 负值 = 框向上移 = 取到画面偏上部分（头、肩），这正是立绘头像想要的；
+/// 正值 = 框向下移 = 会取到人物下半身（腿、裙），是反的。
+///
+/// 立绘是全身竖图，整幅 cover 进 22px 小圆只会得到一团缩到极小的全身像；
+/// 向上取景让人物头肩填满圆框，观感才与「头像」一致。
+const double _kSpeakerDotCropY = -0.95;
 
 /// 从事件首句出发沿 nextTalk/option/check 链构建对话线条目序列（深度优先、
 /// 扁平带 depth）。同一节点第二次被触达时输出 [StudioItemKind.ref]
@@ -322,16 +349,25 @@ class StoryStudioEditor extends StatefulWidget {
   State<StoryStudioEditor> createState() => _StoryStudioEditorState();
 }
 
-/// 舞台站位信息（roles 字符串 '槽位,人物,动作' 的解析结果）。
+/// 舞台站位信息（由 roles 指令解析：slot 为 0..4 的可视列，映射到站位 pos）。
 class _StudioRolePlacement {
   const _StudioRolePlacement({
     required this.slot,
     required this.roleId,
-    required this.action,
+    required this.expr,
+    this.flip = false,
   });
+
+  /// 可视列 0..4（0/1=左 2=中 3/4=右）。
   final int slot;
+
   final String roleId;
-  final String action;
+
+  /// 表情编号 0..26。
+  final int expr;
+
+  /// 是否水平镜像翻转。
+  final bool flip;
 }
 
 class _StoryStudioEditorState extends State<StoryStudioEditor> {
@@ -342,9 +378,32 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   Map<String, dynamic> _talkCfg = {};
   Map<String, dynamic> _optCfg = {};
   Map<String, dynamic> _personCfg = {};
+  Map<String, dynamic> _faceCfg = {};
   Map<String, dynamic> _bgCfg = {};
   Map<String, dynamic> _audioCfg = {};
   Map<String, RoleEntry> _roleCatalog = {};
+  Map<String, EffectiveBgState> _effectiveBgs = const {};
+  /// 与 [_effectiveBgs] 同步缓存的有效舞台（同一次 `_updateEffectiveBgs` 里算出）：
+  /// 单次 `build()` 会对每条旁白行 / 舞台预览 / 演员面板调用 [_stageChars]，
+  /// 每次现算 effectiveStages 都要跑一遍全图 BFS（每帧 3～20+ 次）。
+  Map<String, List<StageCharState>> _effectiveStages = const {};
+
+  /// 派生缓存是否落后于舞台数据。任何 `setState` 都可能改过 [_stageTalks] /
+  /// [_stageOpts]，标记为陈旧后由下一次读取惰性重算（**每帧至多一次** BFS，
+  /// 而不是每次 build 的十几次），既能批量合并、又不会读到过期舞台。
+  bool _derivedStale = true;
+
+  @override
+  void setState(VoidCallback fn) {
+    _derivedStale = true;
+    super.setState(fn);
+    // fn 内部若已显式调用 _updateEffectiveBgs()，会把标记复位（见其实现）。
+  }
+
+  /// 惰性重算派生缓存（幂等：同一帧内只算一次）。
+  void _ensureDerived() {
+    if (_derivedStale) _updateEffectiveBgs();
+  }
 
   int? _evtMtimeNs;
   int? _talkMtimeNs;
@@ -372,6 +431,15 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   static const _stages = ['小学立绘', '中学立绘'];
   String _search = '';
   final TextEditingController _searchCtrl = TextEditingController();
+  Timer? _searchDebounce;
+  Timer? _dirtyRefresh;
+
+  // P3：EvtCfg 顶层条形下拉的排序与 3k+ ComboBoxItem 只在表对象变化时重建。
+  // 此前每次 build（每敲一个字）都重排全部事件并重新分配所有下拉项。
+  Map<String, dynamic>? _evtListCacheFor;
+  int _evtListCacheLen = -1;
+  List<String> _evtKeysCache = const [];
+  List<fluent.ComboBoxItem<String>> _evtItemsCache = const [];
 
   /// 右栏正在检视的在场人物（不在本场时自动回落到首位）。
   String? _inspectRoleId;
@@ -390,6 +458,8 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     if (widget.state.leaveGuard == _confirmLeaveGuard) {
       widget.state.leaveGuard = null;
     }
+    _searchDebounce?.cancel();
+    _dirtyRefresh?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -423,6 +493,11 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       final results = await Future.wait(
         names.map((n) => ApiClient.instance.get('/api/cfg/$n')),
       );
+      Map<String, dynamic> faceData = {};
+      try {
+        final faceRes = await ApiClient.instance.get('/api/cfg/ModFaceCfg');
+        faceData = _asMap(faceRes['data']);
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _evtCfg = _asMap(results[0]['data']);
@@ -431,6 +506,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
         _personCfg = _asMap(results[3]['data']);
         _bgCfg = _asMap(results[4]['data']);
         _audioCfg = _asMap(results[5]['data']);
+        _faceCfg = faceData;
         _evtMtimeNs = _asInt(results[0]['mtime_ns']);
         _talkMtimeNs = _asInt(results[1]['mtime_ns']);
         _optMtimeNs = _asInt(results[2]['mtime_ns']);
@@ -441,7 +517,10 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       if (_evtId == null && _evtCfg.isNotEmpty) {
         final keys = _evtCfg.keys.toList()..sort(compareEventIds);
         _selectEvent(keys.first);
+      } else {
+        _updateEffectiveBgs();
       }
+      _loadStageMeta();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -457,6 +536,15 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     setState(() {
       _roleCatalog = {for (final r in roles) r.id: r};
     });
+  }
+
+  /// 拉取合并元数据（`/api/preview/meta` 的 bgKeys + charKeys）：舞台背景缩略图
+  /// 依赖全局 [bgIdKeyMapOrNull]，此前剧情舞台从不触发刷新，导致切换模组或读取模组时
+  /// 模组背景/角色元数据未更新，依然显示占位图；这里在进入或重新加载时强制刷新。
+  Future<void> _loadStageMeta() async {
+    await refreshBgIdKeyMap();
+    if (!mounted) return;
+    setState(() {});
   }
 
   Map<String, dynamic> _asMap(dynamic v) =>
@@ -491,9 +579,11 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
         _prefixes = storyRelatedPrefixes(evtId, _evtCfg);
         _stageTalks = stageOf(_talkCfg, _prefixes);
         _stageOpts = stageOf(_optCfg, _prefixes, isOption: true);
-        _talkBaseline = stageOf(_talkCfg, _prefixes);
-        _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+        // 基线 = 当前舞台的深拷贝：省去再来一遍 9.8 万行全表 stageOf 扫描。
+        _talkBaseline = copyRecords(_stageTalks);
+        _optBaseline = copyRecords(_stageOpts);
         _dirty = false;
+        _updateEffectiveBgs();
         if (_stageTalks.isNotEmpty) {
           final keys = _stageTalks.keys.toList()..sort(compareIds);
           _talkId = keys.first;
@@ -775,8 +865,8 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       if (!mounted) return false;
       setState(() {
         _dirty = false;
-        _talkBaseline = stageOf(_talkCfg, _prefixes);
-        _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+        _talkBaseline = copyRecords(_stageTalks);
+        _optBaseline = copyRecords(_stageOpts);
       });
       fluent.displayInfoBar(
         context,
@@ -808,7 +898,9 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     required ValueChanged<int?> onMtime,
   }) async {
     Future<bool> put({bool force = false}) async {
-      final r = await ApiClient.instance.put(
+      // putRaw：超过 2000 行时把整表 jsonEncode 挪到后台 isolate，避免大表保存
+      // 期间主线程冻结（小表/测试桩走同步编码，行为不变）。
+      final r = await ApiClient.instance.putRaw(
         '/api/cfg/$cfg',
         body: {
           'data': data,
@@ -863,13 +955,13 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
               _talkCfg = disk;
               _talkMtimeNs = mtime;
               _stageTalks = stageOf(_talkCfg, _prefixes);
-              _talkBaseline = stageOf(_talkCfg, _prefixes);
+              _talkBaseline = copyRecords(_stageTalks);
               break;
             case 'OptionCfg':
               _optCfg = disk;
               _optMtimeNs = mtime;
               _stageOpts = stageOf(_optCfg, _prefixes, isOption: true);
-              _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+              _optBaseline = copyRecords(_stageOpts);
               break;
             case 'BgCfg':
               _bgCfg = disk;
@@ -952,6 +1044,36 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
 
   bool get _noCode => widget.state.noCodeMode;
 
+  /// P3：缓存事件下拉的排序键与 ComboBoxItem；表对象或行数变化才重建。
+  void _ensureEvtListCache() {
+    final cfg = _evtCfg;
+    if (identical(cfg, _evtListCacheFor) && cfg.length == _evtListCacheLen) {
+      return;
+    }
+    _evtListCacheFor = cfg;
+    _evtListCacheLen = cfg.length;
+    _evtKeysCache = cfg.keys.toList()..sort(compareEventIds);
+    _evtItemsCache = [
+      for (final k in _evtKeysCache)
+        fluent.ComboBoxItem(
+          value: k,
+          child: Text(
+            '[$k] ${_evtTitle(k).isEmpty ? '事件' : _evtTitle(k)}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11.5),
+          ),
+        ),
+    ];
+  }
+
+  void _onSearchChanged(String v) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (mounted) setState(() => _search = v);
+    });
+  }
+
   String _evtTitle(String id) {
     final info = _evtCfg[id];
     if (info is Map) {
@@ -989,30 +1111,75 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     return '';
   }
 
-  /// 人物 ID → 当前阶段立绘 key（与经典处理器同规则：url=小学、url2=中学）。
-  String _portraitKeyFor(String roleId) {
-    final id = cln(roleId);
-    if (id.isEmpty) return '';
-    final r = _roleCatalog[id];
-    if (r != null) {
-      final p1 = r.portrait1.trim();
-      final p2 = r.portrait2.trim();
-      if (_stageIndex == 0) return p1.isNotEmpty ? p1 : p2;
-      return p2.isNotEmpty ? p2 : p1;
+  void _updateEffectiveBgs() {
+    if (_evtId == null) {
+      _effectiveBgs = const {};
+      _effectiveStages = const {};
+      _derivedStale = false;
+      return;
     }
-    final p = _personCfg[id];
-    if (p is Map) {
-      String firstOf(dynamic v) {
-        if (v is List && v.isNotEmpty) return cln(v.first);
-        return cln(v);
-      }
+    // 舞台与背景沿同一条对白链推导，一次算清、两处缓存，build 期间零 BFS。
+    _effectiveStages = effectiveStages(
+      evtId: _evtId!,
+      evtCfg: _evtCfg,
+      talks: _stageTalks,
+      options: _stageOpts,
+    );
+    _effectiveBgs = effectiveBackgrounds(
+      evtId: _evtId!,
+      evtCfg: _evtCfg,
+      talks: _stageTalks,
+      options: _stageOpts,
+    );
+    _derivedStale = false;
+  }
 
-      final p1 = firstOf(p['url']);
-      final p2 = firstOf(p['url2']);
-      if (_stageIndex == 0) return p1.isNotEmpty ? p1 : p2;
-      return p2.isNotEmpty ? p2 : p1;
+  EffectiveBgState _effectiveBgFor(Map<String, dynamic>? talk) {
+    if (talk == null) return const EffectiveBgState(bgId: '');
+    _ensureDerived();
+    final tid = cln(talk['id']);
+    final fromMap = _effectiveBgs[tid];
+    if (fromMap != null) return fromMap;
+    final rawBg = cln(talk['bg']);
+    if (rawBg.isNotEmpty && rawBg != '0') {
+      return EffectiveBgState(bgId: rawBg, isInherited: false, sourceTalkId: tid);
     }
-    return '';
+    return const EffectiveBgState(bgId: '');
+  }
+
+  /// 人物 ID + 表情编号 → 候选立绘 key 列表（变体优先，优雅回退到基础立绘）。
+  ///
+  /// 解析口径统一收敛到 [portraitKeyCandidates]（与经典导演视图同源），这里只
+  /// 负责把工作台已加载的四类素材来源摊平成入参：
+  ///   1. ModFaceCfg（`_faceCfg`）：用户按表情逐个指定的自定义表情图；
+  ///   2. RoleCatalog（`/api/roles`）：随包官方 → 工作区 PersonCfg 逐层覆盖；
+  ///   3. 工作区 PersonCfg（`_personCfg`）原始记录：目录未就绪时的自定义兜底；
+  ///   4. charKeys（`/api/preview/meta` 合并元数据）：官方差分/基础立绘兜底。
+  List<String> _portraitKeyCandidates(String roleId, {int expr = 0}) {
+    final id = cln(roleId);
+    if (id.isEmpty) return const [];
+    final r = _roleCatalog[id];
+    final p = _personCfg[id];
+    Map<String, dynamic>? ck;
+    final rawCk = charKeysMapOrNull?[id];
+    if (rawCk is Map) ck = rawCk.cast<String, dynamic>();
+    return portraitKeyCandidates(
+      roleId: id,
+      expr: expr,
+      stageIndex: _stageIndex,
+      faceCfg: _faceCfg,
+      catalogPortrait1: r?.portrait1.trim() ?? '',
+      catalogPortrait2: r?.portrait2.trim() ?? '',
+      personUrl1: p is Map ? portraitFirstStr(p['url']) : '',
+      personUrl2: p is Map ? portraitFirstStr(p['url2']) : '',
+      charKeys: ck,
+    );
+  }
+
+  /// 人物 ID → 当前阶段立绘 key（与经典处理器同规则：url=小学、url2=中学）。
+  String _portraitKeyFor(String roleId, {int expr = 0}) {
+    final cands = _portraitKeyCandidates(roleId, expr: expr);
+    return cands.isNotEmpty ? cands.first : '';
   }
 
   Map<String, String> _allBgs() {
@@ -1027,6 +1194,17 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       final name = e.value is Map ? (e.value as Map)['name'] : e.value;
       if (name != null && name.toString().isNotEmpty) {
         map[e.key.toString()] = name.toString();
+      } else if (!map.containsKey(e.key.toString())) {
+        map[e.key.toString()] = '背景 ${e.key}';
+      }
+    }
+    // 合并元数据中已有但在 gameDicts/_bgCfg 中未命名的背景补充兜底名称
+    final metaBgs = bgIdKeyMapOrNull;
+    if (metaBgs != null) {
+      for (final k in metaBgs.keys) {
+        if (!map.containsKey(k) && k.isNotEmpty && k != '0') {
+          map[k] = '背景 $k';
+        }
       }
     }
     return map;
@@ -1098,63 +1276,173 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     );
   }
 
-  /// 说话人轮换：旁白 ↔ 本句候选角色（点名字换人）。
-  void _cycleSpeaker(Map<String, dynamic> talk) {
-    final candidates = <String>{
-      ...ensureList(talk['roleIds']),
-      ..._parseSlots(talk).map((s) => s.roleId),
-    }.where((s) => s.isNotEmpty && s != '-1').toList()
-      ..sort(compareIds);
-    final current = ensureList(talk['roleIds']);
-    String? pick;
-    if (current.isNotEmpty) {
-      final idx = candidates.indexOf(cln(current.first));
-      if (idx >= 0 && idx + 1 < candidates.length) pick = candidates[idx + 1];
-    } else if (candidates.isNotEmpty) {
-      pick = candidates.first;
-    }
-    setState(() {
-      talk['roleIds'] =
-          pick == null ? <dynamic>[] : <dynamic>[int.tryParse(pick) ?? pick];
-      _dirty = true;
-    });
+  /// 点击说话人名称：弹出「更改说话人」对话框。
+  ///
+  /// 可多选任意人物（不再局限于本句已在场的候选）、一键清空为旁白，并就地编辑
+  /// 显示名称（`roleName`）。相比原先的「点名字轮换」，这里不会在候选末尾把
+  /// 说话人打回旁白；换人后若显示名仍是旧说话人的默认名（未被显式自定义），
+  /// 会自动清空让显示名跟随新说话人，修复「换了人还显示旧名字」的问题。
+  Future<void> _showSpeakerDialog(Map<String, dynamic> talk) async {
+    var ids = normalizeStoryIdList(talk['roleIds'])
+        .map(cln)
+        .where((s) => s.isNotEmpty && s != '-1')
+        .toList();
+    // 旧说话人的默认显示名：用于判断 roleName 是「自定义」还是「跟随说话人」。
+    final oldDefault = ids.map(_roleName).where((n) => n.isNotEmpty).join('、');
+    final nameCtrl = TextEditingController(text: cln(talk['roleName']));
+
+    await fluent.showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AppContentDialog(
+          title: const Text('更改说话人'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '说话人（留空 = 旁白，可多选）',
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 5,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final rid in ids)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: palette.tintAccent,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: palette.accentDeep),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _roleName(rid).isEmpty ? '[$rid]' : _roleName(rid),
+                              style: TextStyle(
+                                  fontSize: 11, color: palette.accentPale),
+                            ),
+                            const SizedBox(width: 4),
+                            MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: () => setDialogState(() {
+                                  ids = ids.where((e) => e != rid).toList();
+                                }),
+                                child: Icon(FluentIcons.dismiss_16_regular,
+                                    size: 10, color: palette.accentPale),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    _StudioPill(
+                      label: '＋ 选择人物',
+                      onTap: () async {
+                        final picked =
+                            await showRolePickerDialog(ctx, multi: true);
+                        if (picked == null || !ctx.mounted) return;
+                        setDialogState(() {
+                          for (final p in picked) {
+                            final pid = cln(p);
+                            if (pid.isNotEmpty &&
+                                pid != '-1' &&
+                                !ids.contains(pid)) {
+                              ids = [...ids, pid];
+                            }
+                          }
+                        });
+                      },
+                    ),
+                    _StudioPill(
+                      label: '旁白（清空）',
+                      onTap: ids.isEmpty
+                          ? null
+                          : () => setDialogState(() => ids = []),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '显示名称（留空 = 用人物本名）',
+                  style: TextStyle(fontSize: 12, color: palette.textSecondary),
+                ),
+                const SizedBox(height: 6),
+                fluent.TextBox(
+                  controller: nameCtrl,
+                  placeholder: '如「？？？」',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            fluent.FilledButton(
+              onPressed: () {
+                final name = nameCtrl.text.trim();
+                // 只保留用户显式输入的自定义名；空或等于旧说话人默认名时清空，
+                // 让显示名跟随新说话人自动更新。
+                final custom = name.isNotEmpty && name != oldDefault;
+                setState(() {
+                  talk['roleIds'] =
+                      ids.map((e) => int.tryParse(e) ?? e).toList();
+                  if (custom) {
+                    talk['roleName'] = name;
+                  } else {
+                    talk.remove('roleName');
+                  }
+                  _dirty = true;
+                });
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
-  // ---------- 站位/表情（roles '槽,人物,动作'） ----------
+  // ---------- 站位/表情（roles 指令 [[roleId, 指令码, ...], ...]） ----------
+
+  /// 可视列 0..4 → 站位 pos（0/1=左 1，2=中 3，3/4=右 2）。
+  static const _slotPos = [1, 1, 3, 2, 2];
+
+  static int _posToSlot(int pos) => pos == 1 ? 1 : (pos == 2 ? 3 : 2);
+
+  /// 有效舞台（含跨对白继承，与后端 preview_event 同口径）；解析失败回退单句。
+  /// 查 [_effectiveStages] 缓存（O(1)），不再每帧重跑全图 BFS。
+  List<StageCharState> _stageChars(String talkId, Map<String, dynamic> talk) {
+    _ensureDerived();
+    if (talkId.isNotEmpty && _evtId != null) {
+      final eff = _effectiveStages[talkId];
+      if (eff != null) return eff;
+    }
+    return parseStageChars(talk['roles']);
+  }
 
   List<_StudioRolePlacement> _parseSlots(Map<String, dynamic> talk) {
-    final out = <_StudioRolePlacement>[];
-    final raw = ensureList(talk['roles']);
-    for (final r in raw) {
-      final parts = r.split(',');
-      if (parts.length < 2) continue;
-      final slot = int.tryParse(parts[0].trim()) ?? 2;
-      out.add(
+    final chars = _stageChars(cln(talk['id']), talk);
+    return [
+      for (final c in chars)
         _StudioRolePlacement(
-          slot: slot.clamp(0, 4),
-          roleId: parts[1].trim(),
-          action: parts.length > 2 && parts[2].trim().isNotEmpty
-              ? parts[2].trim()
-              : '3000',
+          slot: _posToSlot(c.pos),
+          roleId: c.roleId,
+          expr: c.expr,
+          flip: c.flip,
         ),
-      );
-    }
-    if (out.isEmpty) {
-      // roles 为空时按 roleIds 默认摆放（与经典处理器同式：槽 1、3…）。
-      var fallbackSlot = 1;
-      for (final rid in ensureList(talk['roleIds'])) {
-        if (rid.isEmpty || rid == '-1') continue;
-        out.add(
-          _StudioRolePlacement(
-            slot: fallbackSlot % 5,
-            roleId: rid,
-            action: '3000',
-          ),
-        );
-        fallbackSlot += 2;
-      }
-    }
-    return out;
+    ];
   }
 
   _StudioRolePlacement? _placementOf(
@@ -1167,86 +1455,112 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     return null;
   }
 
-  void _writeSlot(Map<String, dynamic> talk, _StudioRolePlacement p) {
-    // 目标站位旧人物与本角色旧站位都清掉：一条对白里一个人只占一个站位。
-    final roles = ensureList(talk['roles'])
-        .where((r) => !r.startsWith('${p.slot},'))
-        .toList();
-    roles.removeWhere((r) {
-      final parts = r.split(',');
-      return parts.length >= 2 && parts[1].trim() == p.roleId;
-    });
-    roles.add('${p.slot},${p.roleId},${p.action}');
+  /// 写回舞台操作：只改站位或表情，均以 roles 指令行形式落盘。
+  void _applyStage(
+    Map<String, dynamic> talk, {
+    String? roleId,
+    int? pos,
+    int? expr,
+  }) {
+    if (roleId == null) return;
+    var roles = talk['roles'];
+    if (pos != null) roles = setStagePos(roles, roleId, pos);
+    if (expr != null) roles = setStageExpr(roles, roleId, expr);
     talk['roles'] = roles;
     _dirty = true;
-  }
-
-  void _setEmotion(Map<String, dynamic> talk, String roleId, String code) {
-    final slots = _parseSlots(talk);
-    final cur = slots.where((s) => s.roleId == roleId).toList();
-    final slot = cur.isEmpty ? 2 : cur.first.slot;
-    _writeSlot(
-      talk,
-      _StudioRolePlacement(slot: slot, roleId: roleId, action: code),
-    );
     setState(() {});
   }
 
-  void _shiftPlacement(Map<String, dynamic> talk, _StudioRolePlacement p, int dir) {
+  void _setEmotion(Map<String, dynamic> talk, String roleId, int expr) {
+    _applyStage(talk, roleId: roleId, expr: expr);
+  }
+
+  void _shiftPlacement(
+    Map<String, dynamic> talk,
+    _StudioRolePlacement p,
+    int dir,
+  ) {
     final next = p.slot + dir;
     if (next < 0 || next > 4) return;
-    _writeSlot(
-      talk,
-      _StudioRolePlacement(slot: next, roleId: p.roleId, action: p.action),
-    );
+    _applyStage(talk, roleId: p.roleId, pos: _slotPos[next]);
+  }
+
+  void _toggleFlip(Map<String, dynamic> talk, String roleId) {
+    talk['roles'] = toggleStageFlip(talk['roles'], roleId);
+    _dirty = true;
+    _markDirty();
     setState(() {});
   }
 
   void _removePlacement(Map<String, dynamic> talk, String roleId) {
-    final roles = ensureList(talk['roles']).where((r) {
-      final parts = r.split(',');
-      return !(parts.length >= 2 && parts[1].trim() == roleId);
-    }).toList();
-    talk['roles'] = roles;
+    talk['roles'] = removeStageRole(talk['roles'], roleId);
     setState(() => _dirty = true);
   }
 
-  static const _emotions = <(String, String)>[
-    ('3000', '普通'),
-    ('3001', '开心'),
-    ('3002', '生气'),
-    ('3003', '悲伤'),
-    ('3004', '害羞'),
-    ('3005', '惊讶'),
-    ('3006', '得意'),
-    ('3007', '叹气'),
-  ];
+  /// 游戏表情编号 → 名称（0..26）。权威表在 `story_logic.dart:kEmotionNames`
+  /// （与后端 stage_service kExpressionNames 同序），此处仅引用，避免双份维护。
+  static const _emotions = kEmotionNames;
 
-  String _emotionName(String code) {
-    for (final e in _emotions) {
-      if (e.$1 == code) return e.$2;
+  String _emotionName(int expr) => emotionNameOf(expr);
+
+  /// 角色是否「已知支持」该表情 —— **只用于高亮提示，不再用于禁用表情按钮**。
+  ///
+  /// 历史坑（本次修复的根因）：本函数原为 `_isEmotionAvailable`，返回值被当作
+  /// `onTap` 的开关，false 即把表情胶囊置灰。但链路上没有任何一环能给出可靠反证：
+  ///   * 后端 `charKeys[id].expressions` 通过「`base_N` 贴图是否存在」探测得到，
+  ///     与游戏真实表情集系统性不符（实测角色 101 真实含 8=惊讶，探测只给到
+  ///     [0,1,2,3,4,5,6]；角色 3 真实含 [1,6,8,11]，探测只给到 [0,2]）；
+  ///   * 旧代码 `if (exprs is List) return exprs.contains(expr)` 会把后面的
+  ///     PersonCfg 兜底整体短路 —— 一旦后端漏检，表情永久置灰；
+  ///   * `/api/cfg/PersonCfg` 只返回 **mod 自己**的表（用户模组仅 31 条），
+  ///     核心角色 101/102/3 不在其中 → 第 3 步兜底拿不到数据；
+  ///   * 基础 PersonCfg 的 380 条里 **没有任何** `l2d`/`l2d2`，
+  ///     「Live2D 角色恒可用」分支在基础数据上从不生效。
+  ///
+  /// 参考实现（友商产品#1 `story.py` / `person.py`）同样从不禁用表情：它只把
+  /// 「已知支持」的表情**标色**（`color = "#DB0000"`），其余照常可选。此处对齐
+  /// 该语义 —— 判定退化为「正向证据并集」，无证据即中性（仍可选）。
+  bool _isEmotionSupported(String roleId, int expr) {
+    if (expr == 0) return true; // 默认表情
+    final id = cln(roleId);
+    if (id.isEmpty) return true;
+
+    // 1. ModFaceCfg 自定义表情差分（id = pid*1000 + expr）
+    final pid = int.tryParse(id);
+    if (pid != null && _faceCfg.isNotEmpty) {
+      for (final e in _faceCfg.values) {
+        if (e is! Map) continue;
+        final fid = (e['id'] as num?)?.toInt() ?? -1;
+        if (fid ~/ 1000 != pid || fid % 100 != expr) continue;
+        final icon = (e['icon'] ?? '').toString().trim();
+        final iconXx = (e['icon_xx'] ?? '').toString().trim();
+        if (icon.isNotEmpty || iconXx.isNotEmpty) return true;
+      }
     }
-    return code.startsWith('30') ? '动作 $code' : code;
-  }
 
-  Future<void> _openTtsPanel(Map<String, dynamic> talk) async {
-    final content = ((talk['content'] ?? talk['showTxt'])?.toString() ?? '')
-        .trim();
-    final role = cln(talk['roleName']).trim();
-    final title = content.isNotEmpty
-        ? (role.isNotEmpty ? '$role：$content' : content)
-        : '';
-    await showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => Center(
-        child: TtsPanel(
-          initText: content,
-          initTitle: title,
-          initTalkId: talk['id'] != null ? 'talk_${talk['id']}' : '',
-        ),
-      ),
-    );
+    // 2. 合并元数据 charKeys：任一正向证据即可
+    final ck = charKeysMapOrNull?[id];
+    if (ck is Map) {
+      final l2d = ck['l2d'];
+      if (l2d is List && l2d.isNotEmpty) return true;
+      final faces = ck['faces'];
+      if (faces is Map && faces.containsKey(expr.toString())) return true;
+      final exprs = ck['expressions'];
+      if (exprs is List && exprs.contains(expr)) return true;
+      // ⚠ 此处不得 `return exprs.contains(expr)`：exprs 漏检只说明「没探测到」，
+      // 不等于「不支持」。一票否决会把下面所有兜底短路（历史 bug）。
+    }
+
+    // 3. PersonCfg 中配置了 Live2D
+    final p = _personCfg[id];
+    if (p is Map) {
+      final l1 = p['l2d'];
+      if (l1 is List && l1.isNotEmpty) return true;
+      final l2 = p['l2d2'];
+      if (l2 is List && l2.isNotEmpty) return true;
+    }
+
+    return false;
   }
 
   // ---------- 放置角色弹窗（点选后立即登场） ----------
@@ -1263,123 +1577,124 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
         ),
       );
     String? placed;
+    int? placedExpr;
     if (slotIdx != null) {
       for (final s in _parseSlots(talk)) {
         if (s.slot == slotIdx) {
           placed = s.roleId;
+          placedExpr = s.expr;
           break;
         }
       }
     }
-    var selected = placed ?? (personKeys.isNotEmpty ? personKeys.first : '10');
-    var actionCode = '3000';
-    var slot = slotIdx ?? 2;
+    final selected = placed ?? (personKeys.isNotEmpty ? personKeys.first : '10');
+    final exprCode = placedExpr ?? 0;
+    final slot = slotIdx ?? 2;
 
     await fluent.showDialog<void>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AppContentDialog(
-          title: Text(slotIdx == null ? '人物登场' : '放置角色到 站位 $slotIdx'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('选择角色:', style: TextStyle(fontSize: 12)),
-                const SizedBox(height: 6),
-                fluent.ComboBox<String>(
-                  value: personKeys.contains(selected) ? selected : null,
-                  placeholder: const Text('请选择角色', style: TextStyle(fontSize: 12)),
-                  isExpanded: true,
-                  items: personKeys
-                      .map(
-                        (k) => fluent.ComboBoxItem(
-                          value: k,
-                          child: Text('[$k] ${allRoles[k] ?? '角色'}',
-                              style: const TextStyle(fontSize: 12)),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (v) {
-                    if (v != null) setDialogState(() => selected = v);
-                  },
-                ),
-                if (slotIdx == null) ...[
-                  const SizedBox(height: 10),
-                  const Text('站位:', style: TextStyle(fontSize: 12)),
-                  const SizedBox(height: 4),
-                  Wrap(
-                    spacing: 6,
-                    children: [0, 1, 2, 3, 4]
-                        .map(
-                          (s) => _StudioPill(
-                            label: const ['左', '中左', '居中', '中右', '右'][s],
-                            selected: slot == s,
-                            onTap: () => setDialogState(() => slot = s),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ],
-                const SizedBox(height: 10),
-                const Text('表情与动作 (30xx):', style: TextStyle(fontSize: 12)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: _emotions
-                      .map(
-                        (e) => _StudioPill(
-                          label: '${e.$2} (${e.$1})',
-                          selected: actionCode == e.$1,
-                          onTap: () => setDialogState(() => actionCode = e.$1),
-                        ),
-                      )
-                      .toList(),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            // 直接从电脑选图导入并写进该角色立绘，省掉先导入再配人设。
-            fluent.Button(
-              onPressed: () async {
-                await _importLocalPortrait(selected);
-                if (ctx.mounted) setDialogState(() {});
-              },
-              child: const Text('从电脑选择立绘…'),
-            ),
-            fluent.Button(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('取消'),
-            ),
-            fluent.FilledButton(
-              onPressed: () {
-                setState(() {
-                  _writeSlot(
-                    talk,
-                    _StudioRolePlacement(
-                      slot: slot,
-                      roleId: selected,
-                      action: actionCode,
-                    ),
-                  );
-                  // 登场即入说话人候选（点选后立即登场的顺手路径）。
-                  final ids = ensureList(talk['roleIds']).map(cln).toList();
-                  if (!ids.contains(selected) && selected != '-1') {
-                    talk['roleIds'] = [
-                      ...normalizeStoryIdList(talk['roleIds']),
-                      int.tryParse(selected) ?? selected,
-                    ];
-                  }
-                  _dirty = true;
-                });
-                Navigator.of(ctx).pop();
-              },
-              child: const Text('登场'),
-            ),
-          ],
-        ),
+      barrierDismissible: true,
+      builder: (ctx) => _StudioPlaceRoleDialog(
+        slotIdx: slotIdx,
+        initialSelected: selected,
+        initialExpr: exprCode,
+        initialSlot: slot,
+        allRoles: allRoles,
+        roleCatalog: _roleCatalog,
+        onCatalogLoaded: (m) {
+          if (mounted) setState(() => _roleCatalog = m);
+        },
+        portraitKeyCandidates: _portraitKeyCandidates,
+        roleName: _roleName,
+        emotionName: _emotionName,
+        isEmotionSupported: _isEmotionSupported,
+        onImportLocalPortrait: (rid) async {
+          await _importLocalPortrait(rid);
+          if (mounted) setState(() {});
+        },
+        onConfirm: (sel, expr, s) {
+          setState(() {
+            talk['roles'] = setStageExpr(
+              setStagePos(talk['roles'], sel, _slotPos[s]),
+              sel,
+              expr,
+            );
+            // 登场即入说话人候选（点选后立即登场的顺手路径）。
+            final ids = ensureList(talk['roleIds']).map(cln).toList();
+            if (!ids.contains(sel) && sel != '-1') {
+              talk['roleIds'] = [
+                ...normalizeStoryIdList(talk['roleIds']),
+                int.tryParse(sel) ?? sel,
+              ];
+            }
+            _dirty = true;
+          });
+        },
+      ),
+    );
+  }
+
+  /// 「点击人物更换角色」：复用 [_StudioPlaceRoleDialog]，确认时经
+  /// [replaceStageRole] 原子替换舞台指令，并联动说话人（roleIds）与高亮（highlights）。
+  Future<void> _showReplaceRoleDialog(
+    Map<String, dynamic> talk,
+    _StudioRolePlacement p,
+  ) async {
+    final allRoles = _allRoles();
+    final oldId = p.roleId;
+    final oldName = _roleName(oldId);
+    final oldLabel = oldName.isEmpty ? oldId : oldName;
+
+    await fluent.showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => _StudioPlaceRoleDialog(
+        // 传 null 让弹窗展示站位微调（站位槽已由 [p] 预置）。
+        slotIdx: null,
+        initialSelected: oldId,
+        initialExpr: p.expr,
+        initialSlot: p.slot,
+        allRoles: allRoles,
+        roleCatalog: _roleCatalog,
+        onCatalogLoaded: (m) {
+          if (mounted) setState(() => _roleCatalog = m);
+        },
+        portraitKeyCandidates: _portraitKeyCandidates,
+        roleName: _roleName,
+        emotionName: _emotionName,
+        isEmotionSupported: _isEmotionSupported,
+        titleText: '更换人物：[$oldId] $oldLabel',
+        confirmButtonText: '确定更换',
+        onImportLocalPortrait: (rid) async {
+          await _importLocalPortrait(rid);
+          if (mounted) setState(() {});
+        },
+        onConfirm: (sel, expr, s) {
+          final newId = cln(sel);
+          if (newId.isEmpty || newId == cln(oldId)) return;
+          setState(() {
+            talk['roles'] = replaceStageRole(
+              talk['roles'],
+              oldId,
+              newId,
+              pos: _slotPos[s],
+              expr: expr,
+              flip: p.flip,
+            );
+            // 说话人 / 高亮联动：原角色在列则替换为新角色。
+            if (ensureList(talk['roleIds']).map(cln).contains(oldId)) {
+              talk['roleIds'] = replaceRoleRef(talk['roleIds'], oldId, newId);
+            }
+            if (ensureList(talk['highlights']).map(cln).contains(oldId)) {
+              talk['highlights'] =
+                  replaceRoleRef(talk['highlights'], oldId, newId);
+            }
+            if (cln(_inspectRoleId ?? '') == cln(oldId)) {
+              _inspectRoleId = newId;
+            }
+            _dirty = true;
+          });
+        },
       ),
     );
   }
@@ -1387,6 +1702,10 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   Future<void> _showSceneBgDialog(Map<String, dynamic> talk) async {
     final bgs = _allBgs();
     var current = cln(talk['bg']);
+    final inheritedState = _effectiveBgFor(talk);
+    final inheritedId = inheritedState.bgId;
+    final inheritedName = bgs[inheritedId] ?? '';
+
     await fluent.showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -1426,14 +1745,53 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                   SizedBox(
                     height: 150,
                     child: BgIdThumb(
+                      key: ValueKey('bg-dialog-$current'),
                       id: current,
                       width: double.infinity,
                       height: 150,
                     ),
                   )
-                else
-                  Text('空 = 延续前文背景，不切换',
-                      style: TextStyle(fontSize: 11, color: palette.textHint)),
+                else ...[
+                  Text(
+                    inheritedId.isNotEmpty
+                        ? '延续上文背景 (当前生效: ${inheritedName.isEmpty ? inheritedId : inheritedName} [$inheritedId])'
+                        : '空 = 延续前文背景（当前链路上文未指定背景）',
+                    style: TextStyle(fontSize: 11, color: palette.textHint),
+                  ),
+                  if (inheritedId.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      height: 140,
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: BgIdThumb(
+                              key: ValueKey('bg-dialog-inherited-$inheritedId'),
+                              id: inheritedId,
+                              width: double.infinity,
+                              height: 140,
+                            ),
+                          ),
+                          Positioned(
+                            right: 6,
+                            bottom: 6,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.65),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text('延续背景预览',
+                                  style: TextStyle(
+                                      fontSize: 10, color: Colors.white70)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
               ],
             ),
           ),
@@ -1462,8 +1820,13 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             fluent.FilledButton(
               onPressed: () {
                 setState(() {
-                  talk['bg'] = current.isEmpty ? null : (int.tryParse(current) ?? current);
+                  if (current.isEmpty || current == '0') {
+                    talk.remove('bg');
+                  } else {
+                    talk['bg'] = int.tryParse(current) ?? current;
+                  }
                   _dirty = true;
+                  _updateEffectiveBgs();
                 });
                 Navigator.of(ctx).pop();
               },
@@ -1503,6 +1866,9 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       onMtime: (v) => _bgMtimeNs = v,
     );
     if (!ok || !mounted) return null;
+    // BgCfg 落盘后刷新 id→key 合并元数据，否则新背景在舞台 / 场景预览里仍是占位图。
+    await refreshBgIdKeyMap();
+    if (!mounted) return null;
     setState(() => _bgCfg = updated);
     return id;
   }
@@ -1546,6 +1912,23 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
 
   @override
   Widget build(BuildContext context) {
+    // 监听合并元数据（bgKeys/charKeys）修订号：舞台立绘与「人物与表情」面板在
+    // build 期被动读取该缓存，元数据异步到达后必须自动重建，否则会停留在占位图上，
+    // 直到用户切换对白（旧 bug：进入剧情舞台要换几次页才显示人物和背景）。
+    //
+    // 外层 [MergedMetaAutoRetry] 负责「后端冷启动 / 返回空表」时的自动重拉：
+    // 渲染期只读缓存、不发请求，旧实现里这一次失败无人补救，背景便一直是占位图。
+    // 定时器归该组件 State 所有，随页面销毁一并取消（否则测试结束会留下未消费的
+    // 定时器）。连续未就绪达上限后不再自动重发，需显式 refresh 或切模组。
+    return MergedMetaAutoRetry(
+      child: ValueListenableBuilder<int>(
+        valueListenable: mergedMetaRevision,
+        builder: (context, _, _) => _buildBody(context),
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
     if (!_loaded) {
       return const Center(
         child: SizedBox(
@@ -1589,7 +1972,8 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   }
 
   Widget _buildTopBar() {
-    final evtKeys = _evtCfg.keys.toList()..sort(compareEventIds);
+    _ensureEvtListCache();
+    final evtKeys = _evtKeysCache;
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1616,16 +2000,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             child: fluent.ComboBox<String>(
               value: evtKeys.contains(_evtId) ? _evtId : null,
               isExpanded: true,
-              items: evtKeys.map((k) {
-                final t = _evtTitle(k);
-                return fluent.ComboBoxItem(
-                  value: k,
-                  child: Text('[$k] ${t.isEmpty ? '事件' : t}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11.5)),
-                );
-              }).toList(),
+              items: _evtItemsCache,
               onChanged: (v) {
                 if (v != null) _selectEvent(v);
               },
@@ -1727,7 +2102,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                   placeholder: '🔍 搜索 ID / 台词 / 说话人',
                   style: const TextStyle(fontSize: 11.5),
                   controller: _searchCtrl,
-                  onChanged: (v) => setState(() => _search = v),
+                  onChanged: _onSearchChanged,
                 ),
               ),
               const SizedBox(height: 6),
@@ -1891,9 +2266,11 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // 说话人圆点头像（speaker-dot）
+              // 立绘是全身竖图，直接 cover 进 22px 小圆里人只占一小块、五官不可辨；
+              // 向上取景（Alignment.y < 0）让人物头肩填满圆框，见 _kSpeakerDotCropY。
               Container(
-                width: 22,
-                height: 22,
+                width: _kSpeakerDotSize,
+                height: _kSpeakerDotSize,
                 margin: const EdgeInsets.only(right: 6, top: 1),
                 clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
@@ -1903,7 +2280,13 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                 child: dotKey.isEmpty
                     ? Icon(FluentIcons.person_24_regular,
                         size: 12, color: palette.textHint)
-                    : TexThumb(keyName: dotKey, width: 22, height: 22, fit: BoxFit.cover),
+                    : TexThumb(
+                        keyName: dotKey,
+                        width: _kSpeakerDotSize,
+                        height: _kSpeakerDotSize,
+                        fit: BoxFit.cover,
+                        alignment: const Alignment(0, _kSpeakerDotCropY),
+                      ),
               ),
               Expanded(
                 child: Column(
@@ -2194,8 +2577,28 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
 
   /// 可编辑游戏画面：背景 + 5 站位立绘 + 对话框内直接写台词。
   Widget _buildSceneStage(Map<String, dynamic> talk) {
-    final bgVal = cln(talk['bg']);
+    final effBg = _effectiveBgFor(talk);
+    final bgVal = effBg.bgId;
     final bgName = _allBgs()[bgVal] ?? '';
+    final isExplicit = !effBg.isInherited && effBg.bgId.isNotEmpty;
+    final isInherited = effBg.isInherited && effBg.bgId.isNotEmpty;
+    // 背景 id 是否已解析出贴图 key。元数据（后端合并 bgKeys）还没就绪时解析不出
+    // 来，缩略图只能显示占位图 —— 明确标出「资源未就绪」（而不是让用户以为是
+    // 这句没背景）；同时 MergedMetaAutoRetry 会持续自动重拉，就绪后自动换图。
+    final bgKey = (bgVal.isEmpty || bgVal == '0') ? null : bgIdKeyMapOrNull?[bgVal];
+    final bgUnresolved =
+        bgVal.isNotEmpty && bgVal != '0' && (bgKey == null || bgKey.isEmpty);
+    final String bgLabel;
+    if (isExplicit) {
+      bgLabel =
+          '背景: ${bgName.isEmpty ? bgVal : bgName} ($bgVal) · ${bgUnresolved ? '资源未就绪' : '本句切换'}';
+    } else if (isInherited) {
+      final src = effBg.sourceTalkId != null ? ' · 延续自 [${effBg.sourceTalkId}]' : ' · 延续前文';
+      bgLabel = '背景: ${bgName.isEmpty ? bgVal : bgName} ($bgVal)$src';
+    } else {
+      bgLabel = '背景: 未设置 (默认黑幕)';
+    }
+
     final slots = _parseSlots(talk);
     final slotMap = <int, _StudioRolePlacement>{
       for (final p in slots) p.slot: p,
@@ -2235,11 +2638,67 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                 onTap: () => _showSceneBgDialog(talk),
               ),
               const Spacer(),
-              Text(
-                bgVal.isEmpty
-                    ? '延续上文背景'
-                    : '背景 ${bgName.isEmpty ? bgVal : bgName}',
-                style: TextStyle(fontSize: 10.5, color: palette.textHint),
+              // 当前背景状态指示与缩略
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isExplicit
+                      ? palette.tintAccent
+                      : (isInherited ? palette.surface : Colors.transparent),
+                  borderRadius: BorderRadius.circular(6),
+                  border: isExplicit
+                      ? Border.all(color: accentColor.withValues(alpha: 0.5))
+                      : null,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (bgVal.isNotEmpty && bgVal != '0') ...[
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: SizedBox(
+                          width: 22,
+                          height: 16,
+                          child: BgIdThumb(id: bgVal, width: 22, height: 16),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    Text(
+                      bgLabel,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: isExplicit
+                            ? palette.accentPale
+                            : (isInherited ? palette.textBody : palette.textHint),
+                        fontWeight: isExplicit ? FontWeight.w600 : FontWeight.normal,
+                      ),
+                    ),
+                    if (isExplicit) ...[
+                      const SizedBox(width: 4),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              talk.remove('bg');
+                              _dirty = true;
+                              _updateEffectiveBgs();
+                            });
+                          },
+                          child: Tooltip(
+                            message: '清除本句背景切换（改为延续前文）',
+                            child: Icon(
+                              FluentIcons.dismiss_12_regular,
+                              size: 11,
+                              color: palette.accentPale,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ],
           ),
@@ -2290,12 +2749,18 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                 label: '＋说话人',
                 onTap: () async {
                   final ids = await showRolePickerDialog(context, multi: true);
+                  if (!mounted) return;
                   if (ids == null || ids.isEmpty) return;
                   setState(() {
-                    talk['roleIds'] = <dynamic>[
-                      ...normalizeStoryIdList(talk['roleIds']),
-                      ...ids.map((e) => int.tryParse(e) ?? e),
-                    ];
+                    final merged = normalizeStoryIdList(talk['roleIds']);
+                    final existing =
+                        merged.map(cln).where((s) => s.isNotEmpty).toSet();
+                    for (final e in ids) {
+                      final id = cln(e);
+                      if (id.isEmpty || !existing.add(id)) continue;
+                      merged.add(int.tryParse(id) ?? id);
+                    }
+                    talk['roleIds'] = merged;
                     _dirty = true;
                   });
                 },
@@ -2330,7 +2795,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                         height: 300,
                       ),
                     ),
-                  // 站位立绘
+                  // 站位立绘（高度 220 沉底，顶部浮动显示角色信息与表情）
                   Positioned.fill(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -2338,60 +2803,142 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: List.generate(5, (slotIdx) {
                           final p = slotMap[slotIdx];
-                          if (p == null) return const Spacer();
-                          final key = _portraitKeyFor(p.roleId);
+                          if (p == null) {
+                            return Expanded(
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => _showPlaceRoleDialog(slotIdx, talk),
+                                  child: Container(
+                                    height: 220,
+                                    margin: const EdgeInsets.symmetric(horizontal: 2),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: Colors.white.withValues(alpha: 0.08),
+                                      ),
+                                    ),
+                                    child: Center(
+                                      child: Opacity(
+                                        opacity: 0.25,
+                                        child: Icon(
+                                          FluentIcons.add_circle_24_regular,
+                                          size: 20,
+                                          color: palette.textHint,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+
+                          final cands = _portraitKeyCandidates(p.roleId, expr: p.expr);
+                          final primaryKey = cands.isNotEmpty ? cands.first : '';
                           final hl = highlights.contains(p.roleId);
+                          final hasHlFocus = highlights.isNotEmpty;
+                          final roleDimmed = hasHlFocus && !hl;
+
                           return Expanded(
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 2),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  if (key.isNotEmpty)
-                                    TexThumb(
-                                      key: ValueKey('studio-pp-${p.roleId}-$key'),
-                                      keyName: key,
-                                      height: 190,
-                                      fit: BoxFit.contain,
-                                    )
-                                  else
-                                    SizedBox(
-                                      height: 60,
-                                      child: Center(
-                                        child: Icon(FluentIcons.person_24_filled,
-                                            size: 32,
-                                            color: hl
-                                                ? palette.accentLight
-                                                : palette.textHint),
-                                      ),
-                                    ),
+                                  // 角色名称与表情浮标（位于立绘顶部，不被底部台词框遮挡）
                                   MouseRegion(
                                     cursor: SystemMouseCursors.click,
                                     child: GestureDetector(
-                                      onTap: () =>
-                                          _showSlotActionDialog(talk, p),
+                                      onTap: () => _showSlotActionDialog(talk, p),
                                       child: Container(
-                                        margin: const EdgeInsets.only(top: 2, bottom: 4),
+                                        margin: const EdgeInsets.only(bottom: 4),
                                         padding: const EdgeInsets.symmetric(
                                             horizontal: 6, vertical: 2),
                                         decoration: BoxDecoration(
                                           color: hl
                                               ? palette.tintAccent
-                                              : palette.card
-                                                  .withValues(alpha: 0.85),
-                                          borderRadius:
-                                              BorderRadius.circular(8),
+                                              : palette.card.withValues(alpha: 0.88),
+                                          borderRadius: BorderRadius.circular(8),
                                           border: hl
-                                              ? Border.all(color: accentColor)
+                                              ? Border.all(color: accentColor, width: 1.2)
+                                              : Border.all(
+                                                  color: Colors.white.withValues(alpha: 0.15)),
+                                          boxShadow: hl
+                                              ? [
+                                                  BoxShadow(
+                                                    color: accentColor.withValues(alpha: 0.35),
+                                                    blurRadius: 4,
+                                                  ),
+                                                ]
                                               : null,
                                         ),
-                                        child: Text(
-                                          '${_roleName(p.roleId).isEmpty ? p.roleId : _roleName(p.roleId)} · ${_emotionName(p.action)}',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                              fontSize: 9.5,
-                                              color: palette.textHigh),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (p.flip) ...[
+                                              Icon(FluentIcons.arrow_swap_16_regular,
+                                                  size: 8.5, color: palette.accentPale),
+                                              const SizedBox(width: 2),
+                                            ],
+                                            Flexible(
+                                              child: Text(
+                                                '${_roleName(p.roleId).isEmpty ? p.roleId : _roleName(p.roleId)} · ${_emotionName(p.expr)}',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 9.5,
+                                                  fontWeight: hl ? FontWeight.w600 : FontWeight.normal,
+                                                  color: hl ? palette.accentPale : palette.textHigh,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  // 立绘（含镜像翻转与发言高亮/弱化）：点击直接呼出更换人物
+                                  Tooltip(
+                                    message:
+                                        '点击更换人物 ([${p.roleId}] ${_roleName(p.roleId)})',
+                                    child: MouseRegion(
+                                      cursor: SystemMouseCursors.click,
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: () =>
+                                            _showReplaceRoleDialog(talk, p),
+                                        child: AnimatedOpacity(
+                                          duration: const Duration(
+                                              milliseconds: 180),
+                                          opacity: roleDimmed ? 0.60 : 1.0,
+                                          child: Transform.flip(
+                                            flipX: p.flip,
+                                            child: cands.isNotEmpty
+                                                ? TexThumb(
+                                                    key: ValueKey(
+                                                        'studio-pp-${p.roleId}-${p.expr}-${p.flip}-$primaryKey'),
+                                                    keyName: primaryKey,
+                                                    keyCandidates: cands,
+                                                    height: 220,
+                                                    fit: BoxFit.contain,
+                                                  )
+                                                : SizedBox(
+                                                    height: 80,
+                                                    child: Center(
+                                                      child: Icon(
+                                                        FluentIcons
+                                                            .person_24_filled,
+                                                        size: 36,
+                                                        color: hl
+                                                            ? palette
+                                                                .accentLight
+                                                            : palette.textHint,
+                                                      ),
+                                                    ),
+                                                  ),
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -2423,7 +2970,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                           MouseRegion(
                             cursor: SystemMouseCursors.click,
                             child: GestureDetector(
-                              onTap: () => _cycleSpeaker(talk),
+                              onTap: () => _showSpeakerDialog(talk),
                               child: Text(
                                 '${_talkDisplayName(_talkId ?? '')} ▸',
                                 style: const TextStyle(
@@ -2616,7 +3163,7 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     );
   }
 
-  /// talk 上的单个跳转目标字段（无代码=浏览按钮，普通=ID 文本）。
+  /// talk 上的单个跳转目标字段（简易=浏览按钮，普通=ID 文本）。
   Widget _targetField(
     Map<String, dynamic> talk,
     String field, {
@@ -2839,19 +3386,19 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('人物动作 roles（分号分隔：站位,人物,动作码）',
+          Text('人物动作 roles（指令行：[[角色, 指令码, 参数…], …]）',
               style: TextStyle(fontSize: 11, color: palette.textSecondary)),
           const SizedBox(height: 4),
           if (_noCode)
             NoCodeEffectField(
-              value: _rolesTo2d(talk['roles']),
+              value: talk['roles'] is List ? talk['roles'] : <dynamic>[],
               type: '2D Array',
               cfg: 'TalkCfg',
               fieldKey: 'roles',
               mode: 'action',
               gameDicts: widget.state.gameDicts,
               onChanged: (v) {
-                talk['roles'] = _rolesFrom2d(v);
+                talk['roles'] = v;
                 _markDirty();
                 setState(() {});
               },
@@ -2859,15 +3406,18 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             )
           else
             _StudioTextField(
-              value: ensureList(talk['roles']).join(';'),
-              placeholder: '如 0,10,3001;3,12,3000',
+              value: const JsonEncoder.withIndent('  ')
+                  .convert(talk['roles'] is List ? talk['roles'] : <dynamic>[]),
+              placeholder: '如 [[0,1001,1,1],[0,3000,2]]',
               style: const TextStyle(fontSize: 11.5),
+              maxLines: 4,
               onChanged: (v) {
-                talk['roles'] = v
-                    .split(';')
-                    .map((s) => s.trim())
-                    .where((s) => s.isNotEmpty)
-                    .toList();
+                try {
+                  final parsed = jsonDecode(v);
+                  talk['roles'] = parsed is List ? parsed : <dynamic>[];
+                } catch (_) {
+                  // JSON 未写完时保持原值，不打断输入。
+                }
                 _markDirty();
               },
             ),
@@ -2961,27 +3511,6 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
     );
   }
 
-  static List<List<String>> _rolesTo2d(dynamic v) {
-    final out = <List<String>>[];
-    for (final item in ensureList(v)) {
-      final parts = item.split(',').map((e) => e.trim()).toList();
-      if (parts.length >= 3) out.add([parts[0], parts[1], parts[2]]);
-    }
-    return out;
-  }
-
-  static List<String> _rolesFrom2d(dynamic v) {
-    final out = <String>[];
-    if (v is List) {
-      for (final row in v) {
-        if (row is List && row.length >= 3) {
-          out.add(row.take(3).map((e) => e.toString()).join(','));
-        }
-      }
-    }
-    return out;
-  }
-
   // ---------- 站位动作弹窗 ----------
 
   Future<void> _showSlotActionDialog(
@@ -3002,8 +3531,11 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
               children: _emotions
                   .map(
                     (e) => _StudioPill(
-                      label: '${e.$2} (${e.$1})',
-                      selected: p.action == e.$1,
+                      label: e.$2,
+                      selected: p.expr == e.$1,
+                      // 表情一律可选：是否存在差分由游戏侧回退处理，编辑器只按
+                      // 「已知支持」做高亮（禁用会把可用的表情藏起来，见 _isEmotionSupported）。
+                      hinted: _isEmotionSupported(p.roleId, e.$1),
                       onTap: () {
                         _setEmotion(talk, p.roleId, e.$1);
                         Navigator.of(ctx).pop();
@@ -3036,6 +3568,15 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                 ),
                 const SizedBox(width: 6),
                 _StudioPill(
+                  label: p.flip ? '已镜像' : '🔄 翻转',
+                  selected: p.flip,
+                  onTap: () {
+                    _toggleFlip(talk, p.roleId);
+                    Navigator.of(ctx).pop();
+                  },
+                ),
+                const SizedBox(width: 6),
+                _StudioPill(
                   label: '高亮',
                   onTap: () {
                     setState(() {
@@ -3052,6 +3593,14 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
                       _dirty = true;
                     });
                     Navigator.of(ctx).pop();
+                  },
+                ),
+                const SizedBox(width: 6),
+                _StudioPill(
+                  label: '🔄 更换人物',
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    _showReplaceRoleDialog(talk, p);
                   },
                 ),
                 const Spacer(),
@@ -3091,7 +3640,10 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
         ? _inspectRoleId!
         : (castIds.isEmpty ? '' : castIds.first);
     final placement = _placementOf(placements, inspect);
-    final key = inspect.isEmpty ? '' : _portraitKeyFor(inspect);
+    final candidates = inspect.isEmpty
+        ? const <String>[]
+        : _portraitKeyCandidates(inspect, expr: placement?.expr ?? 0);
+    final key = candidates.isNotEmpty ? candidates.first : '';
     final highlights = talk == null
         ? <String>{}
         : ensureList(talk['highlights']).map(cln).toSet();
@@ -3111,162 +3663,213 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
             ),
           ),
           const SizedBox(height: 6),
-          if (castIds.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 18),
-              child: Text(
-                '本句没有在场人物（旁白）。\n用中栏「👤 人物登场」或「＋说话人」添加。',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: palette.textHint, height: 1.6),
-              ),
-            )
-          else
-            Wrap(
-              spacing: 5,
-              runSpacing: 5,
-              children: castIds
-                  .map(
-                    (id) => MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: GestureDetector(
-                        onTap: () => setState(() => _inspectRoleId = id),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: id == inspect
-                                ? palette.tintAccent
-                                : palette.card,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: id == inspect ? accentColor : palette.borderHover,
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (castIds.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      child: Text(
+                        '本句没有在场人物（旁白）。\n用中栏「👤 人物登场」或「＋说话人」添加。',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 11, color: palette.textHint, height: 1.6),
+                      ),
+                    )
+                  else
+                    Wrap(
+                      spacing: 5,
+                      runSpacing: 5,
+                      children: castIds
+                          .map(
+                            (id) => MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: () => setState(() => _inspectRoleId = id),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: id == inspect
+                                        ? palette.tintAccent
+                                        : palette.card,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: id == inspect ? accentColor : palette.borderHover,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    _roleName(id).isEmpty ? '[$id]' : _roleName(id),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: id == inspect
+                                        ? palette.accentPale
+                                        : palette.textPrimary,
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                          child: Text(
-                            _roleName(id).isEmpty ? '[$id]' : _roleName(id),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: id == inspect
-                                  ? palette.accentPale
-                                  : palette.textPrimary,
+                          )
+                          .toList(),
+                    ),
+                  if (inspect.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Tooltip(
+                      message: placement != null ? '点击更换人物' : '',
+                      child: MouseRegion(
+                        cursor: placement != null
+                            ? SystemMouseCursors.click
+                            : SystemMouseCursors.basic,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: (talk != null && placement != null)
+                              ? () => _showReplaceRoleDialog(talk, placement)
+                              : null,
+                          child: Container(
+                            height: 220,
+                            width: double.infinity,
+                            clipBehavior: Clip.antiAlias,
+                            decoration: BoxDecoration(
+                              color: palette.bgAlt,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: palette.surface),
                             ),
+                            child: key.isEmpty
+                                ? Center(
+                                    child: Icon(FluentIcons.person_24_filled,
+                                        size: 42, color: palette.textHint),
+                                  )
+                                : Transform.flip(
+                                    flipX: placement?.flip ?? false,
+                                    child: TexThumb(
+                                      key: ValueKey(
+                                          'studio-inspect-$inspect-${placement?.expr ?? 0}-${placement?.flip ?? false}-$key'),
+                                      keyName: key,
+                                      keyCandidates: candidates,
+                                      width: double.infinity,
+                                      height: 220,
+                                      fit: BoxFit.contain,
+                                    ),
+                                  ),
                           ),
                         ),
                       ),
                     ),
-                  )
-                  .toList(),
-            ),
-          if (inspect.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Container(
-              height: 220,
-              width: double.infinity,
-              clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                color: palette.bgAlt,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: palette.surface),
-              ),
-              child: key.isEmpty
-                  ? Center(
-                      child: Icon(FluentIcons.person_24_filled,
-                          size: 42, color: palette.textHint),
-                    )
-                  : TexThumb(
-                      key: ValueKey('studio-inspect-$inspect-$key'),
-                      keyName: key,
-                      width: double.infinity,
-                      height: 220,
-                      fit: BoxFit.contain,
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '[$inspect] ${_roleName(inspect)} · ${placement == null ? '未站在场上' : '站位 ${placement.slot}'}',
+                            style: TextStyle(fontSize: 10.5, color: palette.textMuted),
+                          ),
+                        ),
+                        if (placement != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: palette.tintAccent,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              _emotionName(placement.expr),
+                              style: TextStyle(fontSize: 9.5, color: palette.accentPale),
+                            ),
+                          ),
+                        if (talk != null && placement != null) ...[
+                          const SizedBox(width: 6),
+                          _StudioPill(
+                            label: '🔄 更换',
+                            onTap: () => _showReplaceRoleDialog(talk, placement),
+                          ),
+                        ],
+                      ],
                     ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '[$inspect] ${_roleName(inspect)} · ${placement == null ? '未站在场上' : '站位 ${placement.slot}'}',
-              style: TextStyle(fontSize: 10.5, color: palette.textMuted),
-            ),
-            const SizedBox(height: 10),
-            Text('表情速涂（点一下写入本句动作）',
-                style: TextStyle(
-                    fontSize: 11, color: palette.textSecondary)),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 5,
-              runSpacing: 5,
-              children: _emotions
-                  .map(
-                    (e) => _StudioPill(
-                      label: e.$2,
-                      hint: e.$1,
-                      selected: placement?.action == e.$1,
-                      onTap: talk == null
-                          ? null
-                          : () => _setEmotion(talk, inspect, e.$1),
+                    const SizedBox(height: 10),
+                    Text('表情速涂（点一下写入本句动作）',
+                        style: TextStyle(
+                            fontSize: 11, color: palette.textSecondary)),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 5,
+                      runSpacing: 5,
+                      children: _emotions
+                          .map(
+                            (e) => _StudioPill(
+                              label: e.$2,
+                              hint: '${e.$1}',
+                              selected: placement?.expr == e.$1,
+                              hinted: _isEmotionSupported(inspect, e.$1),
+                              // 仅在「本句未选中」时禁用（那才是真的无处可写），
+                              // 不再按角色差分可用性禁用。
+                              onTap: talk == null
+                                  ? null
+                                  : () => _setEmotion(talk, inspect, e.$1),
+                            ),
+                          )
+                          .toList(),
                     ),
-                  )
-                  .toList(),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _StudioPill(
-                    label: '◀ 左移',
-                    onTap: placement == null || talk == null
-                        ? null
-                        : () => _shiftPlacement(talk, placement, -1),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: _StudioPill(
-                    label: '右移 ▶',
-                    onTap: placement == null || talk == null
-                        ? null
-                        : () => _shiftPlacement(talk, placement, 1),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: _StudioPill(
-                    label: highlights.contains(inspect) ? '取消高亮' : '高亮',
-                    selected: highlights.contains(inspect),
-                    onTap: talk == null
-                        ? null
-                        : () {
-                            setState(() {
-                              final h =
-                                  ensureList(talk['highlights']).map(cln).toList();
-                              if (h.contains(inspect)) {
-                                h.remove(inspect);
-                              } else {
-                                h.add(inspect);
-                              }
-                              talk['highlights'] =
-                                  h.map((e) => int.tryParse(e) ?? e).toList();
-                              _dirty = true;
-                            });
-                          },
-                  ),
-                ),
-              ],
-            ),
-          ],
-          const Spacer(),
-          SizedBox(
-            width: double.infinity,
-            child: fluent.FilledButton(
-              onPressed: talk == null
-                  ? null
-                  : () {
-                      final t = talk;
-                      _openTtsPanel(t);
-                    },
-              style: fluent.ButtonStyle(
-                backgroundColor: WidgetStatePropertyAll(palette.warning),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _StudioPill(
+                            label: '◀ 左移',
+                            onTap: placement == null || talk == null
+                                ? null
+                                : () => _shiftPlacement(talk, placement, -1),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: _StudioPill(
+                            label: '右移 ▶',
+                            onTap: placement == null || talk == null
+                                ? null
+                                : () => _shiftPlacement(talk, placement, 1),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: _StudioPill(
+                            label: placement?.flip == true ? '已镜像' : '🔄 翻转',
+                            selected: placement?.flip == true,
+                            onTap: talk == null || inspect.isEmpty
+                                ? null
+                                : () => _toggleFlip(talk, inspect),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: _StudioPill(
+                            label: highlights.contains(inspect) ? '取消高亮' : '高亮',
+                            selected: highlights.contains(inspect),
+                            onTap: talk == null
+                                ? null
+                                : () {
+                                    setState(() {
+                                      final h =
+                                          ensureList(talk['highlights']).map(cln).toList();
+                                      if (h.contains(inspect)) {
+                                        h.remove(inspect);
+                                      } else {
+                                        h.add(inspect);
+                                      }
+                                      talk['highlights'] =
+                                          h.map((e) => int.tryParse(e) ?? e).toList();
+                                      _dirty = true;
+                                    });
+                                  },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                ],
               ),
-              child: const Text('🎙️ 给本行配音'),
             ),
           ),
           const SizedBox(height: 6),
@@ -3290,10 +3893,14 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
   void _markDirty() {
     if (!_dirty) {
       setState(() => _dirty = true);
-    } else {
-      // 内容摘要需要跟随刷新（左栏卡片预览）
-      setState(() {});
+      return;
     }
+    // P3：已脏后的逐字输入不再整页重建（3k 事件下拉 + 侧栏树 + 两遍链路
+    // 遍历）。侧栏摘要延迟 250ms 刷新一次，连续输入只重建一次。
+    _dirtyRefresh?.cancel();
+    _dirtyRefresh = Timer(const Duration(milliseconds: 250), () {
+      if (mounted) setState(() {});
+    });
   }
 }
 
@@ -3302,18 +3909,22 @@ class _StoryStudioEditorState extends State<StoryStudioEditor> {
 // ---------------------------------------------------------------------------
 
 /// 通用胶囊按钮（页内高频操作；三态：默认/选中/危险，禁用=onTap 为 null）。
+/// [hinted] 为「已知支持」的轻提示：只改文字色，不影响可点性（对齐参考实现
+/// 把可用表情标色、但仍全部可选的做法）。
 class _StudioPill extends StatelessWidget {
   const _StudioPill({
     required this.label,
     this.onTap,
     this.selected = false,
     this.danger = false,
+    this.hinted = false,
     this.hint,
   });
   final String label;
   final VoidCallback? onTap;
   final bool selected;
   final bool danger;
+  final bool hinted;
   final String? hint;
 
   @override
@@ -3330,6 +3941,8 @@ class _StudioPill extends StatelessWidget {
     } else if (danger) {
       bg = palette.tintWarn;
       fg = palette.danger;
+    } else if (hinted) {
+      fg = palette.accentPale;
     }
     return MouseRegion(
       cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
@@ -3594,6 +4207,7 @@ class _StudioOptionCardState extends State<_StudioOptionCard> {
                 ? normalizeStoryIdList(opt[field]).map(cln).toList()
                 : const [],
           );
+          if (!mounted) return;
           if (ids == null || opt is! Map) return;
           opt[field] = ids.map((e) => int.tryParse(e) ?? e).toList();
           widget.onChanged();
@@ -3770,6 +4384,546 @@ class _StudioOptionCardState extends State<_StudioOptionCard> {
               ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 放置角色弹窗（人物选择卡片网格 + 表情选择 + 快捷站位）
+// ---------------------------------------------------------------------------
+
+class _StudioPlaceRoleDialog extends StatefulWidget {
+  const _StudioPlaceRoleDialog({
+    required this.slotIdx,
+    required this.initialSelected,
+    required this.initialExpr,
+    required this.initialSlot,
+    required this.allRoles,
+    required this.roleCatalog,
+    required this.portraitKeyCandidates,
+    required this.roleName,
+    required this.emotionName,
+    required this.isEmotionSupported,
+    required this.onImportLocalPortrait,
+    required this.onConfirm,
+    this.onCatalogLoaded,
+    this.titleText,
+    this.confirmButtonText,
+  });
+
+  final int? slotIdx;
+  final String initialSelected;
+  final int initialExpr;
+  final int initialSlot;
+  final Map<String, String> allRoles;
+  final Map<String, RoleEntry> roleCatalog;
+  final List<String> Function(String roleId, {int expr}) portraitKeyCandidates;
+  final String Function(String id) roleName;
+  final String Function(int expr) emotionName;
+  /// 「已知支持」提示（只用于高亮，不再用于禁用表情按钮）。
+  final bool Function(String roleId, int expr) isEmotionSupported;
+  final Future<void> Function(String roleId) onImportLocalPortrait;
+  final void Function(String selected, int exprCode, int slot) onConfirm;
+
+  /// 弹窗自行拉取到角色目录后回调宿主，同步回 [_StoryStudioEditorState._roleCatalog]，
+  /// 避免下次打开重复请求（宿主目录在弹窗打开瞬间可能尚未就绪）。
+  final void Function(Map<String, RoleEntry> catalog)? onCatalogLoaded;
+
+  /// 自定义标题：用于「更换人物」等复用场景（为空时按 [slotIdx] 取默认文案）。
+  final String? titleText;
+
+  /// 自定义确认按钮文案（为空时默认「登场」）。
+  final String? confirmButtonText;
+
+  @override
+  State<_StudioPlaceRoleDialog> createState() => _StudioPlaceRoleDialogState();
+}
+
+class _StudioPlaceRoleDialogState extends State<_StudioPlaceRoleDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  final ScrollController _gridScroll = ScrollController();
+  late String _selected;
+  late int _exprCode;
+  late int _slot;
+  late Map<String, RoleEntry> _catalog;
+  String _query = '';
+  bool _autoScrolled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = widget.initialSelected;
+    _exprCode = widget.initialExpr;
+    // 注意：这里**不再**把「检测不到的表情」重置为 0。检测只用于高亮，
+    // 静默改写用户已选的表情会丢数据（历史 bug 的另一面）。
+    _slot = widget.initialSlot;
+    _catalog = Map.of(widget.roleCatalog);
+    // 立绘 key 依赖两个异步源：/api/roles（角色目录）与 /api/preview/meta
+    // （charKeys 合并元数据）。弹窗是独立路由，不随宿主 setState 重建，所以
+    // 必须自己触发元数据拉取并监听其到达——否则首屏卡片会定格在占位图标，
+    // 直到用户滚动网格、itemBuilder 重新执行才出图（历史 bug）。
+    ensureMergedMeta();
+    mergedMetaRevision.addListener(_onMetaChanged);
+    if (_catalog.isEmpty) {
+      loadRoles('').then((roles) {
+        if (!mounted || roles.isEmpty) return;
+        final map = {for (final r in roles) r.id: r};
+        setState(() => _catalog = map);
+        widget.onCatalogLoaded?.call(map); // 回填宿主，避免下次打开重复拉取
+      });
+    }
+  }
+
+  /// 合并元数据到达/刷新：重建首屏卡片，让新到的立绘 key 立刻命中。
+  void _onMetaChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// 弹窗内立绘候选：宿主解析结果 + 弹窗自持目录 + 合并元数据，去重合并。
+  ///
+  /// 关键修复点：宿主 [_StoryStudioEditorState._portraitKeyCandidates] 只读宿主
+  /// 自己的 `_roleCatalog`，弹窗打开瞬间它可能尚未就绪而返回空列表。这里用弹窗
+  /// 自己拉到的 `_catalog` 与 `charKeys` 补齐候选链，保证首屏无需滚动即可出图。
+  List<String> _candidatesFor(String id, {required int expr}) {
+    final key = cln(id);
+    if (key.isEmpty) return const [];
+    final out = <String>[];
+    void push(String v) {
+      final s = v.trim();
+      if (s.isEmpty || out.contains(s)) return;
+      out.add(s);
+    }
+
+    for (final c in widget.portraitKeyCandidates(key, expr: expr)) {
+      push(c);
+    }
+    final r = _catalog[key];
+    if (r != null) {
+      push(r.portrait);
+      push(r.portrait2);
+      push(r.portrait1);
+    }
+    final ck = charKeysMapOrNull?[key];
+    if (ck is Map) {
+      push(portraitFirstStr(ck['base2']));
+      push(portraitFirstStr(ck['base']));
+    }
+    // 主角别名 00 / 000 无独立立绘：复用主角 0 的候选。
+    if (key == '00' || key == '000') {
+      for (final c in _candidatesFor('0', expr: expr)) {
+        push(c);
+      }
+    }
+    return out;
+  }
+
+  /// 轻量判断某角色是否有立绘候选（供排序用，避免逐项跑完整解析）。
+  bool _hasPortrait(String id) {
+    final key = cln(id);
+    if (key.isEmpty) return false;
+    final r = _catalog[key];
+    if (r != null &&
+        (r.portrait.isNotEmpty ||
+            r.portrait1.isNotEmpty ||
+            r.portrait2.isNotEmpty)) {
+      return true;
+    }
+    final ck = charKeysMapOrNull?[key];
+    if (ck is Map &&
+        (portraitFirstStr(ck['base']).isNotEmpty ||
+            portraitFirstStr(ck['base2']).isNotEmpty)) {
+      return true;
+    }
+    if (key == '00' || key == '000') return _hasPortrait('0');
+    return false;
+  }
+
+  /// 首帧后把初始选中角色滚入视野（仅一次）。选中项若在网格下方，用户会误以为
+  /// 「未选中/无立绘」，自动滚一次可避免。
+  void _scheduleAutoScroll(List<String> keys, double viewportWidth) {
+    if (_autoScrolled) return;
+    final idx = keys.indexOf(_selected);
+    if (idx < 0) return;
+    _autoScrolled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_gridScroll.hasClients) return;
+      const maxExt = 110.0, spacing = 8.0, aspect = 0.72;
+      // 与 SliverGridDelegateWithMaxCrossAxisExtent 的列数口径一致。
+      final cols = (viewportWidth / (maxExt + spacing)).ceil().clamp(1, 999);
+      final tileW = viewportWidth / cols;
+      final rowPitch = tileW / aspect + spacing;
+      final offset = (idx ~/ cols) * rowPitch;
+      final max = _gridScroll.position.maxScrollExtent;
+      if (offset > _gridScroll.offset) {
+        _gridScroll.jumpTo(offset.clamp(0.0, max));
+      }
+    });
+  }
+
+  void _selectRole(String id) {
+    setState(() {
+      _selected = id;
+    });
+  }
+
+  @override
+  void dispose() {
+    mergedMetaRevision.removeListener(_onMetaChanged);
+    _gridScroll.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    widget.onConfirm(_selected, _exprCode, _slot);
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screen = MediaQuery.sizeOf(context);
+    final dialogWidth = (screen.width - 48).clamp(320.0, 680.0);
+    final dialogHeight = (screen.height * 0.90).clamp(420.0, 720.0);
+
+    // 汇总所有角色（字典与目录合并）。排序分两段：有立绘的在前，让首屏第一行
+    // 即出现有效人物卡片；段内再按数值 ID / 字典序（原口径）。
+    final allKeys = <String>{...widget.allRoles.keys, ..._catalog.keys}.toList();
+
+    int byId(String a, String b) {
+      final na = int.tryParse(a);
+      final nb = int.tryParse(b);
+      if (na != null && nb != null) return na.compareTo(nb);
+      if (na != null) return -1;
+      if (nb != null) return 1;
+      return a.compareTo(b);
+    }
+
+    final withPortrait = <String>[];
+    final withoutPortrait = <String>[];
+    for (final k in allKeys) {
+      (_hasPortrait(k) ? withPortrait : withoutPortrait).add(k);
+    }
+    withPortrait.sort(byId);
+    withoutPortrait.sort(byId);
+    final sortedKeys = [...withPortrait, ...withoutPortrait];
+
+    final q = _query.toLowerCase();
+    final filteredKeys = sortedKeys.where((k) {
+      if (q.isEmpty) return true;
+      final name = _catalog[k]?.name ?? widget.allRoles[k] ?? widget.roleName(k);
+      return k.toLowerCase().contains(q) || name.toLowerCase().contains(q);
+    }).toList();
+
+    final currentRoleName = _catalog[_selected]?.name ??
+        widget.allRoles[_selected] ??
+        widget.roleName(_selected);
+
+    return AppContentDialog(
+      constraints: BoxConstraints(
+        maxWidth: dialogWidth,
+        maxHeight: dialogHeight,
+      ),
+      title: Text(widget.titleText ??
+          (widget.slotIdx == null
+              ? '人物登场'
+              : '放置角色到 站位 ${widget.slotIdx}')),
+      content: SizedBox(
+        width: dialogWidth,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 1. 搜索框
+              fluent.TextBox(
+                controller: _searchController,
+                placeholder: '搜索人物（中文名或 ID）…',
+                prefix: const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Icon(FluentIcons.search_16_regular, size: 14),
+                ),
+                style: const TextStyle(fontSize: 12),
+                onChanged: (v) => setState(() => _query = v.trim()),
+              ),
+              const SizedBox(height: 8),
+
+              // 2. 人物网格（类似简易模式人物选择器）
+              SizedBox(
+                height: 210,
+                child: filteredKeys.isEmpty
+                    ? Center(
+                        child: Text(
+                          '没有匹配的人物',
+                          style:
+                              TextStyle(fontSize: 12, color: palette.textMuted),
+                        ),
+                      )
+                    : LayoutBuilder(
+                        builder: (ctx, box) {
+                          _scheduleAutoScroll(filteredKeys, box.maxWidth);
+                          return GridView.builder(
+                            controller: _gridScroll,
+                            // 独立滚动控制器 + primary:false：本网格嵌在纵向
+                            // SingleChildScrollView 内，不能与祖先抢主滚动。
+                            primary: false,
+                            addAutomaticKeepAlives: false,
+                            scrollCacheExtent:
+                                const ScrollCacheExtent.pixels(210),
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 110,
+                              mainAxisSpacing: 8,
+                              crossAxisSpacing: 8,
+                              childAspectRatio: 0.72,
+                            ),
+                            itemCount: filteredKeys.length,
+                            itemBuilder: (ctx, i) {
+                              final id = filteredKeys[i];
+                              final isSelected = id == _selected;
+                              final name = _catalog[id]?.name ??
+                                  widget.allRoles[id] ??
+                                  widget.roleName(id);
+                              // 用弹窗自持的候选解析（含 _catalog / charKeys 兜底），
+                              // 不依赖宿主目录是否已就绪。
+                              final cands = _candidatesFor(
+                                id,
+                                expr: isSelected ? _exprCode : 0,
+                              );
+                              final thumbKey = cands.isNotEmpty
+                                  ? cands.first
+                                  : (_catalog[id]?.portrait ?? '');
+
+                              return _roleCard(
+                                id: id,
+                                name: name,
+                                isSelected: isSelected,
+                                cands: cands,
+                                thumbKey: thumbKey,
+                                onTap: () => _selectRole(id),
+                                onDoubleTap: () {
+                                  _selectRole(id);
+                                  _confirm();
+                                },
+                              );
+                            },
+                          );
+                        },
+                      ),
+              ),
+              const SizedBox(height: 8),
+
+              // 3. 当前已选角色与表情摘要
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: palette.panel,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: palette.border),
+                ),
+                child: Row(
+                  children: [
+                    Text(
+                      '已选角色：',
+                      style:
+                          TextStyle(fontSize: 11, color: palette.textSecondary),
+                    ),
+                    Expanded(
+                      child: Text(
+                        '[$_selected] ${currentRoleName.isEmpty ? '角色' : currentRoleName}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '表情：',
+                      style:
+                          TextStyle(fontSize: 11, color: palette.textSecondary),
+                    ),
+                    Text(
+                      widget.emotionName(_exprCode),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: palette.accentPale,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // 4. 站位（仅当没有指定站位时展示）
+              if (widget.slotIdx == null) ...[
+                const SizedBox(height: 10),
+                const Text('站位:', style: TextStyle(fontSize: 12)),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 6,
+                  children: [0, 1, 2, 3, 4]
+                      .map(
+                        (s) => _StudioPill(
+                          label: const ['左', '中左', '居中', '中右', '右'][s],
+                          selected: _slot == s,
+                          onTap: () => setState(() => _slot = s),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
+
+              // 5. 表情选择
+              const SizedBox(height: 10),
+              const Text('表情:', style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: _StoryStudioEditorState._emotions
+                    .map(
+                      (e) => _StudioPill(
+                        label: e.$2,
+                        selected: _exprCode == e.$1,
+                        hinted: widget.isEmotionSupported(_selected, e.$1),
+                        onTap: () => setState(() => _exprCode = e.$1),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        fluent.Button(
+          onPressed: () async {
+            await widget.onImportLocalPortrait(_selected);
+            if (mounted) setState(() {});
+          },
+          child: const Text('从电脑选择立绘…'),
+        ),
+        fluent.Button(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        fluent.FilledButton(
+          onPressed: _selected.isEmpty ? null : _confirm,
+          child: Text(widget.confirmButtonText ?? '登场'),
+        ),
+      ],
+    );
+  }
+
+  Widget _roleCard({
+    required String id,
+    required String name,
+    required bool isSelected,
+    required List<String> cands,
+    required String thumbKey,
+    required VoidCallback onTap,
+    required VoidCallback onDoubleTap,
+  }) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        onDoubleTap: onDoubleTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isSelected ? palette.tintAccent : palette.card,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: isSelected ? accentColor : palette.border,
+              width: isSelected ? 2 : 1,
+            ),
+          ),
+          padding: const EdgeInsets.all(4),
+          child: Column(
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // 旁白只有 -1。此前误把主角 0（白雨）也当旁白显示喇叭，
+                      // 导致 0 的立绘永远不加载。
+                      if (id == '-1')
+                        Center(
+                          child: Icon(
+                            FluentIcons.speaker_2_24_regular,
+                            size: 28,
+                            color: isSelected
+                                ? palette.accentPale
+                                : palette.textHint,
+                          ),
+                        )
+                      else if (cands.isNotEmpty || thumbKey.isNotEmpty)
+                        TexThumb(
+                          key: ValueKey(
+                              'place-card-$id-${cands.isNotEmpty ? cands.first : thumbKey}'),
+                          keyName: cands.isNotEmpty ? cands.first : thumbKey,
+                          keyCandidates: cands,
+                          fit: BoxFit.contain,
+                        )
+                      else
+                        Center(
+                          child: Icon(
+                            FluentIcons.person_24_regular,
+                            size: 28,
+                            color: isSelected
+                                ? palette.accentPale
+                                : palette.textHint,
+                          ),
+                        ),
+                      if (isSelected)
+                        Positioned(
+                          top: 2,
+                          right: 2,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: accentColor,
+                              shape: BoxShape.circle,
+                            ),
+                            padding: const EdgeInsets.all(2),
+                            child: const Icon(
+                              Icons.check,
+                              size: 10,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                name.isEmpty ? id : name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                  color: isSelected ? palette.accentPale : palette.textHigh,
+                ),
+              ),
+              Text(
+                'ID $id',
+                maxLines: 1,
+                style: TextStyle(
+                  fontSize: 9.5,
+                  color:
+                      isSelected ? palette.accentLight : palette.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

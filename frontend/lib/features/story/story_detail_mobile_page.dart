@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart'; // 导入后可以使用 palette.xxx
 import '../../core/mobile_widgets.dart';
 import '../../core/models.dart';
+import '../../core/section_header.dart';
 import 'story_editor_mobile.dart';
+import 'story_logic.dart';
 
 // 移除 unused imports
 /// 移动版事件详情编辑页 - 流式表单布局（上下堆叠）
@@ -34,7 +37,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
   
   bool _loading = true;
   bool _saving = false;
-  Map<String, String> _roleNames = {};
+  final Map<String, String> _roleNames = {};
   
   // 辅助函数 - 用于简化代码
   Widget _flexibleText(String text) => Flexible(child: Text(text, style: TextStyle(fontSize: 10, color: AppTheme.palette.textHint), maxLines: 1, overflow: TextOverflow.ellipsis));
@@ -108,10 +111,10 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   String? _error;
 
-  /// 无代码模式（后端共享开关）：跳转 ID 只选不敲。
+  /// 简易模式（后端共享开关）：跳转 ID 只选不敲。
   bool get _noCode => AppState.current?.noCodeMode ?? false;
 
-  /// 无代码模式的跳转目标选择：列出本事件对白，点选写回。
+  /// 简易模式的跳转目标选择：列出本事件对白，点选写回。
   Future<void> _pickTalkTarget(MobileOptionCfg option,
       {required bool second}) async {
     final current =
@@ -157,6 +160,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       ),
     );
     if (picked == null) return;
+    if (!mounted) return;
     setState(() {
       if (second) {
         option.talkId2 = picked;
@@ -280,7 +284,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               sliver: SliverList.separated(
                 itemCount: _talks.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 16),
+                separatorBuilder: (_, _) => const SizedBox(height: 16),
                 itemBuilder: (context, index) =>
                     _buildTalkCard(_talks[index], index),
               ),
@@ -293,7 +297,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               sliver: SliverList.separated(
                 itemCount: _options.isEmpty ? 1 : _options.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 16),
+                separatorBuilder: (_, _) => const SizedBox(height: 16),
                 itemBuilder: (context, index) {
                   if (_options.isEmpty && index == 0) {
                     return _buildAddOptionRow(null);
@@ -382,7 +386,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
             message: '保存',
             child: IconButton(
               icon: Icon(FluentIcons.checkmark_24_regular, color: palette.statusOk),
-              onPressed: _saveEvent,
+              onPressed: () => _saveEvent(),
             ),
           ),
           SizedBox(width: 4),
@@ -544,51 +548,14 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   // 对白区标题行（阶段 4e：卡片列表已提升为 SliverList，这里只保留头部）。
   Widget _buildTalkSectionHeader() {
-    return Row(
-      children: [
-        Icon(
-          FluentIcons.document_24_regular,
-          size: 16,
-          color: AppTheme.palette.textSecondary,
-        ),
-        SizedBox(width: 6),
-        Text(
-          '对白配置 (${_talks.length} 条)',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.palette.textPrimary,
-          ),
-        ),
-        const Spacer(),
-        // 添加对白按钮
-        GestureDetector(
-          onTap: _addNewTalk,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: palette.primaryColor.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: palette.primaryColor.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  FluentIcons.add_24_regular,
-                  size: 12,
-                  color: palette.primaryColor,
-                ),
-                SizedBox(width: 4),
-                Text(
-                  '新建对话',
-                  style: TextStyle(fontSize: 10, color: palette.primaryColor),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
+    return SectionHeader(
+      icon: FluentIcons.document_24_regular,
+      title: '对白配置 (${_talks.length} 条)',
+      trailing: SectionActionButton(
+        label: '新建对话',
+        color: palette.primaryColor,
+        onTap: _addNewTalk,
+      ),
     );
   }
 
@@ -848,51 +815,14 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   // 选项区标题行（阶段 4e：卡片列表已提升为 SliverList，这里只保留头部）。
   Widget _buildOptionsSectionHeader() {
-    return Row(
-      children: [
-        Icon(
-          FluentIcons.arrow_split_24_regular,
-          size: 16,
-          color: AppTheme.palette.textSecondary,
-        ),
-        SizedBox(width: 6),
-        Text(
-          '选项分支 (${_options.length} 个)',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.palette.textPrimary,
-          ),
-        ),
-        const Spacer(),
-        // 添加选项按钮
-        GestureDetector(
-          onTap: _addNewOption,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: palette.statusOk.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: palette.statusOk.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  FluentIcons.add_24_regular,
-                  size: 12,
-                  color: palette.statusOk,
-                ),
-                SizedBox(width: 4),
-                Text(
-                  '添加选项',
-                  style: TextStyle(fontSize: 10, color: palette.statusOk),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
+    return SectionHeader(
+      icon: FluentIcons.arrow_split_24_regular,
+      title: '选项分支 (${_options.length} 个)',
+      trailing: SectionActionButton(
+        label: '添加选项',
+        color: palette.statusOk,
+        onTap: _addNewOption,
+      ),
     );
   }
 
@@ -1399,8 +1329,10 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
     }
   }
 
-  Future<void> _saveEvent() async {
-    if (_saving) return;
+  /// 保存当前事件。U3：普通保存成功只做非阻塞提示并留在本页；
+  /// 只有「保存并返回列表」（[popAfter]）才退出，且只 pop 一次。
+  Future<bool> _saveEvent({bool popAfter = false}) async {
+    if (_saving) return false;
     
     // 保存前校验
     if (_talks.isEmpty) {
@@ -1417,7 +1349,7 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
           ],
         ),
       );
-      return;
+      return false;
     }
     
     setState(() => _saving = true);
@@ -1432,27 +1364,33 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
         options: _options,
       );
 
-      if (!mounted) return;
+      if (!mounted) return false;
       if (result) _baselineJson = sentProjection;
       await MobileHaptic.success();
-      _showSuccessDialog(result ? '保存成功' : '保存完成');
+      if (!mounted) return result;
+      // 在途又有编辑时基线仍落后 → 直接 pop 会绕过 PopScope 静默丢改动，
+      // 此时留在本页由用户决定（再点一次保存 / 返回触发确认）。
+      if (result && popAfter && !_checkUnsavedChanges()) {
+        Navigator.pop(context, 'saved');
+      } else {
+        AppFeedback.success(context, result ? '已保存' : '保存完成');
+      }
+      return result;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       await MobileHaptic.error();
       
       _showErrorDialog('保存失败', e.toString());
+      return false;
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
   Future<void> _saveAndBack() async {
-    await _saveEvent();
-    if (mounted && !_saving) {
-      // maybePop：保存失败/在途又有编辑时仍脏，交由 PopScope 守卫弹确认，
-      // 不再无条件 pop 丢掉改动（阶段 2c）。
-      Navigator.maybePop(context);
-    }
+    // U3：pop 由 _saveEvent 在成功分支统一处理，避免成功后这里再 maybePop
+    // 一次（双 pop 会把列表页也退掉）。
+    await _saveEvent(popAfter: true);
   }
 
   Future<void> _deleteEvent() async {
@@ -1462,8 +1400,9 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
       await _dataAccess.deleteEvent(widget.eventId);
       
       if (mounted) {
-        Navigator.pop(context);
-        _showSuccessDialog('事件已删除');
+        // U3：删除后直接回列表，成功提示由列表页在拿到结果后展示；不再
+        // 「先 pop 再对已销毁页面的 context 弹成功框」。
+        Navigator.pop(context, 'deleted');
       }
     } catch (e) {
       if (mounted) {
@@ -1506,31 +1445,6 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
     );
   }
 
-  void _showSuccessDialog(String message) {
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(FluentIcons.checkmark_circle_24_regular, color: palette.statusOk),
-            SizedBox(width: 8),
-            Text(message),
-          ],
-        ),
-        actions: [
-          fluent.FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              if (mounted) Navigator.pop(context);
-            },
-            child: Text('好'),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _showErrorDialog(String title, String message) {
     if (!mounted) return;
     showDialog(
@@ -1568,48 +1482,6 @@ class _StoryDetailMobilePageState extends State<StoryDetailMobilePage> {
 
   String _baselineJson = '';
 
-}
-
-// 工具函数（复用 story_logic.dart 中的实现）
-String insertTalkId(String currentId, Map<String, dynamic> talks) {
-  final base = int.tryParse(currentId.replaceAll(RegExp(r'^[^0-9]*'), ''));
-  if (base == null) return '';
-  var id = base + 1;
-  while (talks.containsKey(id.toString())) {
-    id++;
-  }
-  return id.toString();
-}
-
-String? allocOptionId(String prefix, Set<String> used) {
-  final p = prefix.toLowerCase().trim();
-  for (var i = 1; i < 100; i++) {
-    final candidate = '${p}${i.toString().padLeft(2, '0')}';
-    if (!used.contains(candidate)) return candidate;
-  }
-  return null;
-}
-
-List<dynamic> normalizeStoryIdList(dynamic value) {
-  final result = <dynamic>[];
-  if (value == null || value == '') return result;
-  final items = value is List ? value : [value];
-  for (final item in items) {
-    if (item is List) {
-      result.addAll(normalizeStoryIdList(item));
-      continue;
-    }
-    final s = item.toString().trim();
-    if (s.isEmpty) continue;
-    result.add(int.tryParse(s) ?? s);
-  }
-  return result;
-}
-
-List<dynamic> ensureList(dynamic v) {
-  if (v == null || v == '') return [];
-  if (v is List) return v.map((e) => e.toString()).toList();
-  return [v.toString()];
 }
 
 /// 受控文本输入：控制器由本 State 持有，绝不在 build 里 `new TextEditingController`。

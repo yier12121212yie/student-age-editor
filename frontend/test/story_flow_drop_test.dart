@@ -14,6 +14,7 @@ import 'package:student_age_editor/core/models.dart';
 import 'package:student_age_editor/features/story/story_flow_drop.dart';
 import 'package:student_age_editor/features/story/story_flow_graph.dart';
 import 'package:student_age_editor/features/story/story_flow_models.dart';
+import 'package:student_age_editor/features/story/story_flow_side_toolbar.dart';
 import 'package:student_age_editor/features/story/story_flow_workspace.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -362,8 +363,15 @@ void main() {
     expect(find.text('好感上升'), findsOneWidget);
     expect(find.text('消耗物品'), findsOneWidget);
 
-    // 搜索带 q= 重新拉取，桩按 desc 过滤
-    await tester.enterText(find.byType(fluent.TextBox), '好感');
+    // 搜索带 q= 重新拉取，桩按 desc 过滤。卡片正文/说话人也是 TextBox，
+    // 必须限定在效果面板内，否则 byType 命中多个。
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(FlowEffectPalette),
+        matching: find.byType(fluent.TextBox),
+      ),
+      '好感',
+    );
     await tester.pumpAndSettle();
     expect(effectQueries.last['q'], '好感');
     expect(effectQueries.last['mode'], 'effect');

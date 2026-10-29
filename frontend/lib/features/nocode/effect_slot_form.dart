@@ -1,4 +1,4 @@
-/// 无代码模式的效果选择机器：参数槽表单 + 效果目录浏览。
+/// 简易模式的效果选择机器：参数槽表单 + 效果目录浏览。
 ///
 /// 后端 /api/effect_suggest 的每条候选带 `slots`（`@ATTR@` 占位符与裸字母
 /// 数值槽）。本文件提供：
@@ -13,6 +13,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/design_tokens.dart';
 import '../blocks/block_catalog.dart';
 import '../blocks/catalog_visuals.dart';
 import '../editor/suggestion_text_field.dart';
@@ -35,7 +36,7 @@ const Map<String, String> kSlotPoolToDictKey = {
 /// 字典池名 → 配置表（`GET /api/cfg/<表>`）。
 ///
 /// game_dicts 没有的池（STATE/TEXT/GAME/谈判/空间/手机消息）从这里补候选，
-/// 让无代码「只选不敲」覆盖全部 `SECONDARY_PLACEHOLDER_MAP` 里的占位符。
+/// 让简易「只选不敲」覆盖全部 `SECONDARY_PLACEHOLDER_MAP` 里的占位符。
 const Map<String, String> kSlotPoolToTable = {
   'ATTR': 'PersonAttrCfg',
   'ROLE': 'PersonCfg',
@@ -160,22 +161,117 @@ String assembleEffectDesc(String desc, List<SuggestionSlot> slots, Map<String, S
   return out;
 }
 
+/// A4：数字槽值的即时校验（后端暂无 min/max 元数据，按**整数**为默认规则）。
+/// 返回空串 = 合法；非空 = 用户可读错误（直接展示在槽下方）。
+/// 空值不在此报错——「未填」由表单的完整性检查兜底。
+String numberSlotError(String value) {
+  final t = value.trim();
+  if (t.isEmpty) return '';
+  if (RegExp(r'^[+-]?\d+$').hasMatch(t)) return '';
+  return '请输入整数（原版参数为整数）';
+}
+
+/// A2：目录/行卡上的行内算符切换按钮组（`= > ≥ < ≤ ≠ 范围`）。
+/// [ops] 来自后端 `ops[]`（已按循环序排好）；[current] 是当前选中算符
+/// （空 = 无条件）；[onPick] 收到变体整条（code/slots 自给自足）。
+class BlockOpChips extends StatelessWidget {
+  const BlockOpChips({
+    super.key,
+    required this.ops,
+    required this.current,
+    required this.onPick,
+    this.dense = false,
+    this.keyPrefix = 'opchip',
+  });
+
+  final List<EffectOpVariant> ops;
+  final String current;
+  final ValueChanged<EffectOpVariant> onPick;
+  final bool dense;
+  final String keyPrefix;
+
+  @override
+  Widget build(BuildContext context) {
+    final seen = <String>{};
+    final uniq = <EffectOpVariant>[];
+    for (final v in ops) {
+      if (seen.add(v.displayOp)) uniq.add(v);
+    }
+    return Wrap(
+      spacing: 3,
+      runSpacing: 3,
+      children: [
+        for (final v in uniq)
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onPick(v),
+              child: Container(
+                key: ValueKey('$keyPrefix-${v.op}'),
+                padding: EdgeInsets.symmetric(
+                    horizontal: dense ? AppSpace.s : AppSpace.m,
+                    vertical: dense ? AppSpace.xxs : AppSpace.xs),
+                decoration: BoxDecoration(
+                  color: v.op == current
+                      ? accentColor.withValues(alpha: 0.18)
+                      : palette.bgAlt,
+                  borderRadius: BorderRadius.circular(AppRadius.m),
+                  border: Border.all(
+                    color: v.op == current
+                        ? accentColor.withValues(alpha: 0.5)
+                        : palette.border,
+                  ),
+                ),
+                child: Text(
+                  v.displayOp,
+                  style: TextStyle(
+                    fontSize: dense ? AppText.micro : AppText.small,
+                    color: v.op == current ? palette.textHigh : palette.textSecondary,
+                    fontWeight:
+                        v.op == current ? FontWeight.w600 : FontWeight.normal,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 /// 带槽候选的参数表单。确认返回填好的完整代码，取消返回 null。
+/// [initialValues] 是调用方记忆的槽值（同一 family 上次填过的）；[onValues]
+/// 在确认时回传本次填值，供目录做「算符切换保留已填值」。
 Future<String?> showEffectSlotForm(
   BuildContext context, {
   required Suggestion suggestion,
   required Map<String, dynamic> gameDicts,
+  Map<String, String> initialValues = const {},
+  void Function(Map<String, String> values)? onValues,
 }) async {
   return showDialog<String>(
     context: context,
-    builder: (ctx) => _SlotFormDialog(suggestion: suggestion, gameDicts: gameDicts),
+    builder: (ctx) => _SlotFormDialog(
+      suggestion: suggestion,
+      gameDicts: gameDicts,
+      initialValues: initialValues,
+      onValues: onValues,
+    ),
   );
 }
 
 class _SlotFormDialog extends StatefulWidget {
-  const _SlotFormDialog({required this.suggestion, required this.gameDicts});
+  const _SlotFormDialog({
+    required this.suggestion,
+    required this.gameDicts,
+    this.initialValues = const {},
+    this.onValues,
+  });
   final Suggestion suggestion;
   final Map<String, dynamic> gameDicts;
+  final Map<String, String> initialValues;
+  final void Function(Map<String, String> values)? onValues;
 
   @override
   State<_SlotFormDialog> createState() => _SlotFormDialogState();
@@ -185,11 +281,62 @@ class _SlotFormDialogState extends State<_SlotFormDialog> {
   final Map<String, String> _values = {};
   // 槽值的人话形态（下拉选中后显示名称而非裸 ID），用于中文预览。
   final Map<String, String> _display = {};
+  // A4：逐槽的即时校验错误（'name' → 错误文案）。
+  final Map<String, String> _errors = {};
+  String? _prefillNote;
 
   bool get _complete => widget.suggestion.slots.every((s) {
         final v = _values[s.name];
-        return v != null && v.trim().isNotEmpty;
+        return v != null &&
+            v.trim().isNotEmpty &&
+            (_errors[s.name] ?? '').isEmpty;
       });
+
+  @override
+  void initState() {
+    super.initState();
+    _prefill();
+  }
+
+  /// A7：新增候选自动带出**第一个合法引用**——dict 槽没有值时按池序取首条；
+  /// 池为空时给出可读提示（而不是让用户在空下拉前发愣）。调用方记忆的
+  /// [widget.initialValues] 优先于首条引用。
+  Future<void> _prefill() async {
+    for (final e in widget.initialValues.entries) {
+      final match = [
+        for (final s in widget.suggestion.slots)
+          if (s.name == e.key) s,
+      ];
+      _values[e.key] = e.value;
+      _display[e.key] = match.isEmpty
+          ? e.value
+          : slotDisplayName(match.first, e.value, widget.gameDicts);
+    }
+    if (mounted) setState(() {});
+    final missing = [
+      for (final s in widget.suggestion.slots)
+        if (s.kind == 'dict' && (_values[s.name] ?? '').trim().isEmpty) s,
+    ];
+    if (missing.isEmpty) return;
+    final emptyPools = <String>[];
+    for (final s in missing) {
+      final entries = await loadSlotPoolEntries(s.dict, widget.gameDicts);
+      if (!mounted) return;
+      if (entries.isEmpty) {
+        emptyPools.add(s.label.isNotEmpty ? s.label : s.name);
+        continue;
+      }
+      final k = entries.keys.first;
+      setState(() {
+        _values[s.name] = k;
+        _display[s.name] = entries[k] ?? k;
+      });
+    }
+    if (emptyPools.isNotEmpty) {
+      setState(() =>
+          _prefillNote = '参数「${emptyPools.join('、')}」没有可用候选，请手动填写');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -197,31 +344,48 @@ class _SlotFormDialogState extends State<_SlotFormDialog> {
     final preview = assembleEffectDesc(
         widget.suggestion.desc, slots, _values, _display);
     return AlertDialog(
-      title: Text(widget.suggestion.desc, style: const TextStyle(fontSize: 14)),
+      title: Text(widget.suggestion.desc,
+          style: const TextStyle(fontSize: AppText.title)),
       content: SizedBox(
         width: 380,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if ((widget.suggestion.description).isNotEmpty) ...[
+              Text(widget.suggestion.description,
+                  style: TextStyle(fontSize: AppText.dense, color: palette.textHint)),
+              const SizedBox(height: AppSpace.s6),
+            ],
             for (final s in slots) _slotEditor(s),
-            const SizedBox(height: 10),
+            if (_prefillNote != null) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpace.s),
+                child: Text(_prefillNote!,
+                    style:
+                        TextStyle(fontSize: AppText.dense, color: palette.statusWarn)),
+              ),
+            ],
+            const SizedBox(height: AppSpace.s10),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(AppSpace.s),
               decoration: BoxDecoration(
                 color: palette.surface,
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(AppRadius.xs),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('预览：$preview',
-                      style: TextStyle(fontSize: 11.5, color: palette.textBody)),
-                  const SizedBox(height: 2),
+                      style:
+                          TextStyle(fontSize: AppText.caption, color: palette.textBody)),
+                  const SizedBox(height: AppSpace.xxs),
                   Text('代码：${assembleEffectCode(widget.suggestion.code, slots, _values)}',
                       style: TextStyle(
-                          fontSize: 10.5, fontFamily: 'Consolas', color: palette.textSecondary)),
+                          fontSize: AppText.dense,
+                          fontFamily: 'Consolas',
+                          color: palette.textSecondary)),
                 ],
               ),
             ),
@@ -232,8 +396,12 @@ class _SlotFormDialogState extends State<_SlotFormDialog> {
         fluent.Button(onPressed: () => Navigator.pop(context), child: const Text('取消')),
         fluent.FilledButton(
           onPressed: _complete
-              ? () => Navigator.pop(
-                  context, assembleEffectCode(widget.suggestion.code, slots, _values))
+              ? () {
+                  // 回传本次填值（目录记忆它，同行内切算符时复用）。
+                  widget.onValues?.call(Map<String, String>.of(_values));
+                  Navigator.pop(
+                      context, assembleEffectCode(widget.suggestion.code, slots, _values));
+                }
               : null,
           child: const Text('确定'),
         ),
@@ -245,6 +413,7 @@ class _SlotFormDialogState extends State<_SlotFormDialog> {
   // （带初值）走同一份实现，避免两处复制。值经回调写回本表单的 `_values`/`_display`。
   Widget _slotEditor(SuggestionSlot s) {
     return SlotField(
+      key: ValueKey('slot-${s.name}'),
       slot: s,
       gameDicts: widget.gameDicts,
       initialValue: _values[s.name] ?? '',
@@ -252,9 +421,19 @@ class _SlotFormDialogState extends State<_SlotFormDialog> {
         _values[s.name] = v;
         _display[s.name] = name;
       }),
+      onError: (err) => setState(() {
+        if (err.isEmpty) {
+          _errors.remove(s.name);
+        } else {
+          _errors[s.name] = err;
+        }
+      }),
     );
   }
 }
+
+/// 槽标签列宽（标签列与错误提示的左缩进共用同一个值）。
+const double _kLabelWidth = 84;
 
 /// 单个参数槽的编辑控件（「新建」与「编辑已有行」共用）：
 ///   * number 槽 → [fluent.TextBox] 数值输入；
@@ -269,11 +448,15 @@ class SlotField extends StatefulWidget {
     required this.gameDicts,
     required this.onChanged,
     this.initialValue = '',
+    this.onError,
   });
   final SuggestionSlot slot;
   final Map<String, dynamic> gameDicts;
   final String initialValue;
   final void Function(String value, String displayName) onChanged;
+
+  /// A4：校验状态回调（空串 = 合法），宿主据此禁用「确定」。
+  final ValueChanged<String>? onError;
 
   @override
   State<SlotField> createState() => _SlotFieldState();
@@ -284,6 +467,7 @@ class _SlotFieldState extends State<SlotField> {
   bool _loading = false;
   late final TextEditingController _ctrl;
   String? _sel;
+  String _error = '';
 
   @override
   void initState() {
@@ -292,6 +476,24 @@ class _SlotFieldState extends State<SlotField> {
     if (widget.slot.kind == 'dict') {
       _loading = true;
       _loadEntries();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SlotField old) {
+    super.didUpdateWidget(old);
+    // A7 预填 / 记忆值回灌：外部初值变化时同步输入框与下拉选中（用户正在
+    // 输入时父级回传的就是输入值本身，两者相等，不会打断）。
+    if (widget.initialValue != old.initialValue &&
+        widget.initialValue != _ctrl.text) {
+      _ctrl.text = widget.initialValue;
+    }
+    final entries = _entries;
+    if (widget.slot.kind == 'dict' &&
+        widget.initialValue != old.initialValue &&
+        entries != null &&
+        entries.containsKey(widget.initialValue)) {
+      _sel = widget.initialValue;
     }
   }
 
@@ -312,20 +514,49 @@ class _SlotFieldState extends State<SlotField> {
     super.dispose();
   }
 
+  /// 值变更统一入口：先做 A4 校验（初值原样保留视为可信，避免历史怪值
+  /// 把编辑已有行锁死），再向外回传值/显示名/错误。
+  void _setValue(String v, String name) {
+    final trusted =
+        widget.slot.kind == 'number' && v.trim() == widget.initialValue.trim();
+    final err = widget.slot.kind == 'number' && !trusted
+        ? numberSlotError(v)
+        : '';
+    if (err != _error) {
+      setState(() => _error = err);
+      widget.onError?.call(err);
+    }
+    widget.onChanged(v, name);
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = widget.slot;
     final label = s.label.isNotEmpty ? s.label : s.name;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
+      padding: const EdgeInsets.only(bottom: AppSpace.s),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 84,
-            child: Text('$label（${s.name}）',
-                style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
+          Row(
+            children: [
+              SizedBox(
+                width: _kLabelWidth,
+                child: Text('$label（${s.name}）',
+                    style: const TextStyle(fontSize: AppText.body),
+                    overflow: TextOverflow.ellipsis),
+              ),
+              Expanded(child: _input(s, label, _entries)),
+            ],
           ),
-          Expanded(child: _input(s, label, _entries)),
+          if (_error.isNotEmpty)
+            Padding(
+              padding:
+                  const EdgeInsets.only(left: _kLabelWidth, top: AppSpace.xxs),
+              child: Text(_error,
+                  style:
+                      TextStyle(fontSize: AppText.dense, color: palette.statusDanger)),
+            ),
         ],
       ),
     );
@@ -336,16 +567,16 @@ class _SlotFieldState extends State<SlotField> {
       return fluent.TextBox(
         controller: _ctrl,
         placeholder: '输入数值',
-        style: const TextStyle(fontSize: 12),
+        style: const TextStyle(fontSize: AppText.body),
         onChanged: (v) {
           final t = v.trim();
-          widget.onChanged(t, t);
+          _setValue(t, t);
         },
       );
     }
     if (_loading) {
       return Text('正在读取候选…',
-          style: TextStyle(fontSize: 12, color: palette.textHint));
+          style: TextStyle(fontSize: AppText.body, color: palette.textHint));
     }
     if (entries != null && entries.isNotEmpty) {
       return fluent.ComboBox<String>(
@@ -355,22 +586,22 @@ class _SlotFieldState extends State<SlotField> {
                 value: e.key, child: Text('${e.key} · ${e.value}')),
         ],
         value: _sel != null && entries.containsKey(_sel) ? _sel : null,
-        placeholder: const Text('选择…', style: TextStyle(fontSize: 12)),
+        placeholder: const Text('选择…', style: TextStyle(fontSize: AppText.body)),
         isExpanded: true,
-        onChanged: (v) => setState(() {
-          _sel = v;
-          widget.onChanged(v ?? '', v != null ? (entries[v] ?? v) : '');
-        }),
+        onChanged: (v) {
+          setState(() => _sel = v);
+          _setValue(v ?? '', v != null ? (entries[v] ?? v) : '');
+        },
       );
     }
     // 真没读到候选（后端不可达 / 表不存在）才手输兜底。
     return fluent.TextBox(
       controller: _ctrl,
       placeholder: '未读到候选，输入 $label 的 ID',
-      style: const TextStyle(fontSize: 12),
+      style: const TextStyle(fontSize: AppText.body),
       onChanged: (v) {
         final t = v.trim();
-        widget.onChanged(t, t);
+        _setValue(t, t);
       },
     );
   }
@@ -424,6 +655,8 @@ class _SlotValueEditDialog extends StatefulWidget {
 class _SlotValueEditDialogState extends State<_SlotValueEditDialog> {
   late final Map<String, String> _values;
   late final Map<String, String> _display;
+  // A4：逐槽校验错误 → 任一非法即禁用「确定」。
+  final Map<String, String> _errors = {};
 
   @override
   void initState() {
@@ -437,6 +670,8 @@ class _SlotValueEditDialogState extends State<_SlotValueEditDialog> {
     }
   }
 
+  bool get _hasError => _errors.values.any((e) => e.isNotEmpty);
+
   @override
   Widget build(BuildContext context) {
     final slots = widget.slots;
@@ -447,7 +682,7 @@ class _SlotValueEditDialogState extends State<_SlotValueEditDialog> {
         ? assembleEffectDesc(widget.templateDesc!, slots, _values, _display)
         : '';
     return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontSize: 14)),
+      title: Text(widget.title, style: const TextStyle(fontSize: AppText.title)),
       content: SizedBox(
         width: 380,
         child: Column(
@@ -456,6 +691,7 @@ class _SlotValueEditDialogState extends State<_SlotValueEditDialog> {
           children: [
             for (final s in slots)
               SlotField(
+                key: ValueKey('slot-${s.name}'),
                 slot: s,
                 gameDicts: widget.gameDicts,
                 initialValue: _values[s.name] ?? '',
@@ -463,27 +699,36 @@ class _SlotValueEditDialogState extends State<_SlotValueEditDialog> {
                   _values[s.name] = v;
                   _display[s.name] = name;
                 }),
+                onError: (err) => setState(() {
+                  if (err.isEmpty) {
+                    _errors.remove(s.name);
+                  } else {
+                    _errors[s.name] = err;
+                  }
+                }),
               ),
             if (code.isNotEmpty || preview.isNotEmpty) ...[
-              const SizedBox(height: 10),
+              const SizedBox(height: AppSpace.s10),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(AppSpace.s),
                 decoration: BoxDecoration(
                   color: palette.surface,
-                  borderRadius: BorderRadius.circular(4),
+                  borderRadius: BorderRadius.circular(AppRadius.xs),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (preview.isNotEmpty)
                       Text('预览：$preview',
-                          style: TextStyle(fontSize: 11.5, color: palette.textBody)),
+                          style: TextStyle(
+                              fontSize: AppText.caption,
+                              color: palette.textBody)),
                     if (code.isNotEmpty) ...[
-                      const SizedBox(height: 2),
+                      const SizedBox(height: AppSpace.xxs),
                       Text('代码：$code',
                           style: TextStyle(
-                              fontSize: 10.5,
+                              fontSize: AppText.dense,
                               fontFamily: 'Consolas',
                               color: palette.textSecondary)),
                     ],
@@ -497,7 +742,7 @@ class _SlotValueEditDialogState extends State<_SlotValueEditDialog> {
       actions: [
         fluent.Button(onPressed: () => Navigator.pop(context), child: const Text('取消')),
         fluent.FilledButton(
-          onPressed: () => Navigator.pop(context, _values),
+          onPressed: _hasError ? null : () => Navigator.pop(context, _values),
           child: const Text('确定'),
         ),
       ],
@@ -539,6 +784,10 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
   String _category = '全部';
   int _page = 0;
 
+  /// A2：每个 family 当前选中的算符 / 上次填过的槽值（同行内切换复用）。
+  final Map<String, String> _familyOp = {};
+  final Map<String, Map<String, String>> _familyValues = {};
+
   @override
   void initState() {
     super.initState();
@@ -566,7 +815,17 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
   Future<void> _pick(Suggestion s) async {
     String? code;
     if (s.slots.isNotEmpty) {
-      code = await showEffectSlotForm(context, suggestion: s, gameDicts: widget.gameDicts);
+      Map<String, String>? filled;
+      code = await showEffectSlotForm(
+        context,
+        suggestion: s,
+        gameDicts: widget.gameDicts,
+        initialValues: _familyValues[s.family] ?? const {},
+        onValues: (v) => filled = v,
+      );
+      if (filled != null && s.family.isNotEmpty) {
+        _familyValues[s.family] = filled!;
+      }
     } else {
       code = s.code;
     }
@@ -591,11 +850,13 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
             _category == '全部' ||
             engine.categoryFor(widget.mode, e.code) == _category)
         .toList();
-    final pages = filtered.isEmpty ? 1 : ((filtered.length - 1) ~/ _pageSize) + 1;
+    // A2：与积木库左栏同一份折叠逻辑（family 一条 + 行内算符）。
+    final groups = groupByFamily(filtered);
+    final pages = groups.isEmpty ? 1 : ((groups.length - 1) ~/ _pageSize) + 1;
     if (_page >= pages) _page = pages - 1;
-    final visible = filtered.skip(_page * _pageSize).take(_pageSize).toList();
+    final visible = groups.skip(_page * _pageSize).take(_pageSize).toList();
     return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontSize: 14)),
+      title: Text(widget.title, style: const TextStyle(fontSize: AppText.title)),
       content: SizedBox(
         width: 500,
         height: 480,
@@ -604,10 +865,10 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
             fluent.TextBox(
               controller: _q,
               placeholder: '搜索${mode.label}、属性或名称…',
-              style: const TextStyle(fontSize: 12),
+              style: const TextStyle(fontSize: AppText.body),
               onChanged: (v) => _fetch(v.trim()),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpace.s),
             if (categories.length > 1)
               Align(
                 alignment: Alignment.centerLeft,
@@ -627,7 +888,7 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
                   ],
                 ),
               ),
-            const SizedBox(height: 4),
+            const SizedBox(height: AppSpace.xs),
             Expanded(
               child: _loading && _items.isEmpty
                   ? const Center(child: fluent.ProgressRing())
@@ -635,50 +896,76 @@ class _CatalogBrowserDialogState extends State<_CatalogBrowserDialog> {
                       ? Center(
                           child: Text('没有匹配的候选',
                               style: TextStyle(
-                                  fontSize: 12, color: palette.textHint)))
-                      : GridView.builder(
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            mainAxisExtent: 84,
-                            crossAxisSpacing: 8,
-                            mainAxisSpacing: 8,
-                          ),
+                                  fontSize: AppText.body,
+                                  color: palette.textHint)))
+                      : ListView.separated(
                           itemCount: visible.length,
+                          separatorBuilder: (c, i) =>
+                              const SizedBox(height: AppSpace.s),
                           itemBuilder: (c, i) {
-                            final s = visible[i];
+                            final g = visible[i];
+                            final family = g.first.family;
+                            final folded = g.length > 1 && family.isNotEmpty;
+                            final selected = folded
+                                ? blockGroupPick(g, _familyOp[family] ?? '')
+                                : g.first;
                             return BlockCatalogTile(
-                              title: humanizeBlockDesc(s.desc, s.slots),
-                              category:
-                                  engine.categoryFor(widget.mode, s.code),
-                              onTap: () => _pick(s),
+                              title: folded
+                                  ? blockGroupTitle(g)
+                                  : humanizeBlockDesc(
+                                      selected.desc, selected.slots),
+                              subtitle: folded
+                                  ? humanizeBlockDesc(
+                                      selected.desc, selected.slots)
+                                  : '',
+                              category: engine.categoryFor(
+                                  widget.mode, selected.code),
+                              footer: folded
+                                  ? BlockOpChips(
+                                      keyPrefix: 'fldop-${selected.family}',
+                                      ops: selected.ops.isEmpty
+                                          ? [
+                                              for (final s in g)
+                                                EffectOpVariant(
+                                                    op: s.op,
+                                                    code: s.code,
+                                                    slots: s.slots),
+                                            ]
+                                          : selected.ops,
+                                      current: selected.op,
+                                      onPick: (v) => setState(
+                                          () => _familyOp[family] = v.op),
+                                      dense: true,
+                                    )
+                                  : null,
+                              onTap: () => _pick(selected),
                             );
                           },
                         ),
             ),
             if (!_loading || _items.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(top: 4),
+                padding: const EdgeInsets.only(top: AppSpace.xs),
                 child: Row(
                   children: [
-                    Text('${filtered.length} 项 · ${_page + 1}/$pages',
+                    Text('${groups.length} 项 · ${_page + 1}/$pages',
                         style: TextStyle(
-                            fontSize: 10.5, color: palette.textHint)),
+                            fontSize: AppText.dense, color: palette.textHint)),
                     const Spacer(),
                     fluent.Button(
                       onPressed: _page > 0
                           ? () => setState(() => _page--)
                           : null,
                       child: const Text('上一页',
-                          style: TextStyle(fontSize: 11)),
+                          style: TextStyle(fontSize: AppText.small)),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: AppSpace.s6),
                     fluent.Button(
                       onPressed: _page + 1 < pages
                           ? () => setState(() => _page++)
                           : null,
                       child: const Text('下一页',
-                          style: TextStyle(fontSize: 11)),
+                          style: TextStyle(fontSize: AppText.small)),
                     ),
                   ],
                 ),

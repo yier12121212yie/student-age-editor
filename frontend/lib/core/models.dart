@@ -10,6 +10,10 @@ class ModInfo {
   final bool hasManifest;
   final String manifestTitle;
 
+  /// 展示名：优先 manifest 标题（人话名），没有才回退目录名。
+  /// 创意工坊模组的目录名是一串数字 id，直接用会只看到 id。
+  String get displayName => manifestTitle.isNotEmpty ? manifestTitle : name;
+
   factory ModInfo.fromJson(Map<String, dynamic> json) => ModInfo(
         name: json['name'] as String? ?? '',
         root: json['root'] as String? ?? '',
@@ -36,7 +40,7 @@ class FsEntry {
 /// 全局应用状态。
 class AppState extends ChangeNotifier {
   /// 进程级单例引用（app.dart 根 State 创建时写入、dispose 时清空）。
-  /// 深层小控件（如设置页的无代码模式开关）拿不到 state prop 时经此同步；
+  /// 深层小控件（如设置页的简易模式开关）拿不到 state prop 时经此同步；
   /// 只允许在根 State 生命周期内非空。
   static AppState? current;
 
@@ -60,7 +64,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 无代码模式（后端共享开关，editor_env.json no_code_mode，GUI/CLI/TUI 同一份）：
+  /// 简易模式（后端共享开关，editor_env.json no_code_mode，GUI/CLI/TUI 同一份）：
   /// 开启后效果类字段以「选」代「打」——空输入即出候选、带参数槽的候选走表单，
   /// 人物字段提供立绘浏览面板。启动时从 /api/settings/editor 拉取。
   bool noCodeMode = false;
@@ -118,6 +122,18 @@ class AppState extends ChangeNotifier {
     modRoot = root;
     notifyListeners();
   }
+
+  /// 取指定模组的展示名（manifest 标题优先，回退目录名）。找不到时原样返回
+  /// [name]，保证 UI 至少能显示目录名而不是空白。
+  String modDisplayName(String name) {
+    for (final m in mods) {
+      if (m.name == name) return m.displayName;
+    }
+    return name;
+  }
+
+  /// 当前选中模组的展示名。
+  String get currentModDisplayName => modDisplayName(modName);
 
   /// 更新模组列表并广播：mods 是公开字段，但直接赋值不触发通知，
   /// 依赖列表的面板（云同步 Mod 下拉等）需要经此方法刷新。

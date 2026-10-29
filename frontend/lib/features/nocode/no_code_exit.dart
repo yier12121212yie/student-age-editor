@@ -1,6 +1,6 @@
-/// 无代码模式的逃生口：关闭共享开关并给出失败反馈。
+/// 简易模式的逃生口：关闭共享开关并给出失败反馈。
 ///
-/// 无代码模式开启后，代码/ID 字段一律不给文本输入框（见 field_meta 的
+/// 简易模式开启后，代码/ID 字段一律不给文本输入框（见 field_meta 的
 /// [NoCodeShape]）。当某字段既没有候选也没有浏览/试听入口时，用户唯一的出路
 /// 就是关掉这个共享开关——本文件把那一步（写穿后端 + 失败提示）收在一处，
 /// 三个编辑面共用，避免各写一份对话框。
@@ -12,7 +12,7 @@ import 'package:flutter/material.dart';
 import '../../core/no_code_mode.dart';
 import '../../core/app_dialogs.dart';
 
-/// 关闭无代码模式（写穿 editor_env.json）；写穿失败时提示并说明已回滚。
+/// 切换到高级编辑（写穿 editor_env.json）；写穿失败时提示并说明已回滚。
 Future<void> exitNoCodeMode(BuildContext context) async {
   final ok = await persistNoCodeMode(false);
   if (ok || !context.mounted) return;

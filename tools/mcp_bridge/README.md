@@ -103,3 +103,28 @@ Claude Code（项目根 `.mcp.json`）与 ZCode 等客户端通用，均为 stdi
 
 实现 MCP 2025-03-26 的子集：`initialize`、`notifications/initialized`（忽略）、`ping`、
 `tools/list`、`tools/call`；未知方法返回 JSON-RPC 错误 `-32601`，未知通知静默忽略。
+
+## 与 Web 端原生 HTTP MCP（`/api/mcp`）的关系
+
+除本目录下的本地 `stdio` Python 桥接脚本外，编辑器还提供 **Streamable HTTP MCP 原生端点（`/api/mcp`）**，供 Web 端及跨机器外部 Agent 直接通过 HTTP 接入（无需在客户端安装 Python）：
+
+- **HTTP 端点**：`POST <Origin>/api/mcp`（只读模式：`POST <Origin>/api/mcp?readonly=1`）
+- **鉴权请求头**：`Authorization: Bearer <令牌>`（或本机 `X-Backend-Token: <令牌>`）
+- **令牌签发**：在编辑器前端 **「设置」→「HTTP MCP 服务端（供外部 Agent 接入）」→「生成令牌」卡片** 中生成长期访问令牌，并一键复制 Claude Code / Cursor / Windsurf 的 JSON 配置片段：
+
+```json
+{
+  "mcpServers": {
+    "student-age-editor": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/api/mcp",
+      "headers": {
+        "Authorization": "Bearer sa_mcp_..."
+      }
+    }
+  }
+}
+```
+
+完整的 Web 端使用说明与**后端同事 C++ 接口对接规范**（`/api/mcp`、`/api/auth/tokens`、`Authorization: Bearer` 鉴权头）请参见 [`WEB_GUIDE.md` §4](../../WEB_GUIDE.md)。
+

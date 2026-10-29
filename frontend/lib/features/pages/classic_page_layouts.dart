@@ -1776,7 +1776,9 @@ Future<void> _promptCreateEntry({
   final idController = TextEditingController();
   final nameController = TextEditingController();
 
-  await showDialog<void>(
+  // 弹窗内的两个控制器由本函数持有：无论用户如何离开（取消/确定/异常），
+  // 都要在对话框生命周期结束后释放，避免每次「新建条目」泄漏两个控制器。
+  final dialog = showDialog<void>(
     context: context,
     builder: (ctx) => AppContentDialog(
       title: Text('➕ 新建 ${cfgDisplayName(cfgName)} 条目'),
@@ -1853,6 +1855,13 @@ Future<void> _promptCreateEntry({
       ],
     ),
   );
+
+  try {
+    await dialog;
+  } finally {
+    idController.dispose();
+    nameController.dispose();
+  }
 }
 
 Future<void> _promptDeleteEntry({

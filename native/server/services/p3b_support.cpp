@@ -6,6 +6,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 
 #include "p3b_miniz_config.h"
@@ -379,6 +381,36 @@ std::optional<std::string> ZipReader::read(const std::string& name) const {
     std::string out(static_cast<const char*>(p), size);
     mz_free(p);
     return out;
+}
+
+bool ZipReader::extract_to_file(const std::string& name, const std::string& dst) const {
+    if (!impl_ || !impl_->ok) return false;
+    // 打开目标文件走 UTF-8→本地宽字符的 paths 助手；miniz 自带的
+    // extract_to_file 用 fopen(char*)，在 Windows 上会按 ANSI 代码页解释
+    // 非 ASCII 资源名（贴图/配乐）而失败。回调式解压逐块写盘，整条大条目
+    // 不进堆。
+    std::ofstream out(sa_core::paths::to_path(dst), std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    struct Ctx {
+        std::ofstream* out;
+    } ctx{&out};
+    const mz_bool ok = mz_zip_reader_extract_file_to_callback(
+        &impl_->zip, name.c_str(),
+        [](void* opaque, mz_uint64 /*file_ofs*/, const void* buf, size_t n) -> size_t {
+            auto* c = static_cast<Ctx*>(opaque);
+            c->out->write(static_cast<const char*>(buf), static_cast<std::streamsize>(n));
+            return c->out->good() ? n : 0;  // 0 -> miniz aborts the extraction
+        },
+        &ctx, 0);
+    out.flush();
+    if (!ok || !out.good()) {
+        out.close();
+        std::error_code ec;
+        std::filesystem::remove(sa_core::paths::to_path(dst), ec);
+        return false;
+    }
+    out.close();
+    return true;
 }
 
 bool ZipReader::extract_all(const std::string& dest) const {

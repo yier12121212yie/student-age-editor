@@ -608,7 +608,12 @@ bool apply_fix(json& mod_data, const json& bug) {
         if (evt_id.size() + 2 >= 32) return false;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%s%02d", evt_id.c_str(), suffix);
-        long long new_opt_id = std::stoll(buf);
+        // `evt_id` 只校验了长度、**未**校验是否为纯数字；非数字时 stoll 抛
+        // std::invalid_argument，而 apply_fix/调用点都没有 try/catch，会一路冒泡到
+        // httpd 兜底成 HTTP 500。这里直接判定为「本条修复不适用」并放弃。
+        auto new_opt_id_opt = try_int(buf);
+        if (!new_opt_id_opt) return false;
+        long long new_opt_id = *new_opt_id_opt;
 
         std::string one_key = row_key(opt_cfg, "1");
         if (!one_key.empty()) {

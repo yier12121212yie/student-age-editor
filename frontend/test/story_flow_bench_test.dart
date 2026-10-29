@@ -199,7 +199,6 @@ Future<void> mountCanvas(
   WidgetTester tester, {
   required FlowGraph graph,
   required Map<String, Offset> positions,
-  Set<String> expanded = const {},
   TextEditingController? Function(String nodeId, String field)? fieldController,
 }) async {
   await tester.pumpWidget(
@@ -213,16 +212,15 @@ Future<void> mountCanvas(
             child: StoryFlowGraph(
               graph: graph,
               positions: positions,
-              expandedNodes: expanded,
               onSelectionChanged: (_) {},
               onMoveNode: (id, pos) => positions[id] = pos,
               onAddEdge: (_, _, _) {},
               onDeleteEdge: (_, _, _) {},
               onRequestDelete: () {},
-              onToggleExpand: (_) {},
               fieldController: fieldController ?? _noField,
               onFieldChanged: (_, _, _) {},
-              onDeleteNode: (_) {},
+              speakerController: (_) => null,
+              onSpeakerSubmitted: (_, _) {},
             ),
           ),
         ),
@@ -511,11 +509,12 @@ void main() {
     testWidgets('拖节点一帧：图缓存生效，卡片重建量降到可见区', (tester) async {
       await mount(tester);
       // 首个节点世界坐标 (40,40)（layoutFlow startX/startY），初始
-      // scale=1/pan=0；卡片中部 (120,70) 避开底部端口与右下展开箭头。
+      // scale=1/pan=0；抓标题条左侧把手 (46,52) —— 正文/说话人是输入框，
+      // 会把指针让给文本编辑。
       final origin = tester.getTopLeft(find.byType(StoryFlowGraph));
       final r = await benchDrag(
         tester,
-        origin + const Offset(120, 70),
+        origin + const Offset(46, 52),
         const Offset(6, 4),
       );
       await drain(tester);
@@ -584,15 +583,11 @@ void main() {
       testWidgets('$rows 句：纯平移穿过三档 LOD', (tester) async {
         final graph = benchGraph(rows);
         final positions = layoutFlow(graph: graph);
-        final expanded = <String>{
-          for (var i = 0; i < graph.nodes.length; i += 10) graph.nodes[i].id,
-        };
         final ctls = <String, TextEditingController>{};
         await mountCanvas(
           tester,
           graph: graph,
           positions: positions,
-          expanded: expanded,
           fieldController: (id, field) => ctls.putIfAbsent(
             '$id|$field',
             () => TextEditingController(text: ''),
@@ -640,7 +635,7 @@ void main() {
           lessThanOrEqualTo(20),
           reason: '视口裁剪未生效：${full.mounted} 张卡片常驻',
         );
-        report('B3 $rows 句 → ${graph.nodes.length} 节点（展开 ${expanded.length}）');
+        report('B3 $rows 句 → ${graph.nodes.length} 节点（全量内联编辑）');
         report('   完整档 ${tier(full)}');
 
         await zoomOut(6); // 0.9^6 ≈ 0.53 → 仅标题档

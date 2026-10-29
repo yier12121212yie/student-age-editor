@@ -246,18 +246,24 @@ void main() {
       expect(find.byKey(const Key('go_detail')), findsOneWidget);
     });
 
-    testWidgets('保存成功后经对话框「好」直接返回列表', (tester) async {
+    testWidgets('保存成功留在本页并给非阻塞反馈，返回时不再拦截', (tester) async {
       await pumpDetail(tester);
       await editContent(tester, '改过的对白');
 
       await tester.tap(find.byTooltip('保存'));
       await tester.pumpAndSettle();
-      expect(find.text('保存成功'), findsOneWidget);
+      // U3：普通保存不再弹阻塞成功框，也不再强制退出编辑页。
+      expect(find.text('保存成功'), findsNothing);
+      expect(find.text('已保存'), findsWidgets);
       expect(find.text('有未保存修改'), findsNothing);
+      expect(find.byTooltip('保存'), findsOneWidget, reason: '仍停留在详情页');
 
-      await tester.tap(find.text('好')); // 成功对话框设计上连带退出详情页
+      await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('go_detail')), findsOneWidget);
+      expect(find.byKey(const Key('go_detail')), findsOneWidget,
+          reason: '保存后返回不应再弹未保存确认');
+      // 放掉成功 InfoBar 的 3s 自动关闭 Timer，避免收尾时报 pending timer。
+      await tester.pump(const Duration(seconds: 4));
     });
 
     testWidgets('保存失败后返回仍被拦截', (tester) async {

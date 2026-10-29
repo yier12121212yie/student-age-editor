@@ -52,6 +52,21 @@ json aliyun_settings(const std::string& base) {
     return s;
 }
 
+// 环境变量的临时覆盖（测试结束恢复原值）。
+struct EnvRestore {
+    std::string key;
+    std::string saved;
+    bool had = false;
+    EnvRestore(std::string k, std::string v) : key(std::move(k)) {
+        saved = sa_core::paths::getenv_utf8(key.c_str());
+        had = !saved.empty();
+        sa_core::paths::setenv_utf8(key.c_str(), v, true);
+    }
+    ~EnvRestore() { sa_core::paths::setenv_utf8(key.c_str(), had ? saved : "", true); }
+    EnvRestore(const EnvRestore&) = delete;
+    EnvRestore& operator=(const EnvRestore&) = delete;
+};
+
 }  // namespace
 
 TEST_CASE("minimax_base strips trailing /v1 (avoid /v1/v1)", "[p4][tts]") {
@@ -383,6 +398,31 @@ TEST_CASE("tts_store: save/register/bind/list/read/delete round-trip", "[p4][tts
     auto rel = tts_store::delete_material(mod_root, "audio/tts/greeting.wav");
     CHECK(rel == "audio/tts/greeting.wav");
     CHECK_FALSE(fs::exists(abs_path));
+}
+
+TEST_CASE("tts settings: hosted media overlay applies admin key but hides it",
+          "[p4][tts]") {
+    sat::CfgFixture fx("p4_tts_hosted");
+    const std::string overlay =
+        sa_core::paths::path_to_utf8(fx.root() / "hosted_media.json");
+    json m;
+    m["ttsProvider"] = "minimax";
+    m["ttsBaseUrl"] = "https://tts.example";
+    m["ttsApiKey"] = "sk-admin-global";
+    m["ttsModel"] = "speech-02-hd";
+    REQUIRE(sa_core::paths::write_bytes_simple(overlay, m.dump(2)));
+    EnvRestore guard("EDITOR_HOSTED_MEDIA_FILE", overlay);
+
+    auto r = sat::call_router(fx.router(), "GET", "/api/tts/settings");
+    REQUIRE(r.status == 200);
+    const json& s = r.json_payload.at("settings");
+    CHECK(s["ttsProvider"] == "minimax");
+    CHECK(s["ttsBaseUrl"] == "https://tts.example");
+    CHECK(s["ttsModel"] == "speech-02-hd");
+    // 管理员 key 只用于服务端合成，读设置时一律抹掉。
+    CHECK(s["ttsApiKey"] == "");
+    // 覆盖文件只带非空字段：账号自己的默认值保持不变。
+    CHECK(s["ttsFormat"] == "wav");
 }
 
 #if defined(_WIN32)

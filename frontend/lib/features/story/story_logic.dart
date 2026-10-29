@@ -15,14 +15,18 @@ String cln(dynamic v) {
   return s.endsWith('.0') ? s.replaceAll(_tailZero, '') : s;
 }
 
-/// 无代码模式的事件 ID 自动分配：在 `min..max` 家族内取第一个空闲位。
-/// 优先「最大已用 + 1」，被占则顺序上探；家族全占返回 null。
+/// 简易模式的事件 ID 自动分配：在 `min..max` 家族内取第一个空闲位。
+/// 优先「最大已用 + 1」，被占则顺序上探；上探越过 `max`（上界本身被占用）
+/// 时从 `min` 回绕扫描区间内的首个空闲 ID。家族全占时：给了 [fallbackStart]
+/// 则从它起向上分配，否则返回 null。
 ///
-/// 导演视图用 8000~8999、剧情工作台用 7 位 `1xxxxxx`，两者共用本函数。
+/// 导演视图用 8000~8999（[fallbackStart] 9000）、剧情工作台用 7 位 `1xxxxxx`，
+/// 两者共用本函数。
 String? allocEventId(
   Iterable<String> existing, {
   int min = 1000000,
   int max = 1999999,
+  int? fallbackStart,
 }) {
   final ids = {for (final s in existing) s};
   var maxN = min - 1;
@@ -38,7 +42,18 @@ String? allocEventId(
   while (id <= max && ids.contains(id.toString())) {
     id++;
   }
-  return id > max ? null : id.toString();
+  if (id <= max) return id.toString();
+  // 递增扫描越过上界（上界被占用）：从 min 回绕找第一个空闲 ID。
+  for (var i = min; i <= max; i++) {
+    if (!ids.contains(i.toString())) return i.toString();
+  }
+  if (fallbackStart == null) return null;
+  // 区间全占：从 fallbackStart 起向上分配（与区间外 ID 共存）。
+  var f = fallbackStart;
+  while (ids.contains(f.toString())) {
+    f++;
+  }
+  return f.toString();
 }
 
 /// 值 → 字符串列表（单值包一层，列表拍平一层）。
@@ -249,13 +264,9 @@ String appendTalkId(
   Map<String, dynamic> talks,
 ) {
   if (currentId != null) {
-    final base = int.tryParse(cln(currentId));
-    if (base == null) return '';
-    var id = base + 1;
-    while (talks.containsKey(id.toString())) {
-      id++;
-    }
-    return id.toString();
+    // 有当前节点：与「插入对话」同一套「当前 ID + 1 跳过已占用」探针，
+    // 直接复用以免两份实现漂移。
+    return insertTalkId(currentId, talks);
   }
   var start = int.tryParse('${cln(evtId)}001') ?? 0;
   while (talks.containsKey(start.toString())) {
@@ -486,4 +497,493 @@ int compareEventIds(dynamic a, dynamic b) {
   final bn = int.tryParse(cln(b));
   if (an != null && bn != null) return an.compareTo(bn);
   return cln(a).compareTo(cln(b));
+}
+
+// ---------------------------------------------------------------------------
+// 舞台指令（TalkCfg.roles）
+//
+// roles **不是** "槽,人物,动作" CSV 字符串，而是指令行数组
+// `[[roleId, 指令码, ...参数], ...]`（见 native stage_service.cpp STAGE_ACTIONS，
+// 后端 preview build_stage 以此为真源）：
+//   入场 1001 滑动 / 1002 直接 / 1003 底部，参数 [1, pos]（pos 1=左 2=右 3=中）
+//   退场 2001 滑动 / 2002 直接
+//   表情 3000 + expr（0..26）
+//   动作 3001 微动 / 3002 震动 / 3005 转身 / 3006 换装 / 3007 镜像 / 3009 气泡
+//   移动 3004 左右 / 3008 上下
+// 之前剧情舞台把它当 CSV 解析，导致人物显示成错误 ID（如把入场指令码 1001 当角色）。
+// 下列纯函数与后端 build_stage / preview_event 同口径，供 GUI / 移动端复用。
+// ---------------------------------------------------------------------------
+
+/// 游戏表情编号 → 中文名（0..26）。与后端 `stage_service.cpp:kExpressionNames`
+/// 及 `semantic_core.cpp:expression_dict()` 同口径，供 GUI / 移动端复用。
+///
+/// 22=喜极而泣、26=尴尬（口径依据游戏本体 TalkCfg 实测：带 `[role,3000,22]` 的
+/// 台词正文为「肖清雅流出了开心的泪水」；26 号与台词标注「（尴尬）」共现）。
+const List<(int, String)> kEmotionNames = [
+  (0, '默认'),
+  (1, '开心'),
+  (2, '生气'),
+  (3, '伤心'),
+  (4, '害羞'),
+  (5, '喜欢'),
+  (6, '认真'),
+  (7, '疑惑'),
+  (8, '惊讶'),
+  (9, '得意'),
+  (10, '微笑'),
+  (11, '坏笑'),
+  (12, '担心'),
+  (13, '害怕'),
+  (14, '难过'),
+  (15, '咆哮'),
+  (16, '窘迫'),
+  (17, '不满'),
+  (18, '冷笑'),
+  (19, '无语'),
+  (20, '苦笑'),
+  (21, '挫败'),
+  (22, '喜极而泣'),
+  (23, '迷茫'),
+  (24, '嫌弃'),
+  (25, '俏皮'),
+  (26, '尴尬'),
+];
+
+/// 表情编号 → 中文名；未知编号回退为「表情 N」。
+String emotionNameOf(int expr) {
+  for (final e in kEmotionNames) {
+    if (e.$1 == expr) return e.$2;
+  }
+  return '表情 $expr';
+}
+
+/// 在场角色的舞台状态（单个 talk 内或跨 talk 累积）。
+class StageCharState {
+  StageCharState({
+    required this.roleId,
+    this.pos = 3,
+    this.expr = 0,
+    this.flip = false,
+    this.present = false,
+  });
+
+  final String roleId;
+
+  /// 站位：1=左 2=右 3=中。
+  int pos;
+
+  /// 表情编号 0..26。
+  int expr;
+
+  /// 是否水平翻转（镜像）。
+  bool flip;
+
+  /// 是否在场。
+  bool present;
+}
+
+bool _isStageRow(dynamic row) => row is List && row.length >= 2;
+
+/// 把一组 roles 指令作用到 [state] 上（可跨对白累积），语义同后端 build_stage。
+void applyStageCommands(Map<String, StageCharState> state, dynamic roles) {
+  if (roles is! List) return;
+  for (final row in roles) {
+    if (!_isStageRow(row)) continue;
+    final r = row as List;
+    final rid = cln(r[0]);
+    if (rid.isEmpty) continue;
+    final tid = int.tryParse(cln(r[1]));
+    if (tid == null) continue;
+
+    StageCharState touch() =>
+        state.putIfAbsent(rid, () => StageCharState(roleId: rid));
+
+    if (tid == 1001 || tid == 1002 || tid == 1003) {
+      final e = touch();
+      var pos = r.length > 3 ? (int.tryParse(cln(r[3])) ?? 3) : 3;
+      if (pos != 1 && pos != 2) pos = 3;
+      e.pos = pos;
+      e.present = true;
+    } else if (tid == 2001 || tid == 2002) {
+      state[rid]?.present = false;
+    } else if (tid == 3000) {
+      // 3000（表情）本身即是「在场角色」的动作；单句对白若只写了这一条，
+      // 必须一并标记在场，否则 parseStageChars 会把角色整条丢弃（角色消失
+      // 或降级回默认），历史 bug 之一。
+      final e = touch();
+      e.expr = r.length > 2 ? (int.tryParse(cln(r[2])) ?? 0) : 0;
+      e.present = true;
+    } else if (tid == 3006) {
+      // 3006（换装）同理：作为该角色唯一动作时也要维持在场。
+      touch().present = true;
+    } else if (tid == 3007) {
+      final e = touch();
+      e.flip = !e.flip;
+      e.present = true;
+    }
+  }
+}
+
+/// 单个 talk 的显式舞台角色（不含跨对白继承），保持指令出现顺序。
+List<StageCharState> parseStageChars(dynamic roles) {
+  final s = <String, StageCharState>{};
+  applyStageCommands(s, roles);
+  return [for (final e in s.values) if (e.present) e];
+}
+
+/// 舞台状态深拷贝（BFS 分支隔离用）。
+Map<String, StageCharState> _cloneStageState(
+  Map<String, StageCharState> src,
+) {
+  return {
+    for (final e in src.entries)
+      e.key: StageCharState(
+        roleId: e.value.roleId,
+        pos: e.value.pos,
+        expr: e.value.expr,
+        flip: e.value.flip,
+        present: e.value.present,
+      ),
+  };
+}
+
+/// 沿对白链（BFS，与后端 preview_event 同口径）计算每条对白的**有效**舞台：
+/// talkId → 在场角色（含前面各句登场/退场/表情的累积）。
+///
+/// 队列元素携带**父节点状态的独立深拷贝**（`(tid, stateSnapshot)`），每个子
+/// 分支只在自己的副本上累积。历史 bug：所有节点共享同一个可变 `state` Map，
+/// 选项分支 A 里设置的表情/出退场会串进分支 B，导致不同分支表情错乱。
+Map<String, List<StageCharState>> effectiveStages({
+  required String evtId,
+  required Map<String, dynamic> evtCfg,
+  required Map<String, dynamic> talks,
+  required Map<String, dynamic> options,
+}) {
+  final out = <String, List<StageCharState>>{};
+  final seen = <String>{};
+  final queue = <(String, Map<String, StageCharState>)>[];
+  // 入队前判重（而不是出队时），并让状态快照**惰性构造**：被 [`seen`] 挡下的
+  // 节点连克隆都不必做——同一父节点的多个子分支里只有一个会真正入队。
+  void enqueue(String tid, Map<String, StageCharState> Function() makeState) {
+    if (tid.isEmpty || !seen.add(tid)) return;
+    queue.add((tid, makeState()));
+  }
+
+  for (final s in storyStartIds(evtId, evtCfg, talks)) {
+    enqueue(cln(s), () => const <String, StageCharState>{});
+  }
+
+  // 索引游标遍历（替代 queue.removeAt(0) 的 O(N) 数组搬移）。
+  for (var qi = 0; qi < queue.length; qi++) {
+    final (tid, parentState) = queue[qi];
+    final rec = talks[tid];
+    if (rec is! Map) continue;
+    // 每个节点在自己的深拷贝上应用指令：兄弟分支互不污染。无指令时直接沿用
+    // 父快照（后续只读，不会被改写），省掉一次整状态克隆。
+    final roles = rec['roles'];
+    final hasCommands = roles is List && roles.isNotEmpty;
+    final state = hasCommands ? _cloneStageState(parentState) : parentState;
+    if (hasCommands) applyStageCommands(state, roles);
+    out[tid] = [
+      for (final e in state.values)
+        if (e.present)
+          StageCharState(
+            roleId: e.roleId,
+            pos: e.pos,
+            expr: e.expr,
+            flip: e.flip,
+            present: true,
+          ),
+    ];
+    // 子节点各自继承一份独立快照（同一父节点的多个子分支也不共享）。
+    void enqueueChild(dynamic childId) {
+      final cs = cln(childId);
+      if (cs.isEmpty) return;
+      enqueue(cs, () => _cloneStageState(state));
+    }
+
+    for (final oid in normalizeStoryIdList(rec['option'])) {
+      final orec = options[cln(oid)];
+      if (orec is! Map) continue;
+      for (final branch in const ['talkId', 'talkId2']) {
+        for (final b in normalizeStoryIdList(orec[branch])) {
+          enqueueChild(b);
+        }
+      }
+    }
+    for (final key in const ['nextTalk', 'nextTalk2']) {
+      for (final n in normalizeStoryIdList(rec[key])) {
+        enqueueChild(n);
+      }
+    }
+  }
+  return out;
+}
+
+/// 对白节点的生效背景状态：当前有效背景 ID、是否继承自前文、来源对白 ID。
+class EffectiveBgState {
+  const EffectiveBgState({
+    required this.bgId,
+    this.isInherited = false,
+    this.sourceTalkId,
+  });
+
+  /// 生效的背景 ID（如 "100"）。若整条链路无背景则为空串 ""。
+  final String bgId;
+
+  /// 是否继承自前文（true = 本句留空/0 延续；false = 本句显式切换）。
+  final bool isInherited;
+
+  /// 背景最初切换的对白 ID（若显式切换则为其自身 ID）。
+  final String? sourceTalkId;
+}
+
+/// 沿对白链（与 effectiveStages 同口径）计算每条对白的生效背景：
+/// talkId → 生效背景状态。
+Map<String, EffectiveBgState> effectiveBackgrounds({
+  required String evtId,
+  required Map<String, dynamic> evtCfg,
+  required Map<String, dynamic> talks,
+  required Map<String, dynamic> options,
+}) {
+  final out = <String, EffectiveBgState>{};
+  final starts = storyStartIds(evtId, evtCfg, talks);
+  final seen = <String>{};
+  final queue = <(String, String, String?)>[];
+  void enqueue(String tid, String bg, String? src) {
+    if (tid.isEmpty || !seen.add(tid)) return;
+    queue.add((tid, bg, src));
+  }
+
+  for (final s in starts) {
+    enqueue(cln(s), '', null);
+  }
+
+  // 索引游标遍历（替代 queue.removeAt(0) 的 O(N) 数组搬移）。
+  for (var qi = 0; qi < queue.length; qi++) {
+    final (tid, inheritBg, inheritSource) = queue[qi];
+    final rec = talks[tid];
+    if (rec is! Map) continue;
+
+    final rawBg = cln(rec['bg']);
+    final hasExplicit = rawBg.isNotEmpty && rawBg != '0';
+
+    final String activeBg;
+    final bool isInherited;
+    final String? activeSource;
+
+    if (hasExplicit) {
+      activeBg = rawBg;
+      isInherited = false;
+      activeSource = tid;
+    } else {
+      activeBg = inheritBg;
+      isInherited = inheritBg.isNotEmpty;
+      activeSource = inheritSource;
+    }
+
+    out[tid] = EffectiveBgState(
+      bgId: activeBg,
+      isInherited: isInherited,
+      sourceTalkId: activeSource,
+    );
+
+    for (final oid in normalizeStoryIdList(rec['option'])) {
+      final orec = options[cln(oid)];
+      if (orec is! Map) continue;
+      for (final branch in const ['talkId', 'talkId2']) {
+        for (final b in normalizeStoryIdList(orec[branch])) {
+          enqueue(cln(b), activeBg, activeSource);
+        }
+      }
+    }
+    for (final key in const ['nextTalk', 'nextTalk2']) {
+      for (final n in normalizeStoryIdList(rec[key])) {
+        enqueue(cln(n), activeBg, activeSource);
+      }
+    }
+  }
+
+  for (final entry in talks.entries) {
+    final tid = cln(entry.key);
+    if (out.containsKey(tid)) continue;
+    final rec = entry.value;
+    if (rec is! Map) continue;
+    final rawBg = cln(rec['bg']);
+    if (rawBg.isNotEmpty && rawBg != '0') {
+      out[tid] = EffectiveBgState(
+        bgId: rawBg,
+        isInherited: false,
+        sourceTalkId: tid,
+      );
+    }
+  }
+
+  return out;
+}
+
+List<dynamic> _copyRoles(dynamic roles) {
+  final v = copyRecordValue(roles);
+  return v is List ? v.toList() : <dynamic>[];
+}
+
+dynamic _roleIdValue(String id) => int.tryParse(id) ?? id;
+
+/// 设置角色入场站位（1=左 2=右 3=中）：已有入场指令改其 pos，否则追加滑动入场。
+List<dynamic> setStagePos(dynamic roles, String roleId, int pos) {
+  final id = cln(roleId);
+  final out = _copyRoles(roles);
+  for (final row in out) {
+    if (_isStageRow(row) && cln((row as List)[0]) == id) {
+      final tid = int.tryParse(cln(row[1]));
+      if (tid == 1001 || tid == 1002 || tid == 1003) {
+        while (row.length < 4) {
+          row.add(0);
+        }
+        row[3] = pos;
+        return out;
+      }
+    }
+  }
+  out.add(<dynamic>[_roleIdValue(id), 1001, 1, pos]);
+  return out;
+}
+
+/// 设置角色表情（0..26）：已有 3000 指令改其 expr，否则追加。
+List<dynamic> setStageExpr(dynamic roles, String roleId, int expr) {
+  final id = cln(roleId);
+  final out = _copyRoles(roles);
+  for (final row in out) {
+    if (_isStageRow(row) &&
+        cln((row as List)[0]) == id &&
+        int.tryParse(cln(row[1])) == 3000) {
+      while (row.length < 3) {
+        row.add(0);
+      }
+      row[2] = expr;
+      return out;
+    }
+  }
+  out.add(<dynamic>[_roleIdValue(id), 3000, expr]);
+  return out;
+}
+
+/// 让角色退场：移除其全部指令并追加滑动退场（build_stage 会把其 present 置否）。
+List<dynamic> removeStageRole(dynamic roles, String roleId) {
+  final id = cln(roleId);
+  final out = <dynamic>[
+    for (final row in _copyRoles(roles))
+      if (!(_isStageRow(row) && cln((row as List)[0]) == id)) row,
+  ];
+  out.add(<dynamic>[_roleIdValue(id), 2001]);
+  return out;
+}
+
+/// 切换角色水平镜像（3007 镜像指令）：若已有 3007 指令则移除，否则追加。
+List<dynamic> toggleStageFlip(dynamic roles, String roleId) {
+  final id = cln(roleId);
+  final out = _copyRoles(roles);
+  var removed = false;
+  out.removeWhere((row) {
+    if (_isStageRow(row) &&
+        cln((row as List)[0]) == id &&
+        int.tryParse(cln(row[1])) == 3007) {
+      removed = true;
+      return true;
+    }
+    return false;
+  });
+  if (!removed) {
+    out.add(<dynamic>[_roleIdValue(id), 3007]);
+  }
+  return out;
+}
+
+/// 角色引用替换：把 ID 列表（`roleIds` / `highlights`）中的 [oldRoleId]
+/// 换成 [newRoleId]（仅当原列表确实包含 [oldRoleId]）。
+///
+/// 保持原有数值口径（数字 ID 写回仍为 int），顺带去重与剔除空值。
+List<dynamic> replaceRoleRef(
+  dynamic list,
+  String oldRoleId,
+  String newRoleId,
+) {
+  final oldId = cln(oldRoleId);
+  final newId = cln(newRoleId);
+  final src = normalizeStoryIdList(list);
+  if (oldId.isEmpty || newId.isEmpty || oldId == newId) return src;
+  final out = <dynamic>[];
+  final seen = <String>{};
+  var replaced = false;
+  for (final item in src) {
+    final cur = cln(item);
+    final next = cur == oldId ? newId : cur;
+    if (cur == oldId) replaced = true;
+    if (next.isEmpty || !seen.add(next)) continue;
+    out.add(int.tryParse(next) ?? next);
+  }
+  return replaced ? out : src;
+}
+
+/// 替换角色：把舞台指令中的 [oldRoleId] 替换为 [newRoleId]。
+///
+/// 与 [setStagePos] / [setStageExpr] / [removeStageRole] 同口径（纯函数，
+/// 深拷贝后返回新列表，不修改入参）。
+///
+/// - 原指令中**显式包含** [oldRoleId] 的指令行：将其首项角色 ID 直接改写为
+///   [newRoleId]（入场、表情、镜像、移动等动作全部随角色迁移）。若显式传入
+///   [pos] / [expr] / [flip]，再确保新角色具备对应指令。
+/// - 原指令中**未显式包含** [oldRoleId]（即角色由前序台词继承在场）：
+///   追加 [oldRoleId] 的滑动退场（[removeStageRole]），再按相同站位与表情
+///   追加 [newRoleId] 的入场/表情指令；[flip] 为 true 时追加镜像指令。
+///
+/// [pos] 为游戏站位（1=左 2=右 3=中），[expr] 为表情编号 0..26。
+List<dynamic> replaceStageRole(
+  dynamic roles,
+  String oldRoleId,
+  String newRoleId, {
+  int? pos,
+  int? expr,
+  bool? flip,
+}) {
+  final oldId = cln(oldRoleId);
+  final newId = cln(newRoleId);
+  if (oldId.isEmpty || newId.isEmpty || oldId == newId) {
+    return _copyRoles(roles);
+  }
+
+  var out = _copyRoles(roles);
+  var explicit = false;
+  for (final row in out) {
+    if (_isStageRow(row) && cln((row as List)[0]) == oldId) {
+      row[0] = _roleIdValue(newId);
+      explicit = true;
+    }
+  }
+
+  if (!explicit) {
+    // 继承在场：让旧角色退场，再让新角色在相同站位/表情登场。
+    out = removeStageRole(out, oldId);
+    out = setStagePos(out, newId, pos ?? 3);
+    if (expr != null) out = setStageExpr(out, newId, expr);
+    if (flip == true) out = toggleStageFlip(out, newId);
+    return out;
+  }
+
+  // 显式在场：ID 已改写，按需补齐/更新站位、表情与镜像指令。
+  if (pos != null) out = setStagePos(out, newId, pos);
+  if (expr != null) out = setStageExpr(out, newId, expr);
+  if (flip != null) {
+    bool hasFlipRow(dynamic row) =>
+        _isStageRow(row) &&
+        cln((row as List)[0]) == newId &&
+        int.tryParse(cln(row[1])) == 3007;
+    final hasFlip = out.any(hasFlipRow);
+    if (flip && !hasFlip) {
+      out.add(<dynamic>[_roleIdValue(newId), 3007]);
+    } else if (!flip && hasFlip) {
+      out.removeWhere(hasFlipRow);
+    }
+  }
+  return out;
 }

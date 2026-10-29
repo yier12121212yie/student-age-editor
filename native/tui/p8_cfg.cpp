@@ -348,6 +348,10 @@ bool IsFloatText(const std::string& s) {
 
 }  // namespace
 
+bool IsNumericText(const std::string& text) {
+    return IsIntText(text) || IsFloatText(text);
+}
+
 Json DecodeFieldValue(const std::string& text, const std::string& ftype) {
     // strip (Python .strip())
     size_t b = text.find_first_not_of(" \t\r\n");

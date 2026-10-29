@@ -3,6 +3,9 @@
 //                              模板 / 参数槽 / 嵌套展开 / 行级错误；文本解析语义与
 //                              /api/effect_validate 一致（每行 `[1, 1, 3, 5], [7, 1, 101, 50]`
 //                              逗号分隔、单行扁平数组自动升二维、全角标点宽容）。
+//                              json_error 时附带 error_offset/error_line/error_col（D4）。
+//   POST /api/effect/parse_batch 只读批量拆解（D6）：逐项复用 effect_parse_body，
+//                              汇总 {total,parsed,problem,unparseable,empty} + 逐项状态。
 //   GET  /api/graph/relations  人物关系图：nodes（/api/roles 同源数据）+
 //                              levels（RelationCfg 本体+Mod 按 id 覆盖合并——注意
 //                              /api/dicts 的 relations 是静态内嵌不合并，这里必须自行 merge）
@@ -92,12 +95,19 @@ json norm_effect_rows(const json& arr) {
 }
 
 // /api/effect_validate 同款字典池（ROLE/ATTR/…静态池）。
-AvailableMap game_pools() {
-    AvailableMap av;
-    for (const char* key : {"ROLE", "ATTR", "ITEM", "RELATION", "MAP", "JOB", "STATE", "TEXT",
-                            "NEGOTIATION_SKILL", "NEGOTIATION_BUFF", "GAME", "KZONE_POST",
-                            "KZONE_MESSAGE", "PHONE_MSG"})
-        for (const auto& kv : p1::pool_by_key(key)) av[key][kv.first] = kv.second;
+//
+// 返回**静态单例引用**：`pool_by_key` 指向只读静态池，聚合结果不会变化。
+// 改前每次调用都要重新构造并拷贝 14 张字典池，而 /api/effect/parse_batch
+// 逐项经 effect_parse_body 调用它（单次最多 4000 项），是隐藏的热点开销。
+const AvailableMap& game_pools() {
+    static const AvailableMap av = [] {
+        AvailableMap m;
+        for (const char* key : {"ROLE", "ATTR", "ITEM", "RELATION", "MAP", "JOB", "STATE", "TEXT",
+                                "NEGOTIATION_SKILL", "NEGOTIATION_BUFF", "GAME", "KZONE_POST",
+                                "KZONE_MESSAGE", "PHONE_MSG"})
+            for (const auto& kv : p1::pool_by_key(key)) m[key][kv.first] = kv.second;
+        return m;
+    }();
     return av;
 }
 
@@ -202,13 +212,15 @@ std::optional<std::pair<const json*, std::vector<std::string>>> match_row_templa
 //   slots[] = {name, kind, dict, label, value}
 //   * `@ATTR@` 等占位符        → kind="dict"，dict=池名，label=SECONDARY_PLACEHOLDER_MAP
 //                                中文名，value=该行该位标量串（ID 字符串）。
-//   * 裸字母（V/X/P/N/Bg/…）   → kind="number"，dict=null，label="数值"（统一，契约只
-//                                钉了 V→"数值"，不臆造其它数字标签），value=标量串。
+//   * 裸字母（V/X/P/N/Bg/…）   → kind="number"，dict=null，label 取自 A1 模板元数据
+//                                （范围=下限/上限；否则 desc 上下文词；兜底"数值"），
+//                                value=标量串。
 //   * rest 尾段（EFFECTS*）    → kind="nested"，dict=null，label="嵌套效果"，
 //                                value=该行剩余元素的归一文本（结构已由 nested 字段
 //                                展开，见下）。
 // 同名槽多次出现只保留首个（与 /api/effect_suggest 的 slots 合并语义一致）。
-json build_slots(const std::vector<std::string>& parts, const json& row) {
+json build_slots(const std::vector<std::string>& parts, const json& row,
+                 const json& meta_labels) {
     json slots = json::array();
     std::map<std::string, size_t> seen;
     const json& sp = p1::secondary_placeholder_map();
@@ -244,7 +256,12 @@ json build_slots(const std::vector<std::string>& parts, const json& row) {
                 if (sp[key][1].is_string()) label = sp[key][1].get<std::string>();
             }
         } else {
+            // A1 模板级标签（范围 下限/上限；否则 desc 上下文词），兜底"数值"。
             label = "数值";
+            if (meta_labels.is_object()) {
+                auto it = meta_labels.find(name);
+                if (it != meta_labels.end() && it->is_string()) label = it->get<std::string>();
+            }
         }
         json slot;
         slot["name"] = name;
@@ -274,8 +291,10 @@ json args_slice(const json& row, size_t from) {
 // 单个 effect/condition 行的结构化解析（递归复用于 998 嵌套行）。
 // 返回 row 对象；translation 带出该行的中文译名（与 /api/effect_validate 同源：
 // validate_secondary_item 的 translation，含失败回退 repr）。
+// mode 只用于 A1 元数据（family/ops 的码表口径），998 内层恒 "effect"。
 json parse_semantic_row(const json& row, size_t line, const SecondaryIndex& idx,
-                        const AvailableMap& av, std::string& translation) {
+                        const AvailableMap& av, std::string& translation,
+                        const std::string& mode) {
     json res = p1::validate_secondary_item(row, idx, av);
     translation = res.value("translation", sa_core::py_str(row));
 
@@ -294,14 +313,25 @@ json parse_semantic_row(const json& row, size_t line, const SecondaryIndex& idx,
     const bool has_tmpl = res.contains("template") && res["template"].is_object();
     if (has_tmpl) {
         const json& tmpl = res["template"];
+        const std::string tcode = tmpl.value("code", "");
+        const std::string tdesc = tmpl.value("desc", "");
+        // A1 元数据：与 /api/effect_suggest 同一派生点（模板串同源 → family/ops 一致）。
+        json meta = p1::template_meta(tdesc, tcode);
         json t;
-        t["code"] = tmpl.value("code", "");
-        t["desc"] = tmpl.value("desc", "");
+        t["code"] = tcode;
+        t["desc"] = tdesc;
+        t["family"] = meta["family"];
+        t["family_label"] = meta["family_label"];
+        t["description"] = meta["description"];
+        t["op"] = meta["op"];
+        t["value_index"] = meta["value_index"];
+        t["upper_index"] = meta["upper_index"];
+        t["ops"] = p1::family_ops(mode, tdesc, tcode);
         out["template"] = std::move(t);
         std::vector<std::string> parts;
         if (tmpl.contains("parts") && tmpl["parts"].is_array())
             for (const auto& p : tmpl["parts"]) if (p.is_string()) parts.push_back(p.get<std::string>());
-        out["slots"] = build_slots(parts, row);
+        out["slots"] = build_slots(parts, row, meta["labels"]);
     } else {
         out["template"] = nullptr;
         out["slots"] = nullptr;
@@ -351,7 +381,7 @@ json parse_semantic_row(const json& row, size_t line, const SecondaryIndex& idx,
             for (const auto& sub : nested_rows) {
                 ++li;
                 std::string sub_tr;
-                json sub_out = parse_semantic_row(sub, li, nidx, av, sub_tr);
+                json sub_out = parse_semantic_row(sub, li, nidx, av, sub_tr, "effect");
                 narr.push_back(std::move(sub_out));
             }
             out["nested"] = std::move(narr);
@@ -397,6 +427,68 @@ std::string normalize_parse_text(const std::string& text_in) {
     return t;
 }
 
+// D4 json_error 定位：把 nlohmann parse_error.byte（1-based，指向 wrapped =
+// "[" + t + "]" 中的出错字节）换算成原始文本 t 的「字符偏移 + 行列」，供前端
+// 显示「第 N 个字符附近」。全部按 UTF-8 码点计（续字节不另计列）。
+void locate_parse_error(const std::string& t, size_t wrapped_byte, long long& offset,
+                        long long& line, long long& col) {
+    // wrapped = "[" + t + "]"：先由 1-based 转 0-based，再减去前导 '[' 占的 1 位。
+    long long b = wrapped_byte > 0 ? static_cast<long long>(wrapped_byte) - 1 : 0;
+    long long byte_pos = b > 1 ? b - 1 : 0;  // 落在 t 内的 0-based 字节位置
+    if (byte_pos > static_cast<long long>(t.size())) byte_pos = static_cast<long long>(t.size());
+    long long ch = 0, li = 1, co = 1;
+    for (long long i = 0; i < byte_pos;) {
+        unsigned char c = static_cast<unsigned char>(t[static_cast<size_t>(i)]);
+        long long len = 1;
+        if ((c >> 5) == 0x6) len = 2;
+        else if ((c >> 4) == 0xE) len = 3;
+        else if ((c >> 3) == 0x1E) len = 4;
+        if (c == '\n') { ++li; co = 1; }
+        else ++co;
+        i += len;
+        ++ch;
+    }
+    offset = ch;
+    line = li;
+    col = co;
+}
+
+// D3 部分拆解：把规范化后的整段文本按「顶层 ] 边界」切成若干行片段
+// （每片段含自身的方括号）。整体 JSON 解析失败时用它逐行回退——好行照常
+// 出积木，坏行由调用方以 {error, display} 形式返回，避免一行坏字锁死整段。
+std::vector<std::string> split_top_level_rows(const std::string& t) {
+    std::vector<std::string> segs;
+    int depth = 0;
+    size_t start = 0;
+    for (size_t i = 0; i < t.size(); ++i) {
+        char c = t[i];
+        if (c == '[') {
+            ++depth;
+        } else if (c == ']') {
+            --depth;
+            if (depth <= 0) {
+                segs.push_back(t.substr(start, i - start + 1));
+                start = i + 1;
+                depth = 0;
+                while (start < t.size() &&
+                       (t[start] == ';' || t[start] == ',' || t[start] == ' ' ||
+                        t[start] == '\n' || t[start] == '\t'))
+                    ++start;
+                i = start - 1;
+            }
+        }
+    }
+    if (start < t.size()) {
+        std::string rest = t.substr(start);
+        size_t a = rest.find_first_not_of(" \t\n");
+        size_t b = rest.find_last_not_of(" \t\n");
+        if (a != std::string::npos) rest = rest.substr(a, b - a + 1);
+        else rest.clear();
+        if (!rest.empty()) segs.push_back(rest);
+    }
+    return segs;
+}
+
 // POST /api/effect/parse 主体（契约见文件头）。
 json effect_parse_body(const std::string& text_in, const std::string& mode_in) {
     std::string mode = str::lower(str::trim(mode_in));
@@ -418,31 +510,104 @@ json effect_parse_body(const std::string& text_in, const std::string& mode_in) {
     std::string t = normalize_parse_text(text_in);
     if (t.empty()) return finish("empty", true, "");
 
-    json arr = json::parse("[" + t + "]", nullptr, false);
-    if (arr.is_discarded())
-        return finish("json_error", false, "括号或逗号不匹配");
-    // 缺外层括号判定与 /api/effect_validate 完全一致（screen/action 除外）。
-    if (mode != "screen" && mode != "action" && arr.is_array() && !arr.empty() && !arr[0].is_array()) {
-        std::string s0 = sa_core::py_str(arr[0]);
-        std::string d = lstrip_neg(s0);
-        bool numeric = std::all_of(d.begin(), d.end(), [](char c) { return c >= '0' && c <= '9'; }) &&
-                       !d.empty();
-        if (numeric)
-            return finish("missing_outer_bracket", false, "缺少外层方括号，请改为: [ [" + t + "] ]");
-    }
-    json in_rows = norm_effect_rows(arr);
+    // 待解析行序列：元素为数组（好行）或 {"__bad__":1,"display":原文}（坏行）。
+    // 整体可解析时与原逻辑一致；整体失败时走 D3 的逐行回退（partial）。
+    std::vector<json> items;
     bool any_error = false;
+    bool partial = false;
+
+    // D4：捕获 JSON 解析失败位置（parse_error.byte），供 json_error 附带
+    // offset/line/col，前端据此显示「第 N 个字符附近」。
+    const std::string wrapped = "[" + t + "]";
+    json arr = json::value_t::discarded;
+    bool parse_failed = false;
+    size_t parse_byte = 0;
+    try {
+        arr = json::parse(wrapped);
+    } catch (const json::parse_error& e) {
+        parse_failed = true;
+        parse_byte = e.byte;
+    } catch (const json::exception&) {
+        parse_failed = true;
+    }
+    if (parse_failed) {
+        auto segs = split_top_level_rows(t);
+        int good = 0;
+        for (const auto& seg : segs) {
+            json one = json::parse(seg, nullptr, false);
+            bool ok_seg = !one.is_discarded();
+            if (ok_seg) {
+                if (one.is_array() && !one.empty() && one[0].is_array()) {
+                    for (const auto& s : one) { items.push_back(s); ++good; }
+                } else if (one.is_array()) {
+                    items.push_back(one);
+                    ++good;
+                } else {
+                    ok_seg = false;  // 非数组标量片段：按坏行处理
+                }
+            }
+            if (!ok_seg) {
+                json bad;
+                bad["__bad__"] = true;
+                bad["display"] = seg;
+                items.push_back(std::move(bad));
+                partial = true;
+            }
+        }
+        // 一行都没救回来：维持原有的整体失败语义，并附带定位信息。
+        if (good == 0) {
+            long long off = 0, ln = 1, cl = 1;
+            locate_parse_error(t, parse_byte, off, ln, cl);
+            out["error_offset"] = off;
+            out["error_line"] = ln;
+            out["error_col"] = cl;
+            return finish("json_error", false, "括号或逗号不匹配");
+        }
+    } else {
+        // 缺外层括号判定与 /api/effect_validate 完全一致（screen/action 除外）。
+        if (mode != "screen" && mode != "action" && arr.is_array() && !arr.empty() &&
+            !arr[0].is_array()) {
+            std::string s0 = sa_core::py_str(arr[0]);
+            std::string d = lstrip_neg(s0);
+            bool numeric =
+                std::all_of(d.begin(), d.end(), [](char c) { return c >= '0' && c <= '9'; }) &&
+                !d.empty();
+            if (numeric)
+                return finish("missing_outer_bracket", false,
+                              "缺少外层方括号，请改为: [ [" + t + "] ]");
+        }
+        json in_rows = norm_effect_rows(arr);
+        for (const auto& it : in_rows) items.push_back(it);
+    }
 
     if (mode == "effect" || mode == "condition") {
         const SecondaryIndex& idx = mode == "effect" ? p1::effect_editor_secondary_index()
                                                     : p1::condition_secondary_index();
-        AvailableMap av = game_pools();
+        const AvailableMap& av = game_pools();
         size_t i = 0;
-        for (const auto& item : in_rows) {
+        for (const auto& item : items) {
             ++i;
+            if (item.is_object() && item.value("__bad__", false)) {
+                json r;
+                r["line"] = static_cast<long long>(i);
+                r["negate"] = false;
+                r["primary"] = nullptr;
+                r["secondary"] = nullptr;
+                r["args"] = json::array();
+                r["display"] = item.value("display", std::string());
+                r["template"] = nullptr;
+                r["slots"] = json::array();
+                r["nested"] = nullptr;
+                r["error"] = "未识别的行（括号或逗号不匹配）";
+                r["unrecognized"] = true;
+                translations.push_back(item.value("display", std::string()));
+                rows.push_back(std::move(r));
+                any_error = true;
+                continue;
+            }
             if (!item.is_array()) continue;
             std::string tr;
-            json r = parse_semantic_row(item, i, idx, av, tr);
+            json r = parse_semantic_row(item, i, idx, av, tr, mode);
             translations.push_back(tr);
             if (!r["error"].is_null()) any_error = true;
             rows.push_back(std::move(r));
@@ -450,16 +615,31 @@ json effect_parse_body(const std::string& text_in, const std::string& mode_in) {
     } else {
         // cost/action/screen：无二级语义（secondary=null、negate=false），模板从
         // 对应静态码表做轻量匹配；译名/错误沿用 /api/effect_validate 的分支实现。
-        const json* db = nullptr;
-        if (mode == "cost") db = &p1::cost_db();
-        else if (mode == "action") db = &p1::action_cmd_db();
-        else db = &p1::screen_effect_db();
+        const json& db = p1::mode_db(mode);
         size_t i = 0;
         std::string screen_multi_err;
-        if (mode == "screen" && in_rows.is_array() && in_rows.size() > 1)
+        if (mode == "screen" && items.size() > 1)
             screen_multi_err = "一句话只能填写一个屏幕效果";
-        for (const auto& item : in_rows) {
+        for (const auto& item : items) {
             ++i;
+            if (item.is_object() && item.value("__bad__", false)) {
+                json r;
+                r["line"] = static_cast<long long>(i);
+                r["negate"] = false;
+                r["primary"] = nullptr;
+                r["secondary"] = nullptr;
+                r["args"] = json::array();
+                r["display"] = item.value("display", std::string());
+                r["template"] = nullptr;
+                r["slots"] = json::array();
+                r["nested"] = nullptr;
+                r["error"] = "未识别的行（括号或逗号不匹配）";
+                r["unrecognized"] = true;
+                translations.push_back(item.value("display", std::string()));
+                rows.push_back(std::move(r));
+                any_error = true;
+                continue;
+            }
             if (!item.is_array()) continue;
             std::string tr, err;
             if (mode == "screen" || mode == "action") {
@@ -499,13 +679,23 @@ json effect_parse_body(const std::string& text_in, const std::string& mode_in) {
             r["secondary"] = nullptr;
             r["args"] = args_slice(item, 1);
             r["display"] = row_display(item);
-            auto m = match_row_template(item, *db);
+            auto m = match_row_template(item, db);
             if (m) {
+                const std::string tcode = m->first->value("code", "");
+                const std::string tdesc = m->first->value("desc", "");
+                json meta = p1::template_meta(tdesc, tcode);
                 json tt;
-                tt["code"] = m->first->value("code", "");
-                tt["desc"] = m->first->value("desc", "");
+                tt["code"] = tcode;
+                tt["desc"] = tdesc;
+                tt["family"] = meta["family"];
+                tt["family_label"] = meta["family_label"];
+                tt["description"] = meta["description"];
+                tt["op"] = meta["op"];
+                tt["value_index"] = meta["value_index"];
+                tt["upper_index"] = meta["upper_index"];
+                tt["ops"] = p1::family_ops(mode, tdesc, tcode);
                 r["template"] = std::move(tt);
-                r["slots"] = build_slots(m->second, item);
+                r["slots"] = build_slots(m->second, item, meta["labels"]);
             } else {
                 // 匹配不到模板：生成通用参数槽位 (用于 action/screen/cost 中的动态值，如人物 ID 引用)
                 // 这样即使没有 template，前端也能显示原始参数并支持编辑；cost/action/screen 的
@@ -529,6 +719,7 @@ json effect_parse_body(const std::string& text_in, const std::string& mode_in) {
             rows.push_back(std::move(r));
         }
     }
+    if (partial) return finish("partial", false, "部分行无法解析，已按原样保留");
     return finish(any_error ? "logic_error" : "ok", !any_error, "");
 }
 
@@ -592,12 +783,78 @@ void register_semantic_graph(Router& r) {
     // POST /api/effect/parse — 文本 → 逐行结构化（契约见文件头；文本语义与
     // /api/effect_validate 完全一致：外层包裹解析、扁平单行升二维、全角宽容）。
     r.post(R"(/api/effect/parse)", [](const Req& req) -> Resp {
-        const json& body = req.body.is_object() ? req.body : json::object();
+        // 三目两侧同为 json 且右侧是右值时会退化出临时副本（req.body 整树深拷贝）；
+        // 用一个具名空对象兜底即可保持引用语义。
+        static const json kEmptyJson = json::object();
+        const json& body = req.body.is_object() ? req.body : kEmptyJson;
         std::string text = body.contains("text") ? py_str_or_empty(body.at("text")) : std::string();
         std::string mode = body.contains("mode") && body.at("mode").is_string()
                                ? body.at("mode").get<std::string>()
                                : std::string("effect");
         return Resp::Json(200, effect_parse_body(text, mode));
+    });
+
+    // POST /api/effect/parse_batch — 只读批量拆解（D6 拆解体检报告）：
+    //   body = {"items":[{"id":<any>,"text":<str>,"mode":<str>} ...]}
+    //   resp = {"ok":true, "summary":{total,parsed,problem,unparseable,empty},
+    //           "results":[{"id","status","ok","message?","error_row_count",
+    //                       "unrecognized_rows"} ...]}
+    // 逐项复用 effect_parse_body，避免前端 N 次往返；不写盘、不改缓存。
+    r.post(R"(/api/effect/parse_batch)", [](const Req& req) -> Resp {
+        static const json kEmptyJson = json::object();
+        const json& body = req.body.is_object() ? req.body : kEmptyJson;
+        const json* items =
+            (body.contains("items") && body.at("items").is_array()) ? &body.at("items") : nullptr;
+        // 上限保护：单次最多 4000 项（超出部分忽略），防止前端误传超大表。
+        constexpr size_t kMaxItems = 4000;
+
+        json results = json::array();
+        long long total = 0, parsed = 0, problem = 0, unparseable = 0, empty = 0;
+        if (items) {
+            for (const auto& it : *items) {
+                if (!it.is_object()) continue;
+                if (static_cast<size_t>(total) >= kMaxItems) break;
+                std::string text =
+                    it.contains("text") ? py_str_or_empty(it.at("text")) : std::string();
+                std::string mode = (it.contains("mode") && it.at("mode").is_string())
+                                       ? it.at("mode").get<std::string>()
+                                       : std::string("effect");
+                json r = effect_parse_body(text, mode);
+                std::string status = r.value("status", std::string());
+                bool ok = r.value("ok", false);
+                long long err_rows = 0, unrec = 0;
+                if (r.contains("rows") && r.at("rows").is_array())
+                    for (const auto& row : r.at("rows")) {
+                        if (row.contains("error") && row.at("error").is_string()) ++err_rows;
+                        if (row.value("unrecognized", false)) ++unrec;
+                    }
+                ++total;
+                if (status == "ok") ++parsed;
+                else if (status == "empty") ++empty;
+                else if (status == "logic_error" || status == "partial") ++problem;
+                else ++unparseable;
+
+                json e = json::object();
+                if (it.contains("id")) e["id"] = it.at("id");
+                e["status"] = status;
+                e["ok"] = ok;
+                if (r.contains("message")) e["message"] = r.at("message");
+                e["error_row_count"] = err_rows;
+                e["unrecognized_rows"] = unrec;
+                results.push_back(std::move(e));
+            }
+        }
+        json out = json::object();
+        out["ok"] = true;
+        json s = json::object();
+        s["total"] = total;
+        s["parsed"] = parsed;
+        s["problem"] = problem;
+        s["unparseable"] = unparseable;
+        s["empty"] = empty;
+        out["summary"] = std::move(s);
+        out["results"] = std::move(results);
+        return Resp::Json(200, out);
     });
 }
 

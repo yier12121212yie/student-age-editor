@@ -39,7 +39,7 @@ namespace cs = sa_core::paths;
 // ---- 与 mod_files_routes.cpp 同款小工具（独立 TU 自带一份） ----------------
 
 bool is_image_ext(const std::string& ext) {
-    static const std::vector<std::string> kExts = {"png", "jpg", "jpeg", "webp", "bmp"};
+    static const std::vector<std::string> kExts = {"png", "jpg", "jpeg", "webp", "avif", "bmp"};
     for (const auto& e : kExts)
         if (e == ext) return true;
     return false;
@@ -208,34 +208,47 @@ static Resp add_ref(const Req& req) {
     }
     const std::string rel = dir + "/" + candidate;
 
-    std::string lerr;
-    if (!file_transfer::mark_linked(editor_root(), file_id, &lerr)) {
-        // 状态在读取与登记之间被后台归档线程改写（complete 后的竞态）时，
-        // 如实回 409 + 当前状态，让前端提示「文件已落盘/不可引用」。
-        if (lerr.rfind("status not linkable", 0) == 0) {
-            const json cur = file_transfer::find_record(editor_root(), file_id);
-            const std::string cur_st =
-                cur.is_object() ? cur.value("status", std::string()) : std::string();
-            return Resp::Json(409, json{{"error", "文件当前状态不可引用"}, {"status", cur_st}});
+    // 本地分片上传（免 COS）的记录：字节已经在服务端盘上，直接复制进模组
+    // 目录即可；随后删除暂存记录，避免同一份大文件存两份。
+    const bool local_storage = rec.value("local_upload", false) ||
+                               rec.value("storage_type", std::string()) == "local";
+    if (local_storage) {
+        std::string merr;
+        if (!file_transfer::materialize(editor_root(), file_id, cs::join(root, rel), &merr))
+            return err_json(500, "写入模组目录失败: " + merr);
+    } else {
+        std::string lerr;
+        if (!file_transfer::mark_linked(editor_root(), file_id, &lerr)) {
+            // 状态在读取与登记之间被后台归档线程改写（complete 后的竞态）时，
+            // 如实回 409 + 当前状态，让前端提示「文件已落盘/不可引用」。
+            if (lerr.rfind("status not linkable", 0) == 0) {
+                const json cur = file_transfer::find_record(editor_root(), file_id);
+                const std::string cur_st =
+                    cur.is_object() ? cur.value("status", std::string()) : std::string();
+                return Resp::Json(409, json{{"error", "文件当前状态不可引用"}, {"status", cur_st}});
+            }
+            return err_json(500, "标记引用失败: " + lerr);
         }
-        return err_json(500, "标记引用失败: " + lerr);
+
+        long long size = 0;
+        if (rec.contains("size") && rec["size"].is_number()) size = rec["size"].get<long long>();
+
+        json entry = json::object();
+        entry["file_id"] = file_id;
+        entry["size"] = size;
+        entry["orig_name"] = orig;
+        entry["uploaded_at"] = sa_core::now_ms();
+        entry["kind"] = is_image_ext(ext) ? "texture" : (audio ? "audio" : (is_video_ext(ext) ? "video" : "other"));
+        refs[rel] = std::move(entry);
+        if (!save_cos_index(root, idx)) {
+            // 引用没落账就回滚状态？linked 只是标记，重复无害；但必须让调用方知道
+            // 这次没成，不能出现「前端以为成功、导出拼不进」的静默不一致。
+            return err_json(500, "写入 " + std::string(kCosIndexFile) + " 失败");
+        }
     }
 
     long long size = 0;
     if (rec.contains("size") && rec["size"].is_number()) size = rec["size"].get<long long>();
-
-    json entry = json::object();
-    entry["file_id"] = file_id;
-    entry["size"] = size;
-    entry["orig_name"] = orig;
-    entry["uploaded_at"] = sa_core::now_ms();
-    entry["kind"] = is_image_ext(ext) ? "texture" : (audio ? "audio" : (is_video_ext(ext) ? "video" : "other"));
-    refs[rel] = std::move(entry);
-    if (!save_cos_index(root, idx)) {
-        // 引用没落账就回滚状态？linked 只是标记，重复无害；但必须让调用方知道
-        // 这次没成，不能出现「前端以为成功、导出拼不进」的静默不一致。
-        return err_json(500, "写入 " + std::string(kCosIndexFile) + " 失败");
-    }
 
     // 可选：音频登记进 AudioCfg（与 import_files 同语义；文件本体在 COS）。
     json audio_id = nullptr;
@@ -256,11 +269,16 @@ static Resp add_ref(const Req& req) {
         invalidate_preview_cache();
     }
 
+    if (local_storage) {
+        std::string derr;
+        file_transfer::discard_local_record(editor_root(), file_id, &derr);
+    }
+
     json saved_entry = json::object();
     saved_entry["name"] = orig;
     saved_entry["path"] = rel;
     saved_entry["size"] = size;
-    saved_entry["cos"] = true;
+    saved_entry["cos"] = !local_storage;
     saved_entry["file_id"] = file_id;
     saved_entry["audio_id"] = audio_id;
     saved_entry["audio_error"] = audio_error;
@@ -312,7 +330,19 @@ static Resp export_staged(const Req& req) {
 
     // 引用资源：经内网拉回临时文件。磁盘上已有同名真文件（例如导入的完整包）
     // 时磁盘优先，跳过该引用。
-    const std::filesystem::path tmp_dir = std::filesystem::temp_directory_path();
+    //
+    // 拼包中间产物落在大容量数据盘（file transfer 的本地对象目录），而不是
+    // 系统临时目录：系统 temp 往往是容量小/易满的盘（Linux tmpfs、Windows
+    // C:），带贴图/配乐的大模组（数百 MB~GB）写到这里必然 ENOSPC，表现正是
+    // 「打包失败: write failed: <某资源>」。与 register_local_artifact 的目标
+    // 同处一个文件系统后，登记时也退化为廉价的原子 rename。
+    const std::filesystem::path tmp_dir =
+        cs::to_path(file_transfer::local_objects_dir(editor_root())) / ".export_stage";
+    {
+        std::error_code mec;
+        std::filesystem::create_directories(tmp_dir, mec);
+        if (mec) return err_json(500, "无法创建导出暂存目录: " + cs::path_to_utf8(tmp_dir));
+    }
     std::vector<std::filesystem::path> tmp_files;
     auto drop_tmp = [&tmp_files]() {
         for (const auto& p : tmp_files) {

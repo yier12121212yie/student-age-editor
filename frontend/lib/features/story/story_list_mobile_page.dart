@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
 import '../../core/mobile_widgets.dart';
 import 'story_editor_mobile.dart';
@@ -516,8 +517,15 @@ class _StoryListMobilePageState extends State<StoryListMobilePage> {
       ),
     );
 
-    // 返回后刷新列表
-    if (mounted && _selectedEventId == event.id) {
+    // 返回后刷新列表；保存/删除的结果在这里给出一次性反馈（详情页不再
+    // 用阻塞弹窗，也不在 pop 之后对旧 context 弹框）。
+    if (!mounted) return;
+    if (result == 'saved') {
+      AppFeedback.success(context, '已保存');
+    } else if (result == 'deleted') {
+      AppFeedback.success(context, '事件已删除');
+    }
+    if (_selectedEventId == event.id) {
       setState(() => _selectedEventId = null);
       _loadData();
     }

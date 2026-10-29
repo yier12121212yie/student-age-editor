@@ -84,6 +84,21 @@ inline sa::file_transfer::CosOps mem_ops(const std::shared_ptr<MemCos>& m) {
         m->objects.erase(key);
         return true;
     };
+    ops.multipart_initiate = [](const CosConfig&, const std::string&, std::string*) -> std::string {
+        return "UPLOAD-TEST-1";
+    };
+    ops.multipart_complete =
+        [](const CosConfig&, const std::string&, const std::string&,
+           const std::vector<std::pair<long long, std::string>>& parts,
+           std::string* err) -> bool {
+        if (parts.empty()) {
+            if (err) *err = "no parts";
+            return false;
+        }
+        return true;
+    };
+    ops.multipart_abort = [](const CosConfig&, const std::string&, const std::string&,
+                             std::string*) -> bool { return true; };
     return ops;
 }
 

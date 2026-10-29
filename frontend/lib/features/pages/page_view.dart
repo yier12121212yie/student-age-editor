@@ -4,6 +4,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/models.dart';
 import '../../core/responsive.dart';
+import '../../core/editor_leave_guard.dart';
 import '../editor/cfg_display_names.dart';
 import '../editor/schema_editor_view.dart';
 import '../story/story_director_view.dart';
@@ -126,8 +127,17 @@ class _PageViewState extends State<EditorPageView> {
                         ),
                       ),
                   ],
-                  onChanged: (v) {
-                    if (v != null) setState(() => _cfg = v);
+                  onChanged: (v) async {
+                    if (v == null || v == _cfg) return;
+                    // U1：下拉会以新 key 重建 SchemaEditorView，旧视图内存改动
+                    // 必须先确认（保存 / 放弃 / 取消），不能静默丢弃。
+                    final ok = await confirmLeaveDirty(
+                      context,
+                      action: '切换配置表',
+                      allowDiscard: true,
+                      onDiscard: () {},
+                    );
+                    if (ok && mounted) setState(() => _cfg = v);
                   },
                 ),
               ),

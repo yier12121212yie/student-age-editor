@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -8,14 +9,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../../core/api_client.dart';
+import '../../core/a11y_semantics.dart';
 import '../../core/backend_retry.dart';
+import '../../core/design_tokens.dart';
+import '../../core/diagnostics.dart';
 import '../../core/no_code_mode.dart';
 import '../../core/platform_env.dart';
 import '../ai/ai_policy.dart';
+import '../ai/mcp/mcp_backend_bridge.dart';
 import '../ai/mcp/mcp_types.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
 import '../../core/app_theme.dart';
+import '../auth/auth_state.dart';
+import 'mcp_token_section.dart';
 import 'update_section.dart';
 import '../../core/app_dialogs.dart';
 
@@ -210,12 +217,14 @@ class AiSettings {
   /// 返回远端（三端共享）写入是否成功。本机 SharedPreferences 已成功；
   /// 远端失败只影响终端同步——调用方据此提示「已保存」还是「已保存，仅本机生效」。
   ///
-  /// Web：API Key 只存浏览器本地（SharedPreferences），**绝不写穿到编辑器
-  /// 后端**（共享文件会被 CLI/TUI 等其他端读到）；返回 true 表示本机保存成功。
+  /// Web：仅**自托管**形态把 API Key 留在浏览器本地，**绝不写穿到服务器**；
+  /// 本机浏览器版与桌面版同源同用户，写穿 `.editor_ai.json` 才能让
+  /// TTS/生图与 CLI/TUI 读到同一份配置（否则页面上填的 key 不生效）。
+  /// 返回 true 表示保存成功（自托管只算本机保存成功）。
   Future<bool> save() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(prefsKey, jsonEncode(toJson()));
-    if (kIsWeb) return true;
+    if (kIsWeb && AuthState.current?.mode != AuthMode.local) return true;
     // 写穿三端共享文件 .editor_ai.json（CLI/TUI/GUI 唯一数据源）。
     try {
       await ApiClient.instance
@@ -238,6 +247,9 @@ class AiSettings {
   /// - 后端不可达（冷启动竞态/Android 沙箱等）：静默沿用本地值。
   static Future<AiSettings> loadWithRemote() async {
     final local = await load();
+    // 自托管的 AI 设置端点被网关封禁，且用户 key 不应离开浏览器：
+    // 直接读本机缓存，省掉每次启动一次注定 403 的请求。
+    if (kIsWeb && AuthState.current?.mode == AuthMode.hosted) return local;
     // 有对话/生图配置，或任一 TTS 配置（TTS-only 也能从远端同步）即视为有效。
     bool meaningful(AiSettings s) =>
         s.apiKey.isNotEmpty ||
@@ -375,7 +387,6 @@ class _SettingsPageState extends State<SettingsPage> {
   double _temperature = 0.7;
   String _ttsProvider = '';
   double _ttsSpeed = 1.0;
-  bool _ttsTesting = false;
   String _permissionMode = 'confirm';
 
   /// 服务端 TTS / 生图能力（网页版策略 `tts_image_available`）。桌面端与
@@ -385,9 +396,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // ---------------- MCP 服务器编辑态 ----------------
 
-  /// Android / Web 上无本机子进程能力，stdio 表单隐藏（与 backend_launcher
-  /// supportsSpawn 同一判断口径）。
-  static bool get _stdioSupported => !isAndroidPlatform && !kIsWeb;
+  /// Android / Web 的原生子进程能力。Android 恒 false；Web 由后端桥接
+  /// （C2）代持，具体可用性在 initState 里问 `/api/mcp/stdio/policy`
+  /// （本机浏览器版可用；自托管默认关闭，需管理员显式开启）。
+  bool _stdioSupported = !isAndroidPlatform && !kIsWeb;
 
   /// 当前编辑中的 MCP 列表（点「保存配置」才写回 AiSettings）。
   List<McpServerConfig> _mcpServers = [];
@@ -402,6 +414,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _mcpCmdCtrl = TextEditingController();
   final _mcpArgsCtrl = TextEditingController();
   final _mcpUrlCtrl = TextEditingController();
+  final _mcpHeadersCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -428,7 +441,17 @@ class _SettingsPageState extends State<SettingsPage> {
       text: widget.settings.customInstructions,
     );
     _mcpServers = List.of(widget.settings.mcpServers);
-    if (kIsWeb) _loadWebPolicy();
+    if (kIsWeb) {
+      _loadWebPolicy();
+      unawaited(_detectStdioBridge());
+    }
+  }
+
+  /// Web：stdio 服务器由后端桥接代持（C2），先探测 policy 决定是否展示表单。
+  Future<void> _detectStdioBridge() async {
+    final ok = await McpStdioBridge.available();
+    if (!mounted || ok == _stdioSupported) return;
+    setState(() => _stdioSupported = ok);
   }
 
   /// 网页版读取一次 AI 策略，决定服务端 TTS / 生图相关设置是否展示。
@@ -495,62 +518,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _mcpCmdCtrl.dispose();
     _mcpArgsCtrl.dispose();
     _mcpUrlCtrl.dispose();
+    _mcpHeadersCtrl.dispose();
     super.dispose();
-  }
-
-  Map<String, dynamic> _ttsSettingsMap() => {
-    'ttsProvider': _ttsProvider,
-    'ttsApiKey': _ttsApiKeyCtrl.text.trim(),
-    'ttsGroupId': _ttsGroupIdCtrl.text.trim(),
-    'ttsModel': _ttsModelCtrl.text.trim(),
-    'ttsBaseUrl': _ttsBaseUrlCtrl.text.trim(),
-    'ttsVoice': _ttsVoiceCtrl.text.trim(),
-    'ttsSpeed': _ttsSpeed,
-    // 页面无编辑控件，从既有设置透传，供后端参数归一使用。
-    'ttsVolume': widget.settings.ttsVolume,
-    'ttsPitch': widget.settings.ttsPitch,
-    'ttsFormat': widget.settings.ttsFormat,
-  };
-
-  Future<void> _ttsTest() async {
-    setState(() => _ttsTesting = true);
-    try {
-      final r = await ApiClient.instance.runLongTask(
-        '/api/tts/test',
-        body: {'provider': _ttsProvider, 'settings': _ttsSettingsMap()},
-        timeout: const Duration(seconds: 60),
-        maxWait: const Duration(seconds: 300),
-      );
-      final ok = r['ok'] == true;
-      if (!mounted) return;
-      fluent.displayInfoBar(
-        context,
-        builder: (ctx, close) => fluent.InfoBar(
-          title: Text(ok ? '配音服务连接成功' : '配音服务连接失败'),
-          content: Text(
-            ok
-                ? (r['detail']?.toString() ?? '')
-                : (r['error']?.toString() ?? '未知错误'),
-          ),
-          severity: ok
-              ? fluent.InfoBarSeverity.success
-              : fluent.InfoBarSeverity.error,
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        fluent.displayInfoBar(
-          context,
-          builder: (ctx, close) => fluent.InfoBar(
-            title: const Text('配音服务连接失败'),
-            content: Text(e.toString()),
-            severity: fluent.InfoBarSeverity.error,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _ttsTesting = false);
-    }
   }
 
   Future<void> _save() async {
@@ -607,6 +576,7 @@ class _SettingsPageState extends State<SettingsPage> {
       _mcpCmdCtrl.clear();
       _mcpArgsCtrl.clear();
       _mcpUrlCtrl.clear();
+      _mcpHeadersCtrl.clear();
     });
   }
 
@@ -618,10 +588,11 @@ class _SettingsPageState extends State<SettingsPage> {
     if (idRaw.isEmpty) return; // 名称与 id 至少填一项
     final id = McpServerConfig.sanitizeId(idRaw);
     if (_mcpServers.any((e) => e.id == id)) return; // id 重复（命名空间冲突）
+    final transport = _stdioSupported ? _mcpTransport : 'http';
     final cfg = McpServerConfig(
       id: id,
       name: name,
-      transport: _stdioSupported ? _mcpTransport : 'http',
+      transport: transport,
       command: _mcpCmdCtrl.text.trim(),
       // 一行一个参数：命令行里带空格的路径不会被拆坏
       args: [
@@ -629,6 +600,9 @@ class _SettingsPageState extends State<SettingsPage> {
           if (line.trim().isNotEmpty) line.trim(),
       ],
       url: _mcpUrlCtrl.text.trim(),
+      headers: transport == 'http'
+          ? McpServerConfig.parseHeadersInput(_mcpHeadersCtrl.text)
+          : const {},
       enabled: _mcpFormEnabled,
     );
     setState(() {
@@ -658,6 +632,7 @@ class _SettingsPageState extends State<SettingsPage> {
               command: cfg.command,
               args: cfg.args,
               url: cfg.url,
+              headers: cfg.headers,
               enabled: on,
             )
           else
@@ -674,6 +649,8 @@ class _SettingsPageState extends State<SettingsPage> {
     final target = cfg.transport == 'http'
         ? (cfg.url.trim().isEmpty ? '（未填 url）' : cfg.url.trim())
         : (cfg.command.trim().isEmpty ? '（未填 command）' : cfg.command.trim());
+    final authBadge =
+        cfg.transport == 'http' && cfg.headers.isNotEmpty ? ' · 已配鉴权头' : '';
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.all(8),
@@ -695,7 +672,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   style: TextStyle(fontSize: 12, color: palette.textHigh),
                 ),
                 Text(
-                  '${cfg.id} · ${cfg.transport == 'http' ? 'HTTP' : 'stdio'} · $target',
+                  '${cfg.id} · ${cfg.transport == 'http' ? 'HTTP' : 'stdio'} · $target$authBadge',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 10, color: palette.textHint),
@@ -721,6 +698,24 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 隐藏 stdio 相关字段，并隐藏列表中已存在的 stdio 服务器（在此平台永远连不上）。
   List<Widget> _buildMcpSection() {
     final muted = TextStyle(fontSize: 11, color: palette.textMuted);
+    final httpFields = <Widget>[
+      const SizedBox(height: 8),
+      _mcpLabel('URL'),
+      const SizedBox(height: 4),
+      fluent.TextBox(
+        controller: _mcpUrlCtrl,
+        placeholder: 'https://example.com/mcp',
+      ),
+      const SizedBox(height: 8),
+      _mcpLabel('鉴权请求头（可选：直接填 Bearer 令牌，或按 Key: Value 每行一条）'),
+      const SizedBox(height: 4),
+      fluent.TextBox(
+        controller: _mcpHeadersCtrl,
+        minLines: 1,
+        maxLines: 3,
+        placeholder: 'Authorization: Bearer <token>',
+      ),
+    ];
     final formFields = <Widget>[
       const SizedBox(height: 8),
       _mcpLabel('名称'),
@@ -766,25 +761,12 @@ class _SettingsPageState extends State<SettingsPage> {
             maxLines: 6,
             placeholder: '-y\n@modelcontextprotocol/server-filesystem\nD:\\data',
           ),
-        ] else ...[
-          const SizedBox(height: 8),
-          _mcpLabel('URL'),
-          const SizedBox(height: 4),
-          fluent.TextBox(
-            controller: _mcpUrlCtrl,
-            placeholder: 'https://example.com/mcp',
-          ),
-        ],
+        ] else
+          ...httpFields,
       ] else ...[
         const SizedBox(height: 4),
         Text('当前平台仅支持 HTTP 传输（无法启动本地子进程）', style: muted),
-        const SizedBox(height: 8),
-        _mcpLabel('URL'),
-        const SizedBox(height: 4),
-        fluent.TextBox(
-          controller: _mcpUrlCtrl,
-          placeholder: 'https://example.com/mcp',
-        ),
+        ...httpFields,
       ],
       const SizedBox(height: 8),
       Row(
@@ -809,8 +791,7 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     ];
-    // 无本机子进程能力的平台（Web / Android）不展示 stdio 服务器：它们在此
-    // 平台永远连不上（transport 工厂直接抛「网页版不支持本地进程 MCP」），
+    // 无子进程 / 桥接未开启的平台不展示 stdio 服务器：它们在此平台连不上，
     // 展示只会误导。仅从渲染中过滤，_mcpServers 原样保留，保存时不丢配置。
     final rows = <Widget>[];
     var hiddenStdio = 0;
@@ -843,14 +824,21 @@ class _SettingsPageState extends State<SettingsPage> {
       const SizedBox(height: 2),
       if (_stdioSupported)
         Text(
-          '注意：stdio 服务器会以命令拉起本机外部进程，进程以本机用户权限运行，'
-          '仅添加可信来源的服务器',
+          kIsWeb
+              ? '注意：网页版的 stdio 服务器由服务器端代持进程（自托管需管理员在 '
+                  'gateway.json 开启 mcp_stdio 并配置命令白名单）；进程拥有与后端相同的'
+                  '文件/网络权限，仅添加可信来源的服务器'
+              : '注意：stdio 服务器会以命令拉起本机外部进程，进程以本机用户权限运行，'
+                  '仅添加可信来源的服务器',
           style: TextStyle(fontSize: 11, color: palette.warning),
         )
       else if (hiddenStdio > 0)
         Text(
-          '当前平台不支持本地子进程，已隐藏 $hiddenStdio 个 stdio 服务器'
-          '（配置仍保留，可在桌面端管理）',
+          kIsWeb
+              ? '当前部署未开启 stdio MCP 桥接，已隐藏 $hiddenStdio 个 stdio 服务器'
+                  '（配置仍保留；管理员开启 mcp_stdio 后会重新显示）'
+              : '当前平台不支持本地子进程，已隐藏 $hiddenStdio 个 stdio 服务器'
+                  '（配置仍保留，可在桌面端管理）',
           style: TextStyle(fontSize: 11, color: palette.warning),
         ),
       const SizedBox(height: 8),
@@ -1081,137 +1069,6 @@ class _SettingsPageState extends State<SettingsPage> {
                     placeholder: 'https://api.openai.com/v1',
                     onChanged: (_) {},
                   ),
-                  const SizedBox(height: 20),
-                  Divider(color: palette.border),
-                  const SizedBox(height: 8),
-                  Text(
-                    '配音（TTS）',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: palette.textHigh,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '为剧本/文本合成语音：阿里云（DashScope 百炼，Bearer sk-*）或 MiniMax（T2A V2）。'
-                    '密钥仅保存在本机；生成内容存到当前 mod 的 audio/tts/ 目录',
-                    style: TextStyle(fontSize: 11, color: palette.textMuted),
-                  ),
-                  const SizedBox(height: 12),
-                  Text('服务商', style: TextStyle(fontSize: 12, color: hintColor)),
-                  const SizedBox(height: 6),
-                  fluent.ComboBox<String>(
-                    value: _ttsProvider,
-                    isExpanded: true,
-                    items: const [
-                      fluent.ComboBoxItem(
-                        value: '',
-                        child: Text('未配置（在配音面板中按需选择）'),
-                      ),
-                      fluent.ComboBoxItem(
-                        value: 'aliyun',
-                        child: Text('阿里云 DashScope（百炼）'),
-                      ),
-                      fluent.ComboBoxItem(
-                        value: 'minimax',
-                        child: Text('MiniMax（T2A V2）'),
-                      ),
-                    ],
-                    onChanged: (v) => setState(() => _ttsProvider = v ?? ''),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'API Key',
-                    style: TextStyle(fontSize: 12, color: hintColor),
-                  ),
-                  const SizedBox(height: 6),
-                  fluent.TextBox(
-                    controller: _ttsApiKeyCtrl,
-                    obscureText: true,
-                    placeholder: 'sk-...（阿里云）或 MiniMax API Key',
-                  ),
-                  if (_ttsProvider == 'minimax') ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      'Group ID（MiniMax 控制台获取）',
-                      style: TextStyle(fontSize: 12, color: hintColor),
-                    ),
-                    const SizedBox(height: 6),
-                    fluent.TextBox(
-                      controller: _ttsGroupIdCtrl,
-                      placeholder: '19xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Text(
-                    '模型（留空使用默认）',
-                    style: TextStyle(fontSize: 12, color: hintColor),
-                  ),
-                  const SizedBox(height: 6),
-                  fluent.TextBox(
-                    controller: _ttsModelCtrl,
-                    placeholder: 'qwen-tts / cosyvoice-v2 / speech-02-hd',
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '默认音色（留空使用服务商默认）',
-                    style: TextStyle(fontSize: 12, color: hintColor),
-                  ),
-                  const SizedBox(height: 6),
-                  fluent.TextBox(
-                    controller: _ttsVoiceCtrl,
-                    placeholder: 'Cherry / female-shaonv / 其他 voice id',
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Base URL（留空使用官方默认；自建代理/中转时才需修改）',
-                    style: TextStyle(fontSize: 12, color: hintColor),
-                  ),
-                  const SizedBox(height: 6),
-                  fluent.TextBox(
-                    controller: _ttsBaseUrlCtrl,
-                    placeholder: _ttsProvider == 'minimax'
-                        ? 'https://api.minimax.io'
-                        : 'https://dashscope.aliyuncs.com/...',
-                  ),
-                  const SizedBox(height: 12),
-                  Text('语速', style: TextStyle(fontSize: 12, color: hintColor)),
-                  fluent.Slider(
-                    value: _ttsSpeed,
-                    min: 0.5,
-                    max: 2,
-                    onChanged: (v) => setState(() => _ttsSpeed = v),
-                    label: '${_ttsSpeed.toStringAsFixed(1)}x',
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      fluent.Button(
-                        onPressed: (_ttsTesting || _ttsProvider.isEmpty)
-                            ? null
-                            : _ttsTest,
-                        child: _ttsTesting
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('测试连接'),
-                      ),
-                      const SizedBox(width: 8),
-                      if (_ttsProvider.isEmpty)
-                        Expanded(
-                          child: Text(
-                            '先选择服务商并填写 API Key 再测试',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: palette.textMuted,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
                 ],
                 ..._buildMcpSection(),
                 const SizedBox(height: 16),
@@ -1219,6 +1076,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   onPressed: widget.settingsLoaded ? _save : null,
                   child: Text(widget.settingsLoaded ? '保存配置' : '配置加载中…'),
                 ),
+                const McpTokenSection(),
                 // 手机（宽度 <720）强制 MobileShell，界面风格选择器改了不生效——隐藏。
                 if (widget.uiMode != null &&
                     widget.onUiModeChanged != null &&
@@ -1302,6 +1160,16 @@ class _SettingsPageState extends State<SettingsPage> {
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
                 _AppearanceSection(),
+                if (kIsWeb) ...[
+                  const SizedBox(height: 24),
+                  Divider(color: palette.border),
+                  const SizedBox(height: 8),
+                  const _AccessibilitySection(),
+                ],
+                const SizedBox(height: 24),
+                Divider(color: palette.border),
+                const SizedBox(height: 8),
+                const _DiagnosticsSection(),
                 const SizedBox(height: 24),
                 Divider(color: palette.border),
                 const SizedBox(height: 8),
@@ -1379,7 +1247,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             .toSet();
       });
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         fluent.displayInfoBar(
           context,
           builder: (c, close) => fluent.InfoBar(
@@ -1388,6 +1256,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             severity: fluent.InfoBarSeverity.error,
           ),
         );
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -1405,7 +1274,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
         body: {'data': b64, 'filename': file.name},
       );
       await _load();
-      if (mounted)
+      if (mounted) {
         fluent.displayInfoBar(
           context,
           builder: (c, close) => const fluent.InfoBar(
@@ -1413,8 +1282,9 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             severity: fluent.InfoBarSeverity.success,
           ),
         );
+      }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         fluent.displayInfoBar(
           context,
           builder: (c, close) => fluent.InfoBar(
@@ -1423,6 +1293,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             severity: fluent.InfoBarSeverity.error,
           ),
         );
+      }
     }
   }
 
@@ -1440,7 +1311,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
       );
       await _load();
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         fluent.displayInfoBar(
           context,
           builder: (c, close) => fluent.InfoBar(
@@ -1449,6 +1320,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             severity: fluent.InfoBarSeverity.error,
           ),
         );
+      }
     }
   }
 
@@ -1475,7 +1347,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
       await ApiClient.instance.delete('/api/extensions/${Uri.encodeComponent(id)}');
       await _load();
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         fluent.displayInfoBar(
           context,
           builder: (c, close) => fluent.InfoBar(
@@ -1484,6 +1356,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
             severity: fluent.InfoBarSeverity.error,
           ),
         );
+      }
     }
   }
 
@@ -1521,7 +1394,7 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
         ),
         const SizedBox(height: 4),
         Text(
-          '将游戏资源打包为 Zip（含 aa_index.json / base_data.json / Cfgs），可在设置中加载，兼容无游戏的 Android/Linux。',
+          '将游戏素材打包为压缩包，可在设置中加载，兼容未安装游戏的手机 / Linux 设备。',
           style: TextStyle(fontSize: 11, color: palette.textMuted),
         ),
         const SizedBox(height: 8),
@@ -1608,6 +1481,140 @@ class _ResourcePackSectionState extends State<_ResourcePackSection> {
   }
 }
 
+/// 无障碍（Web）：屏幕阅读器语义树开关。
+///
+/// 默认关闭：编辑区大量自绘控件，语义树在 CanvasKit 上每帧都有额外开销；
+/// 需要读屏/朗读时再打开（选择会记住）。桌面端不显示本区块——那边的语义树
+/// 被全局排除有明确原因（Windows AXTree 刷屏/冻结，见 app.dart）。
+class _AccessibilitySection extends StatelessWidget {
+  const _AccessibilitySection();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: A11ySemantics.enabled,
+      builder: (context, on, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '无障碍',
+            style: TextStyle(
+              fontSize: 13,
+              color: palette.textHigh,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '屏幕阅读器支持（语义树）',
+            style: TextStyle(fontSize: 11, color: palette.textMuted),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '向浏览器暴露界面元素的无障碍信息',
+                      style: TextStyle(fontSize: 12, color: palette.textPrimary),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '开启后屏幕阅读器可朗读按钮、输入框与列表；编辑区是自绘画布，'
+                      '单元格内容仍无法逐字朗读。会增加少量渲染开销。',
+                      style: TextStyle(fontSize: 11, color: palette.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              fluent.ToggleSwitch(
+                checked: on,
+                onChanged: (v) => A11ySemantics.setEnabled(v),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 诊断（Web）：把启动/渲染状态、浏览器环境与最近错误汇总成一段文本。
+///
+/// 用户报「白屏 / 卡住 / 错位」时，Flutter 的画布上没有可读的界面树；让对方
+/// 一键复制这段文本，比来回问「什么浏览器、卡在哪一步」高效得多。
+class _DiagnosticsSection extends StatefulWidget {
+  const _DiagnosticsSection();
+
+  @override
+  State<_DiagnosticsSection> createState() => _DiagnosticsSectionState();
+}
+
+class _DiagnosticsSectionState extends State<_DiagnosticsSection> {
+  bool _busy = false;
+  String? _note;
+  bool _noteOk = false;
+
+  Future<void> _copy() async {
+    setState(() {
+      _busy = true;
+      _note = null;
+    });
+    final ok = await copyDiagnosticsReport();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _noteOk = ok;
+      _note = ok ? '已复制到剪贴板' : '复制失败：请允许剪贴板权限后重试';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '诊断',
+          style: TextStyle(
+            fontSize: AppText.emphasis,
+            color: palette.textHigh,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: AppSpace.xs),
+        Text(
+          '把启动阶段、运行环境与最近错误汇总成一段文本，反馈问题时粘贴给开发者。'
+          '不含模组内容与账号信息。',
+          style: TextStyle(fontSize: AppText.small, color: palette.textMuted),
+        ),
+        const SizedBox(height: AppSpace.s10),
+        Row(
+          children: [
+            fluent.Button(
+              onPressed: _busy ? null : _copy,
+              child: Text(_busy ? '正在复制…' : '复制诊断信息'),
+            ),
+            const SizedBox(width: AppSpace.s10),
+            if (_note != null)
+              Flexible(
+                child: Text(
+                  _note!,
+                  style: TextStyle(
+                    fontSize: AppText.small,
+                    color: _noteOk ? palette.statusOk : palette.danger,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 /// 保存校验设置：保存时指南校验错误是否阻止保存。
 class _SaveValidateSection extends StatefulWidget {
   const _SaveValidateSection();
@@ -1688,10 +1695,10 @@ class _SaveValidateSectionState extends State<_SaveValidateSection> {
   }
 }
 
-/// 无代码模式：编辑器共享开关（后端 editor_env.json，GUI/CLI/TUI 读同一份）。
+/// 简易模式：编辑器共享开关（后端 editor_env.json，GUI/CLI/TUI 读同一份）。
 /// 外观（白日/暗色）选择器。
 ///
-/// 与「无代码模式」同款：本机偏好立即生效（SharedPreferences），同时尽力写一份
+/// 与「简易模式」同款：本机偏好立即生效（SharedPreferences），同时尽力写一份
 /// 到后端共享设置，让 TUI / CLI 也跟着变；写失败**不回滚**——本机已生效，
 /// 只提示「仅本机生效」，避免用户以为切换失败了。
 class _AppearanceSection extends StatefulWidget {
@@ -1982,7 +1989,7 @@ class _NoCodeModeSectionState extends State<_NoCodeModeSection> {
 
   Future<void> _toggle(bool v) async {
     setState(() => _on = v);
-    // 写穿逻辑收在 core/no_code_mode.dart：字段级逃生口（"关闭无代码模式以手动
+    // 写穿逻辑收在 core/no_code_mode.dart：字段级逃生口（"切换到高级编辑以手动
     // 编辑"）与这里共用同一份"写穿 + 失败回滚"。
     final ok = await persistNoCodeMode(v);
     if (!mounted) return;
@@ -2001,7 +2008,7 @@ class _NoCodeModeSectionState extends State<_NoCodeModeSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '无代码模式',
+          '简易模式',
           style: TextStyle(
             fontSize: 13,
             color: palette.textHigh,
@@ -2010,12 +2017,12 @@ class _NoCodeModeSectionState extends State<_NoCodeModeSection> {
         ),
         const SizedBox(height: 4),
         Text(
-          '开启后无需手写效果码：效果/指令字段点选即用（参数走表单补全），人物字段提供立绘浏览面板',
+          '开启后不用手写指令：效果与选项点选即用（参数自动补全），人物直接点立绘选择',
           style: TextStyle(fontSize: 11, color: palette.textMuted),
         ),
         const SizedBox(height: 2),
         Text(
-          '该开关保存在后端，GUI / CLI / TUI 三端共享生效',
+          '该开关在三个界面之间共享生效',
           style: TextStyle(fontSize: 11, color: palette.textMuted),
         ),
         const SizedBox(height: 10),
@@ -2026,7 +2033,7 @@ class _NoCodeModeSectionState extends State<_NoCodeModeSection> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '选人物与效果，不写代码',
+                    '点选人物与效果，不写指令',
                     style: TextStyle(fontSize: 12, color: palette.textPrimary),
                   ),
                   const SizedBox(height: 2),

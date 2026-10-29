@@ -178,9 +178,12 @@ void main() {
 
   FlowGraph graphOf(WidgetTester tester) => canvasOf(tester).graph;
 
-  /// 卡片正文是 TextSpan，`find.text` 只认 Text.data；这里匹配 RichText 纯文本。
+  /// 卡片正文现在是内联输入框（EditableText），低 LOD / 缺失节点才是
+  /// RichText。两种都算「卡片上显示了这句话」。
   Finder nodeText(String s) => find.byWidgetPredicate(
-    (w) => w is RichText && w.text.toPlainText().contains(s),
+    (w) =>
+        (w is EditableText && w.controller.text.contains(s)) ||
+        (w is RichText && w.text.toPlainText().contains(s)),
   );
 
   Future<void> settle(WidgetTester tester) async {
@@ -255,7 +258,7 @@ void main() {
 
     w.onSelectionChanged(FlowSelection.ofNode(_t2));
     await settle(tester);
-    canvasOf(tester).onDeleteNode(_t2);
+    canvasOf(tester).onDeleteNode!(_t2);
     await settle(tester);
 
     expect(nodeOf(tester, _t2), isNull, reason: '删除没生效，后面的撤销断言无从判断');
@@ -290,7 +293,7 @@ void main() {
       reason: '前置：初始只有 甲→乙 一条边',
     );
 
-    canvasOf(tester).onDeleteNode(_t2);
+    canvasOf(tester).onDeleteNode!(_t2);
     await settle(tester);
 
     expect(
@@ -321,18 +324,15 @@ void main() {
     final w = await mount(tester);
     w.onSelectionChanged(FlowSelection.ofNode(_t2));
     await settle(tester);
-    canvasOf(tester).onToggleExpand(_t2);
-    await settle(tester);
 
-    // 展开区已挂上 content 字段（标签与输入框同时存在，缺控制器就不渲染标签）。
-    // 行标签 = kGuideFieldLabels['content']（台词内容）+ 字段 key。
+    // 卡片正文现在是常驻内联输入框：确认乙的 content 已有 EditableText。
     expect(
       find.descendant(
         of: find.byType(StoryFlowGraph),
-        matching: find.text('台词内容 content'),
+        matching: find.byType(EditableText),
       ),
-      findsOneWidget,
-      reason: '前置：乙 未展开，内联 content 输入框不存在',
+      findsWidgets,
+      reason: '前置：卡片正文应有内联 content 输入框',
     );
 
     void type(String text) => canvasOf(
@@ -395,7 +395,8 @@ void main() {
     expect(nodeText('丁'), findsOneWidget, reason: '没真的切到事件 2');
     expect(nodeOf(tester, _t1), isNull, reason: '事件 1 的节点不该留在事件 2 画布上');
 
-    // 脏画布：必须弹。
+    // 脏画布：必须弹。模拟真实输入：控制器文本与写回记录一起变。
+    canvasOf(tester).fieldController(_t21, 'content')!.text = '丁改';
     canvasOf(tester).onFieldChanged(_t21, 'content', '丁改');
     await settle(tester);
     await switchEvent(tester, from: _evt2Title, to: _evtTitle);
@@ -443,7 +444,7 @@ void main() {
     await mount(tester);
 
     // 事件 1 删掉 乙（一步可撤销），不撤销，直接切走并选「放弃修改」。
-    canvasOf(tester).onDeleteNode(_t2);
+    canvasOf(tester).onDeleteNode!(_t2);
     await settle(tester);
     expect(nodeText('乙'), findsNothing);
 

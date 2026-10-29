@@ -6,11 +6,16 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
 import '../../core/workbench_guard.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
 import '../pages/pages_catalog.dart';
 
 /// JSON 侧栏工作台 —— 导演布局下「JSON 侧栏」的专属界面。
@@ -57,6 +62,11 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
   String _snap = '';
   int? _mtime;
 
+  /// 脏标记与整表序列化字节数的**缓存**：只在加载 / 保存 / 丢弃 / 记录变更时
+  /// 更新，使 `build()`（含右栏「序列化大小」）期间零全表 jsonEncode 开销。
+  bool _dirty = false;
+  int _approxBytes = 0;
+
   bool _loading = false;
   bool _saving = false;
   String? _error;
@@ -93,15 +103,12 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
   // 数据
   // ------------------------------------------------------------------
 
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
   int? _mtimeOf(dynamic r) =>
       (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
+
+  /// 整表序列化后的 UTF-8 字节数（缓存用，仅在这些写入点调用）。
+  int _bytesOf(Map<String, dynamic> data) =>
+      utf8.encode(jsonEncode(data)).length;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -118,7 +125,7 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
     if (t != null) await _loadTable(t);
   }
   @override
-  String get guardSubject => 'JSON 修改';
+  String get guardSubject => '高级编辑';
 
   Future<void> _loadTable(String name) async {
     setState(() {
@@ -133,11 +140,13 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
     try {
       final r = await ApiClient.instance.get('/api/cfg/$name');
       if (!mounted) return;
-      final data = _dataOf(r);
+      final data = WorkbenchController.extractData(r);
       final ids = _sortedIdsOf(data);
       setState(() {
         _data = data;
         _snap = jsonEncode(data);
+        _dirty = false;
+        _approxBytes = _bytesOf(_data);
         _mtime = _mtimeOf(r);
         _selId = ids.isNotEmpty ? ids.first : null;
         _loading = false;
@@ -158,13 +167,11 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
     await _loadTable(name);
   }
 
-  bool get _dirty => _table != null && jsonEncode(_data) != _snap;
-
   Future<void> _save() async {
     final name = _table;
     if (name == null || _saving) return;
     if (_parseError != null) {
-      _info('当前记录 JSON 有误，请先修正再保存', fluent.InfoBarSeverity.error);
+      AppFeedback.error(context, '当前记录格式有误，请先修正再保存');
       return;
     }
     setState(() => _saving = true);
@@ -182,9 +189,11 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
           setState(() {
             _mtime = _mtimeOf(r);
             _snap = jsonEncode(_data);
+            _dirty = false;
+            _approxBytes = _bytesOf(_data);
             _saving = false;
           });
-          _info('$name 已保存', fluent.InfoBarSeverity.success);
+          AppFeedback.success(context, '$name 已保存');
           return;
         } on ApiException catch (e) {
           if (!mounted) return;
@@ -203,12 +212,12 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
             setState(() => _saving = false);
             return;
           }
-          _info('保存失败：$e', fluent.InfoBarSeverity.error);
+          AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}', detail: e.toString());
           setState(() => _saving = false);
           return;
         } catch (e) {
           if (!mounted) return;
-          _info('保存失败：$e', fluent.InfoBarSeverity.error);
+          AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}', detail: e.toString());
           setState(() => _saving = false);
           return;
         }
@@ -221,6 +230,8 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
   void _discard() {
     setState(() {
       _data = (jsonDecode(_snap) as Map).cast<String, dynamic>();
+      _dirty = false;
+      _approxBytes = _bytesOf(_data);
       _parseError = null;
       if (_selId == null || !_data.containsKey(_selId)) {
         final ids = _sortedIds;
@@ -251,17 +262,6 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
             child: const Text('强制覆盖'),
           ),
         ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
       ),
     );
   }
@@ -325,12 +325,14 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
     try {
       final v = jsonDecode(text);
       if (v is! Map) {
-        setState(() => _parseError = '记录必须是一个 JSON 对象（{…}）');
+        setState(() => _parseError = '每条记录必须写成「{ … }」形式');
         return;
       }
       setState(() {
         _data[_selId!] = v.cast<String, dynamic>();
         _parseError = null;
+        _dirty = true;
+        _approxBytes = _bytesOf(_data);
       });
     } catch (e) {
       setState(() => _parseError = _shortError(e));
@@ -380,13 +382,15 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
     ctrl.dispose();
     if (id == null || !mounted) return;
     if (_data.containsKey(id)) {
-      _info('记录 $id 已存在', fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(context, '记录 $id 已存在');
       return;
     }
     setState(() {
       _data[id] = <String, dynamic>{};
       _selId = id;
       _parseError = null;
+      _dirty = true;
+      _approxBytes = _bytesOf(_data);
     });
     _syncEditor();
   }
@@ -419,6 +423,8 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
       final ids = _sortedIds;
       _selId = ids.isNotEmpty ? ids.first : null;
       _parseError = null;
+      _dirty = true;
+      _approxBytes = _bytesOf(_data);
     });
     _syncEditor();
   }
@@ -453,7 +459,7 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
             child: fluent.TextBox(
               controller: _tableCtrl,
-              placeholder: '搜索配置表名（如 EvtCfg）',
+              placeholder: '搜索配置表名',
               onChanged: (v) => setState(() => _tableSearch = v),
             ),
           ),
@@ -500,40 +506,20 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
   Widget _center() {
     if (_table == null) {
       return Center(
-        child: Text('选择左侧一张配置表，查看与编辑其原始 JSON。',
+        child: Text('选择左侧一张配置表，查看与编辑其原始数据。',
             style: TextStyle(fontSize: 13, color: palette.textHint)),
       );
     }
     if (_loading) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const fluent.ProgressRing(),
-            const SizedBox(height: 10),
-            Text('正在读取 $_table…',
-                style: TextStyle(fontSize: 12, color: palette.textMuted)),
-          ],
-        ),
-      );
+      // C4：读取单表期间用统一骨架屏，比转圈更能说明「正在加载什么」。
+      return const WorkbenchSkeleton(rows: 6);
     }
     if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(FluentIcons.error_circle_24_regular,
-                size: 30, color: palette.statusDanger),
-            const SizedBox(height: 8),
-            Text('读取失败',
-                style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-            const SizedBox(height: 4),
-            Text('$_error',
-                style: TextStyle(fontSize: 11, color: palette.textMuted)),
-            const SizedBox(height: 10),
-            fluent.Button(onPressed: _reload, child: const Text('重试')),
-          ],
-        ),
+      // C4：改用统一的错误面板（人性化文案 + 重试 + 复制详情）。
+      return WorkbenchErrorPanel(
+        error: _error,
+        title: '读取失败',
+        onRetry: _reload,
       );
     }
 
@@ -568,17 +554,17 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
                         fontWeight: FontWeight.w600,
                         color: palette.textHigh)),
                 const SizedBox(height: 2),
-                Text('${_data.length} 条记录 · JSON 原始编辑',
+                Text('${_data.length} 条记录 · 原始数据编辑',
                     style:
                         TextStyle(fontSize: 10.5, color: palette.textMuted)),
               ],
             ),
           ),
-          _MiniBtn(label: '重新加载', onTap: _reload),
+          WorkbenchMiniButton(label: '重新加载', onTap: _reload),
           const SizedBox(width: 6),
-          _MiniBtn(label: '＋ 记录', onTap: _addRecord),
+          WorkbenchMiniButton(label: '＋ 记录', onTap: _addRecord),
           const SizedBox(width: 6),
-          _MiniBtn(
+          WorkbenchMiniButton(
             label: '删除记录',
             danger: true,
             enabled: _selId != null,
@@ -678,20 +664,26 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
             child: Row(
               children: [
-                Text(
-                  _selId == null ? '未选择记录' : '记录 #$_selId',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: palette.textSecondary),
+                // 窄屏（手机）下记录编辑区可能只剩 ~150dp，标题需可压缩，
+                // 否则「记录 #id + 格式标记 + 格式化」横向溢出（B3）。
+                Flexible(
+                  child: Text(
+                    _selId == null ? '未选择记录' : '记录 #$_selId',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: palette.textSecondary),
+                  ),
                 ),
                 const SizedBox(width: 8),
                 if (_parseError != null)
-                  _Tag(text: 'JSON 有误', color: palette.statusDanger)
+                  _Tag(text: '格式有误', color: palette.statusDanger)
                 else
-                  _Tag(text: 'JSON 有效', color: palette.statusOk),
+                  _Tag(text: '格式正确', color: palette.statusOk),
                 const Spacer(),
-                _MiniBtn(
+                WorkbenchMiniButton(
                   label: '格式化',
                   enabled: row != null,
                   onTap: _format,
@@ -739,62 +731,20 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving || _parseError != null) ? null : _save,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      saveBlocked: _parseError != null,
+      onSave: _save,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
     );
   }
 
   // ---------- 右栏 ----------
 
   Widget _infoPanel(double w) {
-    final bytes = _table == null ? 0 : utf8.encode(jsonEncode(_data)).length;
+    final bytes = _approxBytes;
     return Container(
       width: w,
       color: palette.panel,
@@ -803,7 +753,7 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _SectionCard(
+            WorkbenchSectionCard(
               title: '表信息',
               children: [
                 _kv('配置表', _table ?? '未选择'),
@@ -812,7 +762,7 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
                 _kv('mtime', _mtime == null ? '—' : '$_mtime'),
               ],
             ),
-            _SectionCard(
+            WorkbenchSectionCard(
               title: '当前记录',
               children: [
                 _kv('编号', _selId ?? '未选择'),
@@ -825,10 +775,10 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
                           color: palette.statusDanger)),
               ],
             ),
-            _SectionCard(
+            WorkbenchSectionCard(
               title: '说明',
-              subtitle: 'JSON 侧栏用于核对与高级改动；常规编辑请优先使用专属工作台，'
-                  '避免破坏字段类型。保存按整表写回。',
+              subtitle: '高级编辑器用于核对与批量改动；常规编辑请优先使用专属工作台，'
+                  '避免破坏数据类型。保存按整张表写回。',
               children: const [],
             ),
           ],
@@ -863,51 +813,6 @@ class _JsonWorkbenchState extends State<JsonWorkbench>
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
 
 class _Tag extends StatelessWidget {
   const _Tag({required this.text, required this.color});
@@ -978,62 +883,3 @@ class _HoverTileState extends State<_HoverTile> {
   }
 }
 
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
-          ),
-        ),
-      ),
-    );
-  }
-}

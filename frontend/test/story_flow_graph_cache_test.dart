@@ -150,12 +150,15 @@ void main() {
   FlowGraph graphOf(WidgetTester tester) =>
       tester.widget<StoryFlowGraph>(find.byType(StoryFlowGraph)).graph;
 
-  /// 卡片正文是 TextSpan，`find.text` 只认 Text.data；这里匹配 RichText 纯文本。
+  /// 卡片正文现在是内联输入框（EditableText），低 LOD / 缺失节点才是
+  /// RichText。两种都算「卡片上显示了这句话」。
   /// 限定在画布子树内：Inspector 打开后，ID 字段的名称回显里也会出现同一句台词。
   Finder nodeText(String s) => find.descendant(
     of: find.byType(StoryFlowGraph),
     matching: find.byWidgetPredicate(
-      (w) => w is RichText && w.text.toPlainText().contains(s),
+      (w) =>
+          (w is EditableText && w.controller.text.contains(s)) ||
+          (w is RichText && w.text.toPlainText().contains(s)),
     ),
   );
 
@@ -193,6 +196,8 @@ void main() {
     final w = await mount(tester);
     final before = graphOf(tester);
 
+    // 模拟真实输入：控制器文本与写回记录一起变。
+    w.fieldController(_t1, 'content')!.text = '改后文本';
     w.onFieldChanged(_t1, 'content', '改后文本');
     await settle(tester);
 
@@ -223,7 +228,7 @@ void main() {
     expect(before.nodes.length, 3, reason: '甲/乙/丙 三个对白节点');
     expect(nodeText('乙'), findsOneWidget);
 
-    w.onDeleteNode(_t2);
+    w.onDeleteNode!(_t2);
     await settle(tester);
 
     expect(nodeText('乙'), findsNothing);
@@ -300,13 +305,11 @@ void main() {
 
   // ---------- 内联字段编辑：刷新 + 平移不重建 ----------
   testWidgets('内联编辑字段：卡片文本刷新，随后纯平移仍 0 次卡片 build', (tester) async {
-    var w = await mount(tester);
-    w.onToggleExpand(_t1);
-    await settle(tester);
-    w = tester.widget<StoryFlowGraph>(find.byType(StoryFlowGraph));
+    await mount(tester);
 
+    var w = tester.widget<StoryFlowGraph>(find.byType(StoryFlowGraph));
     final ctl = w.fieldController(_t1, 'content');
-    expect(ctl, isNotNull, reason: 'schema 有 content 字段就该给内联区一个控制器');
+    expect(ctl, isNotNull, reason: 'schema 有 content 字段就该给卡片一个控制器');
     ctl!.text = '改后的台词';
     w.onFieldChanged(_t1, 'content', '改后的台词');
     await settle(tester);
@@ -318,11 +321,6 @@ void main() {
       reason: '控制器被回收重建 → 输入框文本回弹，用户看到的是「我打的字没了」',
     );
     expect(nodeText('改后的台词'), findsOneWidget);
-    expect(
-      w.fieldInvalid(_t1, 'content'),
-      isFalse,
-      reason: '合法文本不该被标成写回失败',
-    );
 
     // 性能底线：平移只换视口矩阵，一张卡片都不许重建。
     final vp = tester
@@ -375,37 +373,31 @@ void main() {
         debugBuildSlotsCalls - slots0,
         0,
         reason:
-            '纯宿主重泵改不了内容签名（graph/展开/选中/高亮全不变）也不改 '
+            '纯宿主重泵改不了内容签名（graph/选中/高亮全不变）也不改 '
             'positionsVersion —— 若仍在重算槽位，说明门控退化回「每次重建全作废」',
       );
       expect(debugSlotCardsBuilt - built0, 0, reason: '重泵不得新建任何卡片实例');
       await settle(tester);
     });
 
-    testWidgets('负向对照：展开/收起 → _buildSlots 恰 1 次/次', (tester) async {
+    testWidgets('负向对照：选中集变化 → _buildSlots 恰 1 次/次', (tester) async {
       await mount(tester);
       final slots0 = debugBuildSlotsCalls;
-      final dash0 = debugDashCacheClears;
       tester
           .widget<StoryFlowGraph>(find.byType(StoryFlowGraph))
-          .onToggleExpand(_t1);
+          .onSelectionChanged(FlowSelection.ofNode(_t1));
       await settle(tester);
       expect(
         debugBuildSlotsCalls - slots0,
         1,
-        reason: 'expandedNodes 内容变了必须恰好重建一次（计数器若仍为 0 就是写坏了）',
-      );
-      expect(
-        debugDashCacheClears - dash0,
-        1,
-        reason: '展开态影响端口锚点 → 虚线缓存必须作废一次（C4 探针负向对照）',
+        reason: '选中集变了（影响卡片边框）必须恰好重建一次（计数器若仍为 0 就是写坏了）',
       );
       final slots1 = debugBuildSlotsCalls;
       tester
           .widget<StoryFlowGraph>(find.byType(StoryFlowGraph))
-          .onToggleExpand(_t1);
+          .onSelectionChanged(FlowSelection.none);
       await settle(tester);
-      expect(debugBuildSlotsCalls - slots1, 1, reason: '收起同样恰好重建一次');
+      expect(debugBuildSlotsCalls - slots1, 1, reason: '取消选中同样恰好重建一次');
     });
 
     testWidgets('负向对照：跨 LOD 档 → _buildSlots 恰 1 次', (tester) async {
@@ -435,9 +427,10 @@ void main() {
 
     testWidgets('拖拽 30 帧：0 次卡片构建、30 次包装重建、节点跟手', (tester) async {
       await mount(tester);
-      // 首个节点世界 (40,40)，scale=1/pan=0；卡片中部 (120,70) 避开端口/箭头。
+      // 首个节点世界 (40,40)，scale=1/pan=0；抓标题条左侧把手 (46,52)
+      // （正文/说话人是输入框，会让位给文本编辑）。
       final origin = tester.getTopLeft(find.byType(StoryFlowGraph));
-      final g = await tester.startGesture(origin + const Offset(120, 70));
+      final g = await tester.startGesture(origin + const Offset(46, 52));
       await tester.pump(); // 按下选中的那次重建不记入帧成本
       final slots0 = debugBuildSlotsCalls;
       final built0 = debugSlotCardsBuilt;

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/app_command.dart';
 import '../../core/models.dart';
 import '../ai/ai_chat_controller.dart';
 import '../settings/settings_page.dart';
@@ -66,6 +67,37 @@ class ShellState extends ChangeNotifier {
     if (_activePluginPanel == v) return;
     _activePluginPanel = v;
     notifyListeners();
+  }
+
+  // ---------------- A2 命令面板 / 全局快捷键的落地回调 ----------------
+
+  /// 活动壳登记的命令落地回调（导演壳给功能视图、移动壳给子页等）。
+  /// 全局快捷键挂在壳之上（`app_shortcuts.dart`），它只认这一份登记；
+  /// 没登记的入口不会出现在命令面板里。不经 notifyListeners——命令清单在
+  /// 打开面板时现取。
+  AppCommandHost _commandHost = const AppCommandHost();
+  AppCommandHost get commandHost => _commandHost;
+
+  void registerCommandHost(AppCommandHost host) {
+    _commandHost = host;
+  }
+
+  /// 注销：仅在登记的仍是同一个 host 时清空（切换布局时新旧壳会短暂共存，
+  /// 旧壳的 dispose 不得抹掉新壳刚登记的 host）。
+  void unregisterCommandHost(AppCommandHost host) {
+    if (identical(_commandHost, host)) _commandHost = const AppCommandHost();
+  }
+
+  /// 打开「剧情库检索」（Ctrl+F 与命令面板共用）：优先活动壳登记的实现
+  /// （导演壳跳功能视图、剧情图壳切 base 视图、移动壳弹全屏），否则退回
+  /// 左侧栏检索面板——创作/经典两壳都有。
+  void openSearch() {
+    final h = _commandHost.openSearch;
+    if (h != null) {
+      h();
+      return;
+    }
+    selectPane(SidePane.base);
   }
 
   void setAiOpen(bool open) {

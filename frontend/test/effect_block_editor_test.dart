@@ -34,6 +34,7 @@ Map<String, dynamic> _row({
   List<Map<String, dynamic>> slots = const [],
   List<Map<String, dynamic>>? nested,
   String? error,
+  Map<String, dynamic>? templateExtra,
 }) {
   final head = <dynamic>[?primary, ?secondary, ...args];
   return {
@@ -43,18 +44,94 @@ Map<String, dynamic> _row({
     'secondary': secondary,
     'args': args,
     'display': display ?? '[${head.join(', ')}]',
-    'template': code == null ? null : {'code': code, 'desc': desc ?? ''},
+    'template': code == null
+        ? null
+        : {'code': code, 'desc': desc ?? '', ...?templateExtra},
     'slots': slots,
     'nested': nested,
     'error': error,
   };
 }
 
+/// A1 元数据：条件「年龄」家族的 3 个算符变体（≥/≤/范围）。
+List<Map<String, dynamic>> _ageOpVariants() => [
+      {
+        'op': '≥',
+        'code': '[1, 1, V]',
+        'value_index': 2,
+        'upper_index': -1,
+        'slots': [
+          {'kind': 'number', 'name': 'V', 'label': '年龄', 'count': 1},
+        ],
+      },
+      {
+        'op': '≤',
+        'code': '[1, 2, V]',
+        'value_index': 2,
+        'upper_index': -1,
+        'slots': [
+          {'kind': 'number', 'name': 'V', 'label': '年龄', 'count': 1},
+        ],
+      },
+      {
+        'op': '范围',
+        'code': '[1, 3, X, Y]',
+        'value_index': 2,
+        'upper_index': 3,
+        'slots': [
+          {'kind': 'number', 'name': 'X', 'label': '下限', 'count': 1},
+          {'kind': 'number', 'name': 'Y', 'label': '上限', 'count': 1},
+        ],
+      },
+    ];
+
+/// 条件行：年龄 ≥ 5（模板带 A1 family/ops，供行内切算符测试）。
+Map<String, dynamic> _rowAge() => _row(
+      code: '[1, 1, V]',
+      desc: '年龄 >= V',
+      slots: [_numSlot('V', '年龄', '5')],
+      templateExtra: {
+        'family': '1|年龄',
+        'family_label': '年龄',
+        'op': '≥',
+        'ops': _ageOpVariants(),
+      },
+    );
+
 /// 标准效果行：属性 3(魅力) +5 → `[1, 1, 3, 5]` / 人话「属性 魅力 增加 5」。
 Map<String, dynamic> _rowA() => _row(
       code: '[1, 1, @ATTR@, V]',
       desc: '属性 @ATTR@ 增加 V',
       slots: [_dictSlot('ATTR', 'ATTR', '属性', '3'), _numSlot('V', '数值', '5')],
+    );
+
+/// 998 嵌套组行（真实契约形态）：模板 `[998, 2, 0, EFFECTS*]`，rest 槽
+/// `EFFECTS`（kind=nested）承载子行；后端只认「父行数组内的嵌套」。
+Map<String, dynamic> _row998(List<Map<String, dynamic>> nested) => _row(
+      primary: 998,
+      secondary: 2,
+      args: const [0],
+      display: '[998, 2, 0, [[20, 1, 101, 50]]]',
+      code: '[998, 2, 0, EFFECTS*]',
+      desc: '对所有人执行嵌套效果 EFFECTS*',
+      slots: const [
+        {
+          'name': 'EFFECTS',
+          'kind': 'nested',
+          'dict': null,
+          'label': '嵌套效果',
+          'value': '[[20, 1, 101, 50]]',
+        },
+      ],
+      nested: nested,
+    );
+
+/// 子行：获得物品 101 ×50（无模板的裸行，序列化走原文）。
+Map<String, dynamic> _childItem() => _row(
+      primary: 20,
+      secondary: 1,
+      args: const [101, 50],
+      display: '[20, 1, 101, 50]',
     );
 
 /// 第二条：给予物品 101 ×50 → `[7, 1, 101, 50]`。
@@ -93,6 +170,10 @@ void _mockParse(Map<String, dynamic> Function(String text, String mode) build) {
     }
   });
 }
+
+/// 对话框内的「确定」（编辑器/浏览器自身也有同名按钮，需限定在 AlertDialog 内）。
+Finder _dialogConfirm() =>
+    find.descendant(of: find.byType(AlertDialog), matching: find.text('确定'));
 
 Future<void> _mountEditor(
   WidgetTester t, {
@@ -185,6 +266,419 @@ void main() {
       // 子行取反
       rows[0].nested[0].negate = true;
       expect(serializeBlockRows(rows), '[998, 1, 0]; [1, -1, 3, 7]');
+    });
+  });
+
+  group('D8 嵌套 998 组：内联序列化 + 子行增删移', () {
+    test('真实 998 行（rest 槽 EFFECTS*）：子行内联进父行，不再另起一行', () {
+      final rows = rowsFromParse({
+        'rows': [
+          _row998([_childItem()]),
+        ],
+      });
+      expect(rows[0].inlinesNested, isTrue);
+      expect(rows[0].toLine(), '[998, 2, 0, [[20, 1, 101, 50]]]');
+      expect(serializeBlockRows(rows), '[998, 2, 0, [[20, 1, 101, 50]]]');
+    });
+
+    test('多子行内联成一个嵌套数组；删除/移序/清空都往返稳定', () {
+      final rows = rowsFromParse({
+        'rows': [
+          _row998([_childItem(), _rowA()]),
+        ],
+      });
+      expect(serializeBlockRows(rows),
+          '[998, 2, 0, [[20, 1, 101, 50], [1, 1, 3, 5]]]');
+
+      // 组内上移：子行序交换
+      final n = rows[0].nested;
+      final last = n.removeLast();
+      n.insert(0, last);
+      expect(serializeBlockRows(rows),
+          '[998, 2, 0, [[1, 1, 3, 5], [20, 1, 101, 50]]]');
+
+      // 删空 → 连前置逗号一起摘掉，不留残缺行
+      n.clear();
+      expect(rows[0].toLine(), '[998, 2, 0]');
+    });
+
+    test('rest 槽不进槽表单（避免文本把手改成子行）', () {
+      final r = rowsFromParse({
+        'rows': [
+          _row998([_childItem()]),
+        ],
+      })[0];
+      expect(r.slots.map((s) => s.name), contains('EFFECTS'));
+      expect(r.editableSlots.map((s) => s.name), isNot(contains('EFFECTS')));
+      expect(r.editable, isFalse, reason: '只有 rest 槽 → 本行没有可改的参数');
+    });
+
+    testWidgets('子行删除：只删一条 → 组内剩一条', (t) async {
+      _mockParse((text, mode) => {
+            'ok': true,
+            'status': 'ok',
+            'translations': [],
+            'rows': [
+              _row998([_childItem(), _rowA()]),
+            ],
+          });
+      String? result;
+      await _mountEditor(t, text: 'X', dicts: {'attrs': {'3': '魅力'}}, onResult: (v) => result = v);
+      expect(find.byKey(const ValueKey('cdel-1-child')), findsOneWidget);
+
+      await t.tap(find.byKey(const ValueKey('cdel-1-child')));
+      await t.pumpAndSettle();
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[998, 2, 0, [[20, 1, 101, 50]]]');
+    });
+
+    testWidgets('子行删空：容器行一并移除并提示', (t) async {
+      _mockParse((text, mode) => {
+            'ok': true,
+            'status': 'ok',
+            'translations': [],
+            'rows': [
+              _row998([_childItem()]),
+            ],
+          });
+      String? result;
+      await _mountEditor(t, text: 'X', onResult: (v) => result = v);
+      await t.tap(find.byKey(const ValueKey('cdel-0-child')));
+      await t.pumpAndSettle();
+      expect(find.textContaining('容器行已无子行'), findsOneWidget);
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '');
+    });
+
+    testWidgets('子行上移：组内顺序交换', (t) async {
+      _mockParse((text, mode) => {
+            'ok': true,
+            'status': 'ok',
+            'translations': [],
+            'rows': [
+              _row998([_childItem(), _rowA()]),
+            ],
+          });
+      String? result;
+      await _mountEditor(t, text: 'X', dicts: {'attrs': {'3': '魅力'}}, onResult: (v) => result = v);
+      await t.tap(find.byKey(const ValueKey('cup-1-child')));
+      await t.pumpAndSettle();
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[998, 2, 0, [[1, 1, 3, 5], [20, 1, 101, 50]]]');
+    });
+
+    testWidgets('添加子行：走目录 → 追加进组内嵌套数组', (t) async {
+      ApiClient.instance.client = MockClient((req) async {
+        switch (req.url.path) {
+          case '/api/effect/parse':
+            final text = (jsonDecode(req.body)['text'] ?? '').toString();
+            return _resp({
+              'ok': true,
+              'status': 'ok',
+              'translations': [],
+              'rows': text.contains('998')
+                  ? [_row998([_childItem()])]
+                  : [_row(primary: 9, secondary: 9, args: const [], display: '[9, 9]', code: '[9, 9]', desc: '目录行')],
+            });
+          case '/api/effect_suggest':
+            return _resp({
+              'items': [
+                {'code': '[9, 9]', 'desc': '目录行', 'raw_code': '[9, 9]', 'slots': []},
+              ]
+            });
+          default:
+            return _resp({'ok': true});
+        }
+      });
+      String? result;
+      await _mountEditor(t, text: '998', onResult: (v) => result = v);
+      await t.tap(find.byKey(const ValueKey('cadd-0')));
+      await t.pumpAndSettle();
+      expect(find.text('浏览效果'), findsOneWidget);
+      await t.tap(find.text('目录行'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[998, 2, 0, [[20, 1, 101, 50], [9, 9]]]');
+    });
+  });
+
+  group('A2/D：family 元数据与单行单点化', () {
+    test('switchRowOp：切算符保留已填值；范围缺值返回 false', () {
+      final r = rowsFromParse({
+        'rows': [_rowAge()],
+      })[0];
+      expect(r.familyLabel, '年龄');
+      expect(r.ops.map((v) => v.op), ['≥', '≤', '范围']);
+      expect(r.toLine(), '[1, 1, 5]');
+
+      // 直系切 ≤：V=5 原样保留，行码改写为 [1, 2, 5]。
+      expect(switchRowOp(r, r.ops[1]), isTrue);
+      expect(r.op, '≤');
+      expect(r.toLine(), '[1, 2, 5]');
+
+      // 切范围：X/Y 还没有值 → false（调用方改为打开槽表单补填）。
+      expect(switchRowOp(r, r.ops[2]), isFalse);
+      expect(r.toLine(), '[1, 2, 5]');
+    });
+
+    test('switchRowOp：范围变体补齐 X/Y 后生成 [1, 3, X, Y]', () {
+      final r = rowsFromParse({
+        'rows': [_rowAge()],
+      })[0];
+      r.values['X'] = '3';
+      r.values['Y'] = '5';
+      expect(switchRowOp(r, r.ops[2]), isTrue);
+      expect(r.op, '范围');
+      expect(r.toLine(), '[1, 3, 3, 5]');
+      // 取反仍作用在 secondary 上。
+      r.negate = true;
+      expect(r.toLine(), '[1, -3, 3, 5]');
+    });
+
+    test('D singleRow 单点化：判定 / 再加行 / 收敛写入 / 文案', () {
+      expect(singleRowForType('1D Array'), isTrue);
+      expect(singleRowForType('2D Array'), isFalse);
+      expect(blockCanAddRow(singleRow: false, rowCount: 5), isTrue);
+      expect(blockCanAddRow(singleRow: true, rowCount: 0), isTrue);
+      expect(blockCanAddRow(singleRow: true, rowCount: 1), isFalse);
+
+      final host = <EffectBlockRow>[EffectBlockRow(rawCode: '[1, 1, 3, 5]')];
+      applyRowsWithSingleRow(host, [EffectBlockRow(rawCode: '[9, 9]')],
+          singleRow: true);
+      expect(serializeBlockRows(host), '[9, 9]');
+      applyRowsWithSingleRow(host, [EffectBlockRow(rawCode: '[7, 7]')],
+          singleRow: false);
+      expect(serializeBlockRows(host), '[9, 9]; [7, 7]');
+      expect(kSingleRowHint, '一句话只能一个屏幕效果');
+    });
+
+    testWidgets('行内算符 chips：点 ≤ 改写 code 且保留已填值', (t) async {
+      _mockParse((text, mode) => {
+            'ok': true,
+            'status': 'ok',
+            'translations': [],
+            'rows': [_rowAge()],
+          });
+      String? result;
+      await _mountEditor(t, text: 'X', onResult: (v) => result = v);
+      expect(find.text('[1, 1, 5]'), findsOneWidget);
+      expect(find.byKey(const ValueKey('op-0-≥')), findsOneWidget);
+      expect(find.byKey(const ValueKey('op-0-范围')), findsOneWidget);
+
+      await t.tap(find.byKey(const ValueKey('op-0-≤')));
+      await t.pumpAndSettle();
+      expect(find.text('[1, 2, 5]'), findsOneWidget, reason: '切算符改写 code 且保留 V=5');
+
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[1, 2, 5]');
+    });
+
+    testWidgets('行内切「范围」：新槽补填后生成 [1, 3, X, Y]', (t) async {
+      _mockParse((text, mode) => {
+            'ok': true,
+            'status': 'ok',
+            'translations': [],
+            'rows': [_rowAge()],
+          });
+      String? result;
+      await _mountEditor(t, text: 'X', onResult: (v) => result = v);
+
+      await t.tap(find.byKey(const ValueKey('op-0-范围')));
+      await t.pumpAndSettle();
+      expect(find.text('切换为「范围」'), findsOneWidget, reason: '缺值时打开槽表单补填');
+      await t.enterText(
+          find.descendant(
+              of: find.byKey(const ValueKey('slot-X')),
+              matching: find.byType(EditableText)),
+          '3');
+      await t.enterText(
+          find.descendant(
+              of: find.byKey(const ValueKey('slot-Y')),
+              matching: find.byType(EditableText)),
+          '5');
+      await t.pumpAndSettle();
+      await t.tap(_dialogConfirm());
+      await t.pumpAndSettle();
+      expect(find.text('[1, 3, 3, 5]'), findsOneWidget);
+
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[1, 3, 3, 5]');
+    });
+
+    testWidgets('A4：非法数值即时报错并禁用「确定」', (t) async {
+      _mockParse((text, mode) => {
+            'ok': true,
+            'status': 'ok',
+            'translations': [],
+            'rows': [_rowAge()],
+          });
+      ApiClient.instance.client = MockClient((req) async {
+        switch (req.url.path) {
+          case '/api/effect/parse':
+            return _resp({'ok': true, 'status': 'ok', 'translations': [], 'rows': [_rowAge()]});
+          case '/api/effect_suggest':
+            return _resp({
+              'items': [
+                for (final v in _ageOpVariants())
+                  {
+                    'code': v['code'],
+                    'desc': '年龄 满足 V',
+                    'raw_code': v['code'],
+                    'slots': v['slots'],
+                    'family': '1|年龄',
+                    'family_label': '年龄',
+                    'op': v['op'],
+                    'ops': _ageOpVariants(),
+                  },
+              ]
+            });
+          default:
+            return _resp({'ok': true});
+        }
+      });
+      String? result;
+      await _mountEditor(t, text: '', onResult: (v) => result = v);
+      await t.tap(find.byKey(const ValueKey('add-row')));
+      await t.pumpAndSettle();
+      expect(find.text('浏览效果'), findsOneWidget);
+      await t.tap(find.text('年龄'));
+      await t.pumpAndSettle();
+
+      // 非法输入：报错 + 「确定」按压无效（对话框不关闭）。
+      await t.enterText(
+          find.descendant(
+              of: find.byKey(const ValueKey('slot-V')),
+              matching: find.byType(EditableText)),
+          '5.5');
+      await t.pumpAndSettle();
+      expect(find.text('请输入整数（原版参数为整数）'), findsOneWidget);
+      await t.tap(_dialogConfirm());
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('slot-V')), findsOneWidget,
+          reason: '非法值不得关闭表单');
+
+      // 合法后错误消失，确定可用。
+      await t.enterText(
+          find.descendant(
+              of: find.byKey(const ValueKey('slot-V')),
+              matching: find.byType(EditableText)),
+          '5');
+      await t.pumpAndSettle();
+      expect(find.text('请输入整数（原版参数为整数）'), findsNothing);
+      await t.tap(_dialogConfirm());
+      await t.pumpAndSettle();
+      expect(find.text('[1, 1, 5]'), findsOneWidget);
+
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[1, 1, 5]');
+    });
+  });
+
+  group('A7：初始值自动填充', () {
+    testWidgets('新增候选：dict 槽自动带出第一个合法引用', (t) async {
+      ApiClient.instance.client = MockClient((req) async {
+        switch (req.url.path) {
+          case '/api/effect/parse':
+            return _resp({
+              'ok': true,
+              'status': 'ok',
+              'translations': [],
+              'rows': [_rowA()],
+            });
+          case '/api/effect_suggest':
+            return _resp({
+              'items': [
+                {
+                  'code': '[1, 1, @ATTR@, V]',
+                  'desc': '属性 @ATTR@ 增加 V',
+                  'raw_code': '[1, 1, @ATTR@, V]',
+                  'slots': [
+                    _dictSlot('ATTR', 'ATTR', '属性', '3'),
+                    _numSlot('V', '数值', ''),
+                  ],
+                },
+              ]
+            });
+          default:
+            return _resp({'ok': true});
+        }
+      });
+      String? result;
+      await _mountEditor(t, text: '', dicts: {'attrs': {'3': '魅力'}}, onResult: (v) => result = v);
+      await t.tap(find.byKey(const ValueKey('add-row')));
+      await t.pumpAndSettle();
+      await t.tap(find.text('属性 增加 数值'));
+      await t.pumpAndSettle();
+
+      // ATTR 自动取池首条 3（人话「魅力」）；只剩数字槽 V 待填。
+      expect(find.text('预览：属性 魅力 增加 V'), findsOneWidget);
+      expect(find.text('代码：[1, 1, 3, V]'), findsOneWidget);
+
+      await t.enterText(
+          find.descendant(
+              of: find.byKey(const ValueKey('slot-V')),
+              matching: find.byType(EditableText)),
+          '5');
+      await t.pumpAndSettle();
+      await t.tap(_dialogConfirm());
+      await t.pumpAndSettle();
+      expect(find.text('[1, 1, 3, 5]'), findsOneWidget,
+          reason: 'ATTR 预填 3 已落进行码');
+
+      await t.tap(find.text('确定'));
+      await t.pumpAndSettle();
+      expect(result, '[1, 1, 3, 5]');
+    });
+
+    testWidgets('新增候选：池里没有引用时给出可读提示且不能直接确定', (t) async {
+      ApiClient.instance.client = MockClient((req) async {
+        switch (req.url.path) {
+          case '/api/effect/parse':
+            return _resp({
+              'ok': true,
+              'status': 'ok',
+              'translations': [],
+              'rows': [_rowB()],
+            });
+          case '/api/effect_suggest':
+            return _resp({
+              'items': [
+                {
+                  'code': '[7, 1, @ITEM@, V]',
+                  'desc': '物品 @ITEM@ 增加 V',
+                  'raw_code': '[7, 1, @ITEM@, V]',
+                  'slots': [
+                    _dictSlot('ITEM', 'ITEM', '物品', '101'),
+                    _numSlot('V', '数量', ''),
+                  ],
+                },
+              ]
+            });
+          default:
+            return _resp({'ok': true}); // /api/cfg/ItemCfg 空表 → 池无候选
+        }
+      });
+      String? result;
+      await _mountEditor(t, text: '', onResult: (v) => result = v);
+      await t.tap(find.byKey(const ValueKey('add-row')));
+      await t.pumpAndSettle();
+      await t.tap(find.text('物品 增加 数量'));
+      await t.pumpAndSettle();
+
+      expect(find.text('参数「物品」没有可用候选，请手动填写'), findsOneWidget);
+      // 槽空 → 完整性检查拦住「确定」，对话框不关闭、不产出结果。
+      await t.tap(_dialogConfirm());
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('slot-ITEM')), findsOneWidget,
+          reason: '空引用不许直接确定');
+      expect(result, isNull);
     });
   });
 

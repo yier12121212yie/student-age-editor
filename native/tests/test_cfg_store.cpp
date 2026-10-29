@@ -25,6 +25,7 @@
 #include "sa_core/json_wire.h"
 #include "sa_core/paths.h"
 #include "sa_core/sha1.h"
+#include "sa_core/sha256.h"
 #include "sa_core/strings.h"
 #include "sa_core/utf8.h"
 #include "sa_core/util.h"
@@ -127,6 +128,12 @@ std::string sha1_of_file(const std::string& p) {
     return sa_core::sha1_hex(*raw);
 }
 
+std::string sha256_of_file(const std::string& p) {
+    auto raw = cs::read_bytes(p);
+    REQUIRE(raw.has_value());
+    return sa_core::sha256_hex(*raw);
+}
+
 // Defined further down (its own default argument lives there); forward-declared
 // so the bug #6 journal cases, which sit with the other undo/redo cases, can
 // size-check the A8 invariant.
@@ -173,6 +180,11 @@ TEST_CASE("create file has no snapshot", "[cfg_store]") {
     auto r = store::write_cfg(fx.p(), json{{"1", json{{"id", 1}}}});
     CHECK(r["ok"] == true);
     CHECK(r["snapshot"].is_null());
+    // B2：写盘字节的 SHA-256 随结果回传，供 revision 播种（不再重读大表）。
+    REQUIRE(r.contains("sha256"));
+    REQUIRE(r["sha256"].is_string());
+    CHECK(r["sha256"].get<std::string>().size() == 64);
+    CHECK(r["sha256"].get<std::string>() == sha256_of_file(sa_core::paths::path_to_utf8(fx.p())));
     // No snapshot exists for a create (there was no old content), so nothing
     // under .editor_history may look like one. The undo journal IS written:
     // "(nothing) -> {…}" is exactly the step that undo must be able to take,

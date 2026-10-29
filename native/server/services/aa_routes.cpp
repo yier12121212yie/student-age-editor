@@ -111,6 +111,20 @@ json txt_preview_payload(const std::string& raw) {
                 {"truncated", i < n}};
 }
 
+// GET 二进制图片直发的共用逻辑：优先走 [fetch_tex_raw]（模组本地资源优先），
+// 404/422 时若索引与资源扩展均未配置，回旧接口语义的 400 not ready。
+Resp serve_tex_raw_checked(const Req& req, const std::string& key) {
+    Resp raw = fetch_tex_raw(key, req.if_none_match_header);
+    if (raw.status == 200 || raw.status == 302 || raw.status == 304) return raw;
+    auto idx = ensure_aa_index();
+    auto store = ensure_pack_store();
+    bool store_active = store && store->active();
+    if (!idx && !store_active && !portrait_source_configured() &&
+        !background_source_configured())
+        return Resp::Json(400, json{{"error", "index not ready"}});
+    return raw;
+}
+
 }  // namespace
 
 void register_aa_routes(Router& r) {
@@ -133,6 +147,11 @@ void register_aa_routes(Router& r) {
             status = STATE().aa_status;
             error = STATE().aa_error;
             for (const auto& d : STATE().aa_dirs) dirs.push_back(d);
+        }
+        auto pstore = portrait_local_store();
+        auto bstore = background_local_store();
+        if (status == "idle" && ((pstore && pstore->active()) || (bstore && bstore->active()))) {
+            status = "ready";
         }
         json body;
         body["status"] = status;
@@ -179,13 +198,17 @@ void register_aa_routes(Router& r) {
         long long limit = sa_core::py_int(qget(req, "limit", "500")).value_or(500);
         std::string scope = sa_core::str::lower(p4::strip(qget(req, "scope", "")));
         bool store_active = store && store->active();
+        auto pstore = portrait_local_store();
+        auto bstore = background_local_store();
+        bool pstore_active = pstore && pstore->active();
+        bool bstore_active = bstore && bstore->active();
 
         std::vector<std::string> itex, iaud, itxt, stex, saud, stxt;
         if (idx) { itex = idx->tex_keys(); iaud = idx->aud_keys(); itxt = idx->txt_keys(); }
         if (store_active) { stex = store->tex_keys(); saud = store->aud_keys(); stxt = store->txt_keys(); }
 
         std::string status;
-        if (idx || store_active) {
+        if (idx || store_active || pstore_active || bstore_active) {
             status = "ready";
         } else {
             std::lock_guard<std::mutex> lk(STATE().mu_);
@@ -208,7 +231,7 @@ void register_aa_routes(Router& r) {
             } catch (...) {}
             auto music_urls = flow::music_url_basenames(audio_rows);
 
-            bool tex_filterable = (idx && idx->has_texmeta()) || store_active;
+            bool tex_filterable = (idx && idx->has_texmeta()) || store_active || pstore_active || bstore_active;
 
             using BundleFn = std::function<std::string(const std::string&)>;
             using SizeFn = std::function<std::optional<std::array<int, 2>>(const std::string&)>;
@@ -220,6 +243,16 @@ void register_aa_routes(Router& r) {
             if (store_active)
                 tex_groups.push_back({stex, [&](const std::string& k) { return store->tex_path(k); },
                                       [&](const std::string& k) { return store->tex_meta(k); }});
+            if (bstore_active) {
+                auto bkeys = bstore->tex_keys();
+                tex_groups.push_back({bkeys, [&](const std::string& k) { return bstore->tex_path(k); },
+                                      [&](const std::string& k) { return bstore->tex_meta(k); }});
+            }
+            if (pstore_active) {
+                auto pkeys = pstore->tex_keys();
+                tex_groups.push_back({pkeys, [&](const std::string& k) { return pstore->tex_path(k); },
+                                      [&](const std::string& k) { return pstore->tex_meta(k); }});
+            }
             std::vector<Group> aud_groups;
             if (idx)
                 aud_groups.push_back({iaud, [&](const std::string& k) { return idx->aud_bundle(k); }, nullptr});
@@ -293,9 +326,15 @@ void register_aa_routes(Router& r) {
             return Resp::Json(200, std::move(body));
         }
 
+        std::vector<std::vector<std::string>> tex_sources;
+        if (!itex.empty()) tex_sources.push_back(itex);
+        if (!stex.empty()) tex_sources.push_back(stex);
+        if (bstore_active) tex_sources.push_back(bstore->tex_keys());
+        if (pstore_active) tex_sources.push_back(pstore->tex_keys());
+
         json body;
         body["status"] = status;
-        body["tex"] = pick_keys({itex, stex}, q, limit);
+        body["tex"] = pick_keys(tex_sources, q, limit);
         body["aud"] = pick_keys({iaud, saud}, q, limit);
         body["txt"] = pick_keys({itxt, stxt}, q, limit);
         return Resp::Json(200, std::move(body));
@@ -363,49 +402,32 @@ void register_aa_routes(Router& r) {
 
     // POST /api/aa/preview — api.py:2307-2382.
     r.post(R"(/api/aa/preview)", [](const Req& req) -> Resp {
-        auto idx = ensure_aa_index();
-        auto store = ensure_pack_store();
-        bool store_active = store && store->active();
-        if (!idx && !store_active && !portrait_source_configured() &&
-            !background_source_configured())
-            return Resp::Json(400, json{{"error", "index not ready"}});
         const json& body = req.body;
         std::string kind = body.is_object() && body.contains("kind") ? sa_core::py_str(body.at("kind")) : "";
         std::string key = body.is_object() && body.contains("key") ? sa_core::py_str(body.at("key")) : "";
         if (kind.empty() || key.empty()) return Resp::Json(400, json{{"error", "kind/key required"}});
         using sa_core::http::b64_encode;
 
+        auto idx = ensure_aa_index();
+        auto store = ensure_pack_store();
+        bool store_active = store && store->active();
+        if (!idx && !store_active && !portrait_source_configured() &&
+            !background_source_configured())
+            return Resp::Json(400, json{{"error", "index not ready"}});
+
         if (kind == "tex") {
-            bool found = idx && idx->has_tex(key);  // game idx: present but not decodable
-            if (store_active) {
-                if (auto r = store->read_file(store->tex_path(key)))
-                    return Resp::Json(200, json{{"kind", "tex"},
-                                                {"mime", tex_mime(r->second)},
-                                                {"data", b64_encode(r->first)}});
-            }
-            // 人物图片资源扩展：本地目录直接出字节；对象存储只回公开 URL，
-            // 由客户端自行 GET（服务端不再代下载整张图）。
-            if (auto pr = read_portrait_local_tex(key)) {
+            // 复用二进制缓存的解析顺序（模组 -> 解码包 -> 人物 -> 背景）取字节，
+            // 再按旧接口封装成 Base64 JSON：旧消费方零改动 + 内存缓存加速。
+            Resp raw = fetch_tex_raw(key, "");
+            if (raw.status == 200)
                 return Resp::Json(200, json{{"kind", "tex"},
-                                            {"mime", tex_mime(pr->second)},
-                                            {"data", b64_encode(pr->first)}});
-            }
-            if (auto url = portrait_url_for(key))
+                                            {"mime", raw.content_type},
+                                            {"data", b64_encode(raw.bytes)}});
+            if (raw.status == 302)
                 return Resp::Json(200, json{{"kind", "tex"},
                                             {"mime", "image/webp"},
-                                            {"url", *url}});
-            // 背景图片资源扩展：与人物图片扩展同构（本地出字节 / 对象存储回 URL）。
-            if (auto br = read_background_local_tex(key)) {
-                return Resp::Json(200, json{{"kind", "tex"},
-                                            {"mime", tex_mime(br->second)},
-                                            {"data", b64_encode(br->first)}});
-            }
-            if (auto url = background_url_for(key))
-                return Resp::Json(200, json{{"kind", "tex"},
-                                            {"mime", "image/webp"},
-                                            {"url", *url}});
-            if (found) return Resp::Json(422, json{{"error", "texture decode failed: " + key}});
-            return Resp::Json(404, json{{"error", "texture key not found: " + key}});
+                                            {"url", raw.location}});
+            return raw;  // 404 / 422 错误信封原样返回
         }
         if (kind == "aud") {
             bool found = idx && idx->has_aud(key);
@@ -424,6 +446,43 @@ void register_aa_routes(Router& r) {
                 return Resp::Json(200, txt_preview_payload(*raw));
             if (idx && idx->has_txt(key))
                 // key 在索引但 pack 无文件（全量解码包未铺满时的合法形态）。
+                return Resp::Json(422, json{{"error", "text decode failed: " + key}});
+            return Resp::Json(404, json{{"error", "text key not found: " + key}});
+        }
+        return Resp::Json(400, json{{"error", "bad kind"}});
+    });
+
+    // GET /api/aa/tex?key=... — 二进制直发（等价 raw?kind=tex）。返回原始字节流
+    // （Content-Type: image/...）+ ETag/Cache-Control，命中 If-None-Match 回 304。
+    r.get(R"(/api/aa/tex)", [](const Req& req) -> Resp {
+        std::string key = qget(req, "key", "");
+        if (key.empty()) return Resp::Json(400, json{{"error", "key required"}});
+        return serve_tex_raw_checked(req, key);
+    });
+
+    // GET /api/aa/raw?kind=tex&key=... — 二进制直发（tex/aud/txt）。tex 走内存
+    // LRU 缓存与 ETag/304 协商；对象存储回 302 Location；aud/txt 直出原始字节。
+    r.get(R"(/api/aa/raw)", [](const Req& req) -> Resp {
+        std::string kind = sa_core::str::lower(p4::strip(qget(req, "kind", "tex")));
+        if (kind.empty()) kind = "tex";
+        std::string key = qget(req, "key", "");
+        if (key.empty()) return Resp::Json(400, json{{"error", "key required"}});
+        if (kind == "tex") return serve_tex_raw_checked(req, key);
+        if (kind == "aud") {
+            Resp raw = fetch_aud_raw(key, req.if_none_match_header);
+            if (raw.status == 200 || raw.status == 304) return raw;
+            auto idx = ensure_aa_index();
+            auto store = ensure_pack_store();
+            if (!idx && !(store && store->active()))
+                return Resp::Json(400, json{{"error", "index not ready"}});
+            return raw;
+        }
+        if (kind == "txt") {
+            if (auto raw = read_pack_txt(key))
+                return Resp::BytesTyped(200, sa_core::decode_utf8_sig_replace(*raw),
+                                        "text/plain; charset=utf-8");
+            auto idx = ensure_aa_index();
+            if (idx && idx->has_txt(key))
                 return Resp::Json(422, json{{"error", "text decode failed: " + key}});
             return Resp::Json(404, json{{"error", "text key not found: " + key}});
         }

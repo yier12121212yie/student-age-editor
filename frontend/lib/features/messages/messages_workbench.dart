@@ -6,11 +6,16 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
-import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
 import '../resources/role_visuals.dart';
 
@@ -37,9 +42,22 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
     with WorkbenchLeaveGuard<MessagesWorkbench> {
   static const _cfg = 'PhoneMsgCfg';
 
-  Map<String, dynamic> _rows = {};
-  String _snap = '';
-  int? _mtime;
+  /// A3：[A3]整表 load/save/dirty/乐观锁 409 交给公共控制器。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_cfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {
+      if (mounted) AppFeedback.success(context, '短信与回复分支已保存');
+    },
+  );
+
+  Map<String, dynamic> get _rows => _ctl.table(_cfg).data;
 
   bool _loading = true;
   bool _saving = false;
@@ -57,11 +75,23 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -69,16 +99,6 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -95,30 +115,18 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
   String get guardSubject => '短信与回复分支';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
-      final r = await ApiClient.instance.get('/api/cfg/$_cfg');
+      await _ctl.load();
       if (!mounted) return;
-      _rows = _dataOf(r);
-      _mtime = _mtimeOf(r);
-      _snap = jsonEncode(_rows);
       final roots = _roots();
       if (_root == null || !_roots().contains(_root)) {
         _root = roots.isNotEmpty ? roots.first : null;
       }
       _selected = _root;
       _choices.clear();
-      setState(() => _loading = false);
       _loadRoles();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error。
     }
   }
 
@@ -128,106 +136,25 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
     setState(() => _roles = list);
   }
 
-  bool get _dirty => _snap != jsonEncode(_rows);
+  bool get _dirty => _ctl.dirtyDeep;
 
-  Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      var force = false;
-      for (;;) {
-        if (jsonEncode(_rows) == _snap) break;
-        try {
-          final body = <String, dynamic>{
-            'data': _rows,
-            if (!force) 'expect_mtime_ns': _mtime,
-            if (force) 'force': true,
-          };
-          final r = await ApiClient.instance.put('/api/cfg/$_cfg', body: body);
-          if (!mounted) return;
-          setState(() {
-            _mtime = _mtimeOf(r);
-            _snap = jsonEncode(_rows);
-          });
-          break;
-        } on ApiException catch (e) {
-          if (!mounted) return;
-          if (e.statusCode == 409 && !force) {
-            final act = await _conflictDialog();
-            if (!mounted) return;
-            if (act == 'reload') {
-              await _loadAll();
-              return;
-            }
-            if (act == 'force') {
-              force = true;
-              continue;
-            }
-            return;
-          }
-          _info('保存失败：$e', fluent.InfoBarSeverity.error);
-          return;
-        } catch (e) {
-          if (!mounted) return;
-          _info('保存失败：$e', fluent.InfoBarSeverity.error);
-          return;
-        }
-      }
-      if (mounted) {
-        _info('短信与回复分支已保存', fluent.InfoBarSeverity.success);
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
+  Future<void> _saveAll() => _ctl.save();
 
   void _discard() {
-    setState(() {
-      _rows = (jsonDecode(_snap) as Map).cast<String, dynamic>();
-      final roots = _roots();
-      if (_root == null || !roots.contains(_root)) {
-        _root = roots.isNotEmpty ? roots.first : null;
-      }
-      _selected = _root;
-      _choices.clear();
-    });
+    _ctl.discard();
+    final roots = _roots();
+    if (_root == null || !roots.contains(_root)) {
+      _root = roots.isNotEmpty ? roots.first : null;
+    }
+    _selected = _root;
+    _choices.clear();
   }
 
-  Future<String?> _conflictDialog() {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$_cfg 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
+
 
   // ------------------------------------------------------------------
   // 对话树
@@ -505,8 +432,8 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
     final owner = _row(ownerId);
     if (owner == null) return;
     if (_listInt(owner, 'next').isNotEmpty) {
-      _info('这条消息后已有分支，请先在手机视图里选择要继续的分支。',
-          fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(
+          context, '这条消息后已有分支，请先在手机视图里选择要继续的分支。');
       return;
     }
     final text = await _textDialog('添加${_roleName(_roleOf(_row(root)))}信息');
@@ -552,12 +479,12 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
         .where((n) => _roleOf(_row(n)) == 0)
         .toList();
     if (alternative && existingPlayer.length >= 2) {
-      _info('同一条消息最多两个白雨回复。', fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(context, '同一条消息最多两个白雨回复。');
       return;
     }
     if (!alternative && _listInt(owner, 'next').isNotEmpty) {
-      _info('这条消息后已有分支，请先选择要继续编辑的分支。',
-          fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(
+          context, '这条消息后已有分支，请先选择要继续编辑的分支。');
       return;
     }
     final text = await _textDialog('添加白雨信息');
@@ -617,36 +544,15 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('短信数据加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '消息数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -810,7 +716,7 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
                           fontWeight: FontWeight.w600,
                           color: palette.textHigh)),
                   const Spacer(),
-                  Text('ID $root',
+                  Text('编号 $root',
                       style:
                           TextStyle(fontSize: 10.5, color: palette.textHint)),
                 ],
@@ -921,19 +827,19 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
         runSpacing: 8,
         alignment: WrapAlignment.center,
         children: [
-          _MiniBtn(
+          WorkbenchMiniButton(
             label: root == null
                 ? '＋ 添加信息'
                 : '＋ 添加${_roleName(_roleOf(_row(root)))}信息',
             enabled: root != null && !hasNext,
             onTap: _appendContact,
           ),
-          _MiniBtn(
+          WorkbenchMiniButton(
             label: '＋ 添加白雨信息',
             enabled: root != null && !hasNext,
             onTap: () => _appendPlayer(),
           ),
-          _MiniBtn(
+          WorkbenchMiniButton(
             label: '＋ 添加第二种回复',
             enabled: root != null && _selected != null,
             onTap: () => _appendPlayer(alternative: true),
@@ -944,55 +850,13 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1030,13 +894,13 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
                     fontWeight: FontWeight.w700,
                     color: palette.textHigh)),
             const SizedBox(width: 8),
-            Text('ID $id',
+            Text('编号 $id',
                 style: TextStyle(fontSize: 11, color: palette.textHint)),
           ],
         ),
         const SizedBox(height: 14),
         if (isRoot)
-          _SectionCard(
+          WorkbenchSectionCard(
             title: '发送人',
             children: [
               MouseRegion(
@@ -1073,10 +937,10 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
               ),
             ],
           ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '短信内容',
           children: [
-            _SyncedText(
+            SyncedTextField(
               value: row['content']?.toString() ?? '',
               hint: '输入短信内容',
               maxLines: 4,
@@ -1085,18 +949,18 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
           ],
         ),
         if (outgoing)
-          _SectionCard(
+          WorkbenchSectionCard(
             title: '回复选项文字',
             subtitle: '显示在选项按钮上的文字，默认与短信内容相同。',
             children: [
-              _SyncedText(
+              SyncedTextField(
                 value: row['option']?.toString() ?? '',
                 hint: '默认与短信内容相同',
                 onChanged: (v) => setState(() => row['option'] = v),
               ),
             ],
           ),
-        _SectionCard(
+        WorkbenchSectionCard(
           title: '条件与效果',
           children: [
             Text(
@@ -1115,7 +979,7 @@ class _MessagesWorkbenchState extends State<MessagesWorkbench>
           ],
         ),
         const SizedBox(height: 6),
-        _MiniBtn(
+        WorkbenchMiniButton(
           label: isRoot ? '删除这段短信' : '删除此消息及后续分支',
           danger: true,
           onTap: _deleteSelected,
@@ -1297,157 +1161,3 @@ class _ConversationItemState extends State<_ConversationItem> {
   }
 }
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
-          ),
-        ),
-      ),
-    );
-  }
-}

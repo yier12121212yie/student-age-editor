@@ -4,3 +4,6 @@ bool get isWindowsPlatform => false;
 bool get isAndroidPlatform => false;
 
 String? envValue(String name) => null;
+
+/// Web 上由 `webEnvironmentSummary()` 提供浏览器环境，这里为空串。
+String desktopEnvironmentSummary() => '';

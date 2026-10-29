@@ -52,7 +52,19 @@ std::optional<std::string> parse_revision(const json& v) {
 // 回一份新 revision。前端 SaveService 用它更新 _cachedRevision——同一批量
 // 保存的第二张表不再拿着旧指纹被 verify 误拒（写一张必换指纹，两表连发必
 // 假冲突）。Python 无此响应字段，属向后兼容的纯增量偏差。
-std::string refresh_revision_after_write() {
+std::string refresh_revision_after_write(const std::string& path = std::string(),
+                                         const json& result = json()) {
+    // B2：写盘时已序列化出的 new_bytes 摘要随结果返回；直接把它种进
+    // revision 的 per-file 指纹缓存，避免紧接着的全量重算再把刚写的大表
+    // 读一遍并重新 SHA-256（40MB 表每次保存约多 200–400ms）。
+    if (!path.empty() && result.contains("sha256") &&
+        result.at("sha256").is_string()) {
+        if (auto st = sa_core::paths::stat(path)) {
+            revision_manager::seed_file_fingerprint(
+                path, st->mtime_ns, st->size,
+                result.at("sha256").get<std::string>());
+        }
+    }
     revision_manager::invalidate_cache();
     return revision_manager::compute_revision_cached(false);
 }
@@ -200,12 +212,19 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     // Write success quartet (api.py:1083-1091): invalidate -> seed -> note ->
     // preview invalidate. Seeding is what makes the next GET a zero-work hit.
     invalidate_table_cache(path);
-    json merged = result.value("data", json::object());
-    seed_table_cache(path, cfg_name, merged,
-                     result.contains("mtime_ns") && result.at("mtime_ns").is_number()
-                         ? std::optional<long long>(result.at("mtime_ns").get<long long>())
-                         : std::nullopt);
-    note_mod_cfgs_write(cfg_name, merged, path);
+    // B1：patch 合并后的整表由 apply_patch 回传；seed 与 mod-cfgs 缓存共享
+    // 同一份只读表（原先各克隆一次）。
+    if (result.contains("data") && result.at("data").is_object()) {
+        // 直接 move 出 apply_patch 合并好的整表，省掉一次大表深拷贝
+        // （后续只读 result 的 mtime/snapshot，不再用 data）。
+        auto shared = std::make_shared<const json>(std::move(result["data"]));
+        seed_table_cache_shared(
+            path, cfg_name, shared,
+            result.contains("mtime_ns") && result.at("mtime_ns").is_number()
+                ? std::optional<long long>(result.at("mtime_ns").get<long long>())
+                : std::nullopt);
+        note_mod_cfgs_write_shared(cfg_name, std::move(shared), path);
+    }
     invalidate_preview_cache();
 
     json applied = result.value("applied", json::object());
@@ -237,7 +256,7 @@ Resp do_cfg_patch(const std::string& cfg_name, const std::string& path, const js
     }
     env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
     env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
-    env["revision"] = refresh_revision_after_write();
+    env["revision"] = refresh_revision_after_write(path, result);
     return Resp::Json(200, std::move(env));
 }
 
@@ -377,7 +396,11 @@ void register_cfg_routes(Router& r) {
         if (has_body && body.contains("patch") && !body.at("patch").is_null()) {
             return do_cfg_patch(cfg_name, path, body, body.at("patch"));
         }
-        json data = has_body && body.contains("data") ? body.at("data") : json();
+        // B1：body 在请求生命周期内一直有效，写路径只读 data —— 不再为整表
+        // 复制一份（大表一次保存的 5 份深拷贝里最容易被忽略的一份）。
+        static const json kEmptyObject = json::object();
+        const json& data = has_body && body.contains("data") ? body.at("data")
+                                                             : kEmptyObject;
         if (!data.is_object()) {
             return Resp::Json(400, json{{"error", "data must be a dict"}});
         }
@@ -441,18 +464,21 @@ void register_cfg_routes(Router& r) {
                                         {"cfg", cfg_name}});
         }
         invalidate_table_cache(path);
-        seed_table_cache(path, cfg_name, data,
-                         result.contains("mtime_ns") && result.at("mtime_ns").is_number()
-                             ? std::optional<long long>(result.at("mtime_ns").get<long long>())
-                             : std::nullopt);
-        note_mod_cfgs_write(cfg_name, data, path);
+        // B1：seed 与 mod-cfgs 缓存共享同一份只读表。
+        auto shared = std::make_shared<const json>(data);
+        seed_table_cache_shared(
+            path, cfg_name, shared,
+            result.contains("mtime_ns") && result.at("mtime_ns").is_number()
+                ? std::optional<long long>(result.at("mtime_ns").get<long long>())
+                : std::nullopt);
+        note_mod_cfgs_write_shared(cfg_name, std::move(shared), path);
         invalidate_preview_cache();
         json env;
         env["ok"] = true;
         env["cfg"] = cfg_name;
         env["mtime_ns"] = result.contains("mtime_ns") ? result.at("mtime_ns") : json();
         env["snapshot"] = result.contains("snapshot") ? result.at("snapshot") : json();
-        env["revision"] = refresh_revision_after_write();
+        env["revision"] = refresh_revision_after_write(path, result);
         return Resp::Json(200, std::move(env));
     });
 
@@ -622,31 +648,39 @@ void register_cfg_routes(Router& r) {
             deleted_talks_manager::register_tombstone(id, replacement_ids);
         }
         
-        // Remove record from memory
-        json updated_data = data;
-        updated_data.erase(id);
-        
-        // Persist deletion
-        std::optional<long long> expect = std::nullopt;  // No mtime check needed
-        json result = cfg_store::write_cfg(path, updated_data, expect, nullptr, true, true);
+        // Remove record from memory + persist：走 `apply_patch` 的 remove 分支。
+        // 原写法 `json updated_data = data; updated_data.erase(id);
+        // write_cfg(..., updated_data, ...)` 为了删一行要**整表深拷贝**一次
+        // （TalkCfg 可达约 10 万行），单条删除延迟被放大到数十~数百毫秒。
+        // apply_patch 成功时会连同合并后的整表一并回传（result["data"]），
+        // 供下面的缓存播种复用，无需再做第二份副本。
+        json result = cfg_store::apply_patch(path, json::object(), json::array({id}),
+                                             nullptr, std::nullopt, nullptr,
+                                             /*force=*/true);
         if (!result.value("ok", false)) {
             std::string msg = result.value("error", std::string());
             return Resp::Json(500, json{{"error", msg.empty() ? "删除失败" : msg},
                                         {"cfg", cfg_name}});
         }
-        
+
         // Persist tombstones
         if (!deleted_talks_manager::persist()) {
             // Non-fatal: log error but continue
             sa::bump("tombstones.persist_failed");
         }
-        
+
         invalidate_table_cache(path);
-        seed_table_cache(path, cfg_name, updated_data,
-                         result.contains("mtime_ns") && result.at("mtime_ns").is_number()
-                             ? std::optional<long long>(result.at("mtime_ns").get<long long>())
-                             : std::nullopt);
-        note_mod_cfgs_write(cfg_name, updated_data, path);
+        if (result.contains("data") && result.at("data").is_object()) {
+            // 同 do_cfg_patch：合并结果只喂缓存，move 掉省一次深拷贝。
+            auto shared = std::make_shared<const json>(std::move(result["data"]));
+            seed_table_cache_shared(
+                path, cfg_name, shared,
+                result.contains("mtime_ns") && result.at("mtime_ns").is_number()
+                    ? std::optional<long long>(
+                          result.at("mtime_ns").get<long long>())
+                    : std::nullopt);
+            note_mod_cfgs_write_shared(cfg_name, std::move(shared), path);
+        }
         invalidate_preview_cache();
         
         json out;
@@ -655,7 +689,7 @@ void register_cfg_routes(Router& r) {
         out["id"] = id;
         out["tombstone_created"] = true;
         out["replacement_ids"] = replacement_ids;
-        out["revision"] = refresh_revision_after_write();
+        out["revision"] = refresh_revision_after_write(path, result);
         return Resp::Json(200, std::move(out));
     });
 }

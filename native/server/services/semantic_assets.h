@@ -32,6 +32,9 @@ const json& dicts();
 // assets/PersonCfg.json: 官方人物表（id -> {name,gender,url,url2}）。作 /api/roles
 // 在工作区 mod 与已加载 base 数据都没有 PersonCfg 时的兜底。
 const json& person_cfg();
+// assets/BgCfg.json: 官方背景表（id -> {id,url,...}）。作 /api/preview/meta
+// 与剧情流在工作区 mod 与已加载 base 数据都没有 BgCfg 时的兜底。
+const json& bg_cfg();
 
 // /api/schema response assembly (api.py:1361-1368), field-by-field:
 //   {game_schema, field_types, cfg_names} where field_types flattens every
@@ -65,6 +68,39 @@ const json& cost_db();
 const json& screen_effect_db();
 const json& action_cmd_db();
 const json& secondary_placeholder_map();  // {"@ATTR@": ["ATTR","属性"], ...}
+
+// ---- A1 模板语义元数据（概念折叠 / 行内算符 / 参数标签） --------------------
+// 纯函数：仅由模板串 (desc, code) 派生，/api/effect_suggest 与 /api/effect/parse
+// 共用同一实现（两端模板串同源），因此「同一概念返回一致的 family/ops」由构造保证。
+//
+// template_meta 返回：
+//   family        概念键 "一级代码|骨架"。骨架 = desc 去算符（≥/≤/</范围…）、
+//                 去裸值记号（V/X/Y…）、去纯数字后的词串，保留 @PLACEHOLDER@ 与
+//                 括号提示——同键即可折叠成一条概念（≥/≤/范围 等多变体同键）。
+//   label         折叠行标题（骨架另去括号提示；空则回退 family 骨架）。
+//   description   原 desc（模板的白话说明，逐字）。
+//   op            本模板算符：= > ≥ < ≤ ≠ 范围 之一，无则 ""。
+//   value_index   code 逗号段中「值」的下标（范围=下限），-1 表示无。
+//   upper_index   范围模板中「上限值」的下标，非范围恒 -1。
+//   labels        裸字母槽名 -> 人话标签（范围=下限/上限；否则取 desc 中该值
+//                 最近的上文词，兜底 "数值"）。
+json template_meta(const std::string& desc, const std::string& code);
+
+// 同概念全部变体（含自身），按 = > ≥ < ≤ ≠ 范围 循环序、无算符殿后：
+//   [{op, code, value_index, upper_index, slots:[…code_slots…]}, …]
+// slots 内嵌使前端切换算符后无需回查即可重排参数表单。
+// mode ∈ effect|condition|cost|action|screen，与 /api/effect_suggest 同口径
+// （effect 走 EFFECT_EDITOR_DB，与 effect_editor_secondary_index 同源）。
+json family_ops(const std::string& mode, const std::string& desc, const std::string& code);
+
+// mode -> 静态码表；effect = EFFECT_EDITOR_DB，condition/cost/action/screen 同名。
+const json& mode_db(const std::string& mode);
+
+// code 模板里的参数槽（原 /api/effect_suggest 实现，迁此共享）：
+//   "@NAME@" -> dict 槽 {kind,name,dict,label,count}（dict/label 来自
+//               SECONDARY_PLACEHOLDER_MAP；未知池 dict=""）
+//   裸字母   -> number 槽 {kind,name,count}；重复字母合并为一个槽并计 count。
+json code_slots(const std::string& code);
 
 // Resolve assets/schema.json + assets/dicts.json. Thin forward to
 // sa_core::assets::find_asset — the single resolver for the whole backend

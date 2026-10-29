@@ -16,6 +16,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/motion.dart';
+import '../../core/texture_budget.dart';
 import 'ai_models.dart';
 import '../../core/app_dialogs.dart';
 
@@ -1020,9 +1021,11 @@ class _ModImageThumbState extends State<ModImageThumb> {
               image: DecorationImage(
                 // AI 生成图可能有数千万像素，88×88 的缩略图没必要全尺寸解码
                 // （解码 + 纹理上传是这里唯一的大额 GPU 开销）。
+                // 阶段 5·D14：档位改由 TextureBudget 统一给（此前手写
+                // 88×DPR，既不成档、也没有上限）。
                 image: ResizeImage(
                   MemoryImage(bytes),
-                  width: (88 * MediaQuery.devicePixelRatioOf(context)).round(),
+                  width: TextureBudget.decodeWidth(context, 88),
                 ),
                 fit: BoxFit.cover,
               ),
@@ -1044,7 +1047,10 @@ class _ModImageThumbState extends State<ModImageThumb> {
         // 阶段 4d：按显示尺寸×DPR 降采样解码。AI 返回的原图可能有几千万
         // 像素，全分辨率解码一次会卡 UI 且占数百 MB 内存，而这里最多只
         // 显示 640 逻辑宽。
-        final cacheW = (boxW * MediaQuery.devicePixelRatioOf(ctx)).round();
+        // 阶段 5·D14：改走统一档位；上限给「看原图」档（4096）——这里是
+        // 用户主动点开的放大预览，保留原来的放大细节，只封顶防爆。
+        final cacheW = TextureBudget.decodeWidth(ctx, boxW,
+            max: TextureBudget.kFullViewMaxDecodeWidth);
         return AppContentDialog(
           preferredWidth: 700,
           title: Text(widget.path),

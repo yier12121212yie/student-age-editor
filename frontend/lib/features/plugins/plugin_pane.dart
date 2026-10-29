@@ -6,6 +6,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/error_text.dart';
 
 /// 插件声明式面板渲染器：拉 GET /api/plugins/`pluginId`/panel/`panelId`，
 /// 渲染 {"title", "blocks"}。支持 markdown / stats / table / form / actions 五种块。
@@ -607,7 +608,7 @@ class _PluginPaneState extends State<PluginPane> {
       final r = await _request(url, method: 'POST', body: values);
       _handleActionResponse(r);
     } catch (e) {
-      _showError('表单提交失败：$e');
+      _showError('表单提交失败：${humanizeErrorMessage(e)}');
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
@@ -676,7 +677,7 @@ class _PluginPaneState extends State<PluginPane> {
       final r = await _request(url, method: method, body: body);
       _handleActionResponse(r);
     } catch (e) {
-      _showError('操作「$label」失败：$e');
+      _showError('操作「$label」失败：${humanizeErrorMessage(e)}');
     } finally {
       if (mounted) setState(() => _busyAction = false);
     }

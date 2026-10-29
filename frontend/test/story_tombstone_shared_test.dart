@@ -225,7 +225,11 @@ void main() {
     Finder nodeText(String s) => find.descendant(
       of: find.byType(StoryFlowGraph),
       matching: find.byWidgetPredicate(
-        (w) => w is RichText && w.text.toPlainText().contains(s),
+        (w) =>
+            (w is RichText && w.text.toPlainText().contains(s)) ||
+            // 卡片正文在可编辑档位下是内联输入框：文字由 RenderEditable 直接
+            // 绘制，不经过 RichText 部件，只能从控制器取值判断。
+            (w is EditableText && w.controller.text.contains(s)),
       ),
     );
 

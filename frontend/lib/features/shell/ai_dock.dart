@@ -15,8 +15,8 @@ import 'shell_widgets.dart';
 ///
 /// - 展开：可拖拽调宽的 AiPanel，宽度经 [ShellState.aiWidthV] 局部重建，
 ///   拖拽不再触发整壳重绘；
-/// - 收起：不再整个消失，保留一条折叠图标条（[AiCollapsedRail]），
-///   带「正在回复」「待审批」角标；
+/// - 收起：完全隐藏、不占位（此前常驻的折叠图标条会遮挡编辑区右缘，已移除）；
+///   需要时经顶部工具栏 / 底部状态栏的「AI」入口重新展开；
 /// - 开合状态与宽度由 ShellState 持久化（冷启动恢复）。
 class AiDock extends StatelessWidget {
   const AiDock({
@@ -33,9 +33,6 @@ class AiDock extends StatelessWidget {
   /// 非空则面板自带不透明圆角底板（经典/剧情图壳侧栏悬浮在内容之上时必须）。
   final Color? panelBackground;
 
-  /// 折叠图标条宽度。
-  static const double railWidth = 36;
-
   /// 面板总宽 = aiWidth + 该值；手柄命中区（ResizeHandle.hitWidth）
   /// 与面板左缘重叠，不在此宽度之外。
   static const double handleWidth = 5;
@@ -49,7 +46,7 @@ class AiDock extends StatelessWidget {
         return AnimatedContainer(
           duration: AppMotion.normal,
           curve: AppMotion.easeOut,
-          width: open ? aiWidth + handleWidth : railWidth,
+          width: open ? aiWidth + handleWidth : 0,
           child: AnimatedSwitcher(
             duration: AppMotion.normal,
             switchInCurve: AppMotion.easeOut,
@@ -58,11 +55,7 @@ class AiDock extends StatelessWidget {
                 FadeTransition(opacity: anim, child: child),
             child: open
                 ? _panel(aiWidth, key: const ValueKey('ai-panel'))
-                : AiCollapsedRail(
-                    key: const ValueKey('ai-rail'),
-                    shell: shell,
-                    state: state,
-                  ),
+                : const SizedBox.shrink(key: ValueKey('ai-hidden')),
           ),
         );
       },
@@ -143,7 +136,9 @@ Widget _buildAiPanelBody({
 /// - 可用宽度足够：`content` 与 [AiDock] 并排，AI 占据固定宽度；
 /// - 不足：AI 改为 [AiOverlayDock] 悬浮在 `content` 右缘之上，**不占用布局
 ///   宽度**，编辑区保持全宽，避免被停靠的 AI 压窄后内容裁切（看起来像被
-///   AI 侧栏遮挡）。
+///   AI 侧栏遮挡）；
+/// - 收起：不保留常驻折叠条（会遮挡编辑区右缘），只在右下角留一个 [AiOverlayDock]
+///   悬浮按钮，点开才展开。
 class AiDockHost extends StatelessWidget {
   const AiDockHost({
     super.key,
@@ -175,9 +170,22 @@ class AiDockHost extends StatelessWidget {
     // （CSS 宽度变大）后又能显示——正是本次要修的"AI 侧栏遮挡"。
     return LayoutBuilder(
       builder: (context, constraints) {
-        final dockWidth = shell.aiOpen
-            ? shell.aiWidth + AiDock.handleWidth
-            : AiDock.railWidth;
+        // 收起态：完全让出布局宽度，只在右下角留悬浮按钮（不保留固定折叠条）。
+        if (!shell.aiOpen) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              content,
+              AiOverlayDock(
+                state: state,
+                shell: shell,
+                onOpenSettings: onOpenSettings,
+                panelBackground: panelBackground,
+              ),
+            ],
+          );
+        }
+        final dockWidth = shell.aiWidth + AiDock.handleWidth;
         final available = constraints.maxWidth;
         final docked =
             !available.isFinite || available - dockWidth >= minDockedContentWidth;
@@ -321,7 +329,7 @@ class AiOverlayDock extends StatelessWidget {
   }
 }
 
-/// 紧凑布局收起态的右下角悬浮按钮：点击展开；角标语义同 [AiCollapsedRail]
+/// 收起态的右下角悬浮按钮：点击展开；角标语义同 [AiDock]
 /// （待审批优先于正在回复）。
 class _AiOverlayToggle extends StatelessWidget {
   const _AiOverlayToggle({required this.shell, required this.state});
@@ -401,84 +409,9 @@ class _AiOverlayToggle extends StatelessWidget {
   }
 }
 
-/// AI 收起后的竖排图标条：点击展开；「正在回复」呼吸点与「待审批」警示点。
-class AiCollapsedRail extends StatelessWidget {
-  const AiCollapsedRail({super.key, required this.shell, required this.state});
-  final ShellState shell;
-  final AppState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final chat = shell.chatControllerFor(state);
-    return ListenableBuilder(
-      listenable: chat,
-      builder: (context, _) {
-        final busy = chat.busy;
-        final pending = chat.hasPendingPrompt;
-        final tip = pending
-            ? 'AI 助手（等待你审批）· 点击展开'
-            : busy
-            ? 'AI 助手（正在回复…）· 点击展开'
-            : '展开 AI 助手';
-        return Container(
-          width: AiDock.railWidth,
-          decoration: BoxDecoration(
-            color: palette.panel,
-            border: Border(left: BorderSide(color: palette.border)),
-          ),
-          child: Center(
-            child: Tooltip(
-              message: tip,
-              child: GestureDetector(
-                onTap: shell.toggleAi,
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: Container(
-                    padding: const EdgeInsets.all(7),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(6),
-                      color: pending ? palette.tintWarn : Colors.transparent,
-                    ),
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Icon(
-                          FluentIcons.bot_24_regular,
-                          size: 18,
-                          color: pending
-                              ? palette.warning
-                              : busy
-                              ? accentColor
-                              : palette.textMuted,
-                        ),
-                        if (pending)
-                          const Positioned(
-                            right: -2,
-                            top: -2,
-                            child: _AttentionDot(kind: _DotKind.staticWarn),
-                          )
-                        else if (busy)
-                          const Positioned(
-                            right: -2,
-                            top: -2,
-                            child: _AttentionDot(kind: _DotKind.pulseAccent),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
 enum _DotKind { pulseAccent, staticWarn }
 
-/// 折叠条角标：呼吸动画点（流式进行中）或实心警示点（待审批）。
+/// 悬浮按钮角标：呼吸动画点（流式进行中）或实心警示点（待审批）。
 class _AttentionDot extends StatefulWidget {
   const _AttentionDot({required this.kind});
   final _DotKind kind;
@@ -519,7 +452,7 @@ class _AttentionDotState extends State<_AttentionDot>
     );
     if (widget.kind == _DotKind.staticWarn) return dot;
     // repeat(reverse) 的呼吸动画每帧标脏：边界收在这个小点自身，
-    // 不把整条折叠条（乃至侧栏）拖进每帧重绘。
+    // 不把按钮（乃至整壳）拖进每帧重绘。
     return RepaintBoundary(
       child: AnimatedBuilder(
         animation: _c,

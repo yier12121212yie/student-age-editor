@@ -1177,7 +1177,39 @@ std::string json_get_str(const json& o, const std::string& key, const std::strin
     return o.at(key).is_string() ? o.at(key).get<std::string>() : sa_core::py_str(o.at(key));
 }
 
-json read_settings() { return env_store_ai::read_ai_settings(sa::editor_root()); }
+json read_settings() {
+    json s = env_store_ai::read_ai_settings(sa::editor_root());
+    // C1 托管 TTS 转发：网关把管理员全局 key 写进 state 目录的覆盖文件，
+    // 并通过 EDITOR_HOSTED_MEDIA_FILE 传给实例。只覆盖非空字段，账号自己的
+    // 音色/格式偏好仍然生效；key 从不进入账号沙箱。
+    const std::string path =
+        sa_core::paths::getenv_utf8("EDITOR_HOSTED_MEDIA_FILE");
+    if (path.empty()) return s;
+    const auto raw = sa_core::paths::read_bytes(path);
+    if (!raw) return s;
+    auto overlay = json::parse(*raw, nullptr, false);
+    if (overlay.is_discarded() || !overlay.is_object()) return s;
+    for (auto it = overlay.begin(); it != overlay.end(); ++it) {
+        if (it.value().is_null()) continue;
+        if (it.value().is_string() && it.value().get<std::string>().empty()) continue;
+        s[it.key()] = it.value();
+    }
+    return s;
+}
+
+/// 托管媒体转发是否生效（网关 fork 时注入覆盖文件路径）。
+bool hosted_media_active() {
+    return !sa_core::paths::getenv_utf8("EDITOR_HOSTED_MEDIA_FILE").empty();
+}
+
+/// 对外可见的 TTS 设置：托管模式下抹掉管理员 key（前端只需 provider/音色等）。
+json public_settings(json s) {
+    if (!hosted_media_active() || !s.is_object()) return s;
+    for (const char* k : {"ttsApiKey", "apiKey", "imageApiKey"}) {
+        if (s.contains(k)) s[k] = "";
+    }
+    return s;
+}
 
 // CONVENTIONS `_truthy`: only real True / "true". Used for the `ogg` flag.
 bool truthy_json(const json& v) {
@@ -1211,7 +1243,7 @@ Resp tts_store_error(const TtsStoreError& e) { return Resp::Json(400, json{{"err
 void register_tts_routes(Router& r) {
     // GET /api/tts/settings — {"settings": read_ai_settings()}.
     r.get(R"(/api/tts/settings)", [](const Req&) -> Resp {
-        return Resp::Json(200, json{{"settings", read_settings()}});
+        return Resp::Json(200, json{{"settings", public_settings(read_settings())}});
     });
 
     // PUT /api/tts/settings — only tts* keys accepted.

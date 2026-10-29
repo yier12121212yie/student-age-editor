@@ -141,10 +141,11 @@ String cfgLabel(String cfg) {
   return (label == null || label.isEmpty) ? cfg : label;
 }
 
-/// 配置表显示名：`中文名 (CfgName)`；未收录时回退裸 `CfgName`。
+/// 配置表显示名。
 ///
-/// 与经典布局下拉框原有的文案格式保持一致。
+/// 去代码化：只显示中文名，不再拼接裸 `CfgName`（如「对话 (TalkCfg)」→「对话」）；
+/// 未收录的表回退裸 `CfgName`（无法翻译）。
 String cfgDisplayName(String cfg) {
   final label = kCfgLabels[cfg];
-  return (label == null || label.isEmpty) ? cfg : '$label ($cfg)';
+  return (label == null || label.isEmpty) ? cfg : label;
 }

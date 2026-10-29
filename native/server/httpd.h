@@ -24,7 +24,9 @@
 #include <memory>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -50,6 +52,12 @@ struct Req {
     std::string backend_token_header;  // raw X-Backend-Token（安全批次 B 进程
                                        // 令牌；"" if absent）。传输层在
                                        // dispatch 前强制校验，路由层无感。
+    std::string if_none_match_header;  // raw If-None-Match（"" if absent）。本地
+                                       // 图片二进制 GET 路由据此做 ETag 协商，
+                                       // 命中即回 304 且不发包体。
+    std::string accept_encoding_header;  // raw Accept-Encoding（"" if absent）。
+                                         // 静态资源托管据此在 .br/.gz 预压缩旁
+                                         // 文件与原始字节之间协商。
     // Wire-fidelity copies for forwarding services (PLUGIN_SPEC §4 proxy): the
     // parsed views above are lossy — `query` drops repeated keys, `body`
     // reformats JSON — so a proxy that must replay the request byte-for-byte
@@ -79,6 +87,17 @@ struct CorsConfig {
     bool server_mode() const { return !trusted_origins.empty(); }
 };
 
+// 流式响应出口：handler 在拿到上游响应头后调用 start() 定状态/类型，
+// 再逐块 write()。httpd 负责 chunked 帧与收尾（0\r\n\r\n）。
+class StreamEmitter {
+public:
+    virtual ~StreamEmitter() = default;
+    // 只允许调用一次；status/content_type/headers 随首批字节写下。
+    virtual bool start(int status, std::string content_type = {},
+                       std::vector<std::pair<std::string, std::string>> headers = {}) = 0;
+    virtual bool write(std::string_view chunk) = 0;
+};
+
 // Handler result: JSON payload or pre-serialized bytes (bytes 直发, httpd.py:157-160).
 struct Resp {
     int status = 200;
@@ -92,6 +111,21 @@ struct Resp {
     // static web hosting route (网页版计划 M1.2) sets it — every JSON API
     // response stays no-store as the Python wire requires.
     std::string cache_control;
+    // ETag for the 304 negotiation fast path (图片二进制直发，性能优化). Empty
+    // == no `ETag` header emitted (every JSON API response keeps the old wire).
+    std::string etag;
+    // `Location` for a 302/301 hand-through (对象存储图片扩展：后端只回 URL，
+    // 客户端自行跳转拉取). Empty == not emitted.
+    std::string location;
+    // 附加响应头（HTTP MCP：`Mcp-Session-Id`）。每一项的名称与值都过
+    // safe_header_value；非法项整条丢弃（不截断、不转义），避免上游/调用方
+    // 借 CR/LF 注入响应头。空 == 不追加（默认线格式逐字节不变）。
+    std::vector<std::pair<std::string, std::string>> headers;
+
+    // 流式响应（AI SSE / 本地大文件下载）：非空时 httpd 走 chunked 分支，
+    // 忽略 bytes/json_payload。handler 在 emitter.start() 时才确定状态码与
+    // Content-Type（上游响应头到达后）。
+    std::function<bool(StreamEmitter&)> body_stream;
 
     Resp() = default;
     static Resp Json(int status, json payload) {
@@ -111,6 +145,23 @@ struct Resp {
     static Resp BytesTyped(int status, std::string data, std::string content_type) {
         Resp r = Bytes(status, std::move(data));
         r.content_type = std::move(content_type);
+        return r;
+    }
+    // 304 Not Modified：0 字节包体，仅回 ETag / Cache-Control 供客户端续用缓存。
+    static Resp NotModified(std::string etag = {}, std::string cache_control = {}) {
+        Resp r;
+        r.status = 304;
+        r.is_bytes = true;  // 强制空包体：绕过 JSON 序列化（null -> "null"）
+        r.etag = std::move(etag);
+        r.cache_control = std::move(cache_control);
+        return r;
+    }
+    // 3xx hand-through (e.g. 302 Found -> 对象存储公开 URL).
+    static Resp Redirect(int status, std::string location) {
+        Resp r;
+        r.status = status;
+        r.is_bytes = true;  // 空包体 + Location 头
+        r.location = std::move(location);
         return r;
     }
 };
@@ -190,8 +241,9 @@ class Httpd {
     void set_max_slots(int n);
 
     // 安全批次 B：后端进程令牌。非空时，除豁免（/api/ping、OPTIONS、静态资源）
-    // 外的 /api/* 请求必须带等值 X-Backend-Token 头，否则 403。空串（默认）
-    // = 不启用。
+    // 外的 /api/* 请求必须带等值令牌，否则 403。空串（默认）= 不启用。
+    // HTTP MCP（网页版 M2）：令牌可从 `X-Backend-Token` 或
+    // `Authorization: Bearer <token>` 任一头提供（外部 Agent 只会用后者）。
     void set_auth_token(std::string token);
 
     // 安全批次 B：请求体上限（字节，覆盖 httpd 的 256 MiB 默认）。网关 fork

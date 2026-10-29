@@ -545,9 +545,11 @@ TEST_CASE("SaveSession/LoadSession round-trips through disk", "[p8]") {
 TEST_CASE("HandleKey: Ctrl-M toggles permission mode and asks for a persist", "[p8]") {
     AppState s = NavState();
     REQUIRE(s.permission_mode == "confirm");  // the backend default
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'm')) == Intent::SetPermissionMode);
+    // Ctrl-M is unreachable (terminals send 0x0D for both Enter and Ctrl-M);
+    // the toggle lives on Ctrl-G.
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'g')) == Intent::SetPermissionMode);
     REQUIRE(s.permission_mode == "full");
-    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'm')) == Intent::SetPermissionMode);
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'g')) == Intent::SetPermissionMode);
     REQUIRE(s.permission_mode == "confirm");
 }
 
@@ -625,6 +627,154 @@ TEST_CASE("Confirm gate: bugfix fix-all is gated too", "[p8]") {
     REQUIRE(HandleKey(s, K(KeyInput::Char, "f")) == Intent::FixBugs);
     // Rescanning (a read) is never gated.
     REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::ScanBugs);
+}
+
+TEST_CASE("Discard guard: dirty quit is confirmed in full mode too (q and Ctrl-Q)", "[p8]") {
+    AppState s = RowsState();
+    s.permission_mode = "full";  // GateWrite would pass through; the discard
+                                 // guard must not depend on permission_mode
+    s.table.edits["1"] = "\"b\"";
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "q")) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::Quit);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::Quit);
+
+    // Ctrl-Q used to bypass the guard entirely and drop every edit.
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'q')) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::Quit);
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::Quit);
+}
+
+TEST_CASE("Discard guard: a rejected mod switch clears the pending target", "[p8]") {
+    AppState s = NavState();  // mods A (selected) + B; tree shows both nodes
+    s.page = Page::Main;
+    s.focus = Focus::Tables;
+    s.table.name = "TalkCfg";
+    s.table.edits["1"] = "\"b\"";  // dirty
+    s.tree_sel = 1;                // mod B node
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::SelectModFromPending);
+    REQUIRE(s.pending_mod == "B");
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "n")) == Intent::None);
+    REQUIRE(s.pending_mod.empty());
+    REQUIRE(s.selected_mod == "A");  // unchanged
+
+    // Approving replays the switch through the pending target.
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'q')) == Intent::None);
+    REQUIRE(s.confirm.pending == Intent::Quit);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::Quit);
+}
+
+TEST_CASE("Discard guard: dirty table reload and switch arm the confirm dialog", "[p8]") {
+    // Rows-pane `r` reloads the table, dropping staged edits — confirm first.
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "a", "\"a\""}};
+    s.table.edits["1"] = "\"b\"";
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "r")) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::LoadTable);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::LoadTable);
+    REQUIRE(s.pending_table.empty());
+
+    // Tree Enter on another table of the same mod goes through the same guard.
+    AppState t = RowsState();
+    t.mods = {ModEntry{"A", "r/A"}};
+    t.selected_mod = "A";
+    t.expanded_mods.insert("A");
+    t.mod_tables["A"] = {"TalkCfg", "ItemCfg"};
+    t.focus = Focus::Tables;
+    t.tree_sel = 1;  // TalkCfg
+    REQUIRE(HandleKey(t, K(KeyInput::Enter)) == Intent::LoadTable);  // clean: direct
+    t.table.edits["1"] = "\"b\"";
+    t.focus = Focus::Tables;
+    t.tree_sel = 2;  // ItemCfg
+    REQUIRE(HandleKey(t, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(t.confirm.active);
+    REQUIRE(t.confirm.pending == Intent::OpenPendingTable);
+    REQUIRE(t.pending_table == "ItemCfg");
+    REQUIRE(HandleKey(t, K(KeyInput::Char, "y")) == Intent::OpenPendingTable);
+}
+
+TEST_CASE("Palette: quit and save go through the guards", "[p8]") {
+    // Open the palette with Ctrl-P; "quit"/"save" match the ids.
+    AppState s = RowsState();
+    REQUIRE(HandleKey(s, K(KeyInput::CtrlChar, "", 'p')) == Intent::None);
+    REQUIRE(s.palette.active);
+    s.table.edits["1"] = "\"b\"";  // dirty
+    HandleKey(s, K(KeyInput::Char, "q"));
+    HandleKey(s, K(KeyInput::Char, "u"));
+    HandleKey(s, K(KeyInput::Char, "i"));
+    HandleKey(s, K(KeyInput::Char, "t"));
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.confirm.active);
+    REQUIRE(s.confirm.pending == Intent::Quit);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "y")) == Intent::Quit);
+
+    // Palette save with nothing staged reports instead of saving.
+    AppState p = RowsState();
+    REQUIRE(HandleKey(p, K(KeyInput::CtrlChar, "", 'p')) == Intent::None);
+    HandleKey(p, K(KeyInput::Char, "s"));
+    HandleKey(p, K(KeyInput::Char, "a"));
+    HandleKey(p, K(KeyInput::Char, "v"));
+    HandleKey(p, K(KeyInput::Char, "e"));
+    REQUIRE(HandleKey(p, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(p.status == "无改动");
+    // …and a real save is gated like Ctrl-S.
+    p.table.edits["1"] = "\"b\"";
+    REQUIRE(HandleKey(p, K(KeyInput::CtrlChar, "", 'p')) == Intent::None);
+    HandleKey(p, K(KeyInput::Char, "s"));
+    HandleKey(p, K(KeyInput::Char, "a"));
+    HandleKey(p, K(KeyInput::Char, "v"));
+    HandleKey(p, K(KeyInput::Char, "e"));
+    REQUIRE(HandleKey(p, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(p.confirm.pending == Intent::SaveTable);
+}
+
+TEST_CASE("? key: ignored while any text input is capturing the keyboard", "[p8]") {
+    // Filter capture: '?' is filter text, not the help toggle.
+    AppState s = RowsState();
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "/")) == Intent::None);
+    REQUIRE(HandleKey(s, K(KeyInput::Char, "?")) == Intent::None);
+    REQUIRE_FALSE(s.show_help);
+    REQUIRE(s.filter == "?");
+
+    // Row editor: '?' lands in the buffer.
+    AppState e = RowsState();
+    e.table.rows = {TableRow{"1", "a", "\"a\""}};
+    e.editing = true;
+    REQUIRE(HandleKey(e, K(KeyInput::Char, "?")) == Intent::None);
+    REQUIRE_FALSE(e.show_help);
+    REQUIRE(e.edit_buffer == "?");
+
+    // Idle browse: '?' opens the help overlay, and any key closes it.
+    AppState h = RowsState();
+    REQUIRE(HandleKey(h, K(KeyInput::Char, "?")) == Intent::None);
+    REQUIRE(h.show_help);
+    REQUIRE(HandleKey(h, K(KeyInput::Char, "x")) == Intent::None);
+    REQUIRE_FALSE(h.show_help);
+}
+
+TEST_CASE("Number fields refuse non-numeric text instead of coercing to 0", "[p8]") {
+    AppState s = RowsState();
+    s.table.rows = {TableRow{"1", "a", R"({"id":1,"effect":4015})"}};
+    s.detail_mode = DetailMode::Form;
+    s.editing_field = true;
+    s.field_name = "effect";
+    s.field_type = "Number";
+    s.field_buffer = "四千";
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE(s.editing_field);  // editor stays open
+    REQUIRE(s.table.edits.empty());  // nothing staged
+    REQUIRE(s.status.find("需要数字") != std::string::npos);
+
+    // A valid number still lands.
+    s.field_buffer = "4016";
+    REQUIRE(HandleKey(s, K(KeyInput::Enter)) == Intent::None);
+    REQUIRE_FALSE(s.editing_field);
+    REQUIRE(s.table.edits.count("1") == 1);
+    REQUIRE(s.table.edits["1"].find("4016") != std::string::npos);
 }
 
 TEST_CASE("HandleKey: p opens the plugins modal and drives its actions", "[p8]") {

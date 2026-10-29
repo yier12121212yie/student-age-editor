@@ -19,6 +19,7 @@ import 'package:flutter/widgets.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import 'responsive.dart';
+import 'design_tokens.dart';
 
 double _clampD(double v, double lo, double hi) {
   if (hi < lo) return hi;
@@ -169,7 +170,7 @@ Future<bool> confirmDelete(BuildContext context, String message) async {
       title: const Text('确认删除'),
       content: Text(
         message,
-        style: const TextStyle(fontSize: 12.5, height: 1.5),
+        style: const TextStyle(fontSize: AppText.subhead, height: 1.5),
       ),
       actions: [
         fluent.Button(

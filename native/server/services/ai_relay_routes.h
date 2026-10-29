@@ -51,12 +51,17 @@ RelaySettings read_settings_from_ai(const nlohmann::ordered_json& ai);
 nlohmann::ordered_json policy_json(const RelaySettings& s, bool own_key_allowed,
                                    bool tts_image_available,
                                    const std::vector<std::string>& models,
-                                   long long daily_limit);
+                                   long long daily_limit, bool stream = false);
 
 // One buffered round-trip. Never logs or retains the body; on transport failure
 // returns 502 {"error":"ai_upstream_unreachable: ..."}. Upstream status + bytes
 // pass through verbatim.
 Resp relay_chat(const RelaySettings& s, const nlohmann::ordered_json& client_body);
+
+// 流式版本：上游 SSE 逐块透传（chunked）。上游返回普通 JSON（错误/不支持
+// 流式）时同样逐字节透传，由前端按 Content-Type 解析。
+Resp relay_chat_stream(const RelaySettings& s,
+                       const nlohmann::ordered_json& client_body);
 
 }  // namespace ai_relay
 

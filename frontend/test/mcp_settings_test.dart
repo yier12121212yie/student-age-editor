@@ -1,13 +1,19 @@
 // MCP 配置接线测试：AiSettings 序列化往返（customInstructions + mcpServers）、
 // 非法 mcpServers 条目容错，以及 AiChatController.parseMcpToolName
 // 对 mcp__<serverId>__<tool> 工具名的解析（含 id 带下划线的歧义处理）。
+import 'dart:convert';
+
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:student_age_editor/features/ai/ai_chat_controller.dart';
 import 'package:student_age_editor/features/ai/mcp/mcp_types.dart';
+import 'package:student_age_editor/features/settings/mcp_token_section.dart';
 import 'package:student_age_editor/features/settings/settings_page.dart';
 
 void main() {
-  test('AiSettings 序列化往返（customInstructions + mcpServers）', () {
+  test('AiSettings 序列化往返（customInstructions + mcpServers + headers）', () {
     final s = AiSettings(
       baseUrl: 'https://x/v1',
       apiKey: 'k',
@@ -24,6 +30,7 @@ void main() {
           id: 'remote',
           transport: 'http',
           url: 'https://example.com/mcp',
+          headers: const {'Authorization': 'Bearer tok_123', 'X-Tenant': 'alice'},
           enabled: false,
         ),
       ],
@@ -38,12 +45,123 @@ void main() {
     expect(fs.transport, 'stdio');
     expect(fs.command, 'npx.cmd');
     expect(fs.args, ['-y', '@modelcontextprotocol/server-filesystem', r'D:\my data']);
+    expect(fs.headers, isEmpty);
     expect(fs.enabled, isTrue);
     final remote = restored.mcpServers[1];
     expect(remote.id, 'remote');
     expect(remote.transport, 'http');
     expect(remote.url, 'https://example.com/mcp');
+    expect(remote.headers, {'Authorization': 'Bearer tok_123', 'X-Tenant': 'alice'});
     expect(remote.enabled, isFalse);
+  });
+
+  test('McpServerConfig.parseHeadersInput 支持裸 token、Bearer 前缀与多行键值', () {
+    expect(
+      McpServerConfig.parseHeadersInput('my_secret_token'),
+      {'Authorization': 'Bearer my_secret_token'},
+    );
+    expect(
+      McpServerConfig.parseHeadersInput('Bearer abc_123'),
+      {'Authorization': 'Bearer abc_123'},
+    );
+    expect(
+      McpServerConfig.parseHeadersInput(
+        'Authorization: Bearer tok_xyz\nX-Backend-Token: btok_999',
+      ),
+      {
+        'Authorization': 'Bearer tok_xyz',
+        'X-Backend-Token': 'btok_999',
+      },
+    );
+  });
+
+  test('McpConfigGenerator 生成端点与各客户端鉴权配置', () {
+    expect(
+      McpConfigGenerator.buildEndpointUrl('https://editor.example.com/'),
+      'https://editor.example.com/api/mcp',
+    );
+    expect(
+      McpConfigGenerator.buildEndpointUrl(
+        'https://editor.example.com',
+        readonly: true,
+      ),
+      'https://editor.example.com/api/mcp?readonly=1',
+    );
+
+    final claudeJson = jsonDecode(
+      McpConfigGenerator.buildClientSnippet(
+        clientType: McpAgentClientType.claudeCode,
+        baseUrl: 'https://editor.example.com',
+        token: 'sa_mcp_abcdef123456',
+      ),
+    ) as Map<String, dynamic>;
+    final srv =
+        (claudeJson['mcpServers'] as Map)['student-age-editor'] as Map;
+    expect(srv['url'], 'https://editor.example.com/api/mcp');
+    expect(
+      (srv['headers'] as Map)['Authorization'],
+      'Bearer sa_mcp_abcdef123456',
+    );
+
+    final curlCmd = McpConfigGenerator.buildClientSnippet(
+      clientType: McpAgentClientType.curl,
+      baseUrl: 'http://127.0.0.1:8765',
+      token: 'tok_test',
+      readonly: true,
+    );
+    expect(curlCmd, contains('http://127.0.0.1:8765/api/mcp?readonly=1'));
+    expect(curlCmd, contains('Authorization: Bearer tok_test'));
+  });
+
+  test('McpAccessTokenEntry.maskToken 掩码规则', () {
+    expect(McpAccessTokenEntry.maskToken(''), '');
+    expect(McpAccessTokenEntry.maskToken('short'), '***MASKED***');
+    expect(
+      McpAccessTokenEntry.maskToken('sa_mcp_1234567890abcdef'),
+      'sa_mcp***cdef',
+    );
+  });
+
+  testWidgets('McpTokenSection 渲染生成令牌卡片并完成生成与吊销交互', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.pumpWidget(
+      fluent.FluentApp(
+        home: fluent.NavigationView(
+          content: fluent.ScaffoldPage(
+            content: const SingleChildScrollView(
+              child: McpTokenSection(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('HTTP MCP 服务端（供外部 Agent 接入）'), findsOneWidget);
+    expect(find.text('生成令牌（鉴权请求头凭据）'), findsOneWidget);
+    expect(find.text('生成令牌'), findsOneWidget);
+
+    // 点击「生成令牌」按钮
+    await tester.tap(find.text('生成令牌'));
+    await tester.pumpAndSettle();
+
+    // 验证新生成令牌提示框与列表展示
+    expect(find.textContaining('已生成（请立即复制保存'), findsOneWidget);
+    expect(find.text('复制令牌'), findsOneWidget);
+    expect(find.text('复制鉴权请求头'), findsOneWidget);
+    expect(find.text('已生成令牌（1）'), findsOneWidget);
+    expect(find.text('吊销'), findsOneWidget);
+
+    // 点击「吊销」按钮移除该令牌条目
+    await tester.ensureVisible(find.text('吊销'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('吊销'));
+    await tester.pumpAndSettle();
+    expect(find.text('已生成令牌（1）'), findsNothing);
+
+    // 清空 InfoBar 的 3 秒自动关闭定时器
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
   });
 
   test('旧设置 JSON 缺新字段时取默认值', () {

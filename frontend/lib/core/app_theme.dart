@@ -6,6 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'editor_font.dart' show kEditorCjkFamily;
+
+// 几何/字号 token 已迁至 design_tokens.dart（唯一来源）；这里 re-export，
+// 既有 `import 'app_theme.dart'` 的画布引用不受影响。
+export 'design_tokens.dart' show AppRadius, AppSpace, AppType;
+
 /// Dart -> Windows runner channel for the native title bar (no-op elsewhere).
 const MethodChannel _appearanceChannel = MethodChannel('studentage/appearance');
 
@@ -674,46 +680,6 @@ AppPalette palette = AppPalette.light;
 /// 遮蔽，赋值必须经这里）。
 AppPalette syncGlobalPalette(AppPalette p) => palette = p;
 
-/// 圆角阶梯：卡片/浮层/芯片共用，避免同一层级在不同文件里取不同值。
-class AppRadius {
-  AppRadius._();
-
-  static const double xs = 3;
-  static const double s = 5;
-  static const double m = 6;
-  static const double l = 8;
-  static const double xl = 10;
-}
-
-/// 间距阶梯（4 的倍数，画布卡片与浮层内边距用）。
-class AppSpace {
-  AppSpace._();
-
-  static const double xxs = 2;
-  static const double xs = 4;
-  static const double s = 8;
-  static const double m = 12;
-  static const double l = 16;
-  static const double xl = 24;
-}
-
-/// 字号阶梯：画布信息密度高，正文比全局默认小一档。
-class AppType {
-  AppType._();
-
-  /// 角标/徽章。
-  static const double badge = 8.5;
-
-  /// 卡片正文。
-  static const double body = 10.5;
-
-  /// 卡片标题条。
-  static const double title = 11;
-
-  /// 芯片/按钮。
-  static const double chip = 12;
-}
-
 /// 浮层阴影：[float] 给常驻浮层（工具条/小地图），[selected] 给选中态。
 ///
 /// 亮色底上的纯黑大 alpha 阴影会发脏，所以 [float] 按 [AppPalette.isLight]
@@ -771,9 +737,18 @@ class AppShadow {
 ThemeData opaqueMaterialSurfaces([ThemeData? base, AppPalette? p]) {
   final pal = p ?? palette;
   final surface = pal.card;
-  final data =
+  var data =
       base ??
       ThemeData(brightness: pal.isLight ? Brightness.light : Brightness.dark);
+  // Material 层的 `Material` widget 会用 Theme.textTheme.bodyMedium 覆盖
+  // DefaultTextStyle（Fluent 的字体在这里被顶掉）。Web 上 Roboto 没有汉字，
+  // 于是整棵树的中文都要靠引擎 fallback 切片 → 豆腐块。这里把 Material 文本
+  // 主题也指到内置中文字体，保证两条主题链路一致。
+  if (kIsWeb && data.textTheme.bodyMedium?.fontFamily != kEditorCjkFamily) {
+    data = data.copyWith(
+      textTheme: data.textTheme.apply(fontFamily: kEditorCjkFamily),
+    );
+  }
   return data.copyWith(
     canvasColor: surface,
     cardColor: surface,

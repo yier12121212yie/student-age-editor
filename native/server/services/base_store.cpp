@@ -222,6 +222,9 @@ bool BaseStore::load(bool force) {
     data_.clear();
     ids_cache_.clear();
     evt_index_.reset();
+    evt_talk_keys_.clear();
+    evt_opt_keys_.clear();
+    evt_key_index_ready_ = false;
 
     if (dir.empty()) {
         status_ = "idle";
@@ -469,10 +472,6 @@ json BaseStore::search_talks(const std::string& keyword, const json& mod_talk, c
     return out;
 }
 
-static bool id_belongs(const std::string& key, const std::string& evt_id, size_t suffix_len) {
-    return key.size() == evt_id.size() + suffix_len && sa_core::str::starts_with(key, evt_id);
-}
-
 json BaseStore::extract_event(const std::string& evt_id_raw) const {
     std::string evt_id = evt_id_raw;  // ids are strings (§4)
     json delta = json::object();
@@ -486,21 +485,52 @@ json BaseStore::extract_event(const std::string& evt_id_raw) const {
 
     auto b_talk = table_shared_locked("TalkCfg");
     const json& bt = b_talk ? *b_talk : kEmpty;
-    if (bt.is_object()) {
-        json talks = json::object();
-        for (auto it = bt.begin(); it != bt.end(); ++it)
-            if (id_belongs(it.key(), evt_id, 3)) talks[it.key()] = it.value();
-        if (!talks.empty()) delta["TalkCfg"] = std::move(talks);
-    }
     auto b_opt = table_shared_locked("OptionCfg");
     const json& bo = b_opt ? *b_opt : kEmpty;
+
+    // 只建一次 `evt_id -> 行键` 索引，之后按事件命中，不再全表扫描。
+    if (!evt_key_index_ready_) build_evt_key_index_locked();
+
+    if (bt.is_object()) {
+        json talks = json::object();
+        auto it = evt_talk_keys_.find(evt_id);
+        if (it != evt_talk_keys_.end()) {
+            for (const auto& k : it->second) talks[k] = bt.at(k);
+        }
+        if (!talks.empty()) delta["TalkCfg"] = std::move(talks);
+    }
     if (bo.is_object()) {
         json opts = json::object();
-        for (auto it = bo.begin(); it != bo.end(); ++it)
-            if (id_belongs(it.key(), evt_id, 2)) opts[it.key()] = it.value();
+        auto it = evt_opt_keys_.find(evt_id);
+        if (it != evt_opt_keys_.end()) {
+            for (const auto& k : it->second) opts[k] = bo.at(k);
+        }
         if (!opts.empty()) delta["OptionCfg"] = std::move(opts);
     }
     return delta;
+}
+
+// 索引 = 表键去掉尾部固定长度的后缀 → 事件 id；与原 `id_belongs(key, evt_id, N)`
+// 的判定完全等价（`key.size() == evt_id.size() + N && starts_with`），
+// 且按源表插入序登记，保证同一事件下多行的相对顺序不变。
+void BaseStore::build_evt_key_index_locked() const {
+    evt_talk_keys_.clear();
+    evt_opt_keys_.clear();
+    if (auto t = table_shared_locked("TalkCfg"); t && t->is_object()) {
+        for (auto it = t->begin(); it != t->end(); ++it) {
+            const std::string& k = it.key();
+            if (k.size() < 3) continue;  // 无合法前缀（size-3 会下溢）
+            evt_talk_keys_[k.substr(0, k.size() - 3)].push_back(k);
+        }
+    }
+    if (auto o = table_shared_locked("OptionCfg"); o && o->is_object()) {
+        for (auto it = o->begin(); it != o->end(); ++it) {
+            const std::string& k = it.key();
+            if (k.size() < 2) continue;
+            evt_opt_keys_[k.substr(0, k.size() - 2)].push_back(k);
+        }
+    }
+    evt_key_index_ready_ = true;
 }
 
 // ---- singleton + registration --------------------------------------------

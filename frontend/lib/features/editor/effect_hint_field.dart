@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import '../../core/api_client.dart';
+import '../../core/error_text.dart';
 import 'field_meta.dart';
 import 'field_utils.dart';
 import '../../core/app_theme.dart';
@@ -76,11 +77,11 @@ class EffectHintField extends StatefulWidget {
   /// 为空时按 fieldKey 推断（roles→action、screenEffect→screen、其余沿用原规则）。
   final String? mode;
 
-  /// 无代码模式（后端共享开关）：空输入即出候选、带参数槽候选走表单补全，
+  /// 简易模式（后端共享开关）：空输入即出候选、带参数槽候选走表单补全，
   /// 并提供「浏览效果」目录入口。关闭时保持传统"打字出候选、接受即插模板"。
   final bool noCodeMode;
 
-  /// 参数表单的字典池（/api/dicts game_dicts），无代码模式槽选择用。
+  /// 参数表单的字典池（/api/dicts game_dicts），简易模式槽选择用。
   final Map<String, dynamic> gameDicts;
 
   @override
@@ -109,7 +110,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
   String? _illegalHint;
 
   /// 1D Array（TalkCfg.screenEffect）：单行扁平代码文本，如 `4001,0.5`。
-  bool get _is1D => widget.type == '1D Array';
+  bool get _is1D => singleRowForType(widget.type);
 
   String get _mode {
     // 调用方显式指定优先
@@ -268,7 +269,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
       } catch (e) {
         if (!mounted) return;
         setState(() {
-          _statusText = '校验失败：$e';
+          _statusText = '校验失败：${humanizeErrorMessage(e)}';
           _statusColor = palette.textSecondary;
           _statusIsError = false;
         });
@@ -276,7 +277,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
     });
   }
 
-  /// 无代码模式：浏览目录选完一条（可能经过槽表单），按现有分隔符追加到文本。
+  /// 简易模式：浏览目录选完一条（可能经过槽表单），按现有分隔符追加到文本。
   void _appendCode(String code) {
     final text = _ctrl.text.trim();
     final sep = text.isEmpty || !text.contains(',') ? (text.isEmpty ? '' : ', ') : ', ';
@@ -300,7 +301,7 @@ class _EffectHintFieldState extends State<EffectHintField> {
     if (code != null && code.isNotEmpty) _appendCode(code);
   }
 
-  /// 无代码模式的「积木编辑」：把整段文本交给可视化搭建器，
+  /// 简易模式的「积木编辑」：把整段文本交给可视化搭建器，
   /// 确认后整串写回并触发校验（1D 字段如 screenEffect 强制单行）。
   Future<void> _openBlockEditor() async {
     final out = await showEffectBlockEditor(

@@ -229,6 +229,13 @@ int InstancePool::start_locked(std::shared_ptr<Instance>& in, std::string* err) 
         put_env("EDITOR_BG_DIR=" + opts_.background_dir);
     if (!opts_.background_base_url.empty())
         put_env("EDITOR_BG_BASE_URL=" + opts_.background_base_url);
+    // C1：托管 TTS 的管理员覆盖文件（只在媒体转发开启时由 main 写入）。
+    // 始终覆盖为空值，避免网关自身环境里的同名变量漏进实例。
+    put_env("EDITOR_HOSTED_MEDIA_FILE=" + opts_.hosted_media_file);
+    // C2：托管标记 + stdio MCP 命令白名单。EDITOR_HOSTED 始终注入，桥接默认
+    // 关闭；白名单为空时桥接直接 403。
+    put_env("EDITOR_HOSTED=1");
+    put_env("EDITOR_MCP_STDIO_ALLOW=" + opts_.mcp_stdio_allow);
     // 大体积上传：实例的解码上限按 wire 上限的 3/4 派生（base64 膨胀 4/3），
     // 使「网关 body 上限 / 实例 --max-body」与 upload_staging 的上限一致。
     put_env("EDITOR_MAX_UPLOAD_BYTES=" +

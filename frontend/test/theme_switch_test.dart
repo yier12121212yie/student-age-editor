@@ -1,4 +1,3 @@
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -90,6 +89,6 @@ void main() {
     expect(colorOf('外观'), AppPalette.light.textHigh);
     expect(colorOf('主题色'), AppPalette.light.textHigh);
     expect(colorOf('界面风格'), AppPalette.light.textHigh);
-    expect(colorOf('无代码模式'), AppPalette.light.textHigh);
+    expect(colorOf('简易模式'), AppPalette.light.textHigh);
   });
 }

@@ -1132,6 +1132,13 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
             continue;
         }
         if (cl.kind == ReplLine::Quit) break;
+        // Ctrl+C returns the "/__cancel" sentinel from the line editor: echo
+        // ^C and drop the line — it is not a command and must not leak into
+        // the history (it used to warn "未知命令 /__cancel").
+        if (cl.kind == ReplLine::Slash && LowerAscii(Trim(cl.payload)) == "__cancel") {
+            std::fputs((Style::Dim("^C") + "\n").c_str(), stdout);
+            continue;
+        }
         if (interactive && !Trim(line).empty() && (history.empty() || history.back() != line)) {
             history.push_back(Trim(line));
             st.history_pos = history.size();
@@ -1249,9 +1256,11 @@ int RunRepl(const GlobalFlags& flags, const ReplHost& host) {
         }
         if (tokens.empty()) continue;
         last_tokens = tokens;
-        exec_tokens(tokens);
-        // A `mods select` inside a plain command updates the prompt context too.
-        if (tokens.size() >= 3 && tokens[0] == "mods" && tokens[1] == "select")
+        int rc = exec_tokens(tokens);
+        // A `mods select` inside a plain command updates the prompt context
+        // too — but only when it actually succeeded (a failed select used to
+        // leave the prompt pointing at a mod that is not selected).
+        if (rc == 0 && tokens.size() >= 3 && tokens[0] == "mods" && tokens[1] == "select")
             current_mod = tokens[2];
     }
     SaveHistory(host.history_path, history);

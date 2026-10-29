@@ -1,9 +1,9 @@
-/// 无代码模式的「只选不敲」引用/ID 字段。
+/// 简易模式的「只选不敲」引用/ID 字段。
 ///
 /// 与 [NoCodeEffectField]（码字段 → 内联积木）互补：本组件覆盖
 /// `reference` / `visual` 形态——只读展示现值 + 一个选择入口，**不出现任何
 /// 可输入的代码/ID 文本框**。宿主把选择动作（实体面板 / ID 浏览对话框）
-/// 包进 [onPick]；没有候选通道时给只读提示与「关闭无代码模式」逃生口，
+/// 包进 [onPick]；没有候选通道时给只读提示与「切换到高级编辑」逃生口，
 /// 绝不放文本输入框。
 library;
 
@@ -35,7 +35,7 @@ class NoCodeRefField extends StatelessWidget {
 
   /// ID → 名称解析器；非空时每个 token 显示成「ID · 名称」。
   ///
-  /// 无代码模式只读现值，若不回显名称，用户看到的就只是裸 ID（如背景 `109`）。
+  /// 简易模式只读现值，若不回显名称，用户看到的就只是裸 ID（如背景 `109`）。
   /// 返回 null / 空串 / 与 ID 相同时回退裸 ID，绝不显示"未找到"噪音。
   final String? Function(String id)? nameOf;
 
@@ -47,7 +47,7 @@ class NoCodeRefField extends StatelessWidget {
 
   final String emptyText;
 
-  /// 逃生口：关闭无代码模式以便手动编辑。
+  /// 逃生口：切换到高级编辑以便手动编辑。
   final VoidCallback? onDisableNoCode;
 
   final int maxLines;
@@ -106,7 +106,7 @@ class NoCodeRefField extends StatelessWidget {
                         const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: palette.panel,
-                      borderRadius: BorderRadius.circular(AppRadius.xs),
+                      borderRadius: BorderRadius.circular(AppRadius.xxs),
                       border: Border.all(color: palette.border),
                     ),
                     child: Text(
@@ -134,14 +134,14 @@ class NoCodeRefField extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    '该字段没有可选候选；如需手写请关闭无代码模式。',
+                    '该字段没有可选候选；如需手写请切换到高级编辑。',
                     style: TextStyle(fontSize: 10, color: palette.textHint),
                   ),
                 ),
                 if (onDisableNoCode != null)
                   fluent.Button(
                     onPressed: onDisableNoCode,
-                    child: const Text('关闭无代码模式',
+                    child: const Text('切换到高级编辑',
                         style: TextStyle(fontSize: 10)),
                   ),
               ],

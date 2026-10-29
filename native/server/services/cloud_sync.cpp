@@ -578,7 +578,7 @@ std::string guess_content_type(const std::string& path) {
         {".md", "text/markdown"},             {".png", "image/png"},
         {".jpg", "image/jpeg"},               {".jpeg", "image/jpeg"},
         {".gif", "image/gif"},                {".webp", "image/webp"},
-        {".bmp", "image/bmp"},                {".svg", "image/svg+xml"},
+        {".avif", "image/avif"},              {".bmp", "image/bmp"},
         {".mp3", "audio/mpeg"},               {".wav", "audio/x-wav"},
         {".ogg", "audio/ogg"},                {".mp4", "video/mp4"},
         {".webm", "video/webm"},              {".zip", "application/zip"},

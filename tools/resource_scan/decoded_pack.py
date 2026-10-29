@@ -14,9 +14,10 @@
 import json
 import os
 
-_TEX_EXTS = (".webp", ".png", ".jpg", ".jpeg")
+_TEX_EXTS = (".avif", ".webp", ".png", ".jpg", ".jpeg")
 _AUD_EXTS = (".ogg", ".wav", ".m4a", ".mp3")
 _TEX_MIME = {
+    ".avif": "image/avif",
     ".webp": "image/webp",
     ".png": "image/png",
     ".jpg": "image/jpeg",

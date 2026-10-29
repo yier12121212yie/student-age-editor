@@ -4,36 +4,35 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/models.dart';
 import '../../core/responsive.dart';
 import '../editor/editor_controller.dart';
+import '../shell/mobile_subpage.dart';
 import 'pages_catalog.dart';
+import 'workbench_registry.dart';
 import '../../core/app_theme.dart';
+import '../../core/editor_leave_guard.dart';
 
 /// 编辑页面侧边栏：按 [editorPages] 枚举全部页面入口。
+///
+/// B2：若某页面存在专属工作台（见 [workbenchEntryForPage]），移动端点击直接
+/// 打开工作台（全屏子页），桌面端在行尾追加「打开工作台」按钮；无工作台的
+/// 页面仍走通用 [SchemaEditorView]（controller.open）。
 class PagesList extends StatelessWidget {
   const PagesList({super.key, required this.state, required this.controller});
   final AppState state;
   final EditorController controller;
 
-  static const _icons = <String, IconData>{
-    'story': FluentIcons.chat_24_regular,
-    'story_studio': FluentIcons.script_24_regular,
-    'person': FluentIcons.person_24_regular,
-    'evt': FluentIcons.calendar_24_regular,
-    'social': FluentIcons.people_community_24_regular,
-    'gift': FluentIcons.gift_24_regular,
-    'love': FluentIcons.heart_24_regular,
-    'function': FluentIcons.games_24_regular,
-    'resource': FluentIcons.image_24_regular,
-    'official': FluentIcons.grid_24_regular,
-    'news': FluentIcons.news_24_regular,
-    'fishing': FluentIcons.food_fish_24_regular,
-    'travel': FluentIcons.globe_24_regular,
-    'anime': FluentIcons.video_24_regular,
-    'expo': FluentIcons.building_24_regular,
-    'club': FluentIcons.search_24_regular,
-    'crafts': FluentIcons.puzzle_piece_24_regular,
-    'birthday': FluentIcons.food_cake_24_regular,
-    'negotiation': FluentIcons.scales_24_regular,
-  };
+  /// 打开页面专属工作台（全屏子页，自带返回）。
+  void _openWorkbench(BuildContext context, EditorPageDef page) {
+    final entry = workbenchEntryForPage(page.id);
+    if (entry == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => MobileSubPage(
+          title: page.title,
+          body: entry.build(WorkbenchDeps(state: state)),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -57,26 +56,39 @@ class PagesList extends StatelessWidget {
             itemCount: visibleEditorPages.length,
             itemBuilder: (context, i) {
               final page = visibleEditorPages[i];
+              final mobile = isMobileWidth(context);
+              final hasWorkbench = workbenchEntryForPage(page.id) != null;
               return MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
-                  onTap: () => controller.open(OpenDoc.page(pageId: page.id, title: page.title)),
+                  // 移动端：有专属工作台的页面直接打开工作台，否则走通用编辑页。
+                  onTap: () async {
+                    if (mobile && hasWorkbench) {
+                      _openWorkbench(context, page);
+                    } else {
+                      await openDocGuarded(
+                        context,
+                        controller,
+                        OpenDoc.page(pageId: page.id, title: page.title),
+                      );
+                    }
+                  },
                   child: Padding(
                     // 移动端：卡片化 + 更大热区（≥48px）
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     child: Container(
-                      decoration: isMobileWidth(context)
+                      decoration: mobile
                           ? BoxDecoration(
                               color: palette.panel,
                               borderRadius: BorderRadius.circular(8),
                             )
                           : null,
-                      padding: isMobileWidth(context)
+                      padding: mobile
                           ? const EdgeInsets.symmetric(horizontal: 12, vertical: 14)
                           : EdgeInsets.zero,
                       child: Row(
                         children: [
-                          Icon(_icons[page.id] ?? FluentIcons.table_24_regular,
+                          Icon(pageIconFor(page.id),
                               size: 16, color: accentColor),
                           const SizedBox(width: 10),
                           Expanded(
@@ -85,7 +97,7 @@ class PagesList extends StatelessWidget {
                               children: [
                                 Text(page.title,
                                     style: TextStyle(
-                                        fontSize: isMobileWidth(context) ? 14 : 13,
+                                        fontSize: mobile ? 14 : 13,
                                         color: palette.textPrimary,
                                         fontWeight: FontWeight.w600)),
                                 const SizedBox(height: 2),
@@ -97,6 +109,17 @@ class PagesList extends StatelessWidget {
                               ],
                             ),
                           ),
+                          // 桌面：工作台页面在行尾给一个显式入口（不影响原有
+                          // 通用编辑页动线，两者并存）。
+                          if (!mobile && hasWorkbench)
+                            Tooltip(
+                              message: '打开${page.title}工作台',
+                              child: IconButton(
+                                icon: Icon(FluentIcons.window_24_regular,
+                                    size: 15, color: accentColor),
+                                onPressed: () => _openWorkbench(context, page),
+                              ),
+                            ),
                           Icon(FluentIcons.chevron_right_24_regular,
                               size: 13, color: palette.textFaint),
                         ],

@@ -56,6 +56,13 @@ class InstancePool {
         // fork 的 backend 实例（EDITOR_BG_DIR / _BASE_URL）。
         std::string background_dir;
         std::string background_base_url;
+        // C1：托管 TTS 转发的管理员配置覆盖文件（hosted_media.json）。非空时
+        // 作为 EDITOR_HOSTED_MEDIA_FILE 传给 fork 的 backend 实例；TTS 合成
+        // 时叠加在账号设置之上，key 不写入账号沙箱。
+        std::string hosted_media_file;
+        // C2：stdio MCP 命令白名单（逗号分隔；空 == 全部拒绝）。实例始终带
+        // EDITOR_HOSTED=1，桥接据此启用托管策略。
+        std::string mcp_stdio_allow;
     };
 
     explicit InstancePool(Options opts);

@@ -84,3 +84,12 @@ frontend/_analyze_lib.txt
 Start-McpSSHTunnel.ps1
 # website/ 有真实内容（静态官网首页），纳入版本控制——此前误标为“空目录
 # 占位”被整体忽略，内容存在丢失风险。
+
+# 本地工具、临时产物与解包资源
+.qoder/
+.workbuddy/
+.tmp_native/
+frontend/.tmp_build/
+crop_status.png
+test_results.txt
+Tex2D/

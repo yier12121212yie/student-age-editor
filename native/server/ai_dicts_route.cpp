@@ -53,6 +53,10 @@ bool id_is_digits(const std::string& s) {
     return true;
 }
 
+}  // namespace
+
+namespace dicts_view {
+
 json list_dicts() {
     // ai_domain_service.py:670-683
     const json& gd = sa::p1::dicts().value("game_dicts", json::object());
@@ -122,7 +126,7 @@ json get_dict(const std::string& name_raw, const std::string& q_raw,
     return json{{"name", name}, {"cn", src->cn}, {"total", total}, {"items", items}};
 }
 
-}  // namespace
+}  // namespace dicts_view
 
 void register_ai_dicts_route(Router& r) {
     // api.py:1674-1684 (ai_dicts).
@@ -135,10 +139,11 @@ void register_ai_dicts_route(Router& r) {
             std::string name = qv("name");
             if (name.empty()) {
                 // Python `(_query or {}).get("name","")` — empty name → list.
-                return Resp::Json(200, json{{"dicts", list_dicts()}});
+                return Resp::Json(200, json{{"dicts", dicts_view::list_dicts()}});
             }
             std::string limit = qv("limit");
-            return Resp::Json(200, get_dict(name, qv("q"), limit.empty() ? nullptr : &limit));
+            return Resp::Json(
+                200, dicts_view::get_dict(name, qv("q"), limit.empty() ? nullptr : &limit));
         } catch (const SandboxError& e) {
             return Resp::Json(400, json{{"error", e.what()}});
         }

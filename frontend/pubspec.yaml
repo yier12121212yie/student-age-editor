@@ -42,6 +42,7 @@ dependencies:
   audioplayers: ^6.8.1
   file_selector: ^1.1.0
   web: ^1.1.1
+  desktop_drop: ^0.8.4
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -63,6 +64,13 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # 网页版内置中文字体：按普通 asset 声明（**不要**放进 fonts:，否则会被
+  # FontManifest 在引擎启动时无条件下载）。由 core/editor_font_web.dart 用
+  # rootBundle 读取后经 FontLoader 注册，桌面端不会加载。
+  # 生成/更新：python tools/build_web_cjk_font.py
+  assets:
+    - assets/fonts/EditorCJK.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

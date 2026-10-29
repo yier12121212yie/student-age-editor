@@ -40,8 +40,19 @@ def cli(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not _has_flag(argv, "--tier"):
         argv += ["--tier", "portraits"]
+    if not _has_flag(argv, "--format"):
+        argv += ["--format", "webp"]
     if not _has_flag(argv, "--out"):
         argv += ["--out", os.path.join(ROOT, "dist", "portrait_pack.zip")]
+    has_source = (_has_flag(argv, "--from-dir") or _has_flag(argv, "--aa-dir")
+                  or _has_flag(argv, "--index"))
+    tex2d_role = os.path.join(ROOT, "Tex2D", "role")
+    ref_dir = os.path.join(ROOT, "参考资料", "人物立绘")
+    if not has_source:
+        if os.path.isdir(tex2d_role):
+            argv += ["--from-dir", tex2d_role]
+        elif os.path.isdir(ref_dir):
+            argv += ["--from-dir", ref_dir]
     return main(argv)
 
 

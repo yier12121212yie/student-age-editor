@@ -8,6 +8,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/responsive.dart';
+import '../../core/texture_budget.dart';
 import 'local_import.dart' show importLocalAssets;
 
 /// Asset Explorer Panel - Resource browser for Live2D characters, CGs, and audio assets.
@@ -441,11 +442,26 @@ class _AssetExplorerPanelState extends State<AssetExplorerPanel> {
     return f;
   }
 
-  /// POST /api/aa/preview：只有预解码包里的资源能出图，游戏索引里的键回 422
-  /// （C++ 侧不解码 bundle，ARTIFACT_FORMAT §8.7 边界）。
-  /// base64→字节移到 compute（后台 isolate）：预览图常见数 MB，同步解码会卡
-  /// 对话框首帧——参照样板的「解码重活出主 isolate」。
+  /// 图片/音频预览取字节：优先二进制直发通道（GET /api/aa/raw），失败再降级旧版
+  /// POST /api/aa/preview（Base64 JSON）。
+  /// 旧接口只有预解码包里的资源能出图，游戏索引里的键回 422（C++ 侧不解码
+  /// bundle，ARTIFACT_FORMAT §8.7 边界）。
   Future<Uint8List> _loadAssetImage(String previewKind, String key) async {
+    // 1) 二进制直发：免 Base64/JSON/Isolate，图片/音频直接拿原始字节。
+    bool needsPack = false;
+    try {
+      final r = await ApiClient.instance
+          .getRaw('/api/aa/raw', query: {'kind': previewKind, 'key': key});
+      if (r.statusCode == 200 && ApiClient.looksBinaryPayload(r.bodyBytes)) {
+        return r.bodyBytes;
+      }
+      needsPack = r.statusCode == 422;
+    } catch (_) {
+      // 旧后端无该路由 / 传输层失败：降级旧通道。
+    }
+    if (needsPack) throw '该资源需要预解码包才能预览（后端不解码 bundle）';
+
+    // 2) 旧版降级：POST /api/aa/preview，base64 -> 字节移到 compute（后台 isolate）。
     try {
       final res = await ApiClient.instance
           .post('/api/aa/preview', body: {'kind': previewKind, 'key': key});
@@ -775,18 +791,19 @@ class _AssetPreviewBodyState extends State<_AssetPreviewBody> {
         }
         final bytes = snapshot.data ?? _emptyPreviewBytes;
         if (bytes.isEmpty) return const Center(child: Text('无预览数据'));
-        // 按显示宽 × DPR 限解码尺寸：1080p 原图全尺寸解码位图 ≈8MB/张。
+        // 阶段 5·D14：解码宽统一走 TextureBudget（档位唯一来源），不再就地
+        // 手写「显示宽 × DPR 夹 4096」。约束无限时按 512 兜底——不兜底会回落
+        // 到原尺寸解码，8192² 的字体图集单张就是 256 MB。
         return LayoutBuilder(
-          builder: (context, box) {
-            final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1;
-            final px = (box.maxWidth.isFinite ? box.maxWidth : 512.0) * dpr;
-            final w = px.ceil();
-            return Image.memory(
-              bytes,
-              fit: BoxFit.contain,
-              cacheWidth: w < 64 ? 64 : (w > 4096 ? 4096 : w),
-            );
-          },
+          builder: (context, box) => Image.memory(
+            bytes,
+            fit: BoxFit.contain,
+            cacheWidth: TextureBudget.decodeWidth(
+              context,
+              box.maxWidth.isFinite ? box.maxWidth : 512,
+              max: TextureBudget.kFullViewMaxDecodeWidth,
+            ),
+          ),
         );
       },
     );

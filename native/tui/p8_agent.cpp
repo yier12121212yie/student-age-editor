@@ -117,10 +117,22 @@ std::string AgentClient::SendTurn(const std::string& system, const std::vector<C
         return {};
     }
     if (resp.status >= 400) {
+        // Prefer the upstream's human message (`error.message` / `error` as a
+        // string) over dumping the whole error envelope at the user.
         Json parsed = Json::parse(resp.body, nullptr, false);
+        std::string detail;
+        if (!parsed.is_discarded() && parsed.is_object() && parsed.contains("error")) {
+            const Json& e = parsed.at("error");
+            if (e.is_object() && e.contains("message") && e.at("message").is_string())
+                detail = e.at("message").get<std::string>();
+            else if (e.is_string())
+                detail = e.get<std::string>();
+            else if (!e.is_null())
+                detail = e.dump();
+        }
+        if (detail.size() > 300) detail = detail.substr(0, 300) + "…";
         std::string msg = "HTTP " + std::to_string(resp.status);
-        if (!parsed.is_discarded() && parsed.is_object() && parsed.contains("error"))
-            msg += ": " + parsed.at("error").dump();
+        if (!detail.empty()) msg += ": " + detail;
         if (err) *err = msg;
         return {};
     }

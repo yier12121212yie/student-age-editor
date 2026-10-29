@@ -2,13 +2,17 @@
 // （数字序 / List 值取首元素）、MOD 名覆盖、以及后端不可达时的字典回退。
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/features/editor/field_meta.dart';
 import 'package:student_age_editor/features/nocode/entity_picker.dart';
+import 'package:student_age_editor/features/resources/image_asset_picker.dart'
+    show TexBytesCache, TexThumb, debugResetMergedMetaCache, refreshBgIdKeyMap;
 
 http.Response _roles(List<Map<String, dynamic>> roles) => http.Response(
       jsonEncode({'roles': roles}),
@@ -165,6 +169,133 @@ void main() {
       expect(r.name, '');
       expect(r.gender, 2);
       expect(r.portrait, 'p');
+    });
+  });
+
+  group('人物立绘候选链（首屏不加载立绘回归）', () {
+    final dicts = <String, dynamic>{
+      'roles': {'10': '林晓', '-1': '旁白'},
+    };
+
+    tearDown(() {
+      ApiClient.instance.client = http.Client();
+      debugResetMergedMetaCache();
+    });
+
+    test('portrait2 → portrait1 → portrait；别名 00 / 000 回退主角 0', () async {
+      ApiClient.instance.client = MockClient((req) async {
+        expect(req.url.path, '/api/roles');
+        return _roles([
+          {'id': '0', 'name': '白雨', 'portrait': 'role_0', 'portrait2': 'role_0b'},
+          {
+            'id': '10',
+            'name': '主角',
+            'portrait': 'role_10',
+            'portrait1': 'role_10a',
+            'portrait2': 'role_10b',
+          },
+          {'id': '00', 'name': '主角(别名)'},
+        ]);
+      });
+      final roles = await loadEntities(EntityKind.roles, gameDicts: dicts);
+      final r10 = roles.firstWhere((e) => e.id == '10');
+      expect(r10.thumbCandidates, ['role_10b', 'role_10a', 'role_10']);
+      expect(r10.thumbKey, 'role_10b', reason: '变体优先，thumbKey 取候选链首项');
+      final alias = roles.firstWhere((e) => e.id == '00');
+      expect(alias.thumbCandidates, ['role_0b', 'role_0'],
+          reason: '别名无独立立绘时应复用主角 0 的候选');
+    });
+
+    test('后端不可达：MOD 记录 url2/url 兜底出候选', () async {
+      _offline();
+      final roles = await loadEntities(
+        EntityKind.roles,
+        gameDicts: dicts,
+        modRecords: {
+          '10': {'name': '林晓', 'url2': 'role_10b', 'url': 'role_10a'},
+        },
+      );
+      final r10 = roles.firstWhere((e) => e.id == '10');
+      expect(r10.thumbCandidates, ['role_10b', 'role_10a']);
+      expect(r10.thumbKey, 'role_10b');
+    });
+
+    test('后端不可达：合并元数据 charKeys（base2/base）兜底出候选', () async {
+      debugResetMergedMetaCache();
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/preview/meta') {
+          return http.Response(
+            jsonEncode({
+              'bgKeys': {'100': 'bg_x'},
+              'charKeys': {
+                '10': {'base2': 'role_10b', 'base': 'role_10a'},
+              },
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        throw http.ClientException('connection refused'); // /api/roles 不可达
+      });
+      await refreshBgIdKeyMap(); // 填充 charKeys 缓存
+      final roles = await loadEntities(EntityKind.roles, gameDicts: dicts);
+      final r10 = roles.firstWhere((e) => e.id == '10');
+      expect(r10.thumbCandidates, ['role_10b', 'role_10a']);
+    });
+  });
+
+  group('人物网格首屏立绘', () {
+    tearDown(() {
+      ApiClient.instance.client = http.Client();
+      debugResetMergedMetaCache();
+      TexBytesCache.clear();
+    });
+
+    testWidgets('打开人物选择器：首屏卡片即挂载 TexThumb，不退化为占位人形图标', (tester) async {
+      debugResetMergedMetaCache();
+      TexBytesCache.clear();
+      ApiClient.instance.client = MockClient((req) async {
+        if (req.url.path == '/api/roles') {
+          return _roles([
+            for (var i = 0; i < 24; i++)
+              {'id': '$i', 'name': '角色$i', 'portrait': 'role_$i'},
+          ]);
+        }
+        if (req.url.path == '/api/preview/meta') {
+          return http.Response(
+            jsonEncode({'bgKeys': {'100': 'bg_x'}, 'charKeys': <String, dynamic>{}}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      });
+
+      await tester.pumpWidget(fluent.FluentApp(
+        theme: fluent.FluentThemeData(brightness: Brightness.dark),
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: Center(
+              child: fluent.Button(
+                child: const Text('open'),
+                onPressed: () =>
+                    showEntityPicker(ctx, kind: EntityKind.roles, multi: false),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.byType(TexThumb), findsWidgets,
+          reason: '首屏卡片应直接挂载 TexThumb（无需滚动触发重建）');
+      expect(find.byIcon(Icons.person_outline), findsNothing,
+          reason: '有立绘的卡片不应退化为占位人形图标');
+      expect(tester.takeException(), isNull);
+      // 排空贴图请求可能残留的定时器。
+      await tester.pump(const Duration(seconds: 1));
     });
   });
 }

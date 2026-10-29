@@ -446,6 +446,33 @@ TEST_CASE("p3a preview 组装与三缓存失效接线", "[p3a][preview]") {
     CHECK(resp3.json_payload["options"]["6001"]["id"] == "6001");
     CHECK(resp3.json_payload["talks"].contains("5003"));
     CHECK(resp3.json_payload["talk_count"] == 3);
+
+    // 增加 ModFaceCfg 表情差分：101 的表情 1 命中自定义差分
+    {
+        json f;
+        f["id"] = 101001;
+        f["icon"] = "role_101_happy";
+        f["name"] = "开心";
+        json ft;
+        ft["101001"] = f;
+        put_cfg(r, "ModFaceCfg", ft);
+
+        // 更新 talk 5001 让 101 做表情 1 (动作 3000)
+        auto get_t = call_router(r, "GET", "/api/cfg/TalkCfg");
+        REQUIRE(get_t.status == 200);
+        json t_data = get_t.json_payload["data"];
+        t_data["5001"]["roles"] = arr({iarr({101, 1001, 1, 1}), iarr({101, 3000, 1})});
+        put_cfg(r, "TalkCfg", t_data);
+
+        auto resp4 = call_router(r, "POST", "/api/preview/event", {}, json{{"evt_id", "5"}});
+        REQUIRE(resp4.status == 200);
+        INFO("resp4 5001: " + sa_core::py_dumps(resp4.json_payload["talks"]["5001"]));
+        const json& chars4 = resp4.json_payload["talks"]["5001"]["stage"]["chars"];
+        REQUIRE(chars4.size() == 1);
+        CHECK(chars4[0]["tex"] == "role_101_happy");
+        const json& ck = resp4.json_payload["meta"]["charKeys"]["101"];
+        CHECK(ck["expressions"] == iarr({0, 1}));
+    }
 }
 
 TEST_CASE("p3a stage dicts/encode/describe 往返", "[p3a][stage]") {

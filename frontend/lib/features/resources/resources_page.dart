@@ -18,8 +18,13 @@ import '../../core/app_dialogs.dart';
 
 /// Unity 资源侧边栏：AA bundle 索引状态、资源列表（tex/aud/txt）。
 class ResourcesPage extends StatefulWidget {
-  const ResourcesPage({super.key, required this.state});
+  const ResourcesPage({super.key, required this.state, this.initialTab = 'tex'});
+
   final AppState state;
+
+  /// 进入时选中的页签：tex / aud / txt / bg / explorer / live2d。
+  final String initialTab;
+
   @override
   State<ResourcesPage> createState() => _ResourcesPageState();
 }
@@ -50,6 +55,7 @@ class _ResourcesPageState extends State<ResourcesPage> {
   @override
   void initState() {
     super.initState();
+    _tab = widget.initialTab;
     _aaStatus.value = widget.state.aaStatus;
     _refreshStatus();
   }
@@ -57,6 +63,10 @@ class _ResourcesPageState extends State<ResourcesPage> {
   @override
   void didUpdateWidget(covariant ResourcesPage old) {
     super.didUpdateWidget(old);
+    // 主页点不同素材卡片复用同一资源页实例：外部页签意图变化时跟随切换。
+    if (old.initialTab != widget.initialTab) {
+      setState(() => _tab = widget.initialTab);
+    }
     // 其他页面/启动流程改过全局状态时跟随，避免镜像滞后
     if (widget.state.aaStatus != _aaStatus.value) {
       _aaStatus.value = widget.state.aaStatus;
@@ -499,6 +509,27 @@ class _AaPreviewDialogState extends State<_AaPreviewDialog> {
   }
 
   Future<void> _load() async {
+    // 贴图/音频优先走二进制直发通道（免 Base64/JSON 解码）；文本仍走旧接口
+    // （需要 truncated 标记与纯文本渲染）。
+    if (widget.kind == 'tex' || widget.kind == 'aud') {
+      try {
+        final r = await ApiClient.instance.getRaw('/api/aa/raw',
+            query: {'kind': widget.kind, 'key': widget.resourceKey});
+        if (r.statusCode == 200 && ApiClient.looksBinaryPayload(r.bodyBytes)) {
+          if (!mounted) return;
+          setState(() {
+            _bytes = r.bodyBytes;
+            _text = null;
+            _truncated = false;
+            _error = null;
+            _loading = false;
+          });
+          return;
+        }
+      } catch (_) {
+        // 旧后端无该路由 / 传输层失败：降级旧通道。
+      }
+    }
     try {
       final r = await ApiClient.instance
           .post('/api/aa/preview',

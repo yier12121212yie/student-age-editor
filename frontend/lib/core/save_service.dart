@@ -159,10 +159,17 @@ class SaveService {
 
   /// 写成功后端回传的指纹（阶段 2d 假冲突修复）：写一张表必然改变 workspace
   /// hash，若 _cachedRevision 停在旧值，同批第二张表的 PUT 必被 verify 误拒。
-  void _adoptRevision(dynamic res) {
+  ///
+  /// P2-I3：`SaveService.instance` 只有**一个**进程级 `_cachedRevision`，多个
+  /// 工作台/云同步并发保存时按「最后写入者覆盖」——晚返回的旧请求会把已推进
+  /// 的指纹改回旧值，造成后续假冲突。故采纳前校验「请求发出时读到的那份
+  /// revision」仍是当前缓存值；若期间已被别的保存改写，就放弃本次采纳。
+  void _adoptRevision(dynamic res, String? sentRevision) {
     if (res is Map) {
       final fresh = res['revision'];
-      if (fresh is String && fresh.isNotEmpty) _cachedRevision = fresh;
+      if (fresh is String && fresh.isNotEmpty && _cachedRevision == sentRevision) {
+        _cachedRevision = fresh;
+      }
     }
   }
 
@@ -181,6 +188,8 @@ class SaveService {
     final body = <String, dynamic>{
       'data': data,
     };
+    // 本请求实际携带的指纹；用于响应回填时校验缓存未被并发改写（P2-I3）。
+    final sentRevision = _cachedRevision;
     if (_cachedRevision != null && _cachedRevision!.isNotEmpty) {
       body['revision'] = _cachedRevision;
     }
@@ -193,7 +202,7 @@ class SaveService {
       // 期间 UI 不冻结；返回形状与 put 完全一致，调用方（SaveResult 解析、
       // 409 冲突分支）无需变更。
       final res = await ApiClient.instance.putRaw('/api/cfg/$cfgName', body: body);
-      _adoptRevision(res);
+      _adoptRevision(res, sentRevision);
 
       return SaveResult.success(
         cfg: res['cfg'] as String?,
@@ -234,6 +243,7 @@ class SaveService {
         'remove': patchRemove,
       },
     };
+    final sentRevision = _cachedRevision;
     if (_cachedRevision != null && _cachedRevision!.isNotEmpty) {
       body['revision'] = _cachedRevision;
     }
@@ -242,7 +252,7 @@ class SaveService {
       // 与 saveTable 一致走 putRaw：patch 里 set 可能带大量整行，编码同样
       // 应离 isolate；返回形状不变。
       final res = await ApiClient.instance.putRaw('/api/cfg/$cfgName', body: body);
-      _adoptRevision(res);
+      _adoptRevision(res, sentRevision);
       
       return SaveResult.success(
         cfg: res['cfg'] as String?,
@@ -279,6 +289,7 @@ class SaveService {
   }) async {
     // Add revision parameter if available
     final bodyParams = <String, dynamic>{};
+    final sentRevision = _cachedRevision;
     if (_cachedRevision != null && _cachedRevision!.isNotEmpty) {
       bodyParams['revision'] = _cachedRevision!;
     }
@@ -288,7 +299,7 @@ class SaveService {
     
     try {
       final res = await ApiClient.instance.delete('/api/cfg/$cfgName/$id', body: bodyParams.isNotEmpty ? bodyParams : null);
-      _adoptRevision(res);
+      _adoptRevision(res, sentRevision);
 
       if (res['ok'] == true) {
         if (kDebugMode) {

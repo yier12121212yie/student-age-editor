@@ -26,8 +26,11 @@ namespace {
 namespace fs = std::filesystem;
 
 std::string g_editor_root_override;
-// 回调只允许在启动期 build_router() 里写入一次、此后只读（无锁）。若未来
-// 需要运行期重挂，必须先引入同步，否则与 httpd 工作线程构成数据竞争。
+// 回调只允许在启动期 build_router() 里写入一次、此后只读。运行期重挂会与 httpd
+// 工作线程（select_mod → 调用回调）构成数据竞争（std::function 读写撕裂为 UB）。
+// 目前虽靠启动顺序规避，但仍加一把轻量互斥把「写」与「调用」串起来：select_mod
+// 不是热路径，锁开销可忽略，且从此运行期重挂也安全。
+std::mutex g_invalidator_mu;
 std::function<void()> g_mod_cfgs_invalidator;
 std::function<void()> g_preview_invalidator;
 
@@ -209,6 +212,7 @@ namespace detail {
 // main.cpp points this at the executable directory when EDITOR_DATA_ROOT is
 // unset (app_data_dir() portable-build rule in core/paths.py).
 void set_editor_root(const std::string& root) { g_editor_root_override = root; }
+bool has_editor_root_override() { return !g_editor_root_override.empty(); }
 }  // namespace detail
 
 std::vector<std::string> workshop_mods_roots() {
@@ -351,13 +355,27 @@ json select_mod(const std::string& name, const std::string& root) {
     invalidate_mods_cache();
     // api.py:255-263 — mod-cfgs and preview caches go stale with the mod;
     // _TABLE_CACHE deliberately does NOT (path-keyed entries miss naturally).
-    if (g_mod_cfgs_invalidator) g_mod_cfgs_invalidator();
-    if (g_preview_invalidator) g_preview_invalidator();
+    // 在锁外复制出回调再调用（回调内部可能再次加 REG 锁，不能持锁调用）。
+    std::function<void()> mod_inv;
+    std::function<void()> preview_inv;
+    {
+        std::lock_guard<std::mutex> lk(g_invalidator_mu);
+        mod_inv = g_mod_cfgs_invalidator;
+        preview_inv = g_preview_invalidator;
+    }
+    if (mod_inv) mod_inv();
+    if (preview_inv) preview_inv();
     return mod_info(name, root);
 }
 
-void set_mod_cfgs_invalidator(std::function<void()> fn) { g_mod_cfgs_invalidator = std::move(fn); }
-void set_preview_invalidator(std::function<void()> fn) { g_preview_invalidator = std::move(fn); }
+void set_mod_cfgs_invalidator(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(g_invalidator_mu);
+    g_mod_cfgs_invalidator = std::move(fn);
+}
+void set_preview_invalidator(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(g_invalidator_mu);
+    g_preview_invalidator = std::move(fn);
+}
 
 void init_state(const std::string& cli_workspace_root, const std::string& cli_mod_root,
                 const std::string& cli_mod_name) {

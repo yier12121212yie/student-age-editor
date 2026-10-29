@@ -40,6 +40,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../core/api_client.dart';
 import '../../core/file_upload_client.dart';
+import '../../core/long_task_progress.dart';
 import '../../core/mod_resource_ref.dart';
 import 'image_asset_picker.dart' show TexBytesCache;
 
@@ -62,9 +63,18 @@ const List<String> kLocalVideoExtensions = ['mp4', 'webm', 'mov', 'mkv'];
 /// `native/server/services/aa.cpp`），故裁掉 `Textures/` 前缀后再去掉扩展名。
 /// 索引里带子目录的 key 形如 `bg/img_x`，不能按 basename 取。
 String texKeyOfImportedPath(String path) {
-  var p = path;
-  const prefix = 'Textures/';
-  if (p.startsWith(prefix)) p = p.substring(prefix.length);
+  var p = path.replaceAll('\\', '/');
+  final lower = p.toLowerCase();
+  if (lower.startsWith('mods/')) {
+    final firstSlash = p.indexOf('/');
+    if (firstSlash >= 0) {
+      final secondSlash = p.indexOf('/', firstSlash + 1);
+      if (secondSlash >= 0) {
+        p = p.substring(secondSlash + 1);
+      }
+    }
+  }
+  if (p.toLowerCase().startsWith('textures/')) p = p.substring(9);
   final dot = p.lastIndexOf('.');
   final slash = p.lastIndexOf('/');
   if (dot > 0 && dot > slash) p = p.substring(0, dot);
@@ -236,9 +246,18 @@ Future<List<Map<String, dynamic>>> importPickedLocalAssets(
   List<PickedLocalFile> picked, {
   required String kind,
   bool registerAudio = false,
+  // C5：进度与取消。onStage 回报阶段文案（进度多为不确定）；isCancelled 返回
+  // true 时在检查点抛出 [LongTaskCancelled]，且**不再展示**成功/失败提示条
+  // （避免用户已取消却弹出"已导入"）。
+  void Function(String label, [double? frac])? onStage,
+  bool Function()? isCancelled,
 }) async {
   if (picked.isEmpty) return const [];
   final isImage = kind == 'image';
+  bool cancelled() => isCancelled?.call() ?? false;
+  void checkCancel() {
+    if (cancelled()) throw const LongTaskCancelled();
+  }
 
   // web 上超过阈值的单文件改走「留 COS 只存引用」（不落盘）：贴图/配乐/视频
   // 动辄几百 MB，base64 通道必被网关请求体上限拒杀。小文件仍走 import_files
@@ -247,6 +266,7 @@ Future<List<Map<String, dynamic>>> importPickedLocalAssets(
   final refProblems = <String>[];
   final toUpload = <PickedLocalFile>[];
   for (final f in picked) {
+    checkCancel();
     if (kIsWeb && f.bytes.length > StagedResourceRef.refThresholdBytes) {
       try {
         refs.add(await StagedResourceRef.uploadAsRef(
@@ -266,9 +286,11 @@ Future<List<Map<String, dynamic>>> importPickedLocalAssets(
   if (toUpload.isEmpty) {
     result = const ImportFilesResult(saved: [], errors: []);
   } else {
+    onStage?.call('上传 ${toUpload.length} 个文件…');
     try {
       result = await importFiles(toUpload, registerAudio: registerAudio);
     } catch (e) {
+      if (cancelled()) throw const LongTaskCancelled();
       if (context.mounted) {
         _bar(context,
             title: '导入失败',
@@ -278,6 +300,7 @@ Future<List<Map<String, dynamic>>> importPickedLocalAssets(
       return const [];
     }
   }
+  checkCancel();
 
   final savedAll = <Map<String, dynamic>>[...result.saved, ...refs];
 
@@ -292,6 +315,7 @@ Future<List<Map<String, dynamic>>> importPickedLocalAssets(
   ];
 
   if (savedAll.isEmpty) {
+    if (cancelled()) throw const LongTaskCancelled();
     if (context.mounted) {
       _bar(context,
           title: '导入失败',
@@ -304,6 +328,7 @@ Future<List<Map<String, dynamic>>> importPickedLocalAssets(
   // 图片字节有进程级缓存：不清的话新导入的同名图仍然显示旧内容。
   if (isImage) TexBytesCache.clear();
 
+  if (cancelled()) throw const LongTaskCancelled();
   if (context.mounted) {
     _bar(
       context,

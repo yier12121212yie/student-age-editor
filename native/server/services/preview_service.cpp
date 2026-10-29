@@ -14,6 +14,7 @@
 #include "sa_core/util.h"
 #include "aa.h"  // sa::active_pack_dir() — decoded-pack base-table fallback
 #include "server/httpd.h"
+#include "server/services/semantic_assets.h"
 #include "server/services/stores_api.h"
 #include "server/state.h"
 
@@ -50,13 +51,14 @@ std::map<std::string, ModFpEntry> g_mod_fp_cache;
 // _table_cache: 无指纹——本体/包兜底结果缓存，全靠 invalidate_cache 清。
 std::map<std::string, std::shared_ptr<const json>> g_table_cache;
 
-// _meta_cache / _meta_fp：meta 指纹 = mod 在否 + (PersonCfg fp, BgCfg fp)。
+// _meta_cache / _meta_fp：meta 指纹 = mod 在否 + (PersonCfg fp, BgCfg fp, ModFaceCfg fp)。
 struct MetaFp {
     bool has_mod = false;
     std::optional<StatFp> person;
     std::optional<StatFp> bg;
+    std::optional<StatFp> face;
     bool operator==(const MetaFp& o) const {
-        return has_mod == o.has_mod && person == o.person && bg == o.bg;
+        return has_mod == o.has_mod && person == o.person && bg == o.bg && face == o.face;
     }
 };
 std::shared_ptr<const json> g_meta_cache;
@@ -203,7 +205,20 @@ std::shared_ptr<const json> load_base_cfg(const std::string& name) {
         auto t = store->table(name);
         if (t && t->is_object()) return t;
     }
-    return load_pack_cfg(name);
+    if (auto pack = load_pack_cfg(name)) return pack;
+    // 随包资产兜底：工作区/base 数据无对应表时回退（同 /api/roles 对 PersonCfg 的处理）
+    if (name == "BgCfg") {
+        const auto& bg = sa::p1::bg_cfg();
+        if (bg.is_object() && !bg.empty()) {
+            return std::make_shared<const json>(bg);
+        }
+    } else if (name == "PersonCfg") {
+        const auto& person = sa::p1::person_cfg();
+        if (person.is_object() && !person.empty()) {
+            return std::make_shared<const json>(person);
+        }
+    }
+    return nullptr;
 }
 
 // load_table：mod -> _table_cache -> 本体/包 -> {}。
@@ -287,6 +302,7 @@ std::shared_ptr<const json> build_meta() {
         std::string cfg_dir = sa::cfg_dir();
         fp.person = mod_file_fp(cs::join(cfg_dir, "PersonCfg.json"));
         fp.bg = mod_file_fp(cs::join(cfg_dir, "BgCfg.json"));
+        fp.face = mod_file_fp(cs::join(cfg_dir, "ModFaceCfg.json"));
         std::lock_guard<std::mutex> lk(g_mu);
         if (g_meta_cache && g_meta_fp == fp) return g_meta_cache;
     }
@@ -295,6 +311,10 @@ std::shared_ptr<const json> build_meta() {
 
     auto person = load_table_merged("PersonCfg");
     auto bg = load_table_merged("BgCfg");
+    auto mod_face = load_table_merged("ModFaceCfg");
+    auto idx = sa::ensure_aa_index();
+    auto pstore = sa::portrait_local_store();
+    auto pack_store = sa::ensure_pack_store();
 
     json roles = content::role_dict();  // dict(_ROLE_DICT)
     for (auto it = person->begin(); it != person->end(); ++it) {
@@ -326,9 +346,15 @@ std::shared_ptr<const json> build_meta() {
         auto first_str = [&rec](const char* k) -> std::string {
             if (!rec.contains(k)) return std::string();
             const json& u = rec.at(k);
-            if (u.is_array() && !u.empty() && u.front().is_string())
-                return u.front().get<std::string>();
-            return std::string();
+            std::string s;
+            if (u.is_array() && !u.empty()) {
+                if (u.front().is_string()) s = u.front().get<std::string>();
+            } else if (u.is_string()) {
+                s = u.get<std::string>();
+            }
+            s = content::py_strip(s);
+            if (s == "[]" || s == "null" || s == "None" || s == "{}") return "";
+            return s;
         };
         std::string base = first_str("url");
         std::string base2 = first_str("url2");
@@ -336,8 +362,102 @@ std::shared_ptr<const json> build_meta() {
         json ck = json::object();
         ck["base"] = base;
         ck["base2"] = base2;
+        bool has_l2d = (rec.contains("l2d") && rec.at("l2d").is_array() && !rec.at("l2d").empty()) ||
+                       (rec.contains("l2d2") && rec.at("l2d2").is_array() && !rec.at("l2d2").empty());
         ck["l2d"] = rec.contains("l2d") && rec.at("l2d").is_array() ? rec.at("l2d")
                                                                     : json::array();
+
+        std::set<int> exprs;
+        exprs.insert(0);  // 默认表情 0 始终支持
+
+        if (has_l2d) {
+            // 官方表情集为 0..26（26=尴尬），此前漏掉 26。
+            for (int i = 0; i <= 26; ++i) exprs.insert(i);
+        } else {
+            // Tex2D 角色：1. 检查 ModFaceCfg 自定义表情
+            std::string id_str = it.key();
+            long long pid = -1;
+            try {
+                pid = std::stoll(id_str);
+            } catch (...) {}
+
+            json faces = json::object();
+            if (pid >= 0 && mod_face && mod_face->is_object()) {
+                for (auto fit = mod_face->begin(); fit != mod_face->end(); ++fit) {
+                    const json& frec = fit.value();
+                    if (!frec.is_object() || !frec.contains("id")) continue;
+                    long long fid = -1;
+                    if (frec["id"].is_number()) {
+                        fid = frec["id"].get<long long>();
+                    } else if (frec["id"].is_string()) {
+                        try { fid = std::stoll(frec["id"].get<std::string>()); } catch (...) {}
+                    }
+                    if (fid >= 0 && (fid / 1000) == pid) {
+                        int e = static_cast<int>(fid % 100);
+                        std::string icon = frec.value("icon", "");
+                        std::string icon_xx = frec.value("icon_xx", "");
+                        if (!icon.empty() || !icon_xx.empty()) {
+                            exprs.insert(e);
+                            json fobj = json::object();
+                            if (!icon.empty()) fobj["icon"] = icon;
+                            if (!icon_xx.empty()) fobj["icon_xx"] = icon_xx;
+                            faces[std::to_string(e)] = std::move(fobj);
+                        }
+                    }
+                }
+            }
+            if (!faces.empty()) {
+                ck["faces"] = std::move(faces);
+            }
+
+            // 2. 贴图差分探测：`base2_N` / `base_E` 是否存在。
+            //
+            // ⚠ 语义锚点（勿按「权威表情集」使用）：官方 Mod 文档写明表情/服饰 ID
+            // 「其他则自行定义」，而 ModFaceCfg 的 id 编码是 `pid*1000 + cloth*100 +
+            // expr`、立绘差分文件名同样形如 `{base}_{cloth*100+expr}`，因此这里的
+            // 结果必然**偏宽松**（实测 101 会给出 [0..6]，与游戏真实可用集
+            // [0,1,3,4,5,6,8] 既不相等也不互相包含）。
+            //
+            // 它在这里**只承担一个职责**：让 pick_char_tex() 认为「可以试着找表情
+            // 差分」——后者按 candidates 逐个查 tex 索引，查不到就回退 base/base2，
+            // 所以宽一点只多两次 has_tex 查询，不会渲染出错图。反过来，若这里偏严，
+            // Tex2D 角色的表情差分就永远拿不到候选（有表情也点不出效果）。
+            //
+            // ❌ 绝对不要拿它当「角色不支持该表情」的判据去禁用 UI —— 前端曾经的
+            // 置灰 bug 就是这么来的（见 story_studio_editor.dart 的
+            // `_isEmotionSupported`）。
+            for (int e = 1; e <= 26; ++e) {
+                if (exprs.count(e)) continue;
+                std::string estr = std::to_string(e);
+                bool found = false;
+                if (!base2.empty()) {
+                    std::string key2 = base2 + "_" + estr;
+                    if ((idx && idx->has_tex(key2)) ||
+                        (pstore && sa::has_portrait_local_tex(key2)) ||
+                        (pack_store && !pack_store->tex_path(key2).empty()) ||
+                        sa::has_mod_local_tex(key2)) {
+                        found = true;
+                    }
+                }
+                if (!found && !base.empty()) {
+                    std::string key1 = base + "_" + estr;
+                    if ((idx && idx->has_tex(key1)) ||
+                        (pstore && sa::has_portrait_local_tex(key1)) ||
+                        (pack_store && !pack_store->tex_path(key1).empty()) ||
+                        sa::has_mod_local_tex(key1)) {
+                        found = true;
+                    }
+                }
+                if (found) {
+                    exprs.insert(e);
+                }
+            }
+        }
+
+        json expr_arr = json::array();
+        for (int e : exprs) expr_arr.push_back(e);
+        ck["expressions"] = std::move(expr_arr);
+
         char_keys[it.key()] = std::move(ck);
     }
 
@@ -358,27 +478,121 @@ std::shared_ptr<const json> build_meta() {
 // 舞台
 // ---------------------------------------------------------------------------
 
-// _pick_char_tex（preview_service.py:404-432）。AA 索引经 P4 的进程级
-// ensure_aa_index() 接入：索引可用时按 表情变体 → 基础立绘 → 变体前缀 逐候选
-// has_tex 命中返回（超范围表情回退 base，selftest char_tex_fallback 契约）；
-// 索引不可得时与 Python idx=None 分支一致，返回首个候选。
+// Python int(x)（TypeError/ValueError -> nullopt）。bool 视作 0/1。
+std::optional<long long> py_int_val(const json& v) {
+    if (v.is_boolean()) return v.get<bool>() ? 1LL : 0LL;
+    if (v.is_number_integer()) return v.get<long long>();
+    if (v.is_number_unsigned()) return static_cast<long long>(v.get<unsigned long long>());
+    if (v.is_number_float()) {
+        double d = v.get<double>();
+        return static_cast<long long>(d);  // 截断
+    }
+    if (v.is_string()) {
+        std::string s = content::py_strip(v.get_ref<const std::string&>());
+        return content::int_digits_str(s);
+    }
+    return std::nullopt;
+}
+
+// _pick_char_tex（preview_service.py:404-432）。AA 索引/本地立绘/解码包接入：
+// 表情可用且有对应资源时返回表情差分，无差分或未命中时优雅回退 base/base2 避免 404。
 std::string pick_char_tex(const json& ck, const json& expr) {
-    std::string base = ck.is_object() && ck.contains("base") ? content::story_str(ck.at("base"))
+    auto sanitize = [](std::string s) -> std::string {
+        s = content::py_strip(s);
+        if (s == "[]" || s == "null" || s == "None" || s == "{}") return "";
+        return s;
+    };
+    std::string base = ck.is_object() && ck.contains("base") ? sanitize(content::story_str(ck.at("base")))
                                                              : std::string();
     std::string base2 = ck.is_object() && ck.contains("base2")
-                            ? content::story_str(ck.at("base2"))
+                            ? sanitize(content::story_str(ck.at("base2")))
                             : std::string();
-    // Python `ck.get("base") or ""` —— 非字符串 truthy 值也会进候选；
-    // url[0] 建 meta 时已限定为 string，故 story_str 等价。
+
     std::vector<std::string> cands;
-    if (content::py_truthy(expr) && !base2.empty()) cands.push_back(base2 + "_" + content::story_str(expr));
+    std::string expr_str = content::py_truthy(expr) ? content::story_str(expr) : std::string();
+
+    bool has_expr = false;
+    if (ck.is_object() && ck.contains("expressions") && ck.at("expressions").is_array()) {
+        long long e_val = 0;
+        if (auto e_opt = py_int_val(expr)) e_val = *e_opt;
+        for (const auto& ev : ck.at("expressions")) {
+            if (py_int_val(ev) == e_val) {
+                has_expr = true;
+                break;
+            }
+        }
+    } else {
+        has_expr = !expr_str.empty() && expr_str != "0";
+    }
+
+    auto add_variant = [&](const std::string& b) {
+        if (b.empty()) return;
+        auto dot = b.rfind('.');
+        auto slash = b.find_last_of("/\\");
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+            std::string stem = b.substr(0, dot);
+            std::string ext = b.substr(dot);
+            cands.push_back(stem + "_" + expr_str + ext);
+            cands.push_back(stem + "_" + expr_str);
+        } else {
+            cands.push_back(b + "_" + expr_str);
+        }
+    };
+
+    if (has_expr && !expr_str.empty() && expr_str != "0") {
+        if (ck.is_object() && ck.contains("faces") && ck.at("faces").is_object()) {
+            const auto& faces = ck.at("faces");
+            if (faces.contains(expr_str) && faces.at(expr_str).is_object()) {
+                const auto& f = faces.at(expr_str);
+                if (f.contains("icon") && f.at("icon").is_string() && !f.at("icon").get<std::string>().empty())
+                    cands.push_back(f.at("icon").get<std::string>());
+                if (f.contains("icon_xx") && f.at("icon_xx").is_string() && !f.at("icon_xx").get<std::string>().empty())
+                    cands.push_back(f.at("icon_xx").get<std::string>());
+            }
+        }
+        add_variant(base2);
+        add_variant(base);
+    }
+
     if (!base.empty()) cands.push_back(base);
-    if (!base2.empty() && base.empty()) cands.push_back(base2);
+    if (!base2.empty()) cands.push_back(base2);
     if (cands.empty()) return "";
+
     auto idx = sa::ensure_aa_index();
-    if (idx) {
-        for (const auto& t : cands)
-            if (idx->has_tex(t)) return norm_tex_key(t);
+    auto pstore = sa::portrait_local_store();
+    auto pack_store = sa::ensure_pack_store();
+    // WYSIWYG：工作区当前模组 Textures/ 下的自定义立绘（含表情差分）也是有效来源。
+    // 模组本地资源优先匹配。
+    auto mod_has = [](const std::string& k) {
+        return !k.empty() && sa::has_mod_local_tex(k);
+    };
+    bool has_sources = (idx != nullptr) || (pstore && pstore->active()) ||
+                       (pack_store && pack_store->active());
+    if (!has_sources) {
+        for (const auto& t : cands) {
+            if (mod_has(t)) {
+                has_sources = true;
+                break;
+            }
+        }
+    }
+    if (has_sources) {
+        for (const auto& t : cands) {
+            if (mod_has(t)) return norm_tex_key(t);
+            if (idx && idx->has_tex(t)) return norm_tex_key(t);
+            if (pstore && sa::has_portrait_local_tex(t)) return norm_tex_key(t);
+            if (pack_store && !pack_store->tex_path(t).empty()) return norm_tex_key(t);
+        }
+        auto in_sources = [&](const std::string& k) {
+            if (k.empty()) return false;
+            if (mod_has(k)) return true;
+            if (idx && idx->has_tex(k)) return true;
+            if (pstore && sa::has_portrait_local_tex(k)) return true;
+            if (pack_store && !pack_store->tex_path(k).empty()) return true;
+            return false;
+        };
+        if (!base.empty() && in_sources(base)) return norm_tex_key(base);
+        if (!base2.empty() && in_sources(base2)) return norm_tex_key(base2);
     }
     return norm_tex_key(cands[0]);
 }
@@ -397,22 +611,6 @@ struct StageOut {
                        "int() argument must be a string, a bytes-like object or a "
                        "real number, not '" +
                            std::string(content::py_type_name(v)) + "'");
-}
-
-// Python int(x)（TypeError/ValueError -> nullopt）。bool 视作 0/1。
-std::optional<long long> py_int_val(const json& v) {
-    if (v.is_boolean()) return v.get<bool>() ? 1LL : 0LL;
-    if (v.is_number_integer()) return v.get<long long>();
-    if (v.is_number_unsigned()) return static_cast<long long>(v.get<unsigned long long>());
-    if (v.is_number_float()) {
-        double d = v.get<double>();
-        return static_cast<long long>(d);  // 截断
-    }
-    if (v.is_string()) {
-        std::string s = content::py_strip(v.get_ref<const std::string&>());
-        return content::int_digits_str(s);
-    }
-    return std::nullopt;
 }
 
 // 「可迭代为序列」的 Python 语义展开（list -> 元素；dict -> 键；str -> 字符；
@@ -478,15 +676,23 @@ StageOut build_stage(const json& talk, const json& char_keys, const json& prev_s
                 auto e = py_int_val(item[2]);
                 if (e) expr = *e;  // except (TypeError, ValueError): expr = 0
             }
-            touch(rid)["expr"] = expr;
+            // 3000（表情）本身即是「在场角色」的动作；单句对白若只写这一条，
+            // 必须一并标记在场，否则下方 present 过滤会丢弃该角色。
+            json& st = touch(rid);
+            st["expr"] = expr;
+            st["present"] = true;
         } else if (tid == 3006) {
             std::string rid = content::clean_id(item[0]);
-            touch(rid)["cloth"] = true;
+            // 3006（换装）同理：维持在场。
+            json& st = touch(rid);
+            st["cloth"] = true;
+            st["present"] = true;
         } else if (tid == 3007) {
             std::string rid = content::clean_id(item[0]);
             json& st = touch(rid);
             bool cur = st.contains("flip") && content::py_truthy(st.at("flip"));
             st["flip"] = !cur;
+            st["present"] = true;
         }
     }
 

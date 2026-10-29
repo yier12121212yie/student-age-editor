@@ -21,8 +21,12 @@ editor.example.com {
 	}
 
 	# ---- 压缩 -----------------------------------------------------------------
-	# 网页静态产物（main.dart.js 等大文件）与 JSON API 响应都受益。
-	encode gzip
+	# 网页静态产物（main.dart.js / canvaskit wasm / 字体）与 JSON API 响应都受益。
+	# 后端静态路由已为这些文件预生成 .br/.gz 旁文件并按 Accept-Encoding 回
+	# Content-Encoding；Caddy 只压缩没有 Content-Encoding 的响应，不会二次压缩。
+	# 显式包含 wasm/字体类型：Caddy 的默认类型表并不覆盖 application/wasm。
+	@compressible path *.js *.mjs *.css *.html *.json *.wasm *.ttf *.otf *.svg *.txt
+	encode @compressible zstd gzip
 
 	# ---- 反向代理到网关 --------------------------------------------------------
 	# 127.0.0.1:8770 = gateway.json 的 listen_port（默认 8770，改动需同步）；

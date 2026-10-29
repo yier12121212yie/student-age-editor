@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <ctime>
+#include <future>
 #include <string>
+#include <thread>
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/component_base.hpp>
@@ -11,6 +13,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
+#include <ftxui/screen/terminal.hpp>
 
 #include "p8_cfg.h"
 #include "p8_render.h"
@@ -86,24 +89,54 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
+// Status-bar copy per intent, defined below the component.
+std::string TuiAppBusyText(Intent intent);
+
 // A single top-level component: it renders the panel and translates keys.
+//
+// Intents execute on a worker thread (DispatchAsync/DispatchChat): a slow
+// backend or a 120s AI round-trip must not freeze the frame. While busy the
+// keyboard is swallowed and Render shows the dispatch-time snapshot, so the
+// main thread never touches AppState concurrently with the worker. The worker
+// announces completion with a posted Custom event; the busy status bar is
+// painted by the same mechanism before the blocking work starts.
 class TuiComponent : public ftxui::ComponentBase {
 public:
     TuiComponent(TuiApp* app, ftxui::ScreenInteractive* screen) : app_(app), screen_(screen) {}
 
     ftxui::Element Render() override {
-        return BuildElement(app_->st, app_->render_width(), app_->render_list_height());
+        return BuildElement(app_->render_state(), app_->render_width(),
+                            app_->render_list_height());
     }
 
     bool OnEvent(ftxui::Event event) override {
+        if (event == ftxui::Event::Custom) {
+            // Two Custom uses: repaint-after-dispatch and worker completion.
+            // completion_pending_ distinguishes them (main thread only flag).
+            if (app_->completion_pending()) app_->AdoptCompletion();
+            return true;  // consume: just triggers a fresh frame
+        }
         KeyInput k = app_->MapEventPublic(event);
         if (k.kind == KeyInput::None) return false;
+
+        if (app_->busy()) {
+            // Frozen: Esc cancels a running AI chat; every other key waits.
+            if (k.kind == KeyInput::Escape && app_->chat_busy_running())
+                app_->CancelChat();
+            return true;
+        }
+
         Intent intent = HandleKey(app_->st, k);
         if (intent == Intent::Quit) {
             screen_->Exit();
             return true;
         }
-        app_->RunIntent(intent);
+        if (intent == Intent::None) return true;
+        if (intent == Intent::SendChat) {
+            app_->DispatchChat();
+            return true;
+        }
+        app_->DispatchAsync(intent, TuiAppBusyText(intent));
         return true;
     }
 
@@ -111,6 +144,53 @@ private:
     TuiApp* app_;
     ftxui::ScreenInteractive* screen_;
 };
+
+// Status-bar copy shown while a worker executes `intent`. Every network branch
+// of RunIntent has a line here — the frame is painted before the call blocks.
+std::string TuiAppBusyText(Intent intent) {
+    switch (intent) {
+        case Intent::RefreshMods: return "刷新模组列表…";
+        case Intent::SelectMod:
+        case Intent::SelectModFromPending: return "加载模组…";
+        case Intent::RefreshTables: return "刷新表列表…";
+        case Intent::LoadTable:
+        case Intent::OpenPendingTable: return "加载表格…";
+        case Intent::SaveTable: return "保存中…";
+        case Intent::ScanBugs: return "Bug 扫描中…";
+        case Intent::FixBugs: return "修复中…";
+        case Intent::SearchTalk: return "搜索中…";
+        case Intent::ValidateTable: return "校验中…";
+        case Intent::RefreshPlugins: return "刷新插件…";
+        case Intent::InstallPlugin: return "安装插件…";
+        case Intent::UninstallPlugin: return "卸载插件…";
+        case Intent::ReloadPlugins: return "重载插件…";
+        case Intent::RefreshCloudProviders: return "读取 Provider…";
+        case Intent::LoadCloudFiles: return "读取文件列表…";
+        case Intent::CloudSync: return "云同步中…（长操作，请稍候）";
+        case Intent::CloudTest: return "连接测试中…";
+        case Intent::CheckUpdate: return "检查更新中…（查询 GitHub）";
+        case Intent::CreateMod: return "创建模组…";
+        case Intent::LoadAiSettings: return "读取 AI 设置…";
+        case Intent::SetPermissionMode: return "写入权限模式…";
+        case Intent::SetNoCodeMode: return "写入无代码设置…";
+        case Intent::FetchFieldSuggestions:
+        case Intent::FetchSlotEntries:
+        case Intent::FetchDictEntries: return "获取候选…";
+        case Intent::ReportUsage: return "";
+        case Intent::LoadSchema: return "加载 schema…";
+        case Intent::LoadDictLabels: return "加载字段名…";
+        case Intent::TtsLoadSettings: return "读取配音设置…";
+        case Intent::TtsSaveSettings: return "保存配音设置…";
+        case Intent::TtsTest: return "TTS 连接测试中…";
+        case Intent::TtsSynthesize: return "合成配音中…";
+        case Intent::OobeSetWorkspace: return "设置工作区…";
+        case Intent::OobeComplete: return "完成引导…";
+        case Intent::SendChat: return "AI 生成中…（Esc 取消）";
+        case Intent::Quit:
+        case Intent::None: return "";
+    }
+    return "";
+}
 
 }  // namespace
 
@@ -122,57 +202,174 @@ TuiApp::TuiApp(std::string base_url, AgentSettings agent_settings, std::string d
     session_id_ = "tui-" + std::to_string(static_cast<long long>(now));
 }
 
-int TuiApp::render_width() const { return width_; }
-int TuiApp::render_list_height() const { return std::max(1, height_ - 5); }
+int TuiApp::render_width() const {
+    // Read live so resizing the terminal reflows the next frame (the
+    // startup-only probe used to freeze the layout until relaunch).
+    return std::max(20, ftxui::Terminal::Size().dimx);
+}
 
-void TuiApp::Run() {
-    auto probe = ftxui::Screen::Create(ftxui::Dimension::Full(), ftxui::Dimension::Full());
-    width_ = probe.dimx();
-    height_ = probe.dimy();
+int TuiApp::render_list_height() const {
+    return std::max(1, ftxui::Terminal::Size().dimy - 5);
+}
 
-    auto screen = ftxui::ScreenInteractive::TerminalOutput();
-    screen_ = &screen;
-    auto component = std::make_shared<TuiComponent>(this, &screen);
+// ---- async intent plumbing -------------------------------------------------
 
-    std::string err;
-    if (api_.Ping(&err)) {
-        st.status = "已连接 " + api_.base_url();
-    } else {
-        st.status = "后端未连接: " + err + "  (" + api_.base_url() + ")";
+void TuiApp::DispatchAsync(Intent intent, const std::string& busy_text) {
+    st.status = busy_text;     // painted by the repaint Custom below
+    st_view = st;              // frame snapshot shown while busy
+    completion_pending_ = false;
+    busy_.store(true, std::memory_order_release);
+    if (screen_) screen_->PostEvent(ftxui::Event::Custom);
+    std::thread([this, intent] {
+        // Sole owner of `st` until the completion event: the main thread is
+        // frozen and renders st_view instead.
+        RunIntent(intent);
+        busy_.store(false, std::memory_order_release);
+        if (screen_) screen_->PostEvent(ftxui::Event::Custom);
+    }).detach();
+}
+
+void TuiApp::DispatchChat() {
+    st.status = "AI 生成中…（Esc 取消）";
+    st_view = st;  // rollback target for Esc
+    completion_pending_ = false;
+    chat_abandoned_.store(false, std::memory_order_release);
+    is_chat_busy_.store(true, std::memory_order_release);
+    const long long epoch = chat_epoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    busy_.store(true, std::memory_order_release);
+    if (screen_) screen_->PostEvent(ftxui::Event::Custom);
+    std::thread([this, epoch] {
+        // Private copy: Esc rolls the UI back to st_view immediately, so the
+        // worker must never touch st after the cancel.
+        AppState work = st_view;
+        std::string err;
+        std::string reply = agent_.SendTurn(kSystemPrompt, work.chat, &err);
+        if (chat_abandoned_.load(std::memory_order_acquire) ||
+            epoch != chat_epoch_.load(std::memory_order_acquire)) {
+            return;  // abandoned: the main thread already rolled back
+        }
+        work.chat_busy = false;
+        if (!err.empty()) {
+            work.status = err;
+        } else {
+            work.chat.push_back(ChatMsg{"assistant", reply});
+            SaveSession(data_root_, session_id_, work.chat);
+            work.status.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lk(done_mu_);
+            st_done = std::move(work);
+        }
+        busy_.store(false, std::memory_order_release);
+        if (screen_) screen_->PostEvent(ftxui::Event::Custom);
+    }).detach();
+}
+
+void TuiApp::AdoptCompletion() {
+    completion_pending_ = false;
+    if (is_chat_busy_.load(std::memory_order_acquire)) {
+        is_chat_busy_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lk(done_mu_);
+        st = std::move(st_done);
     }
+    // Non-chat intents: the worker already wrote st; just repaint.
+}
+
+void TuiApp::CancelChat() {
+    // Roll back to the dispatch snapshot at once; the late worker result is
+    // discarded via chat_abandoned_.
+    chat_abandoned_.store(true, std::memory_order_release);
+    completion_pending_ = false;
+    is_chat_busy_.store(false, std::memory_order_release);
+    st = st_view;
+    st.chat_busy = false;
+    st.status = "已取消 AI 回复";
+    busy_.store(false, std::memory_order_release);
+}
+
+void TuiApp::RunStartupSequence(AppState& s) {
+    std::string err;
+    if (!api_.Ping(&err)) {
+        s.status = "后端未连接: " + err + "  (" + api_.base_url() + ")";
+        return;
+    }
+    s.status = "已连接 " + api_.base_url();
     // The AI modal title carries the active provider·model like the Alpha's
     // 🤖 dialog did.
     {
         const AgentSettings& as = agent_.settings();
-        st.agent_label = (as.provider.empty() ? std::string("openai_compatible") : as.provider) +
-                         " · " + (as.model.empty() ? std::string("（未配置模型）") : as.model);
+        s.agent_label = (as.provider.empty() ? std::string("openai_compatible") : as.provider) +
+                        " · " + (as.model.empty() ? std::string("（未配置模型）") : as.model);
     }
-    LoadMods();
-    // The permission mode gates every mutating action, so it is seeded from the
-    // same .editor_ai.json the desktop frontend reads (GET /api/ai/settings).
+    // Independent reads run concurrently — on a cold backend this cuts the
+    // sequential startup round-trips down to roughly the slowest one.
+    auto mods_f = std::async(std::launch::async, [this] {
+        std::string e;
+        ModsListing listing = api_.ListModsWithCounts(&e);
+        return std::make_pair(std::move(listing), std::move(e));
+    });
+    auto perm_f = std::async(std::launch::async, [this] {
+        std::string e;
+        return std::make_pair(api_.LoadPermissionMode(&e), e.empty());
+    });
+    auto nocode_f = std::async(std::launch::async, [this] {
+        std::string e;
+        return std::make_pair(api_.LoadNoCodeMode(&e), e.empty());
+    });
+    auto schema_f = std::async(std::launch::async, [this] {
+        std::string e;
+        Json j = api_.GetSchema(&e);
+        return std::make_pair(std::move(j), std::move(e));
+    });
+    auto keymaps_f = std::async(std::launch::async, [this] {
+        std::string e;
+        Json j = api_.GetKeyMaps(&e);
+        return std::make_pair(std::move(j), std::move(e));
+    });
+    auto oobe_f = std::async(std::launch::async, [this] {
+        std::string e;
+        return std::make_pair(api_.OobeDone(&e), e.empty());
+    });
+
     {
-        std::string ac_err;
-        st.permission_mode = api_.LoadPermissionMode(&ac_err);
-    }
-    // No-code mode is a shared editor setting (GET /api/settings/editor): the
-    // three frontends read the same persisted flag; failures just keep it off.
-    {
-        std::string nc_err;
-        st.no_code_mode = api_.LoadNoCodeMode(&nc_err);
-    }
-    // Form metadata: schema field types (columns + encode/decode) and the dicts
-    // key_maps (field 中文 labels). Failures degrade to the generic form.
-    RunIntent(Intent::LoadSchema);
-    RunIntent(Intent::LoadDictLabels);
-    // OOBE first-run wizard (Alpha's OobeScreen; the shared oobe marker).
-    {
-        std::string ob_err;
-        if (!api_.OobeDone(&ob_err)) {
-            st.oobe = OobeState{};
-            st.oobe.active = true;
-            st.page = Page::Oobe;
+        auto [listing, e] = mods_f.get();
+        if (e.empty()) {
+            s.mods = std::move(listing.mods);
+            s.cfg_counts = std::move(listing.cfg_counts);
+            if (!listing.workspace.empty()) s.workspace = listing.workspace;
+            s.mod_sel = s.ClampSel(s.mod_sel, static_cast<int>(s.mods.size()));
+            s.tree_sel = s.ClampSel(s.tree_sel, static_cast<int>(s.TreeItems().size()));
+        } else {
+            s.status = e;
         }
     }
+    s.permission_mode = perm_f.get().first;
+    s.no_code_mode = nocode_f.get().first;
+    s.schema = schema_f.get().first;
+    s.key_maps = keymaps_f.get().first;  // labels degrade to raw keys on error
+    // OOBE first-run wizard (Alpha's OobeScreen; the shared oobe marker).
+    if (!oobe_f.get().first) {
+        s.oobe = OobeState{};
+        s.oobe.active = true;
+        s.page = Page::Oobe;
+    }
+}
+
+void TuiApp::Run() {
+    auto screen = ftxui::ScreenInteractive::TerminalOutput();
+    screen_ = &screen;
+    auto component = std::make_shared<TuiComponent>(this, &screen);
+
+    // Startup runs on the worker under the same busy machinery: the first
+    // frame already shows "正在连接后端…" instead of a black screen.
+    st.status = "正在连接后端 " + api_.base_url() + " …";
+    st_view = st;
+    busy_.store(true, std::memory_order_release);
+    std::thread([this] {
+        RunStartupSequence(st);
+        busy_.store(false, std::memory_order_release);
+        if (screen_) screen_->PostEvent(ftxui::Event::Custom);
+    }).detach();
 
     screen.Loop(component);
 }
@@ -197,6 +394,36 @@ void TuiApp::RunIntent(Intent intent) {
         case Intent::RefreshMods:
             LoadMods();
             break;
+        case Intent::SelectModFromPending: {
+            // Dirty-table confirm approved: replay the deferred mod switch.
+            if (st.pending_mod.empty()) break;
+            const std::string name = st.pending_mod;
+            st.pending_mod.clear();
+            for (int i = 0; i < static_cast<int>(st.mods.size()); ++i) {
+                if (st.mods[i].name == name) {
+                    st.mod_sel = i;
+                    break;
+                }
+            }
+            st.selected_mod = name;
+            st.expanded_mods.insert(name);
+            RunIntent(Intent::SelectMod);
+            break;
+        }
+        case Intent::OpenPendingTable: {
+            // Dirty-table confirm approved: open the deferred table.
+            if (st.pending_table.empty()) break;
+            const std::string next = st.pending_table;
+            st.pending_table.clear();
+            st.table = Table{};
+            st.table.name = next;
+            st.focus = Focus::Rows;
+            st.row_sel = 0;
+            st.detail_mode = DetailMode::Form;
+            st.status = "加载 " + st.table.name;
+            RunIntent(Intent::LoadTable);
+            break;
+        }
         case Intent::SelectMod: {
             if (api_.SelectMod(st.selected_mod, &err)) {
                 st.tables = api_.ListTables(&err);

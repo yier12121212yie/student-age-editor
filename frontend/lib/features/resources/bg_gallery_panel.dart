@@ -4,6 +4,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/empty_state.dart';
 import 'bg_visuals.dart';
 
 /// 背景展示：全部 BgCfg 背景的网格画廊（对齐「人物资源库」的立绘网格）。
@@ -228,10 +229,7 @@ class _BgGalleryPanelState extends State<BgGalleryPanel> {
 
   Widget _buildGrid(List<BgVisual> list) {
     if (list.isEmpty) {
-      return Center(
-        child: Text('没有匹配的背景',
-            style: TextStyle(fontSize: 12, color: palette.textHint)),
-      );
+      return const EmptyState('没有匹配的背景');
     }
     return GridView.builder(
       padding: const EdgeInsets.all(10),

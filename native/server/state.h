@@ -72,6 +72,7 @@ namespace detail {
 // main.cpp / tests: override the fallback editor root (portable-build rule of
 // core/paths.py: exe directory). Only used when EDITOR_DATA_ROOT is unset.
 void set_editor_root(const std::string& root);
+bool has_editor_root_override();
 }  // namespace detail
 
 // Workshop mod roots (P2): core/steam_paths.py workshop_mods_roots — the

@@ -2,8 +2,11 @@
 #include "gw_proxy.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
+#include <memory>
 #include <utility>
 
 #include "sa_core/http_client.h"
@@ -71,15 +74,79 @@ long long now_ms() {
 }
 
 // Resolve bearer -> account. On failure returns false with the 401 to send.
+// 令牌来源（网页版 M2）：先查内存登录会话，再查长期 API 令牌表
+// （<state_dir>/api_tokens.json）。后者命中时把 `readonly` 标记回传，供代理
+// 在转发 /api/mcp 时强制追加 `?readonly=1`。
 bool bearer_account(Gateway& g, const sa::Req& req, std::string* account,
-                    std::string* token_out) {
+                    std::string* token_out, bool* readonly = nullptr) {
+    if (readonly) *readonly = false;
     std::string token;
     if (!parse_bearer(req.authorization_header, &token)) return false;
     Sessions::Info info;
-    if (!g.sessions->check(token, &info)) return false;
-    if (account) *account = info.name;
-    if (token_out) *token_out = token;
-    return true;
+    if (g.sessions->check(token, &info)) {
+        if (account) *account = info.name;
+        if (token_out) *token_out = token;
+        return true;
+    }
+    if (g.api_tokens) {
+        std::string acct;
+        bool ro = false;
+        if (g.api_tokens->verify(token, &acct, &ro)) {
+            // 账号在签发令牌后被停用时，长期凭据必须立刻失效（与 refresh 同规则）。
+            const Account* acc = g.cfg.find_account(acct);
+            if (!acc || acc->disabled) return false;
+            if (account) *account = acct;
+            if (token_out) *token_out = token;
+            if (readonly) *readonly = ro;
+            return true;
+        }
+    }
+    return false;
+}
+
+// 请求体里的 "readonly"：接受布尔或 "true"/"1" 字符串（前端可能两种都发）。
+bool body_readonly(const sa::json& body) {
+    if (!body.is_object() || !body.contains("readonly")) return false;
+    const auto& v = body.at("readonly");
+    if (v.is_boolean()) return v.get<bool>();
+    if (v.is_string()) {
+        const std::string s = sa_core::str::lower(v.get<std::string>());
+        return s == "true" || s == "1" || s == "yes";
+    }
+    if (v.is_number()) return v.get<double>() != 0.0;
+    return false;
+}
+
+// epoch 毫秒 -> "YYYY-MM-DD"（本地时区）；0 表示永不过期。
+std::string format_date_ms(long long ms) {
+    if (ms == 0) return "永不过期";
+    const std::time_t t = static_cast<std::time_t>(ms / 1000);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1,
+                  tm.tm_mday);
+    return buf;
+}
+
+// raw query 里是否已经带了 readonly 标记。
+bool query_has_readonly(const std::string& raw_query) {
+    size_t pos = 0;
+    while (pos <= raw_query.size()) {
+        size_t amp = raw_query.find('&', pos);
+        const std::string pair =
+            raw_query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+        const size_t eq = pair.find('=');
+        const std::string key = eq == std::string::npos ? pair : pair.substr(0, eq);
+        if (key == "readonly") return true;
+        if (amp == std::string::npos) break;
+        pos = amp + 1;
+    }
+    return false;
 }
 
 }  // namespace
@@ -122,31 +189,49 @@ void LoginRateLimiter::record_success(const std::string& name) {
 }
 
 bool endpoint_banned(const std::string& method, const std::string& path) {
+    // 默认托管策略：媒体转发未开启（测试/旧调用方保持既有语义）。
+    Config cfg;
+    return endpoint_banned(method, path, cfg);
+}
+
+bool endpoint_banned(const std::string& method, const std::string& path,
+                     const Config& cfg) {
     // Prefixes disabled in hosted mode (any method). Derived from the M2
     // brief + grep of ai_image.cpp/tts.cpp generation and settings routes:
     //   /api/shutdown         — never proxy a process-killer
     //   /api/plugins/service  — §4 plugin SSRF surface
     //   /api/plugins/agent    — arbitrary tool exec
-    //   /api/tts              — all TTS (gen + settings): platform never pays
     //   /api/oobe             — OOBE rewrites workspace root
-    //   /api/ai/image         — image generate/edit (ai_image.cpp)
     //   /api/ai/settings      — user's own AI key must never land on the box
     static const char* kPrefixes[] = {"/api/shutdown", "/api/plugins/service",
-                                      "/api/plugins/agent", "/api/tts", "/api/oobe",
-                                      "/api/ai/image", "/api/ai/settings"};
+                                      "/api/plugins/agent", "/api/oobe",
+                                      "/api/ai/settings"};
     for (const char* p : kPrefixes)
         if (under(path, p)) return true;
+    // C1：TTS / 生图只在管理员显式开启媒体转发后放行。开启后网关负责
+    // 注入全局 key（生图改请求体、TTS 走覆盖文件），客户端仍不能指定 host。
+    if (!cfg.ai.media_enabled) {
+        static const char* kMediaPrefixes[] = {"/api/tts", "/api/ai/image"};
+        for (const char* p : kMediaPrefixes)
+            if (under(path, p)) return true;
+    }
     // Workspace root is method-specific: only POST /api/workspace (and any
     // subpath) mutates the sandbox root; GET /api/workspace/status stays open.
     if (method == "POST" && under(path, "/api/workspace")) return true;
     // 全量导入端点（安全批次 A）：这些端点接受调用方提供的任意本机文件系统
     // 路径，托管模式下等于把宿主机任意文件读进账号沙箱（sandbox 逃逸/
     // 任意文件读取原语）。Web 通道的安全等价物是 *_upload（字节走 body）。
+    //
+    // 注意 /api/mod/import_files 不在此列：它只接受 body 内联的 base64
+    // `data`（见 mod_files_routes.cpp），文件名经 sanitize_name、目录经
+    // valid_single_dir 净化后写进当前模组沙箱，**不接受任何本机路径**——
+    // 与 *_upload 同型。此前把它误列为本机路径原语，导致托管态网页端
+    // 「从电脑导入图片」被 403 拦死、导入的图片不显示。若日后要重新收紧，
+    // 请确认端点确实读取了调用方提供的路径。
     static const char* kPathImportPrefixes[] = {
         "/api/plugins/install_path",       // plugins_routes.cpp: install_plugin_from_path
         "/api/extensions/install_path",    // 扩展合并：同型本机路径安装
         "/api/resource_packs/import_path", // p3b_domain_tools_routes.cpp: 同型
-        "/api/mod/import_files",           // mod_files_routes.cpp: files[] 本机路径
         "/api/mods/import_path",           // mods_routes.cpp: 模组 zip 本机路径导入
     };
     for (const char* p : kPathImportPrefixes)
@@ -416,6 +501,87 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         return sa::Resp::Json(200, sa::json{{"ok", true}});
     });
 
+    // ---- GET /api/auth/tokens --------------------------------------------
+    // 当前账号已签发的长期 API 令牌列表（只回掩码与元数据，绝无明文）。
+    r.get(R"(/api/auth/tokens)", [&g](const sa::Req& req) -> sa::Resp {
+        std::string account;
+        if (!bearer_account(g, req, &account, nullptr))
+            return err_json(401, "unauthorized");
+        if (!g.api_tokens) return err_code(503, "token service unavailable", "server_error");
+        sa::json arr = sa::json::array();
+        for (const auto& t : g.api_tokens->list_for_account(account)) {
+            sa::json e = sa::json::object();
+            e["id"] = t.id;
+            e["label"] = t.label.empty() ? "未命名令牌" : t.label;
+            // 掩码只作展示：真实明文与 hash 都不可逆，故用 id 拼一个同形串。
+            e["masked_token"] = gw::ApiTokens::token_prefix() + t.id.substr(0, 6) + "***" +
+                                t.id.substr(t.id.size() - 4);
+            e["created_at"] = format_date_ms(t.created_ms);
+            e["expires_at"] = format_date_ms(t.expires_ms);
+            e["readonly"] = t.readonly;
+            arr.push_back(std::move(e));
+        }
+        return sa::Resp::Json(200, sa::json{{"tokens", arr}});
+    });
+
+    // ---- POST /api/auth/tokens -------------------------------------------
+    // 签发一个长期 API 令牌。明文 `token` 只在本次响应里出现一次。
+    r.post(R"(/api/auth/tokens)", [&g](const sa::Req& req) -> sa::Resp {
+        std::string account;
+        if (!bearer_account(g, req, &account, nullptr))
+            return err_json(401, "unauthorized");
+        if (!g.api_tokens) return err_code(503, "token service unavailable", "server_error");
+        std::string label = "External Agent";
+        int ttl_days = 30;
+        bool readonly = body_readonly(req.body);
+        if (req.body.is_object()) {
+            if (req.body.contains("label") && req.body.at("label").is_string()) {
+                std::string l = sa_core::str::trim(req.body.at("label").get<std::string>());
+                if (!l.empty()) label = l;
+            }
+            if (req.body.contains("expires_in_days")) {
+                const auto& v = req.body.at("expires_in_days");
+                if (v.is_number_integer()) {
+                    ttl_days = v.get<int>();
+                } else if (v.is_number()) {
+                    ttl_days = static_cast<int>(v.get<double>());
+                } else if (v.is_string()) {
+                    auto iv = sa_core::py_int(v.get<std::string>());
+                    if (iv) ttl_days = static_cast<int>(*iv);
+                }
+            }
+        }
+        if (ttl_days < 0) ttl_days = 0;
+        if (ttl_days > 3650) ttl_days = 3650;  // 上限 10 年，防误填天文数字
+        ApiTokenInfo info;
+        const std::string token = g.api_tokens->issue(account, label, ttl_days, readonly, &info);
+        std::fprintf(stderr, "[gateway] issued MCP api token '%s' for '%s' (readonly=%d)\n",
+                     info.id.c_str(), account.c_str(), readonly ? 1 : 0);
+        sa::json out = sa::json::object();
+        out["id"] = info.id;
+        out["token"] = token;  // 明文：仅此一次
+        out["masked_token"] = gw::ApiTokens::token_prefix() + info.id.substr(0, 6) + "***" +
+                              info.id.substr(info.id.size() - 4);
+        out["label"] = label;
+        out["created_at"] = format_date_ms(info.created_ms);
+        out["expires_at"] = format_date_ms(info.expires_ms);
+        out["readonly"] = readonly;
+        return sa::Resp::Json(200, std::move(out));
+    });
+
+    // ---- DELETE /api/auth/tokens/:id -------------------------------------
+    r.del(R"(/api/auth/tokens/(?P<id>[^/]+))", [&g](const sa::Req& req) -> sa::Resp {
+        std::string account;
+        if (!bearer_account(g, req, &account, nullptr))
+            return err_json(401, "unauthorized");
+        if (!g.api_tokens) return err_code(503, "token service unavailable", "server_error");
+        const std::string id = req.params.count("id") ? req.params.at("id") : "";
+        if (id.empty()) return err_code(400, "missing token id", "invalid_params");
+        // 只在自己的令牌集合里吊销（跨账号按「未找到」处理，避免枚举他人 id）。
+        if (!g.api_tokens->revoke(account, id)) return err_json(404, "token not found");
+        return sa::Resp::Json(200, sa::json{{"ok", true}});
+    });
+
     // ---- GET /api/ai/policy ----------------------------------------------
     // Bearer-gated like every non-auth /api endpoint ("其它所有 /api/* 一律
     // 先过 Bearer 会话"): the login screen does not need it; the editor does.
@@ -423,10 +589,16 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         std::string account;
         if (!bearer_account(g, req, &account, nullptr))
             return err_json(401, "unauthorized");
+        // C1：管理员开启媒体转发且至少配置了一类全局 key 时，网页端才展示
+        // TTS/生图入口（前端共用一个能力位）。
+        const bool media_available =
+            g.cfg.ai.media_enabled &&
+            (!g.cfg.ai.tts_api_key.empty() || !g.cfg.ai.image_api_key.empty());
         return sa::Resp::Json(
             200, sa::ai_relay::policy_json(g.relay, /*own_key_allowed=*/true,
-                                           /*tts_image_available=*/false, g.cfg.ai.models,
-                                           g.cfg.ai.daily_limit));
+                                           /*tts_image_available=*/media_available,
+                                           g.cfg.ai.models, g.cfg.ai.daily_limit,
+                                           /*stream=*/true));
     });
 
     // ---- POST /api/ai/relay/chat -----------------------------------------
@@ -450,19 +622,208 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         return up;
     });
 
-    // ---- reverse proxy catch-all for everything else under /api ----------
-    auto proxy = [&g](const sa::Req& req) -> sa::Resp {
+    // ---- POST /api/ai/relay/chat/stream ---------------------------------
+    // 与 buffered 版本相同的鉴权/模型白名单/日额度，然后把账号实例的 SSE
+    // 逐块转发给浏览器。实例在流结束前不能回收（Release guard 捕获在
+    // body_stream 里）。
+#ifndef _WIN32
+    r.post(R"(/api/ai/relay/chat/stream)", [&g](const sa::Req& req) -> sa::Resp {
         std::string account;
         if (!bearer_account(g, req, &account, nullptr))
             return err_json(401, "unauthorized");
-        if (endpoint_banned(req.method, req.path))
+        if (!g.relay.usable) return err_json(503, "ai relay not configured");
+        std::string requested;
+        if (req.body.is_object() && req.body.contains("model") &&
+            req.body.at("model").is_string())
+            requested = req.body.at("model").get<std::string>();
+        if (!model_allowed(g.cfg.ai.models, requested))
+            return err_json(400, "model not allowed");
+        if (g.cfg.ai.daily_limit > 0 && g.usage && g.usage->over_limit(account))
+            return err_json(429, "daily quota exceeded");
+
+        std::string perr;
+        int port = g.pool ? g.pool->acquire(account, &perr) : 0;
+        if (port == 0) return err_json(502, "backend unavailable");
+
+        // 只释放池计数，不删除 InstancePool 本体。
+        auto hold = std::shared_ptr<InstancePool>(
+            g.pool.get(), [account](InstancePool* p) { p->release(account); });
+
+        http::Request hr;
+        hr.method = "POST";
+        hr.url = "http://127.0.0.1:" + std::to_string(port) +
+                 "/api/ai/relay/chat/stream";
+        hr.body = req.raw_body;
+        hr.timeout_seconds = 300.0;
+        hr.bypass_proxy = true;
+        hr.follow_redirects = false;
+        hr.discard_body = true;
+        hr.headers.emplace_back("Content-Type", "application/json");
+        hr.headers.emplace_back("Accept", "text/event-stream");
+        {
+            const std::string backend_token = g.pool->peek_token(account);
+            if (!backend_token.empty())
+                hr.headers.emplace_back("X-Backend-Token", backend_token);
+        }
+
+        sa::Resp out;
+        out.body_stream = [hr = std::move(hr), hold,
+                           usage = g.usage.get(),
+                           account](sa::StreamEmitter& emitter) -> bool {
+            bool started = false;
+            bool start_ok = true;
+            http::Request up_req = hr;
+            up_req.on_response = [&](int status,
+                                     const std::vector<std::pair<std::string, std::string>>& h) {
+                std::string ct = "text/event-stream";
+                for (const auto& kv : h) {
+                    std::string name = kv.first;
+                    for (char& c : name)
+                        c = static_cast<char>(
+                            std::tolower(static_cast<unsigned char>(c)));
+                    if (name == "content-type") ct = kv.second;
+                }
+                start_ok = emitter.start(status, std::move(ct));
+                started = true;
+                if (status >= 200 && status < 400 && usage) usage->record(account);
+            };
+            bool write_ok = true;
+            http::Response up = http::request_stream(
+                up_req, [&](std::string_view chunk) {
+                    if (!started) {
+                        start_ok = emitter.start(200, "text/event-stream");
+                        started = true;
+                    }
+                    if (!start_ok) return false;
+                    if (!emitter.write(chunk)) {
+                        write_ok = false;
+                        return false;
+                    }
+                    return true;
+                });
+            if (!started) {
+                emitter.start(502, "application/json; charset=utf-8");
+                emitter.write(sa::json{{"error", "backend unavailable"}}.dump());
+                return true;
+            }
+            return write_ok;
+        };
+        return out;
+    });
+
+    // ---- GET /api/mcp/stdio/stream --------------------------------------
+    // stdio MCP 桥接的 SSE 长连接：必须逐块转发，不能走缓冲代理。
+    r.get(R"(/api/mcp/stdio/stream)", [&g](const sa::Req& req) -> sa::Resp {
+        std::string account;
+        bool readonly = false;
+        if (!bearer_account(g, req, &account, nullptr, &readonly))
+            return err_json(401, "unauthorized");
+        if (readonly)
+            return err_json(403, "readonly token cannot use the stdio MCP bridge");
+        std::string perr;
+        int port = g.pool ? g.pool->acquire(account, &perr) : 0;
+        if (port == 0) return err_json(502, "backend unavailable");
+        auto hold = std::shared_ptr<InstancePool>(
+            g.pool.get(), [account](InstancePool* p) { p->release(account); });
+
+        http::Request hr;
+        hr.method = "GET";
+        hr.url = "http://127.0.0.1:" + std::to_string(port) +
+                 "/api/mcp/stdio/stream";
+        if (!req.raw_query.empty()) hr.url += "?" + req.raw_query;
+        hr.timeout_seconds = 60.0;  // 后端每 15s 发 ping，不会触发停滞超时
+        hr.bypass_proxy = true;
+        hr.follow_redirects = false;
+        hr.discard_body = true;
+        {
+            const std::string backend_token = g.pool->peek_token(account);
+            if (!backend_token.empty())
+                hr.headers.emplace_back("X-Backend-Token", backend_token);
+        }
+
+        sa::Resp out;
+        out.body_stream = [hr = std::move(hr), hold](sa::StreamEmitter& emitter) -> bool {
+            bool started = false;
+            bool start_ok = true;
+            http::Request up_req = hr;
+            up_req.on_response = [&](int status,
+                                     const std::vector<std::pair<std::string, std::string>>& h) {
+                std::string ct = "text/event-stream";
+                for (const auto& kv : h) {
+                    std::string name = kv.first;
+                    for (char& c : name)
+                        c = static_cast<char>(
+                            std::tolower(static_cast<unsigned char>(c)));
+                    if (name == "content-type") ct = kv.second;
+                }
+                start_ok = emitter.start(status, std::move(ct));
+                started = true;
+            };
+            bool write_ok = true;
+            http::Response up = http::request_stream(
+                up_req, [&](std::string_view chunk) {
+                    if (!started) {
+                        start_ok = emitter.start(200, "text/event-stream");
+                        started = true;
+                    }
+                    if (!start_ok) return false;
+                    if (!emitter.write(chunk)) {
+                        write_ok = false;
+                        return false;
+                    }
+                    return true;
+                });
+            if (!started) {
+                emitter.start(502, "application/json; charset=utf-8");
+                emitter.write(sa::json{{"error", "backend unavailable"}}.dump());
+                return true;
+            }
+            return write_ok;
+        };
+        return out;
+    });
+#endif
+
+    // ---- reverse proxy catch-all for everything else under /api ----------
+    auto proxy = [&g](const sa::Req& req) -> sa::Resp {
+        std::string account;
+        bool readonly_token = false;
+        if (!bearer_account(g, req, &account, nullptr, &readonly_token))
+            return err_json(401, "unauthorized");
+        if (endpoint_banned(req.method, req.path, g.cfg))
             return err_json(403, "endpoint disabled in hosted mode");
+        // C2：只读令牌不能使用 stdio 桥接（子进程工具不受编辑器只读门禁约束）。
+        if (readonly_token && under(req.path, "/api/mcp/stdio"))
+            return err_json(403, "readonly token cannot use the stdio MCP bridge");
+        // C1：托管媒体转发（默认关闭时上面已经 403）。生图请求在这里换成
+        // 管理员 key/host —— 客户端自带的 base_url 一律丢弃，SSRF 面与封禁
+        // 前等价；TTS 的 key 由实例读取网关下发的覆盖文件，不随请求走。
+        const bool image_relay =
+            g.cfg.ai.media_enabled && req.method == "POST" &&
+            (req.path == "/api/ai/image/generate" || req.path == "/api/ai/image/edit");
+        const bool tts_relay =
+            g.cfg.ai.media_enabled && req.method == "POST" &&
+            (req.path == "/api/tts/synthesize" || req.path == "/api/tts/test");
+        if (image_relay && g.cfg.ai.image_api_key.empty())
+            return err_json(503, "image relay not configured");
+        if (tts_relay && g.cfg.ai.tts_api_key.empty())
+            return err_json(503, "tts relay not configured");
+        const bool media_call = image_relay || tts_relay;
+        if (media_call && g.cfg.ai.media_daily_limit > 0 && g.media_usage &&
+            g.media_usage->over_limit(account))
+            return err_json(429, "daily media quota exceeded");
         // httpd keeps raw_body only up to 8 MiB. A POST/PUT that parsed a
         // non-empty body but whose raw bytes were dropped means the request
         // exceeded what the proxy can faithfully replay -> refuse it.
         const bool bodyful = (req.method == "POST" || req.method == "PUT");
         if (bodyful && req.raw_body.empty() && !req.body.is_null())
             return err_json(413, "body too large for proxy");
+        // 只读令牌强制只读（网页版 M2）：转发 /api/mcp 时补 `?readonly=1`，
+        // 客户端无法用只读令牌绕过写工具拦截。
+        std::string query = req.raw_query;
+        if (readonly_token && (req.path == "/api/mcp") && !query_has_readonly(query)) {
+            query = query.empty() ? "readonly=1" : query + "&readonly=1";
+        }
 #ifndef _WIN32
         std::string perr;
         int port = g.pool ? g.pool->acquire(account, &perr) : 0;
@@ -483,12 +844,25 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         http::Request hr;
         hr.method = req.method;
         hr.url = "http://127.0.0.1:" + std::to_string(port) + http::quote_component(req.path);
-        if (!req.raw_query.empty()) hr.url += "?" + req.raw_query;
-        hr.body = req.raw_body;
+        if (!query.empty()) hr.url += "?" + query;
+        std::string out_body = req.raw_body;
+        if (image_relay) {
+            auto parsed = sa::json::parse(req.raw_body, nullptr, false);
+            if (!parsed.is_object()) return err_json(400, "body must be a JSON object");
+            parsed["api_key"] = g.cfg.ai.image_api_key;
+            if (!g.cfg.ai.image_base_url.empty())
+                parsed["base_url"] = g.cfg.ai.image_base_url;
+            else
+                parsed.erase("base_url");  // 交给实例默认（OpenAI 官方）
+            if (!g.cfg.ai.image_model.empty())
+                parsed["model"] = g.cfg.ai.image_model;
+            out_body = parsed.dump();
+        }
+        hr.body = std::move(out_body);
         hr.timeout_seconds = 300.0;
         hr.bypass_proxy = true;
         hr.follow_redirects = false;
-        if (!req.raw_body.empty()) hr.headers.emplace_back("Content-Type", "application/json");
+        if (!hr.body.empty()) hr.headers.emplace_back("Content-Type", "application/json");
         // 安全批次 B：backend 实例启用进程令牌后，代理跳必须携带
         // X-Backend-Token（令牌只在网关与 fork 的 backend 之间流转）。
         {
@@ -507,6 +881,9 @@ void register_gateway_routes(sa::Router& r, Gateway& g) {
         }
         std::string ct = hs.header("Content-Type");
         if (ct.empty()) ct = "application/json";
+        // 额度按「已交付」计数：成功受理的合成/生图才 +1。
+        if (media_call && hs.status >= 200 && hs.status < 300 && g.media_usage)
+            g.media_usage->record(account);
         return sa::Resp::BytesTyped(hs.status, std::move(hs.body), std::move(ct));
 #else
         return err_json(502, "backend unavailable");  // gateway is POSIX-only

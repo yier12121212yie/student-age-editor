@@ -123,6 +123,13 @@ TEST_CASE("graph: /api/effect/parse status branches", "[p1][graph]") {
         CHECK(b.at("ok") == false);
         CHECK(b.at("status") == "json_error");
         CHECK(b.at("message") == "括号或逗号不匹配");
+        // D4：失败位置（0-based 码点偏移 + 1-based 行列），供前端显示「第 N 个字符附近」。
+        CHECK(b.contains("error_offset"));
+        CHECK(b.contains("error_line"));
+        CHECK(b.contains("error_col"));
+        CHECK(b.at("error_line").get<long long>() >= 1);
+        CHECK(b.at("error_col").get<long long>() >= 1);
+        CHECK(b.at("error_offset").get<long long>() >= 0);
     }
     {
         // 扁平数组且首项纯数字 → 缺外层括号（与 /api/effect_validate 同判据）
@@ -176,7 +183,8 @@ TEST_CASE("graph: /api/effect/parse effect row slots & template", "[p1][graph]")
     CHECK(slots[1].at("name") == "V");
     CHECK(slots[1].at("kind") == "number");
     CHECK(slots[1].at("dict").is_null());
-    CHECK(slots[1].at("label") == "数值");
+    // A1：数字槽标签来自模板（"属性 @ATTR@ 增加 V" 跳过占位符取上文词），不再统一"数值"。
+    CHECK(slots[1].at("label") == "增加");
     CHECK(slots[1].at("value") == "5");
 
     // 坏行：模板未命中 → template/slots null + error 给校验信息
@@ -266,5 +274,112 @@ TEST_CASE("graph: /api/effect/parse 998 nested & fullwidth & screen/action", "[p
         CHECK(r0["slots"][0].at("kind") == "dict");
         CHECK(r0["slots"][0].at("value") == "1");
         CHECK(r0["slots"][1].at("value") == "20");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A1 元数据：family/ops 在 /api/effect_suggest 与 /api/effect/parse 一致；
+// 数字槽 label 来自模板（不再统一"数值"）；范围模板给 下限/上限 + 上下限下标。
+// ---------------------------------------------------------------------------
+TEST_CASE("graph: A1 family/ops metadata consistency", "[p1][graph]") {
+    GraphFixture fx;
+    // suggest 拉全量 condition 目录（235 条 > 默认 40，limit=1000 取全）。
+    auto sr = fx.call("GET", "/api/effect_suggest",
+                      {{"mode", "condition"}, {"q", ""}, {"limit", "1000"}});
+    REQUIRE(sr.status == 200);
+    const json& items = sr.json_payload.at("items");
+    REQUIRE(items.size() >= 200);
+
+    json age_ops = json();
+    json age_item = json();
+    for (const auto& it : items)
+        if (it.value("raw_code", "") == "[1, 1, V]") { age_item = it; age_ops = it.at("ops"); }
+    REQUIRE_FALSE(age_item.is_null());
+    CHECK(age_item.at("family") == "1|年龄");
+    CHECK(age_item.at("family_label") == "年龄");
+    CHECK(age_item.at("description") == "年龄 >= V");
+    // 参数 label 来自模板：V → 上文词「年龄」。
+    REQUIRE(age_item.at("slots").size() == 1);
+    CHECK(age_item.at("slots")[0].at("label") == "年龄");
+
+    // 同一概念折叠 3 个变体，按 = > ≥ < ≤ ≠ 范围 循环序。
+    REQUIRE(age_ops.size() == 3);
+    CHECK(age_ops[0].at("op") == "≥");
+    CHECK(age_ops[0].at("code") == "[1, 1, V]");
+    CHECK(age_ops[0].at("value_index") == 2);
+    CHECK(age_ops[0].at("upper_index") == -1);
+    CHECK(age_ops[1].at("op") == "≤");
+    CHECK(age_ops[1].at("code") == "[1, 2, V]");
+    CHECK(age_ops[2].at("op") == "范围");
+    CHECK(age_ops[2].at("code") == "[1, 3, X, Y]");
+    CHECK(age_ops[2].at("value_index") == 2);
+    CHECK(age_ops[2].at("upper_index") == 3);
+    // ops 内嵌目标变体的 slots（供前端行内切换算符），范围上下限 label 分明。
+    REQUIRE(age_ops[2].at("slots").size() == 2);
+    CHECK(age_ops[2].at("slots")[0].at("label") == "下限");
+    CHECK(age_ops[2].at("slots")[1].at("label") == "上限");
+
+    // parse 侧同概念：family/ops 与 suggest 完全一致（模板串同源，同一派生点）。
+    json pb = parse_call(fx, "[1, 1, 5]", "condition");
+    const json& r0 = pb.at("rows")[0];
+    REQUIRE(r0.at("template").is_object());
+    CHECK(r0.at("template").at("family") == "1|年龄");
+    CHECK(r0.at("template").at("family_label") == "年龄");
+    CHECK(r0.at("template").at("description") == "年龄 >= V");
+    CHECK(r0.at("template").at("op") == "≥");
+    CHECK(r0.at("template").at("value_index") == 2);
+    CHECK(r0.at("template").at("upper_index") == -1);
+    CHECK(r0.at("template").at("ops") == age_ops);
+    CHECK(r0.at("slots")[0].at("label") == "年龄");
+    CHECK(r0.at("slots")[0].at("value") == "5");
+
+    // 范围行：上下限槽标 下限/上限，值落到 X/Y。
+    json rb = parse_call(fx, "[1, 3, 5, 10]", "condition");
+    const json& rr = rb.at("rows")[0];
+    CHECK(rr.at("template").at("op") == "范围");
+    REQUIRE(rr.at("slots").size() == 2);
+    CHECK(rr.at("slots")[0].at("label") == "下限");
+    CHECK(rr.at("slots")[0].at("value") == "5");
+    CHECK(rr.at("slots")[1].at("label") == "上限");
+    CHECK(rr.at("slots")[1].at("value") == "10");
+
+    // cost：模板级标签同样生效（"…数量 V" → 数量）。
+    json cb = parse_call(fx, "[1, 20]", "cost");
+    CHECK(cb.at("rows")[0].at("template").at("family_label") == "消耗 属性 @ATTR@ 数量");
+    CHECK(cb.at("rows")[0].at("slots")[1].at("label") == "数量");
+}
+
+TEST_CASE("graph: /api/effect/parse partial fallback", "[p1][graph]") {
+    GraphFixture fx;
+    {
+        // 整体 JSON 坏（第二行 `x` 非法），但第一行完整 → 逐行回退：好行照常、
+        // 坏行 {error, display, unrecognized:true}，整体 status=partial、ok=false。
+        json b = parse_call(fx, "[1, 1, 1, 5], [999, x]", "effect");
+        CHECK(b.at("ok") == false);
+        CHECK(b.at("status") == "partial");
+        REQUIRE(b.at("rows").size() == 2);
+        CHECK(b["rows"][0].at("error").is_null());
+        CHECK_FALSE(b["rows"][0].contains("unrecognized"));
+        CHECK(b["rows"][1].at("unrecognized") == true);
+        CHECK(b["rows"][1]["error"].is_string());
+        CHECK(b["rows"][1].at("display") == "[999, x]");
+        CHECK(b["rows"][1].at("primary").is_null());
+    }
+    {
+        // 一行都救不回来 → 维持整体失败语义（不引入 partial）
+        json b = parse_call(fx, "[999, x]", "effect");
+        CHECK(b.at("status") == "json_error");
+        CHECK(b.at("ok") == false);
+        // D4：此时也带定位信息，且偏移落在出错字符附近。
+        CHECK(b.contains("error_offset"));
+        CHECK(b.at("error_offset").get<long long>() >= 0);
+    }
+    {
+        // 分号分隔（前端 serializeBlockRows 的书写习惯）：同样能整体拆解
+        json b = parse_call(fx, "[1, 1, 1, 5]; [1, 1, 1, 6]", "effect");
+        CHECK(b.at("status") != "json_error");
+        REQUIRE(b.at("rows").size() == 2);
+        CHECK(b["rows"][0].at("error").is_null());
+        CHECK(b["rows"][1].at("error").is_null());
     }
 }

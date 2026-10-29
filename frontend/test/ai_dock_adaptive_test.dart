@@ -11,6 +11,7 @@ import 'package:student_age_editor/core/plugin_state.dart';
 import 'package:student_age_editor/core/ui_mode.dart';
 import 'package:student_age_editor/features/shell/ai_dock.dart';
 import 'package:student_age_editor/features/shell/classic_shell.dart';
+import 'package:student_age_editor/features/shell/director_shell.dart';
 import 'package:student_age_editor/features/shell/editor_area.dart';
 import 'package:student_age_editor/features/shell/editor_shell.dart';
 import 'package:student_age_editor/features/shell/shell_state.dart';
@@ -64,6 +65,14 @@ void main() {
         onUiModeChanged: (_) {},
       );
 
+  Widget director(ShellState shell) => DirectorShell(
+        state: AppState(),
+        shell: shell,
+        pluginState: PluginState(),
+        uiMode: UiMode.director,
+        onUiModeChanged: (_) {},
+      );
+
   testWidgets('创作壳紧凑宽度：AI 浮层化且编辑区仍在（不挤占）', (tester) async {
     final shell = ShellState(); // aiOpen 默认 true
     await pumpShell(tester, creation(shell), const Size(900, 700));
@@ -108,9 +117,8 @@ void main() {
     expect(find.byType(AiDock), findsNothing);
   });
 
-  testWidgets('创作壳：收起态折叠条较窄，宿主不足时仍可并排停靠', (tester) async {
-    // 同一 1100 约束下，AI 收起只剩 36px 折叠条：编辑区实得 ~687，
-    // 仍够用，应保持并排停靠（避免不必要的浮层化）。
+  testWidgets('创作壳：收起态不占布局宽度，只留右下角悬浮按钮', (tester) async {
+    // 收起态不再保留常驻折叠条：编辑区不因 AI 被压窄。
     final shell = ShellState()..setAiOpen(false);
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
@@ -126,19 +134,21 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(tester.takeException(), isNull);
-    expect(find.byType(AiDock), findsOneWidget);
-    expect(find.byType(AiOverlayDock), findsNothing);
+    expect(find.byType(AiDock), findsNothing);
+    expect(find.byType(AiOverlayDock), findsOneWidget);
+    expect(find.byKey(const ValueKey('ai-overlay-button')), findsOneWidget);
   });
 
-  testWidgets('创作壳紧凑宽度：收起显示悬浮按钮，再展开可回切', (tester) async {
+  testWidgets('创作壳紧凑宽度：收起只显示悬浮按钮，再展开可回切', (tester) async {
     final shell = ShellState();
     await pumpShell(tester, creation(shell), const Size(900, 700));
 
     shell.setAiOpen(false);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.byKey(const ValueKey('ai-overlay-button')), findsOneWidget);
+    // 收起态：固定折叠条已移除，只在右下角留悬浮按钮，不遮挡编辑区。
     expect(find.byKey(const ValueKey('ai-overlay')), findsNothing);
+    expect(find.byKey(const ValueKey('ai-overlay-button')), findsOneWidget);
 
     shell.setAiOpen(true);
     await tester.pump();
@@ -162,5 +172,25 @@ void main() {
 
     expect(find.byType(AiOverlayDock), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('导演壳宽布局：AI 与内容并排停靠（N11 一致化）', (tester) async {
+    final shell = ShellState(); // aiOpen 默认 true
+    await pumpShell(tester, director(shell), const Size(1600, 1000));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(AiDock), findsOneWidget);
+    expect(find.byType(AiOverlayDock), findsNothing);
+  });
+
+  testWidgets('导演壳紧凑宽度：AI 浮层化且内容仍可交互', (tester) async {
+    final shell = ShellState();
+    await pumpShell(tester, director(shell), const Size(900, 700));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(AiOverlayDock), findsOneWidget);
+    expect(find.byType(AiDock), findsNothing);
+    // 内容区（首页功能网格）在浮层之下仍在。
+    expect(find.text('模组编辑功能'), findsOneWidget);
   });
 }

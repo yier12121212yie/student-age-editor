@@ -21,7 +21,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
+#include "sa_core/atomic_io.h"
 #include "sa_core/paths.h"
 #include "server/httpd.h"
 #include "server/services/static_routes.h"
@@ -178,8 +180,44 @@ int main(int argc, char** argv) {
     g.sessions = std::make_unique<gw::Sessions>(g.cfg.session_ttl_hours * 3600LL * 1000LL);
     // 长期鉴权（记住我）：refresh token 落盘，网关重启后仍可免登。
     g.refresh = std::make_unique<gw::RefreshTokens>(g.cfg.refresh_file);
+    // 外部 Agent 的长期 API 令牌（设置页「生成令牌」卡片）：明文只在签发响应
+    // 里出现一次，落盘仅存 SHA-256 哈希。
+    g.api_tokens =
+        std::make_unique<gw::ApiTokens>(sa_core::paths::join(g.cfg.state_dir, "api_tokens.json"));
     g.usage = std::make_unique<gw::UsageStore>(
         sa_core::paths::join(g.cfg.state_dir, "usage.json"), g.cfg.ai.daily_limit);
+    // C1：媒体转发额度独立计数（聊天额度不会被生图/TTS 吃掉）。
+    g.media_usage = std::make_unique<gw::UsageStore>(
+        sa_core::paths::join(g.cfg.state_dir, "usage_media.json"),
+        g.cfg.ai.media_daily_limit);
+    // C1：托管 TTS 的管理员配置落成覆盖文件，实例启动时通过环境变量读取。
+    // 只下发管理员显式填写的字段；key 不进入任何账号目录。
+    std::string hosted_media_file;
+    if (g.cfg.ai.media_enabled) {
+        sa::json media = sa::json::object();
+        const std::pair<const char*, const std::string*> tts_fields[] = {
+            {"ttsProvider", &g.cfg.ai.tts_provider},
+            {"ttsBaseUrl", &g.cfg.ai.tts_base_url},
+            {"ttsApiKey", &g.cfg.ai.tts_api_key},
+            {"ttsModel", &g.cfg.ai.tts_model},
+            {"ttsVoice", &g.cfg.ai.tts_voice},
+            {"ttsFormat", &g.cfg.ai.tts_format},
+        };
+        for (const auto& f : tts_fields) {
+            if (!f.second->empty()) media[f.first] = *f.second;
+        }
+        if (!media.empty()) {
+            hosted_media_file =
+                sa_core::paths::join(g.cfg.state_dir, "hosted_media.json");
+            try {
+                sa_core::write_text_atomic(hosted_media_file, media.dump(2));
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "warning: cannot write %s: %s\n",
+                             hosted_media_file.c_str(), e.what());
+                hosted_media_file.clear();
+            }
+        }
+    }
     g.relay = gw::resolve_relay(g.cfg);
 
     // Create every account workspace (gateway.json + registered).
@@ -211,6 +249,15 @@ int main(int argc, char** argv) {
     // 背景图片资源扩展（与人物图片扩展同构）透传给每个 backend 实例。
     po.background_dir = g.cfg.backgrounds.dir;
     po.background_base_url = g.cfg.backgrounds.base_url;
+    // C1：托管 TTS 覆盖文件（空 == 不注入，实例只读账号自己的设置）。
+    po.hosted_media_file = hosted_media_file;
+    // C2：stdio MCP 命令白名单（逗号分隔；空 == 桥接拒绝所有命令）。
+    if (g.cfg.mcp_stdio_enabled) {
+        for (size_t i = 0; i < g.cfg.mcp_stdio_allow.size(); ++i) {
+            if (i) po.mcp_stdio_allow += ',';
+            po.mcp_stdio_allow += g.cfg.mcp_stdio_allow[i];
+        }
+    }
     // 上传/请求体上限：网关自身与每个实例用同一个配置值。
     po.max_body_bytes = g.cfg.max_body_bytes;
     // 读 g.cfg（而非启动时的局部副本）：自助注册会在运行时追加账号。

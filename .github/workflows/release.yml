@@ -449,6 +449,8 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
+      - name: 安装 Web 优化工具依赖（图标子集化 + brotli 预压缩）
+        run: python -m pip install --disable-pip-version-check fonttools brotli
       - name: 解析版本号
         env:
           VERSION_INPUT: ${{ github.event.inputs.version }}

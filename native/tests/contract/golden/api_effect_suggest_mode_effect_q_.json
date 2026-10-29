@@ -6,6 +6,27 @@
       {
         "code": "[7, 3, @STATE@]",
         "desc": "移除状态 @STATE@",
+        "description": "移除状态 @STATE@",
+        "family": "7|移除状态 @STATE@",
+        "family_label": "移除状态 @STATE@",
+        "op": "",
+        "ops": [
+          {
+            "code": "[7, 3, @STATE@]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "STATE",
+                "kind": "dict",
+                "label": "状态",
+                "name": "STATE"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[7, 3, @STATE@]",
         "raw_desc": "移除状态 @STATE@",
         "score": 10,
@@ -17,11 +38,34 @@
             "label": "状态",
             "name": "STATE"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[7, 2, @STATE@]",
         "desc": "获取状态 @STATE@",
+        "description": "获取状态 @STATE@",
+        "family": "7|获取状态 @STATE@",
+        "family_label": "获取状态 @STATE@",
+        "op": "",
+        "ops": [
+          {
+            "code": "[7, 2, @STATE@]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "STATE",
+                "kind": "dict",
+                "label": "状态",
+                "name": "STATE"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": -1
+          }
+        ],
         "raw_code": "[7, 2, @STATE@]",
         "raw_desc": "获取状态 @STATE@",
         "score": 10,
@@ -33,11 +77,40 @@
             "label": "状态",
             "name": "STATE"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": -1
       },
       {
         "code": "[1, 1, @ATTR@, V]",
         "desc": "属性 @ATTR@ 增加 V",
+        "description": "属性 @ATTR@ 增加 V",
+        "family": "1|属性 @ATTR@ 增加",
+        "family_label": "属性 @ATTR@ 增加",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 1, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增加",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 1, @ATTR@, V]",
         "raw_desc": "属性 @ATTR@ 增加 V",
         "score": 10,
@@ -52,13 +125,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "增加",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 11, @ATTR@, V]",
         "desc": "每回合 @ATTR@ 增加 V",
+        "description": "每回合 @ATTR@ 增加 V",
+        "family": "1|每回合 @ATTR@ 增加",
+        "family_label": "每回合 @ATTR@ 增加",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 11, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增加",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 11, @ATTR@, V]",
         "raw_desc": "每回合 @ATTR@ 增加 V",
         "score": 10,
@@ -73,13 +176,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "增加",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 2, @ATTR@, V]",
         "desc": "属性 @ATTR@ 设为 V",
+        "description": "属性 @ATTR@ 设为 V",
+        "family": "1|属性 @ATTR@ 设为",
+        "family_label": "属性 @ATTR@ 设为",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 2, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "设为",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 2, @ATTR@, V]",
         "raw_desc": "属性 @ATTR@ 设为 V",
         "score": 10,
@@ -94,13 +227,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "设为",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 22, @ATTR@, V]",
         "desc": "属性 @ATTR@ 增加 V 单位",
+        "description": "属性 @ATTR@ 增加 V 单位",
+        "family": "1|属性 @ATTR@ 增加 单位",
+        "family_label": "属性 @ATTR@ 增加 单位",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 22, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增加",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 22, @ATTR@, V]",
         "raw_desc": "属性 @ATTR@ 增加 V 单位",
         "score": 10,
@@ -115,13 +278,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "增加",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 111, @ATTR@, V]",
         "desc": "属性 @ATTR@ 增加时额外加 V",
+        "description": "属性 @ATTR@ 增加时额外加 V",
+        "family": "1|属性 @ATTR@ 增加时额外加",
+        "family_label": "属性 @ATTR@ 增加时额外加",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 111, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增加时额外加",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 111, @ATTR@, V]",
         "raw_desc": "属性 @ATTR@ 增加时额外加 V",
         "score": 10,
@@ -136,13 +329,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "增加时额外加",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 10, @ATTR@, P]",
         "desc": "属性 @ATTR@ 增长率增加 P",
+        "description": "属性 @ATTR@ 增长率增加 P",
+        "family": "1|属性 @ATTR@ 增长率增加",
+        "family_label": "属性 @ATTR@ 增长率增加",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 10, @ATTR@, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增长率增加",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 10, @ATTR@, P]",
         "raw_desc": "属性 @ATTR@ 增长率增加 P",
         "score": 10,
@@ -157,13 +380,49 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "增长率增加",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 3, @ATTR@, S, V]",
         "desc": "属性 @ATTR@ 增加 S技能的等级*V",
+        "description": "属性 @ATTR@ 增加 S技能的等级*V",
+        "family": "1|属性 @ATTR@ 增加 S技能的等级*V",
+        "family_label": "属性 @ATTR@ 增加 S技能的等级*V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 3, @ATTR@, S, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "S"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 3, @ATTR@, S, V]",
         "raw_desc": "属性 @ATTR@ 增加 S技能的等级*V",
         "score": 10,
@@ -178,18 +437,55 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "S"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 4, @ATTR@, S, P]",
         "desc": "每等级S技能增加 P(1为100%) @ATTR@ 获取率",
+        "description": "每等级S技能增加 P(1为100%) @ATTR@ 获取率",
+        "family": "1|每等级S技能增加 1为100% @ATTR@ 获取率",
+        "family_label": "每等级S技能增加 @ATTR@ 获取率",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 4, @ATTR@, S, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "S"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "每等级S技能增加",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 4
+          }
+        ],
         "raw_code": "[1, 4, @ATTR@, S, P]",
         "raw_desc": "每等级S技能增加 P(1为100%) @ATTR@ 获取率",
         "score": 10,
@@ -204,18 +500,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "S"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "每等级S技能增加",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 4
       },
       {
         "code": "[1, 85, A, P]",
         "desc": "每回合 A 属性的被动收入增加 P",
+        "description": "每回合 A 属性的被动收入增加 P",
+        "family": "1|每回合 属性的被动收入增加",
+        "family_label": "每回合 属性的被动收入增加",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 85, A, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "每回合",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "属性的被动收入增加",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 85, A, P]",
         "raw_desc": "每回合 A 属性的被动收入增加 P",
         "score": 10,
@@ -223,18 +549,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "每回合",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "属性的被动收入增加",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 6, @ATTR@, V1, V2]",
         "desc": "随机增加 @ATTR@ (V1~V2)",
+        "description": "随机增加 @ATTR@ (V1~V2)",
+        "family": "1|随机增加 @ATTR@ V1~V2",
+        "family_label": "随机增加 @ATTR@",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 6, @ATTR@, V1, V2]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 2,
+                "kind": "number",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 6, @ATTR@, V1, V2]",
         "raw_desc": "随机增加 @ATTR@ (V1~V2)",
         "score": 10,
@@ -249,13 +605,42 @@
           {
             "count": 2,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 66, @ATTR@, V1, V2]",
         "desc": "每回合随机增加 @ATTR@ (V1~V2)",
+        "description": "每回合随机增加 @ATTR@ (V1~V2)",
+        "family": "1|每回合随机增加 @ATTR@ V1~V2",
+        "family_label": "每回合随机增加 @ATTR@",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 66, @ATTR@, V1, V2]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 2,
+                "kind": "number",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 66, @ATTR@, V1, V2]",
         "raw_desc": "每回合随机增加 @ATTR@ (V1~V2)",
         "score": 10,
@@ -270,13 +655,60 @@
           {
             "count": 2,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 101, X, A, Y, B, Z]",
         "desc": "每 X 点 A属性 增加 Y 点 B属性 (最多Z)",
+        "description": "每 X 点 A属性 增加 Y 点 B属性 (最多Z)",
+        "family": "1|每 点 A属性 增加 点 B属性 最多Z",
+        "family_label": "每 点 A属性 增加 点 B属性",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 101, X, A, Y, B, Z]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "每",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增加",
+                "name": "Y"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "B"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Z"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 101, X, A, Y, B, Z]",
         "raw_desc": "每 X 点 A属性 增加 Y 点 B属性 (最多Z)",
         "score": 10,
@@ -284,33 +716,78 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "每",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "增加",
             "name": "Y"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "B"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Z"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 1001, X, A, Y, B]",
         "desc": "每当提升 X 点 A属性 时,提升 Y 点 B属性",
+        "description": "每当提升 X 点 A属性 时,提升 Y 点 B属性",
+        "family": "1|每当提升 点 A属性 时 提升 点 B属性",
+        "family_label": "每当提升 点 A属性 时 提升 点 B属性",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 1001, X, A, Y, B]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "每当提升",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "提升",
+                "name": "Y"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "B"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 1001, X, A, Y, B]",
         "raw_desc": "每当提升 X 点 A属性 时,提升 Y 点 B属性",
         "score": 10,
@@ -318,28 +795,68 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "每当提升",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "提升",
             "name": "Y"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "B"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 20, @RELATION@, X, @ATTR@]",
         "desc": "每个 @RELATION@ 增加 X 点 @ATTR@",
+        "description": "每个 @RELATION@ 增加 X 点 @ATTR@",
+        "family": "1|每个 @RELATION@ 增加 点 @ATTR@",
+        "family_label": "每个 @RELATION@ 增加 点 @ATTR@",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 20, @RELATION@, X, @ATTR@]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "RELATION",
+                "kind": "dict",
+                "label": "关系",
+                "name": "RELATION"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "增加",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 20, @RELATION@, X, @ATTR@]",
         "raw_desc": "每个 @RELATION@ 增加 X 点 @ATTR@",
         "score": 10,
@@ -354,6 +871,7 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "增加",
             "name": "X"
           },
           {
@@ -363,11 +881,45 @@
             "label": "属性",
             "name": "ATTR"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 8, 1, X, Y, Z]",
         "desc": "每个 X人格等级 增加 Y属性 Z点",
+        "description": "每个 X人格等级 增加 Y属性 Z点",
+        "family": "1|每个 X人格等级 增加 Y属性 Z点",
+        "family_label": "每个 X人格等级 增加 Y属性 Z点",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 8, 1, X, Y, Z]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Y"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Z"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 8, 1, X, Y, Z]",
         "raw_desc": "每个 X人格等级 增加 Y属性 Z点",
         "score": 10,
@@ -375,23 +927,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Y"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Z"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 8, 10, X, Y, Z]",
         "desc": "每个 X人格等级 使 Y属性 增长率+Z",
+        "description": "每个 X人格等级 使 Y属性 增长率+Z",
+        "family": "1|每个 X人格等级 使 Y属性 增长率+Z",
+        "family_label": "每个 X人格等级 使 Y属性 增长率+Z",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 8, 10, X, Y, Z]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Y"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Z"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 8, 10, X, Y, Z]",
         "raw_desc": "每个 X人格等级 使 Y属性 增长率+Z",
         "score": 10,
@@ -399,23 +988,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Y"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Z"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 8, 11, X, Y, Z]",
         "desc": "每个 X人格等级 使 Y属性 ++Z",
+        "description": "每个 X人格等级 使 Y属性 ++Z",
+        "family": "1|每个 X人格等级 使 Y属性 ++Z",
+        "family_label": "每个 X人格等级 使 Y属性 ++Z",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 8, 11, X, Y, Z]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Y"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Z"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 8, 11, X, Y, Z]",
         "raw_desc": "每个 X人格等级 使 Y属性 ++Z",
         "score": 10,
@@ -423,23 +1049,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Y"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Z"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 40, X, A, V]",
         "desc": "每精通过1个 X标签 的行动, A属性+V",
+        "description": "每精通过1个 X标签 的行动, A属性+V",
+        "family": "1|每精通过1个 X标签 的行动 A属性+V",
+        "family_label": "每精通过1个 X标签 的行动 A属性+V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 40, X, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 40, X, A, V]",
         "raw_desc": "每精通过1个 X标签 的行动, A属性+V",
         "score": 10,
@@ -447,23 +1110,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 41, X, A, V]",
         "desc": "每精通过1个 X标签 的行动, A属性++V",
+        "description": "每精通过1个 X标签 的行动, A属性++V",
+        "family": "1|每精通过1个 X标签 的行动 A属性++V",
+        "family_label": "每精通过1个 X标签 的行动 A属性++V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 41, X, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 41, X, A, V]",
         "raw_desc": "每精通过1个 X标签 的行动, A属性++V",
         "score": 10,
@@ -471,23 +1171,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 300, X, A, V]",
         "desc": "压力等级效果(X=1/10/11) A属性加V",
+        "description": "压力等级效果(X=1/10/11) A属性加V",
+        "family": "1|压力等级效果 1/10/11 A属性加V",
+        "family_label": "压力等级效果 A属性加V",
+        "op": "=",
+        "ops": [
+          {
+            "code": "[1, 300, X, A, V]",
+            "op": "=",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "压力等级效果",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 300, X, A, V]",
         "raw_desc": "压力等级效果(X=1/10/11) A属性加V",
         "score": 10,
@@ -495,23 +1232,55 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "压力等级效果",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 50, 1, @ATTR@, V]",
         "desc": "若你是单身, @ATTR@ +V",
+        "description": "若你是单身, @ATTR@ +V",
+        "family": "1|若你是单身 @ATTR@ +V",
+        "family_label": "若你是单身 @ATTR@ +V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 50, 1, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 4
+          }
+        ],
         "raw_code": "[1, 50, 1, @ATTR@, V]",
         "raw_desc": "若你是单身, @ATTR@ +V",
         "score": 10,
@@ -526,13 +1295,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 4
       },
       {
         "code": "[1, 50, 11, @ATTR@, V]",
         "desc": "若你是单身, @ATTR@ ++V",
+        "description": "若你是单身, @ATTR@ ++V",
+        "family": "1|若你是单身 @ATTR@ ++V",
+        "family_label": "若你是单身 @ATTR@ ++V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 50, 11, @ATTR@, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 4
+          }
+        ],
         "raw_code": "[1, 50, 11, @ATTR@, V]",
         "raw_desc": "若你是单身, @ATTR@ ++V",
         "score": 10,
@@ -547,13 +1346,43 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 4
       },
       {
         "code": "[1, 50, 10, @ATTR@, P]",
         "desc": "若你是单身, @ATTR@ 增长率+P",
+        "description": "若你是单身, @ATTR@ 增长率+P",
+        "family": "1|若你是单身 @ATTR@ 增长率+P",
+        "family_label": "若你是单身 @ATTR@ 增长率+P",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 50, 10, @ATTR@, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "dict": "ATTR",
+                "kind": "dict",
+                "label": "属性",
+                "name": "ATTR"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 4
+          }
+        ],
         "raw_code": "[1, 50, 10, @ATTR@, P]",
         "raw_desc": "若你是单身, @ATTR@ 增长率+P",
         "score": 10,
@@ -568,13 +1397,42 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 4
       },
       {
         "code": "[1, 50, 85, A, P]",
         "desc": "若你是单身, 每回合A属性的被动收入+P",
+        "description": "若你是单身, 每回合A属性的被动收入+P",
+        "family": "1|若你是单身 每回合A属性的被动收入+P",
+        "family_label": "若你是单身 每回合A属性的被动收入+P",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 50, 85, A, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 50, 85, A, P]",
         "raw_desc": "若你是单身, 每回合A属性的被动收入+P",
         "score": 10,
@@ -582,18 +1440,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 74, V, P]",
         "desc": "当某项性格超过 V 时, 每超过1点, 效果+P",
+        "description": "当某项性格超过 V 时, 每超过1点, 效果+P",
+        "family": "1|当某项性格超过 时 每超过1点 效果+P",
+        "family_label": "当某项性格超过 时 每超过1点 效果+P",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 74, V, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "当某项性格超过",
+                "name": "V"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 74, V, P]",
         "raw_desc": "当某项性格超过 V 时, 每超过1点, 效果+P",
         "score": 10,
@@ -601,18 +1489,53 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "当某项性格超过",
             "name": "V"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 75, X, P, A1]",
         "desc": "获得 X 属性时, 随机获得 P 的 A1 等",
+        "description": "获得 X 属性时, 随机获得 P 的 A1 等",
+        "family": "1|获得 属性时 随机获得 的 等",
+        "family_label": "获得 属性时 随机获得 的 等",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 75, X, P, A1]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "获得",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "随机获得",
+                "name": "P"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "name": "A"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 75, X, P, A1]",
         "raw_desc": "获得 X 属性时, 随机获得 P 的 A1 等",
         "score": 10,
@@ -620,23 +1543,54 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "获得",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "随机获得",
             "name": "P"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 76, A, V]",
         "desc": "智力评级每提升1次, A属性 +V",
+        "description": "智力评级每提升1次, A属性 +V",
+        "family": "1|智力评级每提升1次 A属性 +V",
+        "family_label": "智力评级每提升1次 A属性 +V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 76, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 76, A, V]",
         "raw_desc": "智力评级每提升1次, A属性 +V",
         "score": 10,
@@ -644,18 +1598,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 77, A, V]",
         "desc": "情商评级每提升1次, A属性 +V",
+        "description": "情商评级每提升1次, A属性 +V",
+        "family": "1|情商评级每提升1次 A属性 +V",
+        "family_label": "情商评级每提升1次 A属性 +V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 77, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 77, A, V]",
         "raw_desc": "情商评级每提升1次, A属性 +V",
         "score": 10,
@@ -663,18 +1647,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 78, A, V]",
         "desc": "体魄评级每提升1次, A属性 +V",
+        "description": "体魄评级每提升1次, A属性 +V",
+        "family": "1|体魄评级每提升1次 A属性 +V",
+        "family_label": "体魄评级每提升1次 A属性 +V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 78, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 78, A, V]",
         "raw_desc": "体魄评级每提升1次, A属性 +V",
         "score": 10,
@@ -682,18 +1696,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 86, A, V]",
         "desc": "智力评级每提升1次, A属性 ++V",
+        "description": "智力评级每提升1次, A属性 ++V",
+        "family": "1|智力评级每提升1次 A属性 ++V",
+        "family_label": "智力评级每提升1次 A属性 ++V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 86, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 86, A, V]",
         "raw_desc": "智力评级每提升1次, A属性 ++V",
         "score": 10,
@@ -701,18 +1745,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 87, A, V]",
         "desc": "情商评级每提升1次, A属性 ++V",
+        "description": "情商评级每提升1次, A属性 ++V",
+        "family": "1|情商评级每提升1次 A属性 ++V",
+        "family_label": "情商评级每提升1次 A属性 ++V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 87, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 87, A, V]",
         "raw_desc": "情商评级每提升1次, A属性 ++V",
         "score": 10,
@@ -720,18 +1794,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 88, A, V]",
         "desc": "体魄评级每提升1次, A属性 ++V",
+        "description": "体魄评级每提升1次, A属性 ++V",
+        "family": "1|体魄评级每提升1次 A属性 ++V",
+        "family_label": "体魄评级每提升1次 A属性 ++V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 88, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 88, A, V]",
         "raw_desc": "体魄评级每提升1次, A属性 ++V",
         "score": 10,
@@ -739,18 +1843,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 99, A, V]",
         "desc": "解锁的每个专长提供V点A属性",
+        "description": "解锁的每个专长提供V点A属性",
+        "family": "1|解锁的每个专长提供V点A属性",
+        "family_label": "解锁的每个专长提供V点A属性",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 99, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 99, A, V]",
         "raw_desc": "解锁的每个专长提供V点A属性",
         "score": 10,
@@ -758,18 +1892,48 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 98, A, V]",
         "desc": "A属性固定为解锁的专长数*V",
+        "description": "A属性固定为解锁的专长数*V",
+        "family": "1|A属性固定为解锁的专长数*V",
+        "family_label": "A属性固定为解锁的专长数*V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 98, A, V]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 98, A, V]",
         "raw_desc": "A属性固定为解锁的专长数*V",
         "score": 10,
@@ -777,18 +1941,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 97, X, V, Y, P]",
         "desc": "当 X属性 高于V时, Y属性 提升+P",
+        "description": "当 X属性 高于V时, Y属性 提升+P",
+        "family": "1|当 X属性 高于V时 Y属性 提升+P",
+        "family_label": "当 X属性 高于V时 Y属性 提升+P",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 97, X, V, Y, P]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "Y"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "P"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 97, X, V, Y, P]",
         "raw_desc": "当 X属性 高于V时, Y属性 提升+P",
         "score": 10,
@@ -796,28 +2002,72 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "Y"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "P"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 96, A, V, B, X]",
         "desc": "当 A属性 是V的整数倍时, B属性 每回合+X",
+        "description": "当 A属性 是V的整数倍时, B属性 每回合+X",
+        "family": "1|当 A属性 是V的整数倍时 B属性 每回合+X",
+        "family_label": "当 A属性 是V的整数倍时 B属性 每回合+X",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 96, A, V, B, X]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "B"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 96, A, V, B, X]",
         "raw_desc": "当 A属性 是V的整数倍时, B属性 每回合+X",
         "score": 10,
@@ -825,28 +2075,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "B"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       },
       {
         "code": "[1, 95, V, X]",
         "desc": "最高/最低(X)的能力每回合+V",
+        "description": "最高/最低(X)的能力每回合+V",
+        "family": "1|最高/最低 的能力每回合+V",
+        "family_label": "最高/最低的能力每回合+V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 95, V, X]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "最高/最低",
+                "name": "X"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 3
+          }
+        ],
         "raw_code": "[1, 95, V, X]",
         "raw_desc": "最高/最低(X)的能力每回合+V",
         "score": 10,
@@ -854,18 +2136,60 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "最高/最低",
             "name": "X"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 3
       },
       {
         "code": "[1, 94, A, B, V, X]",
         "desc": "当A是最高能力时, B属性 每回合+V",
+        "description": "当A是最高能力时, B属性 每回合+V",
+        "family": "1|当A是最高能力时 B属性 每回合+V",
+        "family_label": "当A是最高能力时 B属性 每回合+V",
+        "op": "",
+        "ops": [
+          {
+            "code": "[1, 94, A, B, V, X]",
+            "op": "",
+            "slots": [
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "A"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "B"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "V"
+              },
+              {
+                "count": 1,
+                "kind": "number",
+                "label": "数值",
+                "name": "X"
+              }
+            ],
+            "upper_index": -1,
+            "value_index": 2
+          }
+        ],
         "raw_code": "[1, 94, A, B, V, X]",
         "raw_desc": "当A是最高能力时, B属性 每回合+V",
         "score": 10,
@@ -873,24 +2197,30 @@
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "A"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "B"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "V"
           },
           {
             "count": 1,
             "kind": "number",
+            "label": "数值",
             "name": "X"
           }
-        ]
+        ],
+        "upper_index": -1,
+        "value_index": 2
       }
     ],
     "mode": "effect",

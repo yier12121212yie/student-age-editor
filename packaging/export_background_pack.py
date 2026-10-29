@@ -46,15 +46,21 @@ def cli(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not _has_flag(argv, "--tier"):
         argv += ["--tier", "backgrounds"]
+    if not _has_flag(argv, "--format"):
+        argv += ["--format", "webp"]
     if not _has_flag(argv, "--out"):
         argv += ["--out", os.path.join(ROOT, "dist", "background_pack.zip")]
-    # 参考资料/背景 存在且未显式指定来源时，直接吃已解码目录：没有游戏的机器
-    # 也能离线成包（背景贴图本就是解码后的 PNG 存料）。
+    # Tex2D/bg 存在且未显式指定来源时，直接吃该目录（备用回退 参考资料/背景）：
+    # 没有游戏的机器也能离线成包。
     has_source = (_has_flag(argv, "--from-dir") or _has_flag(argv, "--aa-dir")
                   or _has_flag(argv, "--index"))
+    tex2d_bg = os.path.join(ROOT, "Tex2D", "bg")
     ref_dir = os.path.join(ROOT, "参考资料", "背景")
-    if not has_source and os.path.isdir(ref_dir):
-        argv += ["--from-dir", ref_dir]
+    if not has_source:
+        if os.path.isdir(tex2d_bg):
+            argv += ["--from-dir", tex2d_bg]
+        elif os.path.isdir(ref_dir):
+            argv += ["--from-dir", ref_dir]
     return main(argv)
 
 

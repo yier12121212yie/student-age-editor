@@ -6,7 +6,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/models.dart';
-import '../ai/tts_panel.dart';
+import '../../core/save_hub.dart';
 import '../editor/field_meta.dart'
     show
         NoCodeShape,
@@ -24,10 +24,20 @@ import '../nocode/no_code_list_field.dart';
 import '../nocode/no_code_ref_field.dart';
 import '../nocode/nocode_effect_field.dart';
 import '../nocode/role_picker.dart';
-import '../resources/image_asset_picker.dart' show TexThumb;
+import '../resources/image_asset_picker.dart'
+    show
+        BgIdThumb,
+        TexThumb,
+        charKeysMapOrNull,
+        ensureMergedMeta,
+        bgIdKeyMapOrNull,
+        MergedMetaAutoRetry,
+        mergedMetaRevision;
+import 'portrait_keys.dart';
 import 'story_logic.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/status_pill.dart';
 
 /// 故事页：事件 → 剧情线 → 对白节点 的三栏编排视图。
 ///
@@ -54,7 +64,7 @@ class StoryDirectorView extends StatefulWidget {
 
 /// TalkCfg 特化字段的中文标签（与官方 DEFAULT_TALK_KEY_MAP 对齐）。
 const _talkLabels = <String, String>{
-  'id': '对话ID',
+  'id': '对话编号',
   'roleIds': '说话人',
   'roleName': '自定义名字',
   'highlights': '高亮人物',
@@ -62,13 +72,13 @@ const _talkLabels = <String, String>{
   'audio': '背景音乐',
   'content': '对话内容',
   'check': '前提判定',
-  'nextTalk': '下一句ID',
-  'nextTalk2': '失败跳转ID',
+  'nextTalk': '下一句',
+  'nextTalk2': '失败后接续',
   'option': '按钮列表',
-  'roles': '人物控制指令',
+  'roles': '人物动作',
   'screenEffect': '屏幕画面特效',
-  'effect': '效果代码',
-  'effect2': '效果代码(失败)',
+  'effect': '效果',
+  'effect2': '失败效果',
   'maxoptions': '最大选项数',
   'miniGame': '小游戏',
   'replace': '替换',
@@ -179,6 +189,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   Map<String, dynamic> _optCfg = {};
   Map<String, dynamic> _personCfg = {};
 
+  /// ModFaceCfg（`/api/cfg/ModFaceCfg`）：用户按表情配置的自定义立绘差分，
+  /// 舞台立绘解析与工作台共用同一候选链时必须参与。
+  Map<String, dynamic> _faceCfg = {};
+
   /// 角色目录（/api/roles）：id → 立绘 key（与否），供经典剧情处理器的舞台立绘
   /// 展示。与「人物资源库」同源，含随包 PersonCfg 兜底（工作区无 PersonCfg 时
   /// 也有图）；拉取失败时为空，舞台退回占位图标。
@@ -211,9 +225,59 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
   @override
   void initState() {
     super.initState();
+    ensureMergedMeta();
     _load();
     // 立绘展示只服务经典剧情处理器的舞台，非经典路径无需额外拉角色目录。
     if (widget.classic) _loadRoleCatalog();
+  }
+
+  // U1：剧情导演页也登记「脏 + 保存」句柄，页内「配置表」下拉切换 / 侧栏
+  // 打开其它文档前才能提供「保存并继续」，而不是静默丢弃整场修改。
+  SaveHub? _saveHub;
+  SaveHandle? _saveHandle;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final hub = SaveHubScope.maybeOf(context);
+    if (!identical(hub, _saveHub)) {
+      _unregisterSaveHandle();
+      _saveHub = hub;
+    }
+    if (TickerMode.valuesOf(context).enabled) {
+      _registerSaveHandle();
+    } else {
+      _unregisterSaveHandle();
+    }
+  }
+
+  void _registerSaveHandle() {
+    final hub = _saveHub;
+    if (hub == null || _saveHandle != null) return;
+    final handle = SaveHandle(
+      debugOwner: 'StoryDirectorView',
+      isEditor: true,
+      canSave: () => _dirty,
+      save: () async {
+        await _save();
+      },
+    );
+    _saveHandle = handle;
+    hub.register(handle);
+  }
+
+  void _unregisterSaveHandle() {
+    final hub = _saveHub;
+    final handle = _saveHandle;
+    if (hub == null || handle == null) return;
+    hub.unregister(handle);
+    _saveHandle = null;
+  }
+
+  @override
+  void dispose() {
+    _unregisterSaveHandle();
+    super.dispose();
   }
 
   KeyTranslator get translator => KeyTranslator(widget.state);
@@ -236,6 +300,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       final results = await Future.wait(
         names.map((n) => ApiClient.instance.get('/api/cfg/$n')),
       );
+      Map<String, dynamic> faceData = {};
+      try {
+        final faceRes = await ApiClient.instance.get('/api/cfg/ModFaceCfg');
+        faceData = _asMap(faceRes['data']);
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _evtCfg = _asMap(results[0]['data']);
@@ -245,6 +314,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         _bgCfg = _asMap(results[4]['data']);
         _audioCfg = _asMap(results[5]['data']);
         _evtTypeCfg = _asMap(results[6]['data']);
+        _faceCfg = faceData;
         _evtMtimeNs = _asInt(results[0]['mtime_ns']);
         _talkMtimeNs = _asInt(results[1]['mtime_ns']);
         _optMtimeNs = _asInt(results[2]['mtime_ns']);
@@ -336,8 +406,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         _prefixes = storyRelatedPrefixes(evtId, _evtCfg);
         _stageTalks = stageOf(_talkCfg, _prefixes);
         _stageOpts = stageOf(_optCfg, _prefixes, isOption: true);
-        _talkBaseline = stageOf(_talkCfg, _prefixes);
-        _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+        // 基线 = 当前舞台的深拷贝：省去再来一遍 9.8 万行全表 stageOf 扫描。
+        _talkBaseline = copyRecords(_stageTalks);
+        _optBaseline = copyRecords(_stageOpts);
         _dirty = false;
         if (_stageTalks.isNotEmpty) {
           final keys = _stageTalks.keys.toList()..sort(compareIds);
@@ -382,35 +453,18 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         }
       }
       if (!mounted) return;
-      // 官方规则：事件 ID 范围 8000~8999。
-      // 优先取区间内最大 ID + 1；区间内全部占用时从 9000 起向上寻找
-      // （保证终止，避免旧实现把 8000-8999 全占用时的 while 循环推到区间外）。
-      var id = 8000;
-      final nums = _evtCfg.keys.map(int.tryParse).whereType<int>().toSet();
-      final inRange = nums.where((n) => n >= 8000 && n <= 8999).toList();
-      if (inRange.isNotEmpty) {
-        id = inRange.reduce((a, b) => a > b ? a : b) + 1;
-      }
-      while (id <= 8999 && nums.contains(id)) {
-        id++;
-      }
-      if (id > 8999) {
-        id = 8000;
-        while (id <= 8999 && nums.contains(id)) {
-          id++;
-        }
-        if (id > 8999) {
-          // 8000-8999 全部占用：向上分配（与区间外事件 ID 共存）
-          id = 9000;
-          while (nums.contains(id)) {
-            id++;
-          }
-        }
-      }
-      final newId = id.toString();
+      // 官方规则：事件 ID 范围 8000~8999。区间全占时从 9000 起向上分配
+      // （与区间外事件 ID 共存）。分配逻辑统一收敛到 allocEventId。
+      final newId = allocEventId(
+        _evtCfg.keys.map((k) => k.toString()),
+        min: 8000,
+        max: 8999,
+        fallbackStart: 9000,
+      );
+      if (newId == null) return;
       setState(() {
         _evtCfg[newId] = {
-          'id': id,
+          'id': int.parse(newId),
           'title': '新事件',
           'type': 0,
           'talkId': <dynamic>[],
@@ -489,34 +543,31 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     return '';
   }
 
-  /// 人物 ID → 当前阶段立绘 key（人物图片展示：经典剧情处理器的舞台站位框）。
+  /// 人物 ID + 表情编号 → 候选立绘 key 列表（经典舞台站位框与工作台同口径）。
   ///
   /// 与「人物资源库」同源：PersonCfg `url` = 小学立绘、`url2` = 中学立绘；
   /// 角色目录不可达（后端离线 / 旧后端）时退回宿主已载入的 PersonCfg 原始记录。
-  /// 查不到返回空串，调用方退回占位图标。
-  String _portraitKeyFor(String roleId) {
+  /// 表情解析统一收敛到 [portraitKeyCandidates]，覆盖 ModFaceCfg 与
+  /// charKeys.faces，杜绝基础立绘截断表情差分。
+  List<String> _portraitKeyCandidates(String roleId, {int expr = 0}) {
     final id = cln(roleId);
-    if (id.isEmpty) return '';
+    if (id.isEmpty) return const [];
     final r = _roleCatalog[id];
-    if (r != null) {
-      final p1 = r.portrait1.trim();
-      final p2 = r.portrait2.trim();
-      if (_stageIndex == 0) return p1.isNotEmpty ? p1 : p2;
-      return p2.isNotEmpty ? p2 : p1;
-    }
     final p = _personCfg[id];
-    if (p is Map) {
-      String firstOf(dynamic v) {
-        if (v is List && v.isNotEmpty) return cln(v.first);
-        return cln(v);
-      }
-
-      final p1 = firstOf(p['url']);
-      final p2 = firstOf(p['url2']);
-      if (_stageIndex == 0) return p1.isNotEmpty ? p1 : p2;
-      return p2.isNotEmpty ? p2 : p1;
-    }
-    return '';
+    Map<String, dynamic>? ck;
+    final rawCk = charKeysMapOrNull?[id];
+    if (rawCk is Map) ck = rawCk.cast<String, dynamic>();
+    return portraitKeyCandidates(
+      roleId: id,
+      expr: expr,
+      stageIndex: _stageIndex,
+      faceCfg: _faceCfg,
+      catalogPortrait1: r?.portrait1.trim() ?? '',
+      catalogPortrait2: r?.portrait2.trim() ?? '',
+      personUrl1: p is Map ? portraitFirstStr(p['url']) : '',
+      personUrl2: p is Map ? portraitFirstStr(p['url2']) : '',
+      charKeys: ck,
+    );
   }
 
   Map<String, String> _allBgs() {
@@ -579,7 +630,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     return map;
   }
 
-  /// 无代码模式：导演视图的码/ID 字段不再给文本输入框。
+  /// 简易模式：导演视图的码/ID 字段不再给文本输入框。
   bool get _noCode => widget.state.noCodeMode;
 
   /// 当前事件的对白候选（id · 内容预览），给跳转目标选择用。
@@ -818,8 +869,8 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       if (!mounted) return false;
       setState(() {
         _dirty = false;
-        _talkBaseline = stageOf(_talkCfg, _prefixes);
-        _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+        _talkBaseline = copyRecords(_stageTalks);
+        _optBaseline = copyRecords(_stageOpts);
       });
       fluent.displayInfoBar(
         context,
@@ -854,7 +905,9 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     required ValueChanged<int?> onMtime,
   }) async {
     Future<bool> put({bool force = false}) async {
-      final r = await ApiClient.instance.put(
+      // putRaw：超过 2000 行时把整表 jsonEncode 挪到后台 isolate，避免大表保存
+      // 期间主线程冻结（小表/测试桩走同步编码，行为不变）。
+      final r = await ApiClient.instance.putRaw(
         '/api/cfg/$cfg',
         body: {
           'data': data,
@@ -888,13 +941,13 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               _replaceTalkCfg(disk); // 整表换新 + 重派生前缀计数
               _talkMtimeNs = mtime;
               _stageTalks = stageOf(_talkCfg, _prefixes);
-              _talkBaseline = stageOf(_talkCfg, _prefixes);
+              _talkBaseline = copyRecords(_stageTalks);
               break;
             case 'OptionCfg':
               _optCfg = disk;
               _optMtimeNs = mtime;
               _stageOpts = stageOf(_optCfg, _prefixes, isOption: true);
-              _optBaseline = stageOf(_optCfg, _prefixes, isOption: true);
+              _optBaseline = copyRecords(_stageOpts);
               break;
             default:
               _evtCfg = disk;
@@ -1001,6 +1054,23 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
 
   @override
   Widget build(BuildContext context) {
+    // 合并元数据（bgKeys/charKeys）异步到达后自动重建：首次进入时舞台背景与
+    // 立绘通常还是占位图，监听修订号即可在元数据就绪后立即换成真实图片，
+    // 不必等用户切换对白（旧实现只发请求不广播，表现为「要换几次页才显示」）。
+    //
+    // 外层 [MergedMetaAutoRetry] 负责「后端冷启动 / 返回空表」时的自动重拉：
+    // 渲染期只读缓存、不发请求，旧实现里这一次失败无人补救，背景便一直是占位
+    // 图，只能靠用户换页触发重建兜回来。定时器归该组件 State 所有，随页面销毁
+    // 一并取消。
+    return MergedMetaAutoRetry(
+      child: ValueListenableBuilder<int>(
+        valueListenable: mergedMetaRevision,
+        builder: (context, _, _) => _buildBody(context),
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
     if (!_loaded) {
       return const Center(
         child: SizedBox(
@@ -1327,20 +1397,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 ),
               ),
               if (opts.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 1,
-                  ),
-                  decoration: BoxDecoration(
-                    color: palette.tintWarn,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    '${opts.length}选',
-                    style: TextStyle(fontSize: 9.5, color: palette.statusTan),
-                  ),
-                ),
+                StatusPill('${opts.length}选',
+                    bg: palette.tintWarn,
+                    fg: palette.statusTan,
+                    bordered: false),
             ],
           ),
         ),
@@ -1539,6 +1599,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                                 onPick: () async {
                                   final ids = await _pickRoleIds();
                                   if (ids == null) return;
+                                  if (!mounted) return;
                                   setState(() {
                                     talk['roleIds'] = ids;
                                     _dirty = true;
@@ -1580,6 +1641,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                                 onPick: () async {
                                   final ids = await _pickRoleIds();
                                   if (ids == null) return;
+                                  if (!mounted) return;
                                   setState(() {
                                     talk['highlights'] = ids;
                                     _dirty = true;
@@ -1701,6 +1763,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                                           .toList(),
                                     );
                                     if (ids == null) return;
+                                    if (!mounted) return;
                                     setState(() {
                                       talk['nextTalk'] = ids;
                                       _dirty = true;
@@ -1805,39 +1868,43 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     );
   }
 
+  /// 5 个展示槽位 → 游戏站位（1=左 2=右 3=中）。与工作室编辑器同口径。
+  static const _slotPos = [1, 1, 3, 2, 2];
+
+  /// 游戏站位 → 展示槽位（左→1、右→3、中→2）。
+  static int _posToSlot(int pos) => pos == 1 ? 1 : (pos == 2 ? 3 : 2);
+
   /// 🎮 可视化舞台：5 个站位槽位，支持直接点击设定角色、表情代码与站位移动
   Widget _buildVisualStage(Map<String, dynamic> talk) {
-    final rawRoles = ensureList(talk['roles']);
     final activeRoleIds = ensureList(talk['roleIds']);
     final highlights = ensureList(talk['highlights']).toSet();
 
     // 槽位映射：0=左, 1=中偏左, 2=居中, 3=中偏右, 4=右
     final slots = <int, _StageRoleInfo>{};
 
-    // 解析当前角色与站位
-    var fallbackSlot = 1;
-    for (final r in rawRoles) {
-      final parts = r.split(',');
-      if (parts.length >= 3) {
-        final slot = int.tryParse(parts[0].trim()) ?? 2;
-        final code = parts[1].trim();
-        final action = parts.length > 2 ? parts[2].trim() : '3000';
-        slots[slot] = _StageRoleInfo(
-          roleId: code,
-          slot: slot,
-          actionCode: action,
-          isHighlight: highlights.contains(code),
-        );
-      }
+    // roles 是**指令行数组** `[[roleId, 指令码, ...参数], ...]`，**不是** CSV 串。
+    // 这里用 story_logic 的规范解析器（与后端 build_stage 同口径）取在场角色。
+    // 历史坑：本处曾按 "槽,人物,动作" 拆字符串，于是把入场指令码 1001 当成了
+    // 角色 ID，导致舞台显示错误人物（story_logic.dart 顶部注释有同样记载）。
+    for (final c in parseStageChars(talk['roles'])) {
+      final slot = _posToSlot(c.pos);
+      slots[slot] = _StageRoleInfo(
+        roleId: c.roleId,
+        pos: c.pos,
+        expr: c.expr,
+        flip: c.flip,
+        isHighlight: highlights.contains(c.roleId),
+      );
     }
 
     // 若 roles 字段为空，按 roleIds 默认放置
     if (slots.isEmpty && activeRoleIds.isNotEmpty) {
+      var fallbackSlot = 1;
       for (final rid in activeRoleIds) {
-        slots[fallbackSlot % 5] = _StageRoleInfo(
+        final slot = fallbackSlot % 5;
+        slots[slot] = _StageRoleInfo(
           roleId: rid,
-          slot: fallbackSlot % 5,
-          actionCode: '3000',
+          pos: _slotPos[slot],
           isHighlight: highlights.contains(rid) || highlights.isEmpty,
         );
         fallbackSlot += 2;
@@ -1887,7 +1954,6 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         // 5 站位主舞台
         Expanded(
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
@@ -1895,17 +1961,32 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 colors: [palette.bgDeep, palette.bgDeep, palette.bgDeep2],
               ),
             ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: List.generate(5, (slotIdx) {
-                final role = slots[slotIdx];
-                return Expanded(
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 4),
-                    child: _buildStageSlot(slotIdx, role, talk),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (cln(talk['bg']).isNotEmpty)
+                  Positioned.fill(
+                    child: Opacity(
+                      opacity: 0.35,
+                      child: BgIdThumb(id: cln(talk['bg']), fit: BoxFit.cover),
+                    ),
                   ),
-                );
-              }),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: List.generate(5, (slotIdx) {
+                      final role = slots[slotIdx];
+                      return Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          child: _buildStageSlot(slotIdx, role, talk),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -1973,8 +2054,11 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     }
 
     final roleName = _roleName(role.roleId);
-    final emotionName = _getEmotionName(role.actionCode);
-    final portraitKey = _portraitKeyFor(role.roleId);
+    final emotionName = emotionNameOf(role.expr);
+    final portraitCandidates =
+        _portraitKeyCandidates(role.roleId, expr: role.expr);
+    final portraitKey =
+        portraitCandidates.isNotEmpty ? portraitCandidates.first : '';
 
     return Container(
       decoration: BoxDecoration(
@@ -2011,12 +2095,24 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
+                  onTap: () =>
+                      _showReplaceRoleToSlotDialog(role, slotIdx, talk),
+                  child: Icon(
+                    FluentIcons.arrow_swap_16_regular,
+                    size: 12,
+                    color: palette.textMuted,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onTap: () {
                     setState(() {
-                      final roles = ensureList(talk['roles'])
-                          .where((r) => !r.startsWith('$slotIdx,'))
-                          .toList();
-                      talk['roles'] = roles;
+                      // 退场：移除该角色全部指令并追加滑动退场（story_logic 规范 helper）。
+                      talk['roles'] = removeStageRole(talk['roles'], role.roleId);
                       _dirty = true;
                     });
                   },
@@ -2032,43 +2128,58 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           const SizedBox(height: 4),
           // 立绘头像框：优先展示角色立绘（人物图片展示），无立绘时退回占位图标。
           Expanded(
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: palette.bgAlt,
-                borderRadius: BorderRadius.circular(4),
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _showReplaceRoleToSlotDialog(role, slotIdx, talk),
+                child: Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: palette.bgAlt,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: portraitKey.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                FluentIcons.person_24_filled,
+                                size: 36,
+                                color: role.isHighlight
+                                    ? palette.accentLight
+                                    : palette.textHint,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                slotNames[slotIdx],
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  color: palette.textHint,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : Transform.flip(
+                          flipX: role.flip,
+                          child: TexThumb(
+                            key: ValueKey(
+                                'stage_portrait_${role.roleId}_${role.expr}_${role.flip}_$portraitKey'),
+                            keyName: portraitKey,
+                            // 表情差分优先（ModFaceCfg / charKeys.faces / base_N），
+                            // 命中不了自动回退基础立绘——候选链由 portraitKeyCandidates
+                            // 统一产出，与剧情工作台完全同口径。
+                            keyCandidates: portraitCandidates,
+                            width: double.infinity,
+                            height: double.infinity,
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                ),
               ),
-              clipBehavior: Clip.antiAlias,
-              child: portraitKey.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            FluentIcons.person_24_filled,
-                            size: 36,
-                            color: role.isHighlight
-                                ? palette.accentLight
-                                : palette.textHint,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            slotNames[slotIdx],
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              color: palette.textHint,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  : TexThumb(
-                      key: ValueKey('stage_portrait_${role.roleId}_$portraitKey'),
-                      keyName: portraitKey,
-                      width: double.infinity,
-                      height: double.infinity,
-                      fit: BoxFit.contain,
-                    ),
             ),
           ),
           const SizedBox(height: 6),
@@ -2077,7 +2188,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () => _showEditRoleActionDialog(slotIdx, role, talk),
+              onTap: () => _showEditRoleActionDialog(role, talk),
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
@@ -2087,7 +2198,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   border: Border.all(color: palette.accentDeep),
                 ),
                 child: Text(
-                  '🎭 $emotionName (${role.actionCode})',
+                  '🎭 $emotionName (${role.expr})',
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -2108,7 +2219,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 child: _miniShiftButton(
                   '◀',
                   slotIdx > 0
-                      ? () => _shiftRoleSlot(slotIdx, slotIdx - 1, role, talk)
+                      ? () => _shiftRoleSlot(slotIdx - 1, role, talk)
                       : null,
                 ),
               ),
@@ -2134,7 +2245,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 child: _miniShiftButton(
                   '▶',
                   slotIdx < 4
-                      ? () => _shiftRoleSlot(slotIdx, slotIdx + 1, role, talk)
+                      ? () => _shiftRoleSlot(slotIdx + 1, role, talk)
                       : null,
                 ),
               ),
@@ -2172,43 +2283,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     );
   }
 
-  String _getEmotionName(String code) {
-    switch (code) {
-      case '3000':
-        return '普通';
-      case '3001':
-        return '开心';
-      case '3002':
-        return '生气';
-      case '3003':
-        return '悲伤';
-      case '3004':
-        return '害羞';
-      case '3005':
-        return '惊讶';
-      case '3006':
-        return '得意';
-      case '3007':
-        return '叹气';
-      default:
-        return code.startsWith('30') ? '动作 $code' : code;
-    }
-  }
-
   void _shiftRoleSlot(
-    int oldSlot,
     int newSlot,
     _StageRoleInfo role,
     Map<String, dynamic> talk,
   ) {
     setState(() {
-      final currentRoles = ensureList(talk['roles'])
-          .where(
-            (r) => !r.startsWith('$oldSlot,') && !r.startsWith('$newSlot,'),
-          )
-          .toList();
-      currentRoles.add('$newSlot,${role.roleId},${role.actionCode}');
-      talk['roles'] = currentRoles;
+      // 站位是 roles 里入场指令的 pos 参数（1=左 2=右 3=中）；无入场指令则补一条。
+      talk['roles'] = setStagePos(talk['roles'], role.roleId, _slotPos[newSlot]);
       _dirty = true;
     });
   }
@@ -2245,7 +2327,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
       selectedPerson = '1';
     }
 
-    var actionCode = '3000';
+    var expr = 0;
 
     await showDialog(
       context: context,
@@ -2281,7 +2363,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                   if (v != null) setDialogState(() => selectedPerson = v);
                 },
               ),
-              // 无代码模式：下拉旁给一个带立绘的人物浏览面板入口
+              // 简易模式：下拉旁给一个带立绘的人物浏览面板入口
               if (widget.state.noCodeMode) ...[
                 const SizedBox(height: 8),
                 Row(
@@ -2307,15 +2389,14 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 ),
               ],
               const SizedBox(height: 12),
-              const Text('表情与动作 (30xx):', style: TextStyle(fontSize: 12)),
+              const Text('表情：', style: TextStyle(fontSize: 12)),
               const SizedBox(height: 6),
-              // 无代码模式：不给代码输入框，只能用下方预设（要填自定义码请先
-              // 关闭无代码模式）。预设按钮本身就是"选"，保留不受影响。
+              // 简易模式：不给输入框，只能用下方预设（要填自定义编号请先切到高级编辑）。
               if (!widget.state.noCodeMode) ...[
                 fluent.TextBox(
-                  controller: TextEditingController(text: actionCode),
-                  onChanged: (v) => actionCode = v.trim(),
-                  placeholder: '如 3000(普通), 3001(开心), 3002(生气)',
+                  controller: TextEditingController(text: '$expr'),
+                  onChanged: (v) => expr = int.tryParse(v.trim()) ?? 0,
+                  placeholder: '输入表情编号 0..26，如 0=默认、1=开心、22=喜极而泣',
                 ),
                 const SizedBox(height: 8),
               ],
@@ -2323,21 +2404,12 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                 spacing: 6,
                 runSpacing: 6,
                 children:
-                    [
-                      ('3000', '普通'),
-                      ('3001', '开心'),
-                      ('3002', '生气'),
-                      ('3003', '悲伤'),
-                      ('3004', '害羞'),
-                      ('3005', '惊讶'),
-                      ('3006', '得意'),
-                      ('3007', '叹气'),
-                    ].map((pair) {
+                    kEmotionNames.map((pair) {
                       return _ActionPill(
                         label: '${pair.$2} (${pair.$1})',
-                        primary: actionCode == pair.$1,
+                        primary: expr == pair.$1,
                         onPressed: () {
-                          setDialogState(() => actionCode = pair.$1);
+                          setDialogState(() => expr = pair.$1);
                         },
                       );
                     }).toList(),
@@ -2352,11 +2424,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             fluent.FilledButton(
               onPressed: () {
                 setState(() {
-                  final roles = ensureList(talk['roles'])
-                      .where((r) => !r.startsWith('$slotIdx,'))
-                      .toList();
-                  roles.add('$slotIdx,$selectedPerson,$actionCode');
-                  talk['roles'] = roles;
+                  // 规范写法：追加「表情」指令 + 一条入场指令（含站位 pos）。
+                  var r = setStageExpr(talk['roles'], selectedPerson, expr);
+                  r = setStagePos(r, selectedPerson, _slotPos[slotIdx]);
+                  talk['roles'] = r;
                   _dirty = true;
                 });
                 Navigator.of(ctx).pop();
@@ -2373,22 +2444,162 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     await _showPlaceRoleToSlotDialog(2, talk);
   }
 
-  Future<void> _showEditRoleActionDialog(
+  /// 更换舞台上某个站位的人物：弹出选人对话框，确认后经 [replaceStageRole]
+  /// 原子替换（保持当前站位与表情），并联动说话人（roleIds）与高亮（highlights）。
+  Future<void> _showReplaceRoleToSlotDialog(
+    _StageRoleInfo role,
     int slotIdx,
+    Map<String, dynamic> talk,
+  ) async {
+    final allRoles = _allRoles();
+    final personKeys = allRoles.keys.toList()
+      ..sort((a, b) {
+        final na = int.tryParse(a);
+        final nb = int.tryParse(b);
+        if (na != null && nb != null) return na.compareTo(nb);
+        if (na != null) return -1;
+        if (nb != null) return 1;
+        return a.compareTo(b);
+      });
+
+    final oldId = role.roleId;
+    var selectedPerson = personKeys.contains(oldId)
+        ? oldId
+        : (personKeys.isNotEmpty ? personKeys.first : oldId);
+    var expr = role.expr;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AppContentDialog(
+          title: Text('更换角色 [${role.roleId}] → 新角色'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('选择新角色:', style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 6),
+              fluent.ComboBox<String>(
+                value: personKeys.contains(selectedPerson)
+                    ? selectedPerson
+                    : (personKeys.isNotEmpty ? personKeys.first : null),
+                placeholder: const Text(
+                  '请选择角色',
+                  style: TextStyle(fontSize: 12),
+                ),
+                isExpanded: true,
+                items: personKeys.map((k) {
+                  final name = allRoles[k] ?? _roleName(k);
+                  return fluent.ComboBoxItem(
+                    value: k,
+                    child: Text(
+                      '[$k] ${name.isNotEmpty ? name : '角色'}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  );
+                }).toList(),
+                onChanged: (v) {
+                  if (v != null) setDialogState(() => selectedPerson = v);
+                },
+              ),
+              if (widget.state.noCodeMode) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    fluent.Button(
+                      onPressed: () async {
+                        final ids = await showRolePickerDialog(
+                            ctx, multi: false, title: '选择人物');
+                        if (ids != null && ids.isNotEmpty) {
+                          setDialogState(() => selectedPerson = ids.first);
+                        }
+                      },
+                      child: const Text('浏览人物…',
+                          style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('立绘网格，可按中文名搜索',
+                          style: TextStyle(
+                              fontSize: 10.5, color: palette.textHint)),
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 12),
+              const Text('表情：', style: TextStyle(fontSize: 12)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: kEmotionNames.map((pair) {
+                  return _ActionPill(
+                    label: '${pair.$2} (${pair.$1})',
+                    primary: expr == pair.$1,
+                    onPressed: () {
+                      setDialogState(() => expr = pair.$1);
+                    },
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          actions: [
+            fluent.Button(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            fluent.FilledButton(
+              onPressed: () {
+                final newId = cln(selectedPerson);
+                if (newId.isEmpty || newId == cln(oldId)) {
+                  Navigator.of(ctx).pop();
+                  return;
+                }
+                setState(() {
+                  talk['roles'] = replaceStageRole(
+                    talk['roles'],
+                    oldId,
+                    newId,
+                    pos: _slotPos[slotIdx],
+                    expr: expr,
+                    flip: role.flip,
+                  );
+                  if (ensureList(talk['roleIds']).map(cln).contains(oldId)) {
+                    talk['roleIds'] =
+                        replaceRoleRef(talk['roleIds'], oldId, newId);
+                  }
+                  if (ensureList(talk['highlights']).map(cln).contains(oldId)) {
+                    talk['highlights'] =
+                        replaceRoleRef(talk['highlights'], oldId, newId);
+                  }
+                  _dirty = true;
+                });
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('确定更换'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showEditRoleActionDialog(
     _StageRoleInfo role,
     Map<String, dynamic> talk,
   ) async {
-    var actionCode = role.actionCode;
+    var expr = role.expr;
     await showDialog(
       context: context,
       builder: (ctx) => AppContentDialog(
-        title: Text('修改 角色 [${role.roleId}] 动作与表情'),
+        title: Text('修改 角色 [${role.roleId}] 表情'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '常用表情代码预设:',
+              '常用表情预设:',
               style: TextStyle(fontSize: 12, color: palette.textSecondary),
             ),
             const SizedBox(height: 8),
@@ -2396,26 +2607,20 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
               spacing: 6,
               runSpacing: 6,
               children:
-                  [
-                    ('3000', '普通'),
-                    ('3001', '开心'),
-                    ('3002', '生气'),
-                    ('3003', '悲伤'),
-                    ('3004', '害羞'),
-                    ('3005', '惊讶'),
-                    ('3006', '得意'),
-                    ('3007', '叹气'),
-                  ].map((pair) {
+                  kEmotionNames.map((pair) {
                     return _ActionPill(
                       label: '${pair.$2} (${pair.$1})',
-                      primary: actionCode == pair.$1,
+                      primary: expr == pair.$1,
                       onPressed: () {
                         setState(() {
-                          final roles = ensureList(talk['roles'])
-                              .where((r) => !r.startsWith('$slotIdx,'))
-                              .toList();
-                          roles.add('$slotIdx,${role.roleId},${pair.$1}');
-                          talk['roles'] = roles;
+                          // 表情指令与入场指令成对写回：角色若原本仅靠 roleIds
+                          // 回退展示（roles 里缺 1001），改表情后必须补一条入场
+                          // 指令，否则 parseStageChars 判其不在场，UI 刷新后槽位
+                          // 重置回 0 号默认脸。
+                          var r = setStageExpr(
+                              talk['roles'], role.roleId, pair.$1);
+                          r = setStagePos(r, role.roleId, role.pos);
+                          talk['roles'] = r;
                           _dirty = true;
                         });
                         Navigator.of(ctx).pop();
@@ -2427,6 +2632,17 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
         ),
         actions: [
           fluent.Button(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _showReplaceRoleToSlotDialog(
+                role,
+                _posToSlot(role.pos),
+                talk,
+              );
+            },
+            child: const Text('🔄 更换角色'),
+          ),
+          fluent.Button(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('关闭'),
           ),
@@ -2435,31 +2651,10 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
     );
   }
 
-  /// 打开配音面板：带入当前对白行的内容与键名前缀（默认 `talk_{id}`）。
-  Future<void> _openTtsPanel(Map<String, dynamic> talk) async {
-    final content = ((talk['content'] ?? talk['showTxt'])?.toString() ?? '')
-        .trim();
-    final role = cln(talk['roleName']).trim();
-    final title = content.isNotEmpty
-        ? (role.isNotEmpty ? '$role：$content' : content)
-        : '';
-    await showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => Center(
-        child: TtsPanel(
-          initText: content,
-          initTitle: title,
-          initTalkId: talk['id'] != null ? 'talk_${talk['id']}' : '',
-        ),
-      ),
-    );
-  }
-
   /// 3. 右栏：流程操作 + 场景人物控制 + 玩家选项配置
   Widget _buildClassicRightPanel(Map<String, dynamic>? talk) {
     final opts = ensureList(talk != null ? talk['option'] : null);
-    final rolesStr = ensureList(talk != null ? talk['roles'] : null).join(';');
+    final rolesStr = ValueCodec.encode(talk != null ? talk['roles'] : null);
     final screenEffect = cln(talk != null ? talk['screenEffect'] : '');
 
     return Container(
@@ -2530,7 +2725,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           ),
           const SizedBox(height: 8),
           Text(
-            '人物动作/表情(30xx):',
+            '人物动作与表情：',
             style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
           ),
           const SizedBox(height: 4),
@@ -2553,21 +2748,25 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
           else
             fluent.TextBox(
               controller: TextEditingController(text: rolesStr),
-              placeholder: '支持模糊连打 (例: 0,3000 或 白雨移动-250)',
+              placeholder: '指令行，分号分行、逗号分列，如「10,1001,1,1; 5,3000,2」',
               onChanged: (v) {
                 if (talk != null) {
-                  talk['roles'] = v
-                      .split(';')
-                      .map((s) => s.trim())
-                      .where((s) => s.isNotEmpty)
-                      .toList();
+                  // 回写规范指令行数组（数值可解析转 num），不要写成 CSV 字符串。
+                  talk['roles'] = [
+                    for (final row in v.split(';'))
+                      if (row.trim().isNotEmpty)
+                        [
+                          for (final tok in row.split(','))
+                            if (tok.trim().isNotEmpty) _numLike(tok.trim()),
+                        ],
+                  ];
                   _dirty = true;
                 }
               },
             ),
           const SizedBox(height: 10),
           Text(
-            '屏幕效果(40xx):',
+            '画面特效：',
             style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
           ),
           const SizedBox(height: 4),
@@ -2637,41 +2836,6 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
             }).toList(),
           ),
 
-          Divider(height: 24, color: palette.border),
-
-          // 台词配音
-          Text(
-            '🎙️ 台词配音',
-            style: TextStyle(
-              fontSize: 12.5,
-              fontWeight: FontWeight.bold,
-              color: palette.warning,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
-            '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
-            style: TextStyle(
-              fontSize: 11,
-              color: palette.textSecondary,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: fluent.FilledButton(
-              onPressed: talk == null ? null : () => _openTtsPanel(talk),
-              style: fluent.ButtonStyle(
-                backgroundColor: WidgetStatePropertyAll(palette.warning),
-              ),
-              child: const Text(
-                '🎙️ 给本行内容配音',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
           Divider(height: 24, color: palette.border),
 
           // 玩家选项配置
@@ -2836,6 +3000,7 @@ class _StoryDirectorViewState extends State<StoryDirectorView> {
                           initial: ensureList(opt['talkId']).map(cln).toList(),
                         );
                         if (ids == null) return;
+                        if (!mounted) return;
                         setState(() {
                           opt['talkId'] = ids;
                           _dirty = true;
@@ -3607,7 +3772,7 @@ class _TalkEditorPane extends StatefulWidget {
   final VoidCallback onAddOption;
   final void Function(String optId) onRemoveOption;
 
-  /// 无代码模式：码字段铺内联积木、引用字段只读+选择，不再出现文本输入框。
+  /// 简易模式：码字段铺内联积木、引用字段只读+选择，不再出现文本输入框。
   final bool noCodeMode;
 
   /// 跳转目标候选（id · 内容预览）。
@@ -3679,7 +3844,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     widget.onChanged();
   }
 
-  /// 无代码模式的只读字段与提示直接读控制器文本；选择类写入（[_pickDict] /
+  /// 简易模式的只读字段与提示直接读控制器文本；选择类写入（[_pickDict] /
   /// [_pickRoles] / [_pickTalkIds]）改了 `widget.talk` 后必须同步对应控制器，
   /// 否则会出现「选了新值、界面仍显示旧值」的失联（切换背景 bg 不生效即此）。
   void _syncPickCtrl(String key) {
@@ -3709,30 +3874,6 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
         _audioCtrl.text = cln(widget.talk['audio']);
         break;
     }
-  }
-
-  /// 打开配音面板：带入当前编辑中的对白内容与键名前缀（默认 `talk_{id}`）。
-  Future<void> _openTtsPanel() async {
-    final content =
-        (_contentCtrl.text.trim().isNotEmpty
-                ? _contentCtrl.text.trim()
-                : cln(widget.talk['showTxt']))
-            .trim();
-    final role = cln(widget.talk['roleName']).trim();
-    final title = content.isNotEmpty
-        ? (role.isNotEmpty ? '$role：$content' : content)
-        : '';
-    await showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => Center(
-        child: TtsPanel(
-          initText: content,
-          initTitle: title,
-          initTalkId: 'talk_${widget.talkId}',
-        ),
-      ),
-    );
   }
 
   /// 逗号分隔文本 → 1D 数字/字符串列表（保持原值类型语义）。
@@ -3769,7 +3910,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     return '';
   }
 
-  /// 无代码模式引用字段的名称回显：把裸 ID 翻成「ID · 名称」。
+  /// 简易模式引用字段的名称回显：把裸 ID 翻成「ID · 名称」。
   ///
   /// bg/audio 用合并后的候选表（含 MOD，见 `_allBgs`/`_allAudios`，由宿主注入
   /// `widget.bgOptions`/`audioOptions`），人物用 [_roleName]，跳转用当前事件
@@ -3804,7 +3945,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     return null;
   }
 
-  // ---------- 无代码模式：只选不敲 ----------
+  // ---------- 简易模式：只选不敲 ----------
 
   bool get _noCode => widget.noCodeMode;
 
@@ -3817,6 +3958,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
       initialSelected: ensureList(widget.talk[key]).map(cln).toList(),
     );
     if (ids == null) return;
+    if (!mounted) return;
     setState(() {
       _setField(key, ids);
       _syncPickCtrl(key);
@@ -3826,6 +3968,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
   Future<void> _pickRoles(String key, {bool multi = true}) async {
     final ids = await showRolePickerDialog(context, multi: multi, title: '选择人物');
     if (ids == null) return;
+    if (!mounted) return;
     setState(() {
       _setField(key, ids);
       _syncPickCtrl(key);
@@ -3845,13 +3988,14 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
       initialSelected: const [],
     );
     if (ids == null || ids.isEmpty) return;
+    if (!mounted) return;
     setState(() {
       _setField(key, num.tryParse(ids.first) ?? ids.first);
       _syncPickCtrl(key);
     });
   }
 
-  /// 无代码模式下的「标签 + 只读/选择控件」：与 [_labelField] 同款头部，
+  /// 简易模式下的「标签 + 只读/选择控件」：与 [_labelField] 同款头部，
   /// 但 body 由调用方给（NoCodeRefField / NoCodeEffectField），不含文本框。
   Widget _labelled(
     String label,
@@ -4032,14 +4176,14 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     _labelField(
                       '背景音乐',
                       'audio',
-                      'AudioCfg ID',
+                      '从音频库选择',
                       _audioCtrl,
                       (v) => _setField('audio', _numOr(v, 0)),
                       trailing: _audioHint(),
                     ),
                   if (_noCode)
                     _labelled(
-                      '人物控制指令',
+                      '人物动作',
                       'roles',
                       NoCodeEffectField(
                         value: rolesTo2d(widget.talk['roles']),
@@ -4055,9 +4199,9 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     )
                   else
                     _labelField(
-                      '人物控制指令',
+                      '人物动作',
                       'roles',
-                      '行: 动作,角色; 列: 动作ID,角色ID…',
+                      '每行一组：动作、人物',
                       _rolesCtrl,
                       (v) => _setField('roles', _decode2d(v)),
                     ),
@@ -4081,7 +4225,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     _labelField(
                       '屏幕画面特效',
                       'screenEffect',
-                      '特效 ID，逗号隔开',
+                      '多个特效用逗号分隔',
                       _screenEffectCtrl,
                       (v) => _setField('screenEffect', _splitIds(v)),
                     ),
@@ -4100,37 +4244,10 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     onChanged: (v) => _setField('content', v),
                   ),
                 ]),
-                _section('台词配音', [
-                  Text(
-                    '用阿里云 / MiniMax 为当前行内容合成语音，素材存入 mod 的 audio/tts/ 并登记 AudioCfg。'
-                    '原版游戏无逐行配音通道（TalkCfg.vocals 为人声效果叠加），因此不写 vocals',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: palette.textMuted,
-                      height: 1.5,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: fluent.FilledButton(
-                      onPressed: () => _openTtsPanel(),
-                      style: fluent.ButtonStyle(
-                        backgroundColor: WidgetStatePropertyAll(
-                          palette.warning,
-                        ),
-                      ),
-                      child: const Text(
-                        '🎙️ 给本行内容配音',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ),
-                ]),
                 _section('流程与分支', [
                   if (_noCode)
                     _labelled(
-                      '前提判定 check',
+                      '前提判定',
                       'check',
                       NoCodeEffectField(
                         value: widget.talk['check'],
@@ -4146,9 +4263,9 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
                     )
                   else
                     _labelField(
-                      '前提判定 check',
+                      '前提判定',
                       'check',
-                      '行: 条件类型,属性ID,值; 分号分隔多条件',
+                      '填写条件，多条用分号分隔',
                       _checkCtrl,
                       (v) => _setField('check', _decode2d(v)),
                     ),
@@ -4527,7 +4644,7 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
     );
   }
 
-  /// 属性表行的无代码形态：码字段 → 内联积木；引用字段 → 只读 + 选择；
+  /// 属性表行的简易形态：码字段 → 内联积木；引用字段 → 只读 + 选择；
   /// 普通文本/数值字段保持原文本框（它们不是代码）。
   Widget _attrNoCode(String key) {
     final type = _schemaType(key);
@@ -4577,13 +4694,14 @@ class _TalkEditorPaneState extends State<_TalkEditorPane> {
               final ids =
                   await showEntityPicker(context, kind: kind, multi: false);
               if (ids == null || ids.isEmpty) return;
+              if (!mounted) return;
               setState(
                   () => _setField(key, num.tryParse(ids.first) ?? ids.first));
             },
     );
   }
 
-  /// 实体种类 → 名称（无代码模式属性表引用字段的回显，零请求）。
+  /// 实体种类 → 名称（简易模式属性表引用字段的回显，零请求）。
   ///
   /// 只读 [AppState.gameDicts]；字典值可能是 List（首元素才是中文名）。
   String? _entityName(EntityKind kind, String id) {
@@ -4704,7 +4822,7 @@ class _OptionRowState extends State<_OptionRow> {
     }
   }
 
-  /// 选项跳转目标 ID → 对白内容预览（无代码模式的名称回显）。
+  /// 选项跳转目标 ID → 对白内容预览（简易模式的名称回显）。
   String? _talkPreviewName(String id) {
     for (final e in widget.talkOptions) {
       if (e.$1 == id) return e.$2.isEmpty ? null : e.$2;
@@ -4796,6 +4914,7 @@ class _OptionRowState extends State<_OptionRow> {
                           .toList(),
                 );
                 if (ids == null) return;
+                if (!mounted) return;
                 if (opt is Map) {
                   opt['talkId'] = ids;
                   widget.onChanged();
@@ -4822,10 +4941,11 @@ class _OptionRowState extends State<_OptionRow> {
   }
 }
 
-/// 人物指令行（`TalkCfg.roles`）在导演视图里是「每行一条 '动作,角色,...' 字符串」
-/// 的列表，而 schema 声明是 2D Array。无代码积木编辑器按 2D 行解析，这里做
-/// 双向适配：读时容忍二维列表与一维字符串列表两种历史形态，写时统一回
-/// 「每行一个逗号串」的列表（与既有文本框的写回口径一致）。
+/// 人物指令行（`TalkCfg.roles`）→ 2D 网格编辑器的行列表。
+///
+/// roles 的规范形态是**指令行数组** `[[roleId, 指令码, ...参数], ...]`；这里读时
+/// 容忍嵌套列表（元素 `toString()` 后剥掉方括号）与历史 CSV 串两种形态，统一拆成
+/// 「每行一个字符串数组」交给 2D 网格控件。
 List<List<String>> rolesTo2d(dynamic v) {
   if (v is! List) return const [];
   final out = <List<String>>[];
@@ -4842,24 +4962,43 @@ List<List<String>> rolesTo2d(dynamic v) {
   return out;
 }
 
-List<String> rolesFrom2d(dynamic v) {
+/// 2D 网格编辑器 → roles 指令行数组：`[['10','1001','1','1']]` → `[[10, 1001, 1, 1]]`。
+///
+/// roles 的规范形态是**指令行数组**（`[[roleId, 指令码, ...参数], ...]`），**不是**
+/// CSV 字符串数组 —— 曾经这里拼成 `'10,1001,1,1'` 字符串，保存后游戏与工作室编辑
+/// 器都读不出来（详见 story_logic.dart 顶部「舞台指令」注释）。数值可解析则转 num。
+List<dynamic> rolesFrom2d(dynamic v) {
   if (v is! List) return const [];
   return [
     for (final row in v)
-      if (row is List) row.map((e) => e.toString()).join(',') else row.toString(),
+      if (row is List) row.map(_numLike).toList() else row,
   ];
+}
+
+dynamic _numLike(dynamic e) {
+  final n = num.tryParse(e.toString().trim());
+  return n ?? e;
 }
 
 class _StageRoleInfo {
   _StageRoleInfo({
     required this.roleId,
-    required this.slot,
-    required this.actionCode,
+    required this.pos,
+    this.expr = 0,
+    this.flip = false,
     this.isHighlight = false,
   });
   final String roleId;
-  final int slot;
-  final String actionCode;
+
+  /// 站位：1=左 2=右 3=中（游戏坐标，来自 roles 入场指令的 pos 参数）。
+  final int pos;
+
+  /// 表情编号 0..26（来自 roles 的 3000 指令）。
+  final int expr;
+
+  /// 是否水平镜像（roles 的 3007 指令）。
+  final bool flip;
+
   final bool isHighlight;
 }
 

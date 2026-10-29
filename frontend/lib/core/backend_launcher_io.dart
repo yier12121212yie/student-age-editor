@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -121,7 +122,13 @@ class BackendLauncher {
   /// 就绪后装载令牌到 ApiClient（幂等；读不到保持 null）。
   Future<void> _loadBackendTokenIntoClient() async {
     final t = await _loadBackendToken();
-    if (t != null) ApiClient.backendToken = t;
+    if (t != null) {
+      ApiClient.backendToken = t;
+      if (kDebugMode) {
+        final mask = t.length > 8 ? '${t.substring(0, 8)}...' : t;
+        debugPrint('[BackendLauncher] 后端安全令牌已加载: $mask');
+      }
+    }
   }
 
   /// 确保后端就绪：已就绪直接返回 true；
@@ -133,6 +140,9 @@ class BackendLauncher {
   Future<bool> _ensure() async {
     try {
       if (await probe()) {
+        if (kDebugMode) {
+          debugPrint('[BackendLauncher] 后端已就绪 (127.0.0.1:$port)');
+        }
         await _loadBackendTokenIntoClient(); // 后端可能已被外部拉起（run_dev）
         return true;
       }
@@ -161,14 +171,44 @@ class BackendLauncher {
       }
 
       final exe = _findBackendExe();
-      if (exe == null) return false; // 开发模式未构建：走错误页「编译并启动后端」或 run_dev.py
+      if (exe == null) {
+        if (kDebugMode) {
+          debugPrint('[BackendLauncher] 未找到后端可执行文件（请先构建 native 或运行 run_dev.py）');
+        }
+        return false; // 开发模式未构建：走错误页「编译并启动后端」或 run_dev.py
+      }
 
+      final devEnv = _devEnvironment();
+      if (kDebugMode) {
+        debugPrint('[BackendLauncher] 从源码启动后端: $exe --port $port');
+      }
       final proc = await Process.start(
         exe,
         ['--port', '$port'],
         workingDirectory: File(exe).parent.path,
+        environment: devEnv,
       );
       _process = proc;
+
+      // 从源码运行时透传打印后端日志
+      if (kDebugMode) {
+        proc.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+          if (line.trim().isNotEmpty) {
+            debugPrint('[backend] $line');
+          }
+        });
+        proc.stderr
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+          if (line.trim().isNotEmpty) {
+            debugPrint('[backend:err] $line');
+          }
+        });
+      }
 
       // 阶段 3：订阅退出码。此前后端进程在会话中途崩溃/被外部杀掉无人察觉，
       // 状态栏仍显示 bootstrap 时的「在线」快照；现在退出即记日志并把
@@ -188,14 +228,23 @@ class BackendLauncher {
       // 原生后端启动后首次就绪可能较慢，轮询等待（最多约 90 秒）。
       for (var i = 0; i < 60; i++) {
         if (await probe(timeout: const Duration(seconds: 1))) {
+          if (kDebugMode) {
+            debugPrint('[BackendLauncher] 后端启动就绪 (127.0.0.1:$port)');
+          }
           await _loadBackendTokenIntoClient();
           return true;
         }
         if (await _hasExited(proc)) {
+          if (kDebugMode) {
+            debugPrint('[BackendLauncher] 后端进程过早退出，启动失败');
+          }
           _process = null; // 启动即退出（如端口被占、环境异常），不再重试
           return false;
         }
         await Future.delayed(const Duration(milliseconds: 500));
+      }
+      if (kDebugMode) {
+        debugPrint('[BackendLauncher] 等待后端就绪超时 (60s)');
       }
       return false;
     } catch (_) {
@@ -332,6 +381,31 @@ class BackendLauncher {
         final f = File('$dir${Platform.pathSeparator}native'
             '${Platform.pathSeparator}$script');
         if (f.existsSync()) return f.parent.path;
+      }
+    }
+    return null;
+  }
+
+  /// 开发模式下为后端进程注入 Tex2D 资源环境变量。
+  static Map<String, String>? _devEnvironment() {
+    if (!kDebugMode) return null;
+    final env = Map<String, String>.from(Platform.environment);
+    final sep = Platform.pathSeparator;
+    for (final dir in sourceSearchRoots(
+      cwd: Directory.current.path,
+      exeDir: File(Platform.resolvedExecutable).parent.path,
+      separator: sep,
+    )) {
+      final roleDir = Directory('$dir${sep}Tex2D${sep}role');
+      final bgDir = Directory('$dir${sep}Tex2D${sep}bg');
+      if (roleDir.existsSync() || bgDir.existsSync()) {
+        if (roleDir.existsSync()) {
+          env.putIfAbsent('EDITOR_PORTRAIT_DIR', () => roleDir.path);
+        }
+        if (bgDir.existsSync()) {
+          env.putIfAbsent('EDITOR_BG_DIR', () => bgDir.path);
+        }
+        return env;
       }
     }
     return null;

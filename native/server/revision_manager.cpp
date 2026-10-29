@@ -52,6 +52,17 @@ struct FileFingerprint {
 std::unordered_map<std::string, FileFingerprint> g_file_metadata;
 size_t g_files_hashed_count = 0;
 
+// B2：路径分隔符归一。collect_target_files 用 `/` 拼接，而 cfg_path/join
+// 在 Windows 产出 `\`；不归一的话「写后播种」的 key 与扫描时对不上，
+// 大表仍会被重读一遍。
+std::string norm_key(const std::string& p) {
+    std::string out = p;
+    for (auto& c : out) {
+        if (c == '\\') c = '/';
+    }
+    return out;
+}
+
 // Compute SHA-256 over a single file's bytes
 std::optional<std::string> sha256_of_file(const std::string& abs_path) {
     auto raw = sa_core::paths::read_bytes(abs_path);
@@ -107,8 +118,13 @@ std::vector<std::string> collect_target_files(const std::string& mod_root) {
 
 void set_workspace_root(const std::string& root) {
     std::lock_guard<std::mutex> lk(g_revision_mu);
+    // B2：同一 root 反复 set（每次 revision 请求 / 每次写前 verify）原先都会
+    // 无条件作废缓存，使「带指纹的快速重算」永远命中不了。root 未变时保留
+    // 缓存；root 变了才清掉旧工作区的文件指纹。
+    if (g_workspace_root == root) return;
     g_workspace_root = root;
     g_cache_valid = false;
+    g_file_metadata.clear();
 }
 
 // 锁边界约定：g_revision_mu 只保护元数据（root/缓存/计数），绝不跨磁盘 IO
@@ -119,14 +135,20 @@ std::string compute_revision() {
     auto start = std::chrono::high_resolution_clock::now();
 
     std::string root;
-    std::vector<std::string> files;
     {
         std::lock_guard<std::mutex> lk(g_revision_mu);
         root = g_workspace_root;
         if (root.empty()) {
             return "";
         }
-        files = collect_target_files(root);
+    }
+
+    // 目录遍历（exists/is_dir/listdir 递归磁盘 IO）必须在锁外执行——与上方锁边界
+    // 约定一致，否则大工作区下 revision 轮询会串行化 set_workspace_root / 缓存读写
+    // 等所有元数据操作。collect_target_files 自身不加锁，无重入风险。
+    std::vector<std::string> files = collect_target_files(root);
+    {
+        std::lock_guard<std::mutex> lk(g_revision_mu);
         g_files_scanned_count = files.size();
     }
 
@@ -140,9 +162,10 @@ std::string compute_revision() {
         if (!st) continue;
         std::string hash;
         bool reuse = false;
+        const std::string key = norm_key(filepath);
         {
             std::lock_guard<std::mutex> lk(g_revision_mu);
-            auto it = g_file_metadata.find(filepath);
+            auto it = g_file_metadata.find(key);
             if (it != g_file_metadata.end() && it->second.mtime_ns == st->mtime_ns &&
                 it->second.size == st->size) {
                 hash = it->second.hash;
@@ -155,7 +178,7 @@ std::string compute_revision() {
             hash = *hash_opt;
             ++hashed;
             std::lock_guard<std::mutex> lk(g_revision_mu);
-            g_file_metadata[filepath] = FileFingerprint{st->mtime_ns, st->size, hash};
+            g_file_metadata[key] = FileFingerprint{st->mtime_ns, st->size, hash};
         }
         combined_hash += hash;
     }
@@ -221,6 +244,13 @@ std::future<std::string> compute_revision_async() {
 void invalidate_cache() {
     std::lock_guard<std::mutex> lk(g_revision_mu);
     g_cache_valid = false;
+}
+
+void seed_file_fingerprint(const std::string& abs_path, long long mtime_ns,
+                           long long size, const std::string& hash) {
+    std::lock_guard<std::mutex> lk(g_revision_mu);
+    g_file_metadata[norm_key(abs_path)] =
+        FileFingerprint{mtime_ns, size, hash};
 }
 
 void set_ntfs_monitoring_enabled(bool enabled) {

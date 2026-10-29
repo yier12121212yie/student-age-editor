@@ -34,15 +34,6 @@ void PopCodepoint(std::string& s) {
     s.erase(i - 1);
 }
 
-bool CaseInsensitiveContains(const std::string& hay, const std::string& needle) {
-    if (needle.empty()) return true;
-    auto lower = [](std::string x) {
-        for (auto& c : x) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return x;
-    };
-    return lower(hay).find(lower(needle)) != std::string::npos;
-}
-
 int SelectedVisibleIndex(const AppState& s) {
     auto vis = s.VisibleRows();
     if (vis.empty()) return -1;
@@ -145,6 +136,51 @@ Intent GateWrite(AppState& s, Intent want, std::string title, std::string detail
     return Intent::None;
 }
 
+// Unsaved-edit protection, orthogonal to permission_mode: GateWrite only gates
+// backend writes in "confirm" mode, so discard confirmations (quit / reload /
+// switch away) must not reuse it — in "full" it would silently drop the edits.
+Intent GateDiscard(AppState& s, Intent want, std::string title, std::string detail) {
+    if (!TableDirty(s)) return want;
+    s.confirm.active = true;
+    s.confirm.title = std::move(title);
+    s.confirm.detail = std::move(detail);
+    s.confirm.pending = want;
+    return Intent::None;
+}
+
+std::string DiscardDetail(const AppState& s) {
+    return "有未保存的修改（" +
+           std::to_string(s.table.edits.size() + s.table.removes.size() + s.table.adds.size()) +
+           " 条），继续将丢弃";
+}
+
+std::string SaveDetail(const AppState& s) {
+    return s.table.name + "  修改 " + std::to_string(s.table.edits.size()) +
+           "  删除 " + std::to_string(s.table.removes.size()) + "  新增 " +
+           std::to_string(s.table.adds.size());
+}
+
+// q / Ctrl-Q / palette "退出" share one path: a dirty table raises the discard
+// dialog regardless of permission_mode.
+Intent RequestQuit(AppState& s) {
+    return GateDiscard(s, Intent::Quit, "退出", DiscardDetail(s));
+}
+
+// Tree mod-node keys and the palette both switch mods through here: the target
+// rides in pending_mod because the confirm dialog replays the intent without
+// arguments (SelectModFromPending picks it up).
+Intent RequestSelectMod(AppState& s, const std::string& name, int index) {
+    if (TableDirty(s)) {
+        s.pending_mod = name;
+        return GateDiscard(s, Intent::SelectModFromPending, "切换模组",
+                           "切换到模组 " + name + "，" + DiscardDetail(s));
+    }
+    s.selected_mod = name;
+    s.mod_sel = index;
+    s.expanded_mods.insert(name);
+    return Intent::SelectMod;
+}
+
 // y/Enter approves (and releases the deferred intent), n/Esc rejects.
 Intent HandleConfirmOverlay(AppState& s, const KeyInput& k) {
     bool approve = false;
@@ -169,6 +205,8 @@ Intent HandleConfirmOverlay(AppState& s, const KeyInput& k) {
     s.confirm.pending = Intent::None;
     if (!approve) {
         s.status = "已拒绝: " + title;
+        s.pending_mod.clear();   // a rejected mod/table switch must not fire later
+        s.pending_table.clear();
         return Intent::None;
     }
     return pending;
@@ -213,12 +251,8 @@ Intent HandleTree(AppState& s, const KeyInput& k) {
             TreeItem it = items[s.ClampSel(s.tree_sel, static_cast<int>(items.size()))];
             if (it.table_index >= 0) return Intent::None;
             const std::string& name = s.mods[it.mod_index].name;
-            if (name != s.selected_mod) {
-                s.selected_mod = name;
-                s.mod_sel = it.mod_index;
-                s.expanded_mods.insert(name);
-                return Intent::SelectMod;
-            }
+            if (name != s.selected_mod)
+                return RequestSelectMod(s, name, it.mod_index);
             s.expanded_mods.insert(name);
             return Intent::None;
         }
@@ -247,23 +281,34 @@ Intent HandleTree(AppState& s, const KeyInput& k) {
                     s.expanded_mods.erase(name);
                     return Intent::None;
                 }
-                s.selected_mod = name;
-                s.mod_sel = it.mod_index;
+                if (name != s.selected_mod)
+                    return RequestSelectMod(s, name, it.mod_index);
                 s.expanded_mods.insert(name);
-                s.status = "加载中模组: " + s.selected_mod;
-                return Intent::SelectMod;
+                return Intent::None;
             }
             const std::string name = table_name(it);
             if (name.empty()) return Intent::None;
             if (s.mods[it.mod_index].name != s.selected_mod) {
                 // Opening a cfg of another mod: select it, then load the table
                 // once the selection (and its cfg list) has round-tripped.
+                if (TableDirty(s)) {
+                    s.pending_mod = s.mods[it.mod_index].name;
+                    s.pending_table = name;
+                    return GateDiscard(s, Intent::SelectModFromPending, "切换模组",
+                                       "切换到模组 " + s.pending_mod + "，" + DiscardDetail(s));
+                }
                 s.selected_mod = s.mods[it.mod_index].name;
                 s.mod_sel = it.mod_index;
                 s.expanded_mods.insert(s.selected_mod);
                 s.pending_table = name;
-                s.status = "加载中模组: " + s.selected_mod;
                 return Intent::SelectMod;
+            }
+            if (TableDirty(s)) {
+                // Switching tables drops the staged edits — confirm first; the
+                // target rides in pending_table (OpenPendingTable consumes it).
+                s.pending_table = name;
+                return GateDiscard(s, Intent::OpenPendingTable, "打开表",
+                                   "打开表 " + name + "，" + DiscardDetail(s));
             }
             s.table = Table{};
             s.table.name = name;
@@ -605,8 +650,11 @@ Intent HandleOobeModal(AppState& s, const KeyInput& k) {
                 return Intent::CreateMod;
             }
             case KeyInput::Escape:
+                // "Skip" closes the wizard for this session only — marking
+                // OOBE done here used to make the wizard unreachable forever.
                 s.oobe.active = false;
-                return Intent::OobeComplete;
+                s.page = Page::Main;
+                return Intent::None;
             case KeyInput::Backspace:
                 PopCodepoint(s.oobe.mod_title);
                 return Intent::None;
@@ -649,7 +697,7 @@ void RebuildPalette(AppState& s) {
     add("action:bugfix", "Bug 扫描", "b");
     add("action:tts", "配音 TTS", "t");
     add("action:update", "检查更新", "u");
-    add("action:permission", "切换权限模式", "Ctrl-M");
+    add("action:permission", "切换权限模式", "Ctrl-G");
     add("action:nocode", "切换无代码模式", "Ctrl-N");
     add("action:newmod", "新建模组", "N");
     add("action:help", "键位帮助", "?");
@@ -662,16 +710,18 @@ Intent RunPaletteAction(AppState& s, const std::string& id) {
         int i = std::atoi(id.c_str() + 4);
         if (i < 0 || i >= static_cast<int>(s.mods.size())) return Intent::None;
         if (s.mods[i].name == s.selected_mod) return Intent::None;
-        s.selected_mod = s.mods[i].name;
-        s.mod_sel = i;
-        s.expanded_mods.insert(s.selected_mod);
         s.tree_sel = i;
-        s.status = "加载中模组: " + s.selected_mod;
-        return Intent::SelectMod;
+        return RequestSelectMod(s, s.mods[i].name, i);
     }
     if (id.rfind("table:", 0) == 0) {
+        const std::string name = id.substr(6);
+        if (TableDirty(s)) {
+            s.pending_table = name;
+            return GateDiscard(s, Intent::OpenPendingTable, "打开表",
+                               "打开表 " + name + "，" + DiscardDetail(s));
+        }
         s.table = Table{};
-        s.table.name = id.substr(6);
+        s.table.name = name;
         s.focus = Focus::Rows;
         s.row_sel = 0;
         s.filter.clear();
@@ -680,10 +730,15 @@ Intent RunPaletteAction(AppState& s, const std::string& id) {
         return Intent::LoadTable;
     }
     if (id == "action:save") {
-        if (s.table.name.empty() || s.table.edits.empty() || !s.table.removes.empty() ||
-            !s.table.adds.empty())
-            return Intent::SaveTable;
-        return Intent::SaveTable;
+        if (s.table.name.empty()) {
+            s.status = "先打开一张表";
+            return Intent::None;
+        }
+        if (!TableDirty(s)) {
+            s.status = "无改动";
+            return Intent::None;
+        }
+        return GateWrite(s, Intent::SaveTable, "保存表格", SaveDetail(s));
     }
     if (id == "action:validate") {
         if (s.table.name.empty()) {
@@ -726,7 +781,7 @@ Intent RunPaletteAction(AppState& s, const std::string& id) {
     }
     if (id == "action:help") { s.show_help = true; return Intent::None; }
     if (id == "action:refresh") return Intent::RefreshMods;
-    if (id == "action:quit") return Intent::Quit;
+    if (id == "action:quit") return RequestQuit(s);
     return Intent::None;
 }
 
@@ -838,6 +893,17 @@ Intent BeginFieldEdit(AppState& s, const FormRow& row) {
 }
 
 }  // namespace
+
+// Shared with the renderer (declared in p8_model.h) so the palette filter shows
+// exactly what Enter will run.
+bool CaseInsensitiveContains(const std::string& hay, const std::string& needle) {
+    if (needle.empty()) return true;
+    auto lower = [](std::string x) {
+        for (auto& c : x) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return x;
+    };
+    return lower(hay).find(lower(needle)) != std::string::npos;
+}
 
 int AppState::ClampSel(int sel, int count) const {
     if (count <= 0) return 0;
@@ -1026,8 +1092,11 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
     if (k.kind == KeyInput::CtrlChar) {
         switch (k.ctrl) {
             case 'q':
+                // Same guard as `q`: dirty edits raise the discard dialog. The
+                // confirm dialog itself stays topmost (it owns the keyboard).
+                if (s.confirm.active) return Intent::None;
                 ClearTransient(s);
-                return Intent::Quit;
+                return RequestQuit(s);
             case 'p':
                 // Ctrl-P command palette (Alpha-later build's bottom bar entry).
                 ClearTransient(s);
@@ -1037,8 +1106,10 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                 s.palette.input.clear();
                 s.palette.sel = 0;
                 return Intent::None;
-            case 'm':
+            case 'g':
                 // Desktop parity: the AI panel's permission-mode quick toggle.
+                // (Ctrl-M is unreachable: terminals send 0x0D for both Enter
+                // and Ctrl-M, and FTXUI normalizes it to Event::Return.)
                 s.permission_mode = s.permission_mode == "confirm" ? "full" : "confirm";
                 s.status = std::string("权限模式: ") +
                            (s.permission_mode == "confirm" ? "confirm（变更前确认）"
@@ -1071,11 +1142,11 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
     if (s.search.active) return HandleSearchOverlay(s, k);
     if (s.validate.active) return HandleValidateOverlay(s, k);
 
-    if (k.kind == KeyInput::Char && k.text == "?") {
-        s.show_help = !s.show_help;
-        return Intent::None;
-    }
-    if (s.show_help) {  // any other key first dismisses the help overlay
+    // The help overlay is topmost below the confirm dialog: any key dismisses
+    // it. `?` itself is bound much further down — only in the idle browse
+    // state — so text inputs (chat, fields, filter, JSON) can type a literal
+    // question mark.
+    if (s.show_help) {
         s.show_help = false;
         if (k.kind != KeyInput::None) return Intent::None;
     }
@@ -1196,6 +1267,17 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                 // Alpha _decode): "1, 2, 3" becomes [1,2,3] for arrays etc.
                 std::string key, raw, out;
                 if (CurrentRowRaw(s, &key, &raw)) {
+                    // Number fields refuse non-numeric text instead of silently
+                    // coercing it to 0 (which would corrupt the record); the
+                    // editor stays open so the value can be fixed.
+                    if (s.field_type == "Number") {
+                        std::string tt = TrimAscii(s.field_buffer);
+                        if (!tt.empty() && !IsNumericText(tt)) {
+                            s.status = "字段 " + s.field_name +
+                                       " 需要数字，已保留原值（继续输入或 Esc 退出）";
+                            return Intent::None;
+                        }
+                    }
                     Json decoded = DecodeFieldValue(s.field_buffer, s.field_type);
                     Json record = Json::parse(raw, nullptr, false);
                     if (!record.is_discarded() && record.is_object()) {
@@ -1239,10 +1321,7 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
             s.status = "无改动";
             return Intent::None;
         }
-        return GateWrite(s, Intent::SaveTable, "保存表格",
-                         s.table.name + "  修改 " + std::to_string(s.table.edits.size()) +
-                             "  删除 " + std::to_string(s.table.removes.size()) + "  新增 " +
-                             std::to_string(s.table.adds.size()));
+        return GateWrite(s, Intent::SaveTable, "保存表格", SaveDetail(s));
     }
 
     // `/` filter mode comes first: while capturing, every char — including
@@ -1279,21 +1358,17 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
         }
     }
 
+    // `?` opens the help overlay only when nothing is capturing text: every
+    // input state above has already returned, so this is the idle browse key.
+    if (k.kind == KeyInput::Char && k.text == "?") {
+        s.show_help = true;
+        return Intent::None;
+    }
+
     // Keys shared by every pane: modal openers + Alpha's `q` quit guard.
     if (k.kind == KeyInput::Char) {
         if (k.text == "q") {
-            if (TableDirty(s)) {
-                s.editing = false;
-                s.editing_field = false;
-                s.filtering = false;
-                return GateWrite(s, Intent::Quit, "退出",
-                                 "有未保存的修改（" +
-                                     std::to_string(s.table.edits.size() +
-                                                    s.table.removes.size() +
-                                                    s.table.adds.size()) +
-                                     " 条），退出将丢弃");
-            }
-            return Intent::Quit;
+            return RequestQuit(s);
         }
         if (k.text == "a") return OpenModal(s, Page::Agent);
         if (k.text == "c") return OpenModal(s, Page::Cloud);
@@ -1311,10 +1386,7 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                 s.status = "无改动";
                 return Intent::None;
             }
-            return GateWrite(s, Intent::SaveTable, "保存表格",
-                             s.table.name + "  修改 " + std::to_string(s.table.edits.size()) +
-                                 "  删除 " + std::to_string(s.table.removes.size()) + "  新增 " +
-                                 std::to_string(s.table.adds.size()));
+            return GateWrite(s, Intent::SaveTable, "保存表格", SaveDetail(s));
         }
         if (k.text == "e") {
             // 聚焦编辑 (Alpha action_edit_record): jump to the detail pane and
@@ -1431,7 +1503,13 @@ Intent HandleKey(AppState& s, const KeyInput& k) {
                         s.status = "复制 " + key + " → " + dup + "（Ctrl-S 保存）";
                         return Intent::None;
                     }
-                    if (k.text == "r") return Intent::LoadTable;
+                    if (k.text == "r") {
+                        // Reload re-reads the file and drops staged edits.
+                        if (TableDirty(s))
+                            return GateDiscard(s, Intent::LoadTable, "重载表格",
+                                               DiscardDetail(s));
+                        return Intent::LoadTable;
+                    }
                     if (k.text == "v") {
                         s.validate.active = true;
                         s.validate.busy = true;

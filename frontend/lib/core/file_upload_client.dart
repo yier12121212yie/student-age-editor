@@ -31,8 +31,8 @@ class UploadInitiateRequest {
   Map<String, dynamic> toJson() => <String, dynamic>{
         'name': name,
         'size': size,
-        if (kind != null) 'kind': kind!,
-        if (storyId != null) 'story_id': storyId!,
+        'kind': ?kind,
+        'story_id': ?storyId,
       };
 }
 
@@ -57,14 +57,15 @@ class UploadInitiateResponse {
   });
 
   factory UploadInitiateResponse.fromJson(Map<String, dynamic> json) {
+    // 后端字段漂移不应抛 TypeError：一律按可空 + 兜底解析。
     return UploadInitiateResponse(
-      fileId: json['file_id'] as String,
-      uploadMode: json['upload_mode'] as String,
-      thresholdBytes: json['threshold_bytes'] as int,
+      fileId: json['file_id'] as String? ?? '',
+      uploadMode: json['upload_mode'] as String? ?? '',
+      thresholdBytes: (json['threshold_bytes'] as num?)?.toInt() ?? 0,
       uploadUrl: json['upload_url'] as String?,
       s3Key: json['s3_key'] as String?,
-      method: json['method'] as String,
-      expiresInSeconds: json['expires_in'] as int?,
+      method: json['method'] as String? ?? '',
+      expiresInSeconds: (json['expires_in'] as num?)?.toInt(),
     );
   }
 }
@@ -78,7 +79,7 @@ class S3CompleteRequest {
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'file_id': fileId,
-        if (etag != null) 'etag': etag!,
+        'etag': ?etag,
       };
 }
 
@@ -244,13 +245,18 @@ class FileUploadClient {
         data: data,
       );
 
-      // 检查是否有错误
-      if (result['errors'] != null && (result['errors'] as List).isNotEmpty) {
-        throw Exception((result['errors'] as List)[0]['error'] as String);
+      // 检查是否有错误（元素类型漂移时按兜底文案处理，不抛 TypeError）。
+      final errors = result['errors'];
+      if (errors is List && errors.isNotEmpty) {
+        final first = errors.first;
+        final msg = first is Map ? first['error']?.toString() : null;
+        throw Exception(msg ?? 'Upload failed');
       }
 
-      if (result['saved'] != null && (result['saved'] as List).isNotEmpty) {
-        return (result['saved'] as List)[0]['path'] as String?;
+      final saved = result['saved'];
+      if (saved is List && saved.isNotEmpty) {
+        final first = saved.first;
+        if (first is Map) return first['path'] as String?;
       }
 
       throw Exception('Server upload returned no success data');

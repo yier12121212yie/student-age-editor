@@ -6,11 +6,18 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/debouncer.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../nocode/entity_picker.dart' show RoleEntry, loadRoles;
 import '../resources/image_asset_picker.dart'
     show TexThumb, showImageAssetPicker;
@@ -65,16 +72,22 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
   static const _faceCfg = 'ModFaceCfg';
   static const _pageSize = 50;
 
-  // 三张表的当前数据（id → row）与加载时的快照 / mtime。
-  Map<String, dynamic> _person = {};
-  Map<String, dynamic> _grow = {};
-  Map<String, dynamic> _face = {};
-  String _personSnap = '';
-  String _growSnap = '';
-  String _faceSnap = '';
-  int? _personM;
-  int? _growM;
-  int? _faceM;
+  // 三张表由公共控制器管理（A3）；下面三个 getter 保留旧名字，减少改动面。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_personCfg, _growCfg, _faceCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  Map<String, dynamic> get _person => _ctl.table(_personCfg).data;
+  Map<String, dynamic> get _grow => _ctl.table(_growCfg).data;
+  Map<String, dynamic> get _face => _ctl.table(_faceCfg).data;
 
   // 引用表（id → 显示名）与人物立绘目录（/api/roles）。
   Map<String, String> _attrNames = {};
@@ -103,32 +116,42 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
   bool _growMulti = false;
 
   final TextEditingController _searchCtrl = TextEditingController();
+  final Debouncer _searchDebounce = Debouncer();
 
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+      // N12：撤销「新增角色」后选中项可能已不存在——回落到首个角色，避免
+      // 编辑区对着已消失的 id 继续走 _ensureRow 造出幽灵行（并再次变脏）。
+      final sel = _selectedId;
+      if (sel != null && _row(_person, sel) == null) {
+        _selectedId = _sortedIds.isEmpty ? null : _sortedIds.first;
+      }
+    });
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
+    _searchDebounce.dispose();
     super.dispose();
   }
 
   // ------------------------------------------------------------------
   // 数据装载 / 保存
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -145,36 +168,16 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
   String get guardSubject => '人物资料';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
-      final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_personCfg'),
-        ApiClient.instance.get('/api/cfg/$_growCfg'),
-        ApiClient.instance.get('/api/cfg/$_faceCfg'),
-      ]);
+      await _ctl.load();
       if (!mounted) return;
-      _person = _dataOf(res[0]);
-      _grow = _dataOf(res[1]);
-      _face = _dataOf(res[2]);
-      _personM = _mtimeOf(res[0]);
-      _growM = _mtimeOf(res[1]);
-      _faceM = _mtimeOf(res[2]);
-      _personSnap = jsonEncode(_person);
-      _growSnap = jsonEncode(_grow);
-      _faceSnap = jsonEncode(_face);
-      _selectedId ??= _sortedIds.isNotEmpty ? _sortedIds.first : null;
-      setState(() => _loading = false);
+      _selectedId ??=
+          _sortedIds.isNotEmpty ? _sortedIds.first : null;
+      setState(() {});
       _loadRoles();
       _loadRefs();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error / WorkbenchStatus.error。
     }
   }
 
@@ -195,10 +198,10 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       ]);
       if (!mounted) return;
       setState(() {
-        _attrNames = _nameMap(_dataOf(res[0]));
-        _traitNames = _nameMap(_dataOf(res[1]));
-        _stateNames = _nameMap(_dataOf(res[2]));
-        _tagNames = _nameMap(_dataOf(res[3]));
+        _attrNames = _nameMap(WorkbenchController.extractData(res[0]));
+        _traitNames = _nameMap(WorkbenchController.extractData(res[1]));
+        _stateNames = _nameMap(WorkbenchController.extractData(res[2]));
+        _tagNames = _nameMap(WorkbenchController.extractData(res[3]));
       });
     } catch (_) {}
   }
@@ -222,127 +225,22 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
     return out;
   }
 
-  bool get _dirty =>
-      _personSnap != jsonEncode(_person) ||
-      _growSnap != jsonEncode(_grow) ||
-      _faceSnap != jsonEncode(_face);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      await _saveOne(_personCfg, _person, _personSnap);
-      await _saveOne(_growCfg, _grow, _growSnap);
-      await _saveOne(_faceCfg, _face, _faceSnap);
-      if (mounted) {
-        _info('人物资料、成长、表情服装已一起保存', fluent.InfoBarSeverity.success);
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
+    final ok = await _ctl.save();
+    if (mounted && ok) {
+      AppFeedback.success(context, '人物资料、成长、表情服装已一起保存');
     }
   }
 
-  Future<void> _saveOne(
-    String name,
-    Map<String, dynamic> data,
-    String snap,
-  ) async {
-    if (jsonEncode(data) == snap) return;
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': data,
-          if (force) 'force': true,
-        };
-        if (!force) {
-          if (name == _personCfg) body['expect_mtime_ns'] = _personM;
-          if (name == _growCfg) body['expect_mtime_ns'] = _growM;
-          if (name == _faceCfg) body['expect_mtime_ns'] = _faceM;
-        }
-        final r = await ApiClient.instance.put('/api/cfg/$name', body: body);
-        final freshSnap = jsonEncode(data);
-        if (!mounted) return;
-        setState(() {
-          if (name == _personCfg) {
-            _personM = _mtimeOf(r);
-            _personSnap = freshSnap;
-          } else if (name == _growCfg) {
-            _growM = _mtimeOf(r);
-            _growSnap = freshSnap;
-          } else {
-            _faceM = _mtimeOf(r);
-            _faceSnap = freshSnap;
-          }
-        });
-        return;
-      } on ApiException catch (e) {
-        if (!mounted) return;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(name);
-          if (!mounted) return;
-          if (act == 'reload') {
-            await _loadAll();
-            return;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return;
-      } catch (e) {
-        if (!mounted) return;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return;
-      }
-    }
-  }
+  /// 409 冲突弹窗（复用统一的 [WorkbenchConflictChoice]）。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
   void _discard() {
-    setState(() {
-      _person = (jsonDecode(_personSnap) as Map).cast<String, dynamic>();
-      _grow = (jsonDecode(_growSnap) as Map).cast<String, dynamic>();
-      _face = (jsonDecode(_faceSnap) as Map).cast<String, dynamic>();
-    });
-  }
-
-  Future<String?> _conflictDialog(String name) {
-    return fluent.showDialog<String>(
-      context: context,
-      builder: (ctx) => AppContentDialog(
-        title: const Text('文件冲突'),
-        content: Text(
-          '$name 已被外部修改（可能被游戏或其他端改写）。\n'
-          '重新加载将放弃本地未保存的修改；强制覆盖将用当前编辑内容覆盖磁盘文件。',
-          style: TextStyle(
-              fontSize: 12.5, color: palette.textPrimary, height: 1.5),
-        ),
-        actions: [
-          fluent.Button(
-            onPressed: () => Navigator.pop(ctx, 'reload'),
-            child: const Text('重新加载'),
-          ),
-          fluent.FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'force'),
-            child: const Text('强制覆盖'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
+    _ctl.discard();
+    setState(() {});
   }
 
   // ------------------------------------------------------------------
@@ -365,6 +263,9 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
   int _pid(String id) => int.tryParse(id) ?? -1;
 
   List<String> get _sortedIds {
+    // 排序结果按源表版本号缓存：源表一变才重算，避免每次 build 全表 O(n log n)。
+    final rev = _ctl.table(_personCfg).revision;
+    if (rev == _sortRev) return _sortedIdsCache;
     final ids = _person.keys.toList();
     ids.sort((a, b) {
       final an = int.tryParse(a);
@@ -372,8 +273,13 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       if (an != null && bn != null) return an.compareTo(bn);
       return a.compareTo(b);
     });
+    _sortRev = rev;
+    _sortedIdsCache = ids;
     return ids;
   }
+
+  int _sortRev = -1;
+  List<String> _sortedIdsCache = const [];
 
   String _nameOf(String id) {
     final m = _row(_person, id);
@@ -535,6 +441,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       initialSelected: initial,
     );
     if (picked == null || picked.isEmpty) return;
+    if (!mounted) return;
     setState(() {
       final arr = List<dynamic>.from(
           (grade == 1 ? row['url2'] : row['url']) as List? ?? []);
@@ -552,6 +459,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       title: '选择立绘图片',
       initialSelected: const [],
     );
+    if (!mounted) return;
     if (picked == null || picked.isEmpty) return;
     final pid = _pid(id);
     final taken = _facesFor(pid, _cloth)
@@ -564,7 +472,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
           ))
         : 0;
     if (face < 0) {
-      _info('这套服装最多支持 100 张表情立绘', fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(context, '这套服装最多支持 100 张表情立绘');
       return;
     }
     final fid = pid * 1000 + _cloth * 100 + face;
@@ -590,7 +498,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       orElse: () => -1,
     );
     if (slot < 0) {
-      _info('该角色已拥有九套附加服装', fluent.InfoBarSeverity.warning);
+      AppFeedback.warning(context, '该角色已拥有九套附加服装');
       return;
     }
     final picked = await showImageAssetPicker(
@@ -599,6 +507,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       initialSelected: const [],
     );
     if (picked == null || picked.isEmpty) return;
+    if (!mounted) return;
     final fid = pid * 1000 + slot * 100;
     setState(() {
       _face[fid.toString()] = <String, dynamic>{
@@ -765,39 +674,15 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('人物数据加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(
-                onPressed: _loadAll,
-                child: const Text('重试'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '人物数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _previewPanel(w),
@@ -837,10 +722,10 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 fluent.TextBox(
                   controller: _searchCtrl,
                   placeholder: '搜索人物名称或编号',
-                  onChanged: (v) => setState(() {
-                    _search = v;
-                    _page = 0;
-                  }),
+                  onChanged: (v) => _searchDebounce.run(() => setState(() {
+                        _search = v;
+                        _page = 0;
+                      })),
                 ),
                 const SizedBox(height: 10),
                 fluent.FilledButton(
@@ -852,7 +737,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 Row(
                   children: [
                     Expanded(
-                      child: _MiniBtn(
+                      child: WorkbenchMiniButton(
                         label: '创建副本',
                         enabled: _selectedId != null,
                         onTap: () => _newPerson(duplicate: true),
@@ -860,7 +745,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                     ),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: _MiniBtn(
+                      child: WorkbenchMiniButton(
                         label: '删除角色',
                         danger: true,
                         enabled: _selectedId != null,
@@ -908,7 +793,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _MiniBtn(
+                  WorkbenchMiniButton(
                     label: '←',
                     enabled: page > 0,
                     onTap: () => setState(() => _page = page - 1),
@@ -916,7 +801,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                   Text('${page + 1} / $pages',
                       style: TextStyle(
                           fontSize: 11.5, color: palette.textSecondary)),
-                  _MiniBtn(
+                  WorkbenchMiniButton(
                     label: '→',
                     enabled: page < pages - 1,
                     onTap: () => setState(() => _page = page + 1),
@@ -995,57 +880,13 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
   }
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            dirty ? '有未保存的修改' : '已与磁盘同步',
-            style: TextStyle(fontSize: 11.5, color: palette.textSecondary),
-          ),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -1067,7 +908,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
         _SectionCard(
           title: '基础资料',
           children: [
-            _Labeled('姓名', _SyncedText(
+            _Labeled('姓名', SyncedTextField(
               value: row['name']?.toString() ?? '',
               hint: '人物姓名',
               onChanged: (v) => setState(() => row['name'] = v),
@@ -1103,8 +944,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                     Row(
                       children: [
                         Expanded(
-                          child: _NumBox(
-                            value: birthday[0],
+                          child: NumBox(
+                            intOnly: true, value: birthday[0],
                             hint: '年',
                             onChanged: (v) => setState(() {
                               final l = _intList(row, 'birthday', 3);
@@ -1115,8 +956,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _NumBox(
-                            value: birthday[1],
+                          child: NumBox(
+                            intOnly: true, value: birthday[1],
                             hint: '月',
                             onChanged: (v) => setState(() {
                               final l = _intList(row, 'birthday', 3);
@@ -1127,8 +968,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _NumBox(
-                            value: birthday[2],
+                          child: NumBox(
+                            intOnly: true, value: birthday[2],
                             hint: '日',
                             onChanged: (v) => setState(() {
                               final l = _intList(row, 'birthday', 3);
@@ -1159,7 +1000,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 ),
               ],
             ),
-            _Labeled('人物介绍', _SyncedText(
+            _Labeled('人物介绍', SyncedTextField(
               value: row['introduction']?.toString() ?? '',
               hint: '人物介绍',
               maxLines: 4,
@@ -1186,7 +1027,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
             Row(
               children: [
                 Expanded(
-                  child: _Labeled('电话号码', _SyncedText(
+                  child: _Labeled('电话号码', SyncedTextField(
                     value: row['telephone']?.toString() ?? '',
                     hint: '电话号码',
                     onChanged: (v) => setState(() => row['telephone'] = v),
@@ -1194,7 +1035,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: _Labeled('普通昵称', _SyncedText(
+                  child: _Labeled('普通昵称', SyncedTextField(
                     value: nicknames.isNotEmpty
                         ? nicknames[0].toString()
                         : '',
@@ -1211,7 +1052,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: _Labeled('恋爱昵称', _SyncedText(
+                  child: _Labeled('恋爱昵称', SyncedTextField(
                     value: nicknames.length > 1 ? nicknames[1].toString() : '',
                     hint: '恋爱昵称',
                     onChanged: (v) => setState(() {
@@ -1226,7 +1067,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 ),
               ],
             ),
-            _Labeled('备注', _SyncedText(
+            _Labeled('备注', SyncedTextField(
               value: row['note']?.toString() ?? '',
               hint: '只给自己看，不影响游戏',
               maxLines: 3,
@@ -1249,10 +1090,12 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                   }),
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  socialOn ? '该角色可在游戏中出现并社交' : '初始不登场（需要事件/剧情安排登场）',
-                  style:
-                      TextStyle(fontSize: 11.5, color: palette.textMuted),
+                Expanded(
+                  child: Text(
+                    socialOn ? '该角色可在游戏中出现并社交' : '初始不登场（需要事件/剧情安排登场）',
+                    style:
+                        TextStyle(fontSize: 11.5, color: palette.textMuted),
+                  ),
                 ),
               ],
             ),
@@ -1260,8 +1103,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
             Row(
               children: [
                 Expanded(
-                  child: _Labeled('企鹅头像编号', _NumBox(
-                    value: (row['kzoneHeadId'] as num?)?.toInt() ?? 0,
+                  child: _Labeled('企鹅头像编号', NumBox(
+                    intOnly: true, value: (row['kzoneHeadId'] as num?)?.toInt() ?? 0,
                     hint: '引用 KZoneAvatarCfg',
                     onChanged: (v) => setState(
                         () => row['kzoneHeadId'] = (v ?? 0).toInt()),
@@ -1269,8 +1112,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: _Labeled('点击音效编号', _NumBox(
-                    value: (row['clickAudio'] as num?)?.toInt() ?? 0,
+                  child: _Labeled('点击音效编号', NumBox(
+                    intOnly: true, value: (row['clickAudio'] as num?)?.toInt() ?? 0,
                     hint: '引用 AudioCfg',
                     onChanged: (v) => setState(
                         () => row['clickAudio'] = (v ?? 0).toInt()),
@@ -1453,7 +1296,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
             Row(
               children: [
                 Expanded(
-                  child: _SyncedText(
+                  child: SyncedTextField(
                     value: code,
                     hint: '如 ENFJ',
                     onChanged: (v) {
@@ -1642,8 +1485,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
             Row(
               children: [
                 Expanded(
-                  child: _Labeled('关联小游戏编号', _NumBox(
-                    value: (g['minigame'] as num?)?.toInt() ?? 0,
+                  child: _Labeled('关联小游戏编号', NumBox(
+                    intOnly: true, value: (g['minigame'] as num?)?.toInt() ?? 0,
                     hint: '引用 MinigameCfg，0 表示未关联',
                     onChanged: (v) =>
                         setState(() => g['minigame'] = (v ?? 0).toInt()),
@@ -1651,8 +1494,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
                 ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: _Labeled('排序', _NumBox(
-                    value: (g['order'] as num?)?.toInt() ?? 0,
+                  child: _Labeled('排序', NumBox(
+                    intOnly: true, value: (g['order'] as num?)?.toInt() ?? 0,
                     onChanged: (v) =>
                         setState(() => g['order'] = (v ?? 0).toInt()),
                   )),
@@ -1676,8 +1519,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       children: [
         for (var i = 0; i < len; i++) ...[
           Expanded(
-            child: _NumBox(
-              value: values[i],
+            child: NumBox(
+              intOnly: true, value: values[i],
               hint: labels[i],
               onChanged: (v) => setState(() {
                 final l = _intList(row, field, len);
@@ -1706,7 +1549,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
     if (_itemNames.isEmpty) {
       try {
         final r = await ApiClient.instance.get('/api/cfg/ItemCfg');
-        _itemNames = _nameMap(_dataOf(r));
+        _itemNames = _nameMap(WorkbenchController.extractData(r));
       } catch (_) {}
     }
     final id = _selectedId;
@@ -1873,10 +1716,10 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
             const SizedBox(height: 12),
             Row(
               children: [
-                _MiniBtn(label: '＋ 加入该角色服装', onTap: _addOutfit),
+                WorkbenchMiniButton(label: '＋ 加入该角色服装', onTap: _addOutfit),
                 const SizedBox(width: 8),
                 if (_cloth != 0)
-                  _MiniBtn(
+                  WorkbenchMiniButton(
                     label: '删除这套服装',
                     danger: true,
                     onTap: _deleteOutfit,
@@ -1923,7 +1766,7 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
               const SizedBox(height: 14),
               _Labeled(
                 '这张立绘的表情名称',
-                _SyncedText(
+                SyncedTextField(
                   value: face['name']?.toString() ?? '',
                   hint: '默认 / 笑 / 生气…',
                   onChanged: (v) => setState(() => face['name'] = v),                ),
@@ -1958,16 +1801,16 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
             Row(
               children: [
                 Expanded(
-                  child: _Labeled('小学 bubbleParm', _NumBox(
-                    value: _firstNum(row['bubbleParm']),
+                  child: _Labeled('小学 bubbleParm', NumBox(
+                    intOnly: true, value: _firstNum(row['bubbleParm']),
                     onChanged: (v) => setState(
                         () => row['bubbleParm'] = _asList(v, row['bubbleParm'])),
                   )),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: _Labeled('中学 bubbleParm2', _NumBox(
-                    value: _firstNum(row['bubbleParm2']),
+                  child: _Labeled('中学 bubbleParm2', NumBox(
+                    intOnly: true, value: _firstNum(row['bubbleParm2']),
                     onChanged: (v) => setState(
                         () => row['bubbleParm2'] = _asList(v, row['bubbleParm2'])),
                   )),
@@ -1980,12 +1823,12 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
           title: 'Live2D 参数',
           subtitle: '每行 [X, Y, 缩放, 镜像(0/1)]，与 l2d / l2d2 模型一一对应。',
           children: [
-            _Labeled('小学 l2d 模型名', _SyncedText(
+            _Labeled('小学 l2d 模型名', SyncedTextField(
               value: _joinList(row['l2d']),
               hint: '逗号分隔，留空则用静态立绘',
               onChanged: (v) => setState(() => row['l2d'] = _splitList(v)),
             )),
-            _Labeled('中学 l2d2 模型名', _SyncedText(
+            _Labeled('中学 l2d2 模型名', SyncedTextField(
               value: _joinList(row['l2d2']),
               hint: '逗号分隔',
               onChanged: (v) => setState(() => row['l2d2'] = _splitList(v)),
@@ -2003,8 +1846,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
       Row(
         children: [
           Expanded(
-            child: _NumBox(
-              value: v[0],
+            child: NumBox(
+              intOnly: true, value: v[0],
               hint: 'X',
               onChanged: (val) => setState(() {
                 final l = _intList(row, field, 3);
@@ -2015,8 +1858,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: _NumBox(
-              value: v[1],
+            child: NumBox(
+              intOnly: true, value: v[1],
               hint: 'Y',
               onChanged: (val) => setState(() {
                 final l = _intList(row, field, 3);
@@ -2027,8 +1870,8 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: _NumBox(
-              value: v[2],
+            child: NumBox(
+              intOnly: true, value: v[2],
               hint: '缩放',
               onChanged: (val) => setState(() {
                 final l = _intList(row, field, 3);
@@ -2208,55 +2051,18 @@ class _PersonWorkbenchState extends State<PersonWorkbench>
 // 通用小部件
 // ----------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
+/// 人物工作台的历史形态：面板型分区（`palette.panel`，边距与字号更宽）。
+class _SectionCard extends WorkbenchSectionCard {
   const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: palette.goldText,
-            ),
-          ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              subtitle!,
-              style: TextStyle(
-                  fontSize: 11.5, height: 1.6, color: palette.textMuted),
-            ),
-          ],
-          const SizedBox(height: 14),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 14),
-          ],
-        ],
-      ),
-    );
-  }
+    required String title,
+    String? subtitle,
+    required List<Widget> children,
+  }) : super(
+          title: title,
+          subtitle: subtitle,
+          children: children,
+          tone: SectionCardTone.panel,
+        );
 }
 
 /// 「选择生日」日历弹窗（对标成熟方案的生日选择）：年份步进 + 月份下拉 +
@@ -2437,169 +2243,6 @@ class _Labeled extends StatelessWidget {
     );
   }
 }
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-  });
-
-  final num? value;
-  final ValueChanged<num?> onChanged;
-  final String? hint;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value?.toString() ?? '');
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = widget.value?.toString() ?? '';
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  void _emit(String v) {
-    if (v.trim().isEmpty) {
-      widget.onChanged(null);
-      return;
-    }
-    widget.onChanged(int.tryParse(v));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: _emit,
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _SegButton extends StatefulWidget {
   const _SegButton({
     required this.label,

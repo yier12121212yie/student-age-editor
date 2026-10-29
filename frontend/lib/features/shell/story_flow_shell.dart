@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
+import '../../core/app_command.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/plugin_state.dart';
 import '../../core/responsive.dart';
 import '../../core/ui_mode.dart';
+import '../../core/editor_leave_guard.dart';
 import 'ai_dock.dart';
 import '../base/base_search_page.dart';
 import '../bugfix/bugfix_panel.dart';
@@ -59,6 +61,28 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
   /// 曾经激活过的视图索引（懒加载保活：未访问的视图不实例化）。
   final Set<int> _visited = {StoryFlowView.graph.index};
 
+  /// Ctrl+F：本壳没有左侧栏，检索 = 切到 base 视图（剧情库检索页）。
+  /// 不登记的话全局检索会退回 `selectPane(base)`——本壳没有侧栏面板，
+  /// 点按静默无效（"假降级"）。
+  AppCommandHost? _registeredHost;
+
+  @override
+  void initState() {
+    super.initState();
+    _registeredHost = AppCommandHost(
+      openSearch: () => _setView(StoryFlowView.base),
+    );
+    widget.shell.registerCommandHost(_registeredHost!);
+  }
+
+  @override
+  void dispose() {
+    if (_registeredHost != null) {
+      widget.shell.unregisterCommandHost(_registeredHost!);
+    }
+    super.dispose();
+  }
+
   void _setView(StoryFlowView v) {
     setState(() {
       _view = v;
@@ -66,8 +90,8 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
     });
   }
 
-  void _openDoc(OpenDoc doc) {
-    widget.shell.controller.open(doc);
+  Future<void> _openDoc(OpenDoc doc) async {
+    if (!await openDocGuarded(context, widget.shell.controller, doc)) return;
     _setView(StoryFlowView.doc);
   }
 
@@ -101,8 +125,9 @@ class _StoryFlowShellState extends State<StoryFlowShell> {
                           child: _contentStack(),
                         ),
                       ),
-                      // AI 侧栏（让出常驻标签条的高度）
-                      if (compact)
+                      // AI 侧栏（让出常驻标签条的高度）；收起态不保留固定折叠条，
+                      // 只在右下角留悬浮按钮，故收起时也走浮层宿主。
+                      if (compact || !widget.shell.aiOpen)
                         Positioned(
                           left: 0,
                           right: 0,

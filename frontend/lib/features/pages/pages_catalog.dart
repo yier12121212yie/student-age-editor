@@ -3,6 +3,38 @@
 /// 表清单覆盖编辑器功能面：每页 cfgNames 里的表名必须在
 /// `native/assets/schema.json` 有定义，否则编辑器只能按数据扫键渲染
 /// （由 test/pages_catalog_coverage_test.dart 断言）。
+library;
+
+import 'package:flutter/widgets.dart' show IconData;
+import 'package:fluentui_system_icons/fluentui_system_icons.dart';
+
+/// 页面图标（单一来源）：页面列表、命令面板等共用，避免图标口径漂移。
+const Map<String, IconData> _kPageIcons = {
+  'story': FluentIcons.chat_24_regular,
+  'story_studio': FluentIcons.script_24_regular,
+  'person': FluentIcons.person_24_regular,
+  'evt': FluentIcons.calendar_24_regular,
+  'social': FluentIcons.people_community_24_regular,
+  'gift': FluentIcons.gift_24_regular,
+  'love': FluentIcons.heart_24_regular,
+  'function': FluentIcons.games_24_regular,
+  'resource': FluentIcons.image_24_regular,
+  'official': FluentIcons.grid_24_regular,
+  'news': FluentIcons.news_24_regular,
+  'fishing': FluentIcons.food_fish_24_regular,
+  'travel': FluentIcons.globe_24_regular,
+  'anime': FluentIcons.video_24_regular,
+  'expo': FluentIcons.building_24_regular,
+  'club': FluentIcons.search_24_regular,
+  'crafts': FluentIcons.puzzle_piece_24_regular,
+  'birthday': FluentIcons.food_cake_24_regular,
+  'negotiation': FluentIcons.scales_24_regular,
+};
+
+/// 取页面图标（未登记回退表格图标）。
+IconData pageIconFor(String id) => _kPageIcons[id] ?? FluentIcons.table_24_regular;
+
+/// 一个编辑页面的定义（id / 标题 / 说明 / 关联配置表）。
 class EditorPageDef {
   const EditorPageDef({
     required this.id,

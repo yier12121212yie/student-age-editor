@@ -392,6 +392,9 @@ Tab 不再是一次性罗列，而是按**词法槽**选池、模糊匹配后弹
   `screenEffect` / `cost`，候选行以中文描述为主、代码为次，接受后自动补引号；
   `"roleIds"/"roles"/"speaker"` 拉 `/api/roles`（value=id、hint=名字）。
   `story import --text` 直接补 effect 代码。
+  候选条目自带元数据（`family`/`family_label`/`op`/`ops[]`/数字槽 `label`，见 §3
+  「无代码模式」；与 `POST /api/effect/parse` 的 `template` 同口径）。CLI 只消费
+  `desc`/`code`/`raw_code`，无需感知新字段。
 - 交互规则：**唯一前缀直接补全**；多候选弹菜单，`↑↓` 移动高亮、数字直达
   （1-9，`0` = 第 10 项）、`Enter` 接受、`Esc` 退回编辑。管道 / 非 TTY 时退回
   一次性罗列，不影响脚本。
@@ -449,7 +452,7 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 │ → 展开  N 新建Mod     ││ Enter 编辑  s/Ctrl-S 保存            ││                               │
 └───────────────────────┘└──────────────────────────────────────┘└───────────────────────────────┘
  N 新建Mod  y 复制  d 删除  e 编辑  f 格式化  s 保存  v 校验  / 过滤  ^k 全局搜索  c 云同步  a AI 助手
- u 检查更新  ^p palette  p 插件  b Bug 扫描  ^M 权限  ^N 无代码  ? 帮助  q 退出
+ u 检查更新  ^p palette  p 插件  b Bug 扫描  ^G 权限  ^N 无代码  ? 帮助  q 退出
  示例数据（--render-check）                                                   有未保存改动 · s 保存
 ```
 
@@ -475,7 +478,8 @@ backend_tui --connect                        # ping→mods→select→cfg list�
 `b` 🐞 Bug 扫描/修复、`t` 🎙 配音 TTS、`u` ⬆️ 检查更新，以及 `^P` 命令面板、
 `Ctrl-K` 🔍 全局搜索、`v` ● 校验结果、`?` ⌨️ 帮助、`confirm` 权限模式下的 ⚠
 审批框。首次启动若 OOBE 未完成，会先弹 🚀 分步向导（① 设置工作区 → ② 可选新建
-Mod → 完成，每步 `Esc` / 留空可跳过）。
+Mod → 完成，每步 `Esc` / 留空可跳过；跳过只关闭本次向导，下次启动仍会弹出，
+完成（最后一步）才标记 OOBE 为已完成）。
 
 ### 快捷键
 
@@ -484,10 +488,10 @@ Mod → 完成，每步 `Esc` / 留空可跳过）。
 | `q` / `Ctrl-Q` | 退出（有未保存修改先弹确认框） |
 | `a` / `c` / `p` / `b` | 呼出 AI 助手 / 云同步 / 插件 / Bug 扫描弹窗（`Esc` 关闭） |
 | `u` | 呼出检查更新弹窗（`r` / `Enter` 查询 GitHub 最新发行版，`Esc` 关闭） |
-| `Ctrl-M` | 切换权限模式 `confirm`（变更前确认）⇄ `full`（直接执行） |
+| `Ctrl-G` | 切换权限模式 `confirm`（变更前确认）⇄ `full`（直接执行） |
 | `Ctrl-N` | 切换无代码模式（编辑字段时选效果/人物，不写代码；与 GUI/CLI 同一开关） |
 | `^P` | 命令面板（模糊搜索全部动作：切换模组 / 打开表 / 保存 / 校验 / 格式化 / 全局搜索 / AI / 云同步 / 插件 / Bug 扫描 / TTS / 检查更新 / 权限 / 无代码 / 新建模组 / 帮助 / 刷新 / 退出，`Enter` 执行、`Esc` 关闭） |
-| `?` | 开关帮助弹窗（任意键先行关闭） |
+| `?` | 开关帮助弹窗（任意键先行关闭；聊天/字段/过滤等输入态下 `?` 按普通字符输入） |
 | `Tab` / `Shift+Tab` | 三栏焦点循环：树 → 记录 → 详情 → 树（反向用 Shift） |
 | `↑↓` | 树 / 行 / 表单字段移动 |
 | `Enter` | 树上选中模组或打开表 / 行选中记录 / 表单模式编辑字段 / 弹窗内执行 |
@@ -503,7 +507,7 @@ Mod → 完成，每步 `Esc` / 留空可跳过）。
 | `Ctrl-K` | 全局搜索对白（跨 TalkCfg/EvtCfg，含本体） |
 | `v` | 校验当前打开的表（issues + counts 弹窗） |
 | `t` | 配音 TTS 页（音色/引擎设置、测试连接、文本合成、素材列表） |
-| `r` | 刷新（树 / 当前表 / 弹窗数据） |
+| `r` | 刷新（树 / 当前表 / 弹窗数据；重载当前表时若有未保存修改会先弹确认框） |
 | `Ctrl-S` | 保存（表页补丁、Bug 弹窗应用修复） |
 
 插件弹窗：`r` 刷新、`R` 重载全部、`i` 安装（弹出单行 zip 路径输入，`Enter` 确认、
@@ -528,7 +532,7 @@ upload / download / sync 方向、`y` 切 DryRun、`x` 切「清理远端多余�
 | 云同步 DryRun / 扫描 / 校验 / 读表 / 搜索 / 测试连接 | 读 | 不弹 |
 
 审批框 `y`/`Enter` 允许、`n`/`Esc` 拒绝（拒绝只记状态行，不执行）。启动时 TUI 用
-`GET /api/ai/settings` 读入当前模式，`Ctrl-M` 切换后用 `PUT /api/ai/settings` 写回，
+`GET /api/ai/settings` 读入当前模式，`Ctrl-G` 切换后用 `PUT /api/ai/settings` 写回，
 与 GUI 的「变更前确认 / 完全访问」是同一份设置。
 
 ### 无代码模式（编辑器共享设置）
@@ -558,6 +562,8 @@ upload / download / sync 方向、`y` 切 DryRun、`x` 切「清理远端多余�
 2. 带参数的候选（如 `[1,1,@ATTR@,V]`）接受后进入**二级选择列表**：标题是
    `槽 i/N · 标签 (name)`，列表项来自对应字典池（属性 / 人物 / 物品 / 关系 …），
    打字即过滤；`Enter` 取当前高亮项，池为空或想手输时直接键入数值再 `Enter`。
+   标题里的**标签来自后端模板元数据**（数字槽如 `年龄`/`数量`/`增加`，字典槽来自
+   占位符映射；老后端无标签时回退显示槽名），与 GUI 无代码面板是同一份 label。
    最后一槽填完自动拼成完整效果码写回字段；中途 `Esc` 取消整次选择。
 3. 接受候选会 `POST /api/usage` 上报（命令 / 效果 / 人物分别计数），下次打开时高频项
    排前面——与 GUI、CLI 共用同一份统计。
@@ -665,7 +671,7 @@ python build_release.py --target macos   --version Alpha-v0.1
   读写（含 `permissionMode`）；工具调用与工具级 diff 审批仍未移植
   （旧 Python 版的 `agent chat/config/history` 不在其中）。
 - **权限模式**：`permissionMode` 取 `confirm`（默认，写操作先弹审批框）或 `full`
-  （直接执行）。TUI 用 `Ctrl-M` 切换并写回后端，CLI 用 `ai set --mode`，GUI 用设置页
+  （直接执行）。TUI 用 `Ctrl-G` 切换并写回后端，CLI 用 `ai set --mode`，GUI 用设置页
   与 AI 面板快捷键——三端同一份 `.editor_ai.json`。TUI 的审批框覆盖保存 / 修复 /
   装插件 / 卸载 / 真实云同步。
 - GUI 的完整 AI 侧栏（工具调用、字段级 diff 审批、多协议、并行子代理、自动重连）

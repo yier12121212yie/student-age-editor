@@ -301,7 +301,7 @@ void main() {
 
     // 命中弹窗出现，且包含对白条目
     expect(find.text('圈选内容'), findsOneWidget);
-    expect(find.textContaining('对白（TalkCfg id=5001）'), findsOneWidget);
+    expect(find.textContaining('对白：说话人'), findsOneWidget);
     expect(find.text('交给 AI 修改'), findsOneWidget);
   });
 

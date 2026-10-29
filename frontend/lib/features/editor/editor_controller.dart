@@ -54,6 +54,9 @@ class EditorController extends ChangeNotifier {
   /// markDirty 上报，页签关闭/切换前据此弹确认，防静默丢改动。
   final Set<OpenDoc> _dirtyDocs = {};
   bool isDirty(OpenDoc doc) => _dirtyDocs.contains(doc);
+
+  /// 是否有任意页签未保存（Web 关标签拦截的同步探针）。
+  bool get hasDirtyDocs => _dirtyDocs.isNotEmpty;
   void markDirty(OpenDoc doc, bool dirty) {
     final changed = dirty ? _dirtyDocs.add(doc) : _dirtyDocs.remove(doc);
     if (changed) notifyListeners();

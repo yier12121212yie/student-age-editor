@@ -40,8 +40,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull, reason: '创作布局渲染不应异常');
 
-    // 状态栏切换按钮存在
-    expect(find.text('切换经典布局'), findsOneWidget);
+    // 状态栏模式入口（A1）：显示当前模式，点开是「模式选择器」
+    expect(find.text('界面模式：创作'), findsOneWidget);
 
     // 切换面板
     await tester.tap(find.byTooltip('设置'));
@@ -49,8 +49,17 @@ void main() {
     expect(shell.pane, SidePane.settings);
     expect(find.text('界面风格'), findsOneWidget);
 
-    // 状态栏切换布局
-    await tester.tap(find.text('切换经典布局'));
+    // 状态栏切换布局（A1）：点开模式选择器，在弹窗里直接选「经典」
+    await tester.tap(find.text('界面模式：创作'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('切换界面模式'), findsOneWidget, reason: '应弹出模式选择器');
+    // 面板里的设置侧栏同样有「经典」卡片，故在模式选择器子树内定位目标项。
+    final picker = find.byKey(const ValueKey('mode-picker'));
+    expect(picker, findsOneWidget);
+    await tester.tap(find.descendant(of: picker, matching: find.text('经典')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
     expect(changed, UiMode.classic);
     expect(tester.takeException(), isNull);
   });

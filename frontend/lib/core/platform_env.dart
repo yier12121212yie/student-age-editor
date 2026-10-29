@@ -3,5 +3,6 @@
 ///
 /// 仅收拢编译期必须离开 dart:io 的零星查询；进程管理等成块逻辑在
 /// backend_launcher 的条件导出里。
+library;
 export 'platform_env_stub.dart'
     if (dart.library.io) 'platform_env_io.dart';

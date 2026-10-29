@@ -6,6 +6,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
 import '../../core/app_theme.dart';
 import '../editor/id_ref_picker.dart' show showIdBrowseDialog;
@@ -45,7 +46,7 @@ Future<void> showStoryImportDialog(BuildContext context, AppState state) {
 class _StoryImportBody extends StatefulWidget {
   const _StoryImportBody({this.noCodeMode = false});
 
-  /// 无代码模式：起始事件 ID 不收手输——自动编号 + 可浏览已有事件选择。
+  /// 简易模式：起始事件 ID 不收手输——自动编号 + 可浏览已有事件选择。
   final bool noCodeMode;
 
   @override
@@ -67,7 +68,7 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
     if (widget.noCodeMode) _loadAutoStart();
   }
 
-  /// 无代码模式：拉 EvtCfg 派生一个空闲的事件 ID，并缓存事件列表供选择。
+  /// 简易模式：拉 EvtCfg 派生一个空闲的事件 ID，并缓存事件列表供选择。
   Future<void> _loadAutoStart() async {
     try {
       final r = await ApiClient.instance.get('/api/cfg/EvtCfg');
@@ -91,7 +92,7 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
     }
   }
 
-  /// 选择已有事件作为导入落点（无代码模式）。
+  /// 选择已有事件作为导入落点（简易模式）。
   Future<void> _pickStartEvent() async {
     if (_evtOptions.isEmpty) await _loadAutoStart();
     if (!mounted) return;
@@ -104,6 +105,7 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
           _startId.text.trim().isEmpty ? const [] : [_startId.text.trim()],
     );
     if (picked == null || picked.isEmpty) return;
+    if (!mounted) return;
     setState(() => _startId.text = picked.first);
   }
 
@@ -160,7 +162,7 @@ class _StoryImportBodyState extends State<_StoryImportBody> {
           children: [
             if (widget.noCodeMode) ...[
               Text(
-                '导入落点事件（无代码模式：自动编号，也可选择已有事件）',
+                '导入落点事件（简易模式：自动编号，也可选择已有事件）',
                 style: TextStyle(fontSize: 12, color: palette.textSecondary),
               ),
               const SizedBox(height: 6),
@@ -348,7 +350,7 @@ class _StoryExportBodyState extends State<_StoryExportBody> {
       if (!mounted) return;
       setState(() => _result = (r as Map)['text'] as String? ?? '');
     } catch (e) {
-      if (mounted) setState(() => _result = '导出失败：$e');
+      if (mounted) setState(() => _result = '导出失败：${humanizeErrorMessage(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

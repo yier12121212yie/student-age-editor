@@ -36,15 +36,52 @@ Future<void> putBytesToUrl(
   return _putBody(bytes.toJS, url, onProgress: onProgress, timeout: timeout);
 }
 
+/// 分片上传（COS multipart）：只把 [offset, offset+length) 这段 Blob 发给
+/// 分片预签名 URL，返回响应头里的 ETag（complete 时要用）。
+///
+/// Blob 按 object URL 缓存一次，多片复用同一份引用（`slice` 不拷贝字节）；
+/// 保证「几百 MB 的包也不会出现 Dart 端整包拷贝」。
+Future<String> putXFileRangeToUrl(
+  XFile file,
+  String url, {
+  required int offset,
+  required int length,
+  void Function(int sent, int total)? onProgress,
+  Duration timeout = const Duration(minutes: 60),
+}) async {
+  final blob = await _rehydrateBlobCached(file.path);
+  final part = blob.slice(offset, offset + length);
+  return _putBodyForEtag(part, url, onProgress: onProgress, timeout: timeout);
+}
+
 /// 预签名直链 GET（带进度）。对象存储需为站点来源放行 GET 的 CORS；未配置时
 /// 浏览器报 0/网络错误，调用方可退回锚点直开下载。
 Future<Uint8List> getBytesFromUrl(
   String url, {
   void Function(int received, int total)? onProgress,
   Duration timeout = const Duration(minutes: 60),
+}) =>
+    _getBytes(url, const {}, onProgress: onProgress, timeout: timeout);
+
+/// 带鉴权头的 GET：本地文件流转的 `/api/v1/files/{id}/raw` 在网关前面，
+/// 浏览器原生下载无法携带 Bearer，只能走 XHR 取字节（仍带进度）。
+Future<Uint8List> getBytesFromUrlWithHeaders(
+  String url, {
+  Map<String, String> headers = const {},
+  void Function(int received, int total)? onProgress,
+  Duration timeout = const Duration(minutes: 60),
+}) =>
+    _getBytes(url, headers, onProgress: onProgress, timeout: timeout);
+
+Future<Uint8List> _getBytes(
+  String url,
+  Map<String, String> headers, {
+  void Function(int received, int total)? onProgress,
+  required Duration timeout,
 }) async {
   final xhr = web.XMLHttpRequest();
   xhr.open('GET', url);
+  headers.forEach((k, v) => xhr.setRequestHeader(k, v));
   xhr.responseType = 'arraybuffer';
   xhr.timeout = timeout.inMilliseconds;
   final done = Completer<Uint8List>();
@@ -112,10 +149,19 @@ Future<void> _putBody(
   void Function(int sent, int total)? onProgress,
   required Duration timeout,
 }) async {
+  await _putBodyForEtag(body, url, onProgress: onProgress, timeout: timeout);
+}
+
+Future<String> _putBodyForEtag(
+  JSAny? body,
+  String url, {
+  void Function(int sent, int total)? onProgress,
+  required Duration timeout,
+}) async {
   final xhr = web.XMLHttpRequest();
   xhr.open('PUT', url);
   xhr.timeout = timeout.inMilliseconds;
-  final done = Completer<void>();
+  final done = Completer<String>();
   if (onProgress != null) {
     xhr.upload.addEventListener(
       'progress',
@@ -128,7 +174,7 @@ Future<void> _putBody(
       if (done.isCompleted) return;
       final status = xhr.status;
       if (status == 200 || status == 201 || status == 204) {
-        done.complete();
+        done.complete(xhr.getResponseHeader('ETag') ?? '');
       } else {
         final hint =
             status == 0 ? '（多为对象存储未配置 CORS：需允许来源站点 PUT 与 * 请求头）' : '';
@@ -153,7 +199,20 @@ Future<void> _putBody(
     }).toJS,
   );
   xhr.send(body);
-  await done.future;
+  return done.future;
+}
+
+// 分片上传时同一 XFile 会被连续 PUT 多片：object URL -> Blob 只重水化一次。
+String? _cachedObjectUrl;
+web.Blob? _cachedBlob;
+
+Future<web.Blob> _rehydrateBlobCached(String objectUrl) async {
+  final cached = _cachedBlob;
+  if (cached != null && _cachedObjectUrl == objectUrl) return cached;
+  final blob = await _rehydrateBlob(objectUrl);
+  _cachedObjectUrl = objectUrl;
+  _cachedBlob = blob;
+  return blob;
 }
 
 /// 把 object URL 指向的文件在浏览器内部转成 Blob（不产生 Dart 字节拷贝）。

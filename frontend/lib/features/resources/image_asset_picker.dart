@@ -16,14 +16,18 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../files/file_viewer.dart' show ImagePreview;
 import '../../core/app_theme.dart';
+import '../../core/empty_state.dart';
 import '../../core/responsive.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/long_task_progress.dart';
+import '../../core/texture_budget.dart';
 import 'local_import.dart'
     show
         PickedLocalFile,
@@ -61,6 +65,23 @@ class TexBytesCache {
   static int _bytes = 0;
   static const int _maxBytes = 64 * 1024 * 1024;
 
+  /// 本轮**瞬时失败**的 key（连不上后端 / 超时 / 5xx / 403 / 200 但无可用载荷）。
+  ///
+  /// 这类失败**不写入 [_cache]**：它与「后端确实没有这张贴图」是两回事。旧实现
+  /// 把两者一视同仁地按 `_cache[key] = null` 记下来，于是冷启动 / 后端未就绪 /
+  /// 长连接被复用关闭时的那一次失败，会让这张贴图在**本进程内永远**显示占位图
+  /// —— 只有重建该组件（切对白触发 `KeyedSubtree` 重挂）才会重新发起请求，
+  /// 这正是「进入剧情舞台人物/背景是占位图，要换几次页才显示」的根因。
+  ///
+  /// 记录在这里只为让渲染组件知道自己「可以再试」（见 [TexThumb]）。
+  static final Set<String> _transient = {};
+
+  /// [key] 上一次尝试是否属「瞬时失败」（可安全重试）。
+  static bool isTransientFailure(String key) => _transient.contains(key);
+
+  /// 清空某 key 的瞬时失败标记（成功拿到来源时调用）。
+  static void _clearTransient(String key) => _transient.remove(key);
+
   static void _put(String key, TexSource? src) {
     _bytes -= _cache.remove(key)?.bytes?.length ?? 0;
     _cache[key] = src;
@@ -85,8 +106,28 @@ class TexBytesCache {
     }
     final inflight = _inflight[key];
     if (inflight != null) return inflight;
-    final f = _fetch(key).whenComplete(() => _inflight.remove(key));
+    final f = _fetch(key);
     _inflight[key] = f;
+    // 完成后把 key 移出在飞去重表。
+    //
+    // **绝不能**写成 `_fetch(key).whenComplete(() => _inflight.remove(key))`：
+    // `Map.remove` 返回的正是刚存进 `_inflight[key]` 的 `f` 本身，而
+    // `whenComplete` 会等待回调**返回的 Future**，于是 `f` 等待自己，永不完成
+    // —— 调用方的 `await` 永远挂起。表现出来就是：首次进入剧情舞台时，贴图
+    // 请求其实已经成功（副作用里已 `_put` 进缓存），但 `loadSource` 的返回值
+    // 永不落地，`TexThumb` 停在占位图上；直到用户切换一次对白，同一 key 命中
+    // `_cache` 分支（`Future.value` 直接完成）才显示 —— 即「要切换一次才正常」。
+    //
+    // 这里用 `then<void>` + 块体（返回 void，不产生自等待），并把返回的 Future
+    // 交给 `unawaited` 显式丢弃。
+    unawaited(f.then<void>(
+      (_) {
+        _inflight.remove(key);
+      },
+      onError: (_) {
+        _inflight.remove(key);
+      },
+    ));
     return f;
   }
 
@@ -94,7 +135,43 @@ class TexBytesCache {
   static Future<Uint8List?> load(String key) async =>
       (await loadSource(key))?.bytes;
 
+  /// 优先二进制高速通道，失败/旧后端再降级旧版 Base64 通道。
   static Future<TexSource?> _fetch(String key) async {
+    // 1) GET /api/aa/raw：直接拿原始字节，彻底跳过 Base64 + JSON + Isolate 解码。
+    //    对象存储命中时后端回 302，http 客户端自动跳转拉取；web 端若因 CORS
+    //    无法读取跳转结果，会抛错落到下面的旧通道降级（旧通道回 URL 供 <img>）。
+    try {
+      final resp = await ApiClient.instance
+          .getRaw('/api/aa/raw', query: {'kind': 'tex', 'key': key});
+      if (resp.statusCode == 200) {
+        final bytes = resp.bodyBytes;
+        if (bytes.isNotEmpty && ApiClient.looksBinaryPayload(bytes)) {
+          final src = TexSource.bytes(bytes);
+          _put(key, src);
+          _clearTransient(key);
+          return src;
+        }
+        if (bytes.isEmpty) {
+          // 200 但空载荷：后端贴图尚未就绪，属瞬时失败，可重试。
+          _transient.add(key);
+          return null;
+        }
+        // 200 但载荷不像图片字节（桩服务把任意路径回成 JSON）：降级旧通道。
+      } else if (resp.statusCode == 422) {
+        // 索引里有这张贴图但没有可解码文件：确定性结论，负缓存避免反复试探。
+        _transient.remove(key);
+        _put(key, null);
+        return null;
+      }
+      // 404/405（旧后端无该路由 / 桩服务）/ 400 / 5xx：降级旧通道。
+    } catch (_) {
+      // 传输层失败（连接被拒 / 超时 / CORS 读取失败）：降级旧通道。
+    }
+    return _fetchLegacy(key);
+  }
+
+  /// 旧版通道：POST /api/aa/preview -> Base64 JSON。保留为降级路径与测试兼容。
+  static Future<TexSource?> _fetchLegacy(String key) async {
     try {
       final r = await ApiClient.instance
           .post('/api/aa/preview', body: {'kind': 'tex', 'key': key});
@@ -103,6 +180,7 @@ class TexBytesCache {
       if (url is String && url.isNotEmpty) {
         final src = TexSource.url(url);
         _put(key, src);
+        _clearTransient(key);
         return src;
       }
       final data = r['data'];
@@ -113,11 +191,31 @@ class TexBytesCache {
               ? await compute(_base64DecodeIsolate, data)
               : base64Decode(data))
           : null;
+      if (bytes == null || bytes.isEmpty) {
+        // 200 但载荷为空（后端贴图尚未就绪 / 解码空转）：**不能**当作
+        // 「这张贴图不存在」缓存下来，否则本次进程生命周期内它永远显示占位图。
+        _transient.add(key);
+        return null;
+      }
       final src = TexSource.bytes(bytes);
       _put(key, src);
+      _clearTransient(key);
       return src;
+    } on ApiException catch (e) {
+      // 404 / 422：后端明确答复「没有这张贴图」或「有但解不开」——这是确定性
+      // 结论，可以负缓存（避免同一 key 反复试探）。
+      if (e.statusCode == 404 || e.statusCode == 422) {
+        _transient.remove(key);
+        _put(key, null);
+        return null;
+      }
+      // 403 / 400 index not ready / 5xx 等：后端还没就绪，属瞬时失败，保持可重试。
+      _transient.add(key);
+      return null;
     } catch (_) {
-      _put(key, null);
+      // 连接被拒 / 超时 / 长连接被复用关闭（ClientException）等传输层失败：
+      // 同样是瞬时失败，绝不能负缓存 —— 这是「必须切页才显示」的主要来源。
+      _transient.add(key);
       return null;
     }
   }
@@ -125,6 +223,7 @@ class TexBytesCache {
   /// 测试隔离用。
   static void clear() {
     _cache.clear();
+    _transient.clear();
     _bytes = 0;
   }
 
@@ -133,15 +232,75 @@ class TexBytesCache {
   static void debugPut(String key, Uint8List? bytes) =>
       _put(key, bytes == null ? null : TexSource.bytes(bytes));
 
-  /// 字段 url 值 → 候选 tex key 列表：原样 + 去 bg/ cg/ 路径前缀。
-  /// 本体数据 url 带 `bg/`、`cg/` 前缀而 AA 索引 key 不带，两个方向都可能命中。
+  /// 字段 url 值 → 候选 tex key 列表：原样 + 规范化路径 + 去前缀 + 去扩展名。
+  /// 支持模组中的反斜杠路径（如 Mods\wuqixiaoya\Textures\Bg\x.png）、本体 bg/、cg/、role/ 前缀等。
   static List<String> keyCandidates(String raw) {
     final v = raw.trim();
-    if (v.isEmpty) return const [];
-    final cands = <String>[v];
-    for (final p in const ['bg/', 'cg/']) {
-      if (v.startsWith(p)) cands.add(v.substring(p.length));
+    if (v.isEmpty || v == '[]' || v == 'null' || v == 'None' || v == '{}') return const [];
+    final cands = <String>[];
+
+    void addCand(String s) {
+      final trimmed = s.trim();
+      if (trimmed.isNotEmpty && trimmed != '[]' && trimmed != 'null' && !cands.contains(trimmed)) {
+        cands.add(trimmed);
+      }
     }
+
+    addCand(v);
+    if (v.contains('\\')) {
+      addCand(v.replaceAll('\\', '/'));
+    }
+
+    var prevCount = 0;
+    while (cands.length > prevCount) {
+      final snapshot = List<String>.from(cands.sublist(prevCount));
+      prevCount = cands.length;
+
+      for (final base in snapshot) {
+        if (base.contains('\\')) {
+          addCand(base.replaceAll('\\', '/'));
+        }
+
+        final lower = base.toLowerCase();
+
+        // 1. 模组路径去 Mods/<name>/
+        if (lower.startsWith('mods/')) {
+          final firstSlash = base.indexOf('/');
+          if (firstSlash >= 0) {
+            final secondSlash = base.indexOf('/', firstSlash + 1);
+            if (secondSlash >= 0) {
+              addCand(base.substring(secondSlash + 1));
+            }
+          }
+        }
+
+        // 2. 剥离 Textures/ 前缀
+        if (lower.startsWith('textures/')) {
+          addCand(base.substring(9));
+        }
+
+        // 3. 去 bg/、cg/、role/、role2/ 前缀
+        for (final p in const ['bg/', 'cg/', 'role/', 'role2/']) {
+          if (lower.startsWith(p)) {
+            addCand(base.substring(p.length));
+          }
+        }
+
+        // 4. 剥离常见图片扩展名（.png, .webp, .jpg, .jpeg）
+        for (final ext in const ['.png', '.webp', '.jpg', '.jpeg']) {
+          if (lower.endsWith(ext)) {
+            addCand(base.substring(0, base.length - ext.length));
+          }
+        }
+
+        // 5. 文件名 basename
+        final slashIdx = base.lastIndexOf('/');
+        if (slashIdx >= 0 && slashIdx + 1 < base.length) {
+          addCand(base.substring(slashIdx + 1));
+        }
+      }
+    }
+
     return cands;
   }
 
@@ -149,13 +308,25 @@ class TexBytesCache {
   static Future<TexSource?> loadSmartSource(String raw) async {
     String? firstKey;
     TexSource? src;
+    var transient = false;
     for (final k in keyCandidates(raw)) {
       firstKey ??= k;
       src = await loadSource(k);
       if (src != null && src.isNotEmpty) return src;
+      if (_transient.contains(k)) transient = true;
     }
-    // 全部未命中：把负结果缓存到首个候选，避免同值反复试探
-    if (firstKey != null && !_cache.containsKey(firstKey)) _put(firstKey, null);
+    // 全部未命中：**只有确定「不存在」时**才把负结果缓存到首个候选（避免同值
+    // 反复试探）；若失败里含瞬时失败，保持不缓存，让之后的重试能够真正重发。
+    if (!transient && firstKey != null && !_cache.containsKey(firstKey)) {
+      _put(firstKey, null);
+    }
+    if (transient) {
+      // 瞬时失败还要标到**调用方传入的原始 key** 上：消费方（[TexThumb]）用它判
+      // `isTransientFailure` 决定是否自重试，而真正发请求的是内层候选。只标内层
+      // 时，若首个候选是「确定性缺失」、后续候选才瞬时失败，外层会误判成不可
+      // 重试 —— 那张图便一直停在占位图上。
+      _transient.add(raw.trim());
+    }
     return src;
   }
 
@@ -174,32 +345,245 @@ Uint8List _base64DecodeIsolate(String b64) => base64Decode(b64);
 Map<String, String>? _bgKeysCache;
 Future<Map<String, String>?>? _bgKeysInflight;
 
+/// 人物 id → `{base, base2, l2d}`（GET /api/preview/meta 的 charKeys，mod+本体
+/// 合并）。与 [bgIdKeyMapOrNull] 同一次请求填充；供剧情舞台按小学/中学阶段取
+/// 立绘 key（比工作区 PersonCfg 更全：含随包官方表与 base 抽取表）。未拉取过返回 null。
+Map<String, dynamic>? _charKeysCache;
+
+/// 合并元数据请求代次：只采纳「最新一次」请求的结果。
+///
+/// 刷新（切模组 / 本地导入新背景）与进入页面可能各发一次请求，两个响应到达
+/// 顺序不定；先发的旧响应若整表为空，会把新拿到的数据覆盖回空 —— 舞台于是
+/// 又退回占位图，且再没有任何东西会二次刷新。用代次把迟到响应丢掉。
+int _metaSeq = 0;
+
+/// 单次拉取内部的**即时**重试次数（不挂定时器，只在一次拉取内重发）。
+const int _metaAttempts = 3;
+
+/// 拉取失败 / 拿到空表后的**自动重试**间隔（无需用户操作）。
+///
+/// 后端冷启动、刚切完模组、刚被拉起时，`GET /api/preview/meta` 可能返回
+/// **空表**（HTTP 200，`bgKeys`/`charKeys` 皆空 —— 后端尚未装载模组与本体
+/// 数据时就是这种形态）。旧实现把空表当终态缓存下来（`_bgKeysCache = {}`），
+/// 而 `loadBgIdKeyMap()` 见到非 null 就直接返回，于是**本次进程内再也不会
+/// 重新拉取**，舞台与缩略图永远停在占位图上；只有用户切换对白/事件触发的
+/// 强制刷新（`refreshBgIdKeyMap`）才会兜回来 —— 这正是「导演模式要换几次页
+/// 才正常显示人物和背景」的根因。
+///
+/// 现在失败/空表都会自动重试（上限 [_metaMissLimit] 次），用户什么都不用做。
+/// 由挂载在舞台宿主上的 [MergedMetaAutoRetry] 负责按时重发（定时器归 State
+/// 所有、随 dispose 取消，避免测试结束留下未消费的定时器）。测试可改小/置零。
+Duration debugMetaRetryDelay = const Duration(seconds: 2);
+
+/// 连续「未就绪」（请求失败或拿到空表）的自动重试上限。
+///
+/// 连续计数在**拿到非空映射**时清零；显式刷新（[refreshBgIdKeyMap]）也清零。
+/// 有上限是为了防住「后端确实没有背景表」这种正常的空表情形——否则渲染路径
+/// 的兜底重试会随着每次重建无限发请求。
+const int _metaMissLimit = 8;
+
+int _metaMissCount = 0;
+
+/// 合并元数据是否**可用**（已拉到非空映射）。
+///
+/// 「缓存非 null」不等于可用：空表也是非 null，消费方拿它查 id 只会得到
+/// null。判定可用性必须看**非空**，否则空表会被当成「已经加载过」而永不重试。
+bool get mergedMetaUsable => _bgKeysCache != null && _bgKeysCache!.isNotEmpty;
+
+/// 连续未就绪次数是否已达上限（不再自动重试，需显式 [refreshBgIdKeyMap]）。
+bool get mergedMetaRetryExhausted => _metaMissCount >= _metaMissLimit;
+
+/// 渲染路径的兜底入口：元数据不可用时补发一次拉取（已可用/正在拉取/已放弃
+/// 自动重试时是空操作）。由 [MergedMetaAutoRetry] 周期调用，使「首次拉取失败
+/// 或拿到空表」时仍会重发，无需用户切页触发重建。
+void ensureMergedMeta() {
+  if (mergedMetaUsable) return;
+  if (_metaMissCount >= _metaMissLimit) return;
+  unawaited(loadBgIdKeyMap());
+}
+
 /// 当前已就绪的 id→key 映射；未拉取过返回 null（不发请求）。
 /// 供 BgIdThumb 渲染期被动消费——渲染路径禁止发起请求（Inspector 的
 /// 「回显不发额外请求」测试即此约束），拉取只由用户点击路径触发。
 Map<String, String>? get bgIdKeyMapOrNull => _bgKeysCache;
 
-/// 拉取（幂等 + 并发去重）。失败缓存 null 不重试。
-Future<Map<String, String>?> loadBgIdKeyMap() async {
-  if (_bgKeysCache != null) return _bgKeysCache;
-  if (_bgKeysInflight != null) return _bgKeysInflight;
+/// 当前已就绪的人物 id→立绘 stage 映射；未拉取过返回 null（不发请求）。
+Map<String, dynamic>? get charKeysMapOrNull => _charKeysCache;
+
+/// 合并元数据（bgKeys / charKeys）**就绪或刷新后的修订号**。
+///
+/// 渲染期读取 [bgIdKeyMapOrNull] / [charKeysMapOrNull] 的组件（[BgIdThumb]、
+/// 剧情舞台的立绘/背景）**不发请求**，地图未就绪时只能显示占位图；旧实现里
+/// 元数据异步到达后没有任何广播，必须靠一次用户交互（切换对白）触发的重建
+/// 才会换成真实图片 —— 表现为「进入页面人物/背景是占位，要换几次页才显示」。
+///
+/// 现在 [_fetchBgKeys] 填充缓存后自增本修订号，订阅方（见 [BgIdThumb] 与各
+/// 舞台宿主）据此自动重建，无需用户操作。
+final ValueNotifier<int> mergedMetaRevision = ValueNotifier<int>(0);
+
+/// 拉取（幂等 + 并发去重）。
+///
+/// [force] 为真时忽略已有缓存强制重拉（本地导入新背景 / 切换模组后调用）。
+/// **不清空旧缓存**：旧映射留在原处继续供舞台渲染，避免「刷新窗口内舞台先退回
+/// 占位图」的闪烁；新数据到达后 [mergedMetaRevision] 自增，订阅方一次换到新图。
+///
+/// 「已就绪」的判定是 [mergedMetaUsable]（非空），不是「缓存非 null」：空表
+/// 必须继续尝试，否则会被当成加载完成而永久停留在占位图。
+Future<Map<String, String>?> loadBgIdKeyMap({bool force = false}) async {
+  if (!force && mergedMetaUsable) return _bgKeysCache;
+  final inflight = _bgKeysInflight;
+  if (inflight != null) return inflight;
+  // 连续未就绪达上限后不再自动发请求（显式 [refreshBgIdKeyMap] 不受限）。
+  if (!force && _metaMissCount >= _metaMissLimit) return _bgKeysCache;
+  _metaMissCount++;
   final f = _fetchBgKeys().whenComplete(() => _bgKeysInflight = null);
   _bgKeysInflight = f;
   return f;
 }
 
-Future<Map<String, String>?> _fetchBgKeys() async {
-  try {
-    final r = await ApiClient.instance.get('/api/preview/meta');
-    final raw = r is Map ? r['bgKeys'] : null;
-    if (raw is Map) {
-      _bgKeysCache = {
-        for (final e in raw.entries)
-          if (e.value != null) e.key.toString(): e.value.toString(),
-      };
+/// 合并元数据「未就绪就自动重拉」的驱动组件。
+///
+/// 挂在剧情舞台宿主（经典剧情视图 / 三栏剧情编辑器）上，负责在元数据不可用时
+/// 按 [debugMetaRetryDelay] 周期重发请求，直到拿到非空映射或重试配额耗尽。
+///
+/// 关键点：定时器由本 State **持有**，并在 [State.dispose] 里取消。此前把定时器
+/// 放在进程级全局变量里，出了 widget 树也不会被取消——测试结束后 `flutter_test`
+/// 会因为「A Timer is still pending even after the widget tree was disposed」而
+/// 让所有渲染舞台的用例集体失败；让 State 拥有它即可随树的销毁一并取消。
+class MergedMetaAutoRetry extends StatefulWidget {
+  const MergedMetaAutoRetry({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<MergedMetaAutoRetry> createState() => _MergedMetaAutoRetryState();
+}
+
+class _MergedMetaAutoRetryState extends State<MergedMetaAutoRetry> {
+  Timer? _timer;
+  bool _pending = false; // 已排定一次重试（定时器或微任务），避免重复排期
+
+  @override
+  void initState() {
+    super.initState();
+    // 元数据就绪（修订号自增）时立即停掉重试，不再空转。
+    mergedMetaRevision.addListener(_onMetaChanged);
+    _tick();
+  }
+
+  @override
+  void dispose() {
+    mergedMetaRevision.removeListener(_onMetaChanged);
+    _timer?.cancel();
+    _timer = null;
+    _pending = false;
+    super.dispose();
+  }
+
+  void _onMetaChanged() {
+    if (mergedMetaUsable) {
+      _timer?.cancel();
+      _timer = null;
+      _pending = false;
+      return;
     }
-  } catch (_) {}
+    _schedule();
+  }
+
+  /// 补发一次拉取并排定下一次重试。
+  void _tick() {
+    if (mergedMetaUsable) return;
+    ensureMergedMeta();
+    _schedule();
+  }
+
+  void _schedule() {
+    if (_pending) return;
+    if (mergedMetaUsable || mergedMetaRetryExhausted) return;
+    final delay = debugMetaRetryDelay;
+    if (delay <= Duration.zero) {
+      // 测试用零延迟：走微任务立即再试，不产生定时器。
+      _pending = true;
+      scheduleMicrotask(() {
+        _pending = false;
+        if (!mounted) return;
+        _tick();
+      });
+      return;
+    }
+    _pending = true;
+    _timer = Timer(delay, () {
+      _pending = false;
+      _timer = null;
+      if (!mounted) return;
+      _tick();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+Future<Map<String, String>?> _fetchBgKeys() async {
+  final seq = ++_metaSeq;
+  Map<String, String>? bg;
+  Map<String, dynamic>? ck;
+  for (var attempt = 1; attempt <= _metaAttempts; attempt++) {
+    try {
+      final r = await ApiClient.instance.get('/api/preview/meta');
+      final raw = r is Map ? r['bgKeys'] : null;
+      if (raw is Map && raw.isNotEmpty) {
+        bg = {
+          for (final e in raw.entries)
+            if (e.value != null) e.key.toString(): e.value.toString(),
+        };
+      }
+      final c = r is Map ? r['charKeys'] : null;
+      if (c is Map && c.isNotEmpty) ck = c.cast<String, dynamic>();
+    } catch (_) {
+      // 后端未就绪 / 首次建索引时可能直接失败：交给下面的重试。
+    }
+    if (bg != null && bg.isNotEmpty) break;
+    // 已被更新的请求取代：本次结果作废，避免覆盖更新的数据。
+    if (seq != _metaSeq) return _bgKeysCache;
+  }
+  if (seq != _metaSeq) return _bgKeysCache;
+  // 非破坏性写入：拿不到（或拿到空的）新数据时保留上一份，而不是把缓存清掉。
+  final wroteBg = bg != null && bg.isNotEmpty;
+  final wroteChar = ck != null && ck.isNotEmpty;
+  if (wroteBg) _bgKeysCache = bg;
+  if (wroteChar) _charKeysCache = ck;
+  if (mergedMetaUsable) {
+    // 真正就绪：清零连续未就绪计数，驱动组件随之停掉定时重试。
+    _metaMissCount = 0;
+  }
+  // 只有真的写入了新数据才广播：失败/空表无新数据可显示，广播只会白重建。
+  // 重试由 [MergedMetaAutoRetry] 的定时器负责，不依赖这里自增。
+  if (wroteBg || wroteChar) {
+    // 元数据（首次到达 / 重新拉取）已刷新：广播一次，让所有在 build 中被动消费
+    // 它的舞台/缩略图立即重建，不必等用户切换对白才从占位图切到真实图片。
+    mergedMetaRevision.value++;
+  }
   return _bgKeysCache;
+}
+
+/// 测试隔离用：清空合并元数据缓存，下一次 [loadBgIdKeyMap] 重新请求。
+/// 同时清零未就绪计数（自动重试的定时器归 [MergedMetaAutoRetry] 所有，随树销毁
+/// 自动取消，此处无需处理）。
+@visibleForTesting
+void debugResetMergedMetaCache() {
+  _bgKeysCache = null;
+  _charKeysCache = null;
+  _bgKeysInflight = null;
+  _metaMissCount = 0;
+  _metaSeq++; // 作废在飞的旧请求，避免其迟到响应污染下一次用例
+}
+
+/// 强制重拉合并元数据（本地导入新背景 / 切换模组后调用）。
+/// 显式刷新视作「用户/程序重试」：清零未就绪计数，让自动重试重新获得配额。
+Future<Map<String, String>?> refreshBgIdKeyMap() {
+  _metaMissCount = 0;
+  return loadBgIdKeyMap(force: true);
 }
 
 /// 选择器选中的 tex key → BgCfg id（basename 归一后比对）。找不到返回 null。
@@ -221,24 +605,31 @@ Future<String?> bgIdForKey(String pickedKey) async {
 
 // ---------------- 异步缩略图组件 ----------------
 
-/// 解码宽度上限（物理像素）：显示宽（逻辑像素）× devicePixelRatio 向上取整，
-/// 夹在 32–4096。尺寸未知（约束无限且无显式宽）返回 null，保持原始解码尺寸。
+// 解码宽度计算已上收到 `core/texture_budget.dart`（阶段 5 · D14「档位唯一来源」）：
+// 本文件原先自带的 `_decodeCacheWidth` 上限写死 4096、不做档位收敛，已删除。
+// 一律改用 `TextureBudget.decodeWidth(context, w, factor:, max:)`。
+
+/// [TexThumb] 瞬时失败后的**自重试**间隔（无需用户操作）。
 ///
-/// 阶段 4d：只降采样、不改显示尺寸——cacheWidth 不小于盒宽×DPR，渲染盒
-/// 仍是原来的约束，因此视觉不变；上限 4096 只在极端大屏+原图超大时才生效。
-int? _decodeCacheWidth(BuildContext context, {required double? logicalWidth}) {
-  final w = logicalWidth;
-  if (w == null || !w.isFinite || w <= 0) return null;
-  final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1;
-  final px = (w * (dpr > 0 ? dpr : 1)).ceil();
-  return math.min(4096, math.max(32, px));
-}
+/// 「瞬时失败」= 后端贴图尚未就绪（200 空载荷 / 403 / 5xx / 传输层断开），
+/// 这类失败**不进负缓存**（见 [TexBytesCache._transient]），所以重发是有效的。
+///
+/// 旧实现把「重试」寄托在**宿主重建**上（`didUpdateWidget` 里顺带重试）；但元数据
+/// 就绪后宿主往往不再重建 —— 那张贴图便永远停在占位图上，直到用户切一次对白
+/// （换掉 `ValueKey` → 组件重挂 → 重新发请求）。这正是「进剧情舞台人物/背景是
+/// 占位图，要切一次才正常显示」的根因：**依赖无关的重建来重试是不可靠的**。
+///
+/// 现在由组件自己按本间隔重试（上限 [TexThumb] 的 `_maxAttempts`），定时器归
+/// State 所有、`dispose` 时取消。测试可改小/置零（置零走微任务，不留定时器）。
+Duration debugTexRetryDelay = const Duration(milliseconds: 800);
 
 /// 按需加载的缩略图：命中缓存即显，未命中后台加载后刷新。
+/// 支持 [keyCandidates] 候选链回退（如：表情差分变体 → 基础立绘）。
 class TexThumb extends StatefulWidget {
   const TexThumb({
     super.key,
-    required this.keyName,
+    this.keyName = '',
+    this.keyCandidates,
     this.width,
     this.height,
     this.fit = BoxFit.cover,
@@ -246,6 +637,7 @@ class TexThumb extends StatefulWidget {
     this.borderRadius,
   });
   final String keyName;
+  final List<String>? keyCandidates;
   final double? width;
   final double? height;
   final BoxFit fit;
@@ -260,6 +652,24 @@ class _TexThumbState extends State<TexThumb> {
   TexSource? _src;
   bool _done = false;
 
+  /// 上次尝试是否属「瞬时失败」（后端未就绪 / 传输层失败）。
+  ///
+  /// 这类失败**不进负缓存**，重发是有效的，所以组件必须自己把它救回来：见
+  /// [_scheduleRetry]。仅靠「宿主重建时顺带重试」不够 —— 元数据就绪后宿主不再
+  /// 重建，那张图就一直停在占位图上，直到用户切一次对白把组件重挂。
+  bool _transient = false;
+
+  /// 累计发起次数与代数：代数用于丢弃过期结果（重试期间又发生一次重建）。
+  int _attempts = 0;
+  int _token = 0;
+
+  /// 瞬时失败的自重试定时器与排期标记（归本 State 所有，[dispose] 里取消）。
+  Timer? _retryTimer;
+  bool _retryScheduled = false;
+
+  /// 单个组件最多尝试次数（含首次）。限定上限避免后端长时间不可用时反复空转。
+  static const int _maxAttempts = 10;
+
   @override
   void initState() {
     super.initState();
@@ -267,19 +677,126 @@ class _TexThumbState extends State<TexThumb> {
   }
 
   @override
+  void dispose() {
+    _cancelRetry();
+    super.dispose();
+  }
+
+  @override
   void didUpdateWidget(covariant TexThumb old) {
     super.didUpdateWidget(old);
-    if (old.keyName != widget.keyName) _load();
+    final oldCands = old.keyCandidates?.join('|') ?? '';
+    final newCands = widget.keyCandidates?.join('|') ?? '';
+    if (old.keyName != widget.keyName || oldCands != newCands) {
+      _reset();
+      _load();
+      return;
+    }
+    // 参数没变但上次是瞬时失败：宿主重建（合并元数据到达、页面刷新、用户操作
+    // 等）即视为一次「后端可能已就绪」的时机，立即重试一次（撤掉待发的定时器，
+    // 避免与自重试各发一次）。
+    if (_src == null && _done && _transient && _attempts < _maxAttempts) {
+      _cancelRetry();
+      _load();
+    }
+  }
+
+  void _reset() {
+    _cancelRetry();
+    _src = null;
+    _done = false;
+    _transient = false;
+    _attempts = 0;
+  }
+
+  /// 瞬时失败后**自己**排定一次重试。
+  ///
+  /// 不能依赖「宿主之后会重建」：元数据就绪后宿主就不再重建了，靠
+  /// `didUpdateWidget` 兜底等于把成功与否交给巧合 —— 用户必须切一次对白
+  /// （换 `ValueKey` 让组件重挂）才能看到图。这里让组件自己按
+  /// [debugTexRetryDelay] 重试，最多 [_maxAttempts] 次。
+  void _scheduleRetry() {
+    if (_retryScheduled || !mounted) return;
+    if (_attempts >= _maxAttempts) return;
+    final delay = debugTexRetryDelay;
+    _retryScheduled = true;
+    if (delay <= Duration.zero) {
+      // 测试用零延迟：走微任务立即再试，不产生定时器。
+      scheduleMicrotask(() {
+        _retryScheduled = false;
+        if (!mounted) return;
+        _load();
+      });
+      return;
+    }
+    _retryTimer = Timer(delay, () {
+      _retryScheduled = false;
+      _retryTimer = null;
+      if (!mounted) return;
+      _load();
+    });
+  }
+
+  void _cancelRetry() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _retryScheduled = false;
+  }
+
+  List<String> get _effectiveCandidates {
+    final list = <String>[];
+    if (widget.keyCandidates != null) {
+      for (final k in widget.keyCandidates!) {
+        final s = k.trim();
+        if (s.isNotEmpty && !list.contains(s)) list.add(s);
+      }
+    }
+    final primary = widget.keyName.trim();
+    if (primary.isNotEmpty && !list.contains(primary)) {
+      list.insert(0, primary);
+    }
+    return list;
   }
 
   Future<void> _load() async {
-    if (TexBytesCache.keyCandidates(widget.keyName).isEmpty) return;
-    final src = await TexBytesCache.loadSmartSource(widget.keyName);
-    if (!mounted) return;
+    final cands = _effectiveCandidates;
+    if (cands.isEmpty) {
+      // 没有可试的 key（元数据/目录还没就绪）：重试没有意义，等宿主重建补候选。
+      _cancelRetry();
+      return;
+    }
+    if (_attempts >= _maxAttempts) {
+      _cancelRetry();
+      return;
+    }
+    _attempts++;
+    final token = ++_token;
+    TexSource? found;
+    var transient = false;
+    for (final cand in cands) {
+      if (TexBytesCache.keyCandidates(cand).isEmpty) continue;
+      final src = await TexBytesCache.loadSmartSource(cand);
+      if (token != _token || !mounted) return; // 已被更新的一次尝试取代
+      // 只有拿到「非空」来源才算命中；空来源（无字节也无 URL）要继续沿候选链
+      // 回退（如表情差分缺失 → 基础立绘），否则会停在占位图上。
+      if (src != null && src.isNotEmpty) {
+        found = src;
+        break;
+      }
+      if (TexBytesCache.isTransientFailure(cand)) transient = true;
+    }
+    if (!mounted || token != _token) return;
     setState(() {
-      _src = src;
+      _src = found;
       _done = true;
+      // 没拿到图且失败可重试 → 标记，并**自行**排定下一次重试。
+      _transient = found == null && transient;
     });
+    if (_src == null && _transient) {
+      _scheduleRetry();
+    } else {
+      _cancelRetry();
+    }
   }
 
   Widget _placeholder() => Center(
@@ -297,13 +814,15 @@ class _TexThumbState extends State<TexThumb> {
     if (src?.bytes != null) {
       // 缩略图盒宽决定解码宽度：画廊 172 / 面板 56 / 悬停浮层 340 这类小盒
       // 不需要 1920×1080 原图常驻解码位图。
+      // 阶段 5：档位由 TextureBudget 收敛（同一张图在这些盒子间共享同一档，
+      // 不再按 4~6 个不同尺寸各解一份）。
       child = LayoutBuilder(
         builder: (context, box) => Image.memory(
           src!.bytes!,
           fit: widget.fit,
           alignment: widget.alignment,
           gaplessPlayback: true,
-          cacheWidth: _decodeCacheWidth(context, logicalWidth: box.maxWidth),
+          cacheWidth: TextureBudget.decodeWidth(context, box.maxWidth),
         ),
       );
     } else if (src?.url != null) {
@@ -346,19 +865,33 @@ class TexSourceImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bytes = source.bytes;
-    if (bytes != null) {
-      return Image.memory(bytes,
-          fit: fit, alignment: alignment, gaplessPlayback: true);
-    }
     final url = source.url;
-    if (url == null || url.isEmpty) return const SizedBox.shrink();
-    return Image.network(
-      url,
-      fit: fit,
-      alignment: alignment,
-      gaplessPlayback: true,
-      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
-      errorBuilder: errorBuilder,
+    if (bytes == null && (url == null || url.isEmpty)) {
+      return const SizedBox.shrink();
+    }
+    // 阶段 5：本组件此前两个分支都**没给 cacheWidth**，等于按原图尺寸解码——
+    // 而 `Tex2D/` 里有 8192×8192 的 SDF 字体图集，单张就是 256 MB 位图。
+    // 包一层 LayoutBuilder 拿到实际盒宽，走统一档位。
+    return LayoutBuilder(
+      builder: (context, box) {
+        final cacheWidth = TextureBudget.decodeWidth(context, box.maxWidth);
+        if (bytes != null) {
+          return Image.memory(bytes,
+              fit: fit,
+              alignment: alignment,
+              gaplessPlayback: true,
+              cacheWidth: cacheWidth);
+        }
+        return Image.network(
+          url!,
+          fit: fit,
+          alignment: alignment,
+          gaplessPlayback: true,
+          cacheWidth: cacheWidth,
+          webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+          errorBuilder: errorBuilder,
+        );
+      },
     );
   }
 }
@@ -369,32 +902,51 @@ class TexSourceImage extends StatelessWidget {
 /// 渲染路径**不发请求**：地图未就绪时显示占位，待用户点过「选背景图」或
 /// 缩略图后（拉取入口）随宿主重建显示。
 class BgIdThumb extends StatelessWidget {
-  const BgIdThumb({super.key, required this.id, this.width = 60, this.height = 45});
+  const BgIdThumb({
+    super.key,
+    required this.id,
+    this.width = 60,
+    this.height = 45,
+    this.fit = BoxFit.cover,
+    this.alignment = Alignment.center,
+  });
   final String id;
   final double width;
   final double height;
+  final BoxFit fit;
+  final AlignmentGeometry alignment;
 
   @override
   Widget build(BuildContext context) {
-    final key = (id.isEmpty || id == '0') ? null : bgIdKeyMapOrNull?[id];
-    if (key == null || key.isEmpty) {
-      return Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: palette.panel,
-          borderRadius: BorderRadius.circular(AppRadius.xs),
-          border: Border.all(color: palette.border),
-        ),
-        child: Icon(FluentIcons.image_24_regular,
-            size: 13, color: palette.iconDisabled),
-      );
-    }
-    return TexThumb(
-      keyName: key,
-      width: width,
-      height: height,
-      borderRadius: BorderRadius.circular(AppRadius.xs),
+    // 监听合并元数据修订号：元数据异步到达（或切换模组后刷新）时自动重建，
+    // 从占位图切到真实背景缩略图，无需用户再点一下（见 [mergedMetaRevision]）。
+    return ValueListenableBuilder<int>(
+      valueListenable: mergedMetaRevision,
+      builder: (context, _, _) {
+        final key = (id.isEmpty || id == '0') ? null : bgIdKeyMapOrNull?[id];
+        if (key == null || key.isEmpty) {
+          return Container(
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              color: palette.panel,
+              borderRadius: BorderRadius.circular(AppRadius.xxs),
+              border: Border.all(color: palette.border),
+            ),
+            child: Icon(FluentIcons.image_24_regular,
+                size: 13, color: palette.iconDisabled),
+          );
+        }
+        return TexThumb(
+          key: ValueKey('bg-thumb-$id-$key'),
+          keyName: key,
+          width: width,
+          height: height,
+          fit: fit,
+          alignment: alignment,
+          borderRadius: BorderRadius.circular(AppRadius.xxs),
+        );
+      },
     );
   }
 }
@@ -557,7 +1109,18 @@ class _MobileImagePreviewPage extends StatelessWidget {
                 ? InteractiveViewer(
                     maxScale: 6,
                     child: Center(
-                      child: Image.memory(bytes!, fit: BoxFit.contain),
+                      // 阶段 5·「看原图」：这里刻意保留「尽量按原图看」的语义，
+                      // 但**必须封顶**——不封顶时打开一张 8192×8192 的 SDF
+                      // 字体图集就是 256 MB 单张纹理（直接崩）。
+                      // 上限 = 屏幕宽 × DPR，再夹到 4096：比屏幕更大的分辨率在
+                      // 本机看不到差别，却会把峰值按面积平方放大。
+                      child: Image.memory(
+                        bytes!,
+                        fit: BoxFit.contain,
+                        cacheWidth: TextureBudget.decodeWidth(
+                            context, MediaQuery.sizeOf(context).width,
+                            max: TextureBudget.kFullViewMaxDecodeWidth),
+                      ),
                     ),
                   )
                 : FutureBuilder<TexSource?>(
@@ -669,6 +1232,9 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   /// 轮询开始与结束不再重建整页画廊与预览区（阶段 4c）。
   final ValueNotifier<bool> _scanning = ValueNotifier<bool>(false);
 
+  /// C5：扫描取消标志。置位后 [_scan] 的轮询循环尽快退出（不再等满 300s）。
+  bool _scanAbort = false;
+
   _AssetTab _tab = _AssetTab.all;
   String _filter = '';
 
@@ -769,6 +1335,7 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
   /// 索引数据到位才是结构性变化，仍由 [_loadKeys] 的 setState 重建画廊。
   Future<void> _scan() async {
     if (_scanning.value) return;
+    _scanAbort = false;
     _scanning.value = true;
     try {
       var status = await ApiClient.instance
@@ -777,16 +1344,22 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       for (var i = 0; i < 300; i++) {
         await Future<void>.delayed(const Duration(seconds: 1));
         if (!mounted) return;
+        if (_scanAbort) break; // C5：用户取消，不再等满 300s
         final st = await ApiClient.instance.get('/api/aa/status');
         status = st['status'] as String? ?? 'idle';
         if (status != 'scanning') break;
       }
-      if (mounted) await _loadKeys();
+      if (mounted && !_scanAbort) await _loadKeys();
     } catch (_) {
       // 扫描失败保持空列表与错误提示
     } finally {
       if (mounted) _scanning.value = false;
     }
+  }
+
+  /// C5：取消正在进行的扫描（前端层）。下一跳即退出轮询，不再刷新列表。
+  void _cancelScan() {
+    _scanAbort = true;
   }
 
   List<String> get _filtered {
@@ -796,11 +1369,13 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     final cacheKey = '$_dataVersion|${_tab.index}|$q';
     final cached = _filteredCache;
     if (cached != null && _filteredCacheKey == cacheKey) return cached;
+    bool isBg(String k) =>
+        k.startsWith('bg/') || k.startsWith('bg_') || k.startsWith('img_');
     Iterable<String> pool = switch (_tab) {
-      _AssetTab.bg => _tex.where((k) => k.startsWith('bg/')),
+      _AssetTab.bg => _tex.where(isBg),
       _AssetTab.cg => _cgKeys,
       _AssetTab.other => _tex.where(
-          (k) => !k.startsWith('bg/') && !_cgKeys.contains(k)),
+          (k) => !isBg(k) && !_cgKeys.contains(k)),
       _AssetTab.all => _tex,
     };
     if (q.isNotEmpty) pool = pool.where((k) => k.toLowerCase().contains(q));
@@ -848,7 +1423,32 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
     }
     if (!mounted || picked.isEmpty) return;
 
-    final saved = await importPickedLocalAssets(context, picked, kind: 'image');
+    // C5：导入期间给进度对话框 + 「取消」。base64 通道是一次 POST，进度为不确定；
+    // 取消为前端层（置位后丢弃在途结果）。
+    final ctl = showLongTaskProgress(context,
+        title: '导入图片', initialLabel: '上传中');
+    List<Map<String, dynamic>> saved;
+    try {
+      saved = await importPickedLocalAssets(
+        context,
+        picked,
+        kind: 'image',
+        onStage: (label, [frac]) => ctl.update(label, frac),
+        isCancelled: () => ctl.isCancelled,
+      );
+      ctl.finish('导入完成');
+      await ctl.closed;
+      if (ctl.isCancelled) return;
+    } on LongTaskCancelled {
+      await ctl.closed;
+      return;
+    } catch (e) {
+      ctl.fail('导入失败');
+      await ctl.closed;
+      rethrow;
+    } finally {
+      ctl.dispose();
+    }
     if (!mounted || saved.isEmpty) return;
 
     final bytesByName = <String, Uint8List>{
@@ -1006,8 +1606,8 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
             ListenableBuilder(
               listenable: _scanning,
               builder: (context, _) => fluent.FilledButton(
-                onPressed: _scanning.value ? null : _scan,
-                child: Text(_scanning.value ? '扫描中…' : '扫描游戏资源'),
+                onPressed: _scanning.value ? _cancelScan : _scan,
+                child: Text(_scanning.value ? '取消扫描' : '扫描游戏资源'),
               ),
             ),
             const SizedBox(height: 8),
@@ -1076,8 +1676,16 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
             if (localBytes != null)
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
+                // 阶段 5·4d 漏点：这里此前**没有 cacheWidth**——一个 44×44 的
+                // 头像位在按原图解码。遇到 8192² 的字体图集就是 256 MB 位图换
+                // 一个 44px 的显示盒（放大 186 倍的浪费）。
+                // 走统一档位后 44 × DPR 会被吸到 176 档，约 124 KB。
                 child: Image.memory(localBytes,
-                    width: 44, height: 44, fit: BoxFit.contain),
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.contain,
+                    cacheWidth: TextureBudget.decodeWidth(context, 44,
+                        max: TextureBudget.kPortraitMaxDecodeWidth)),
               )
             else
               TexThumb(
@@ -1150,19 +1758,16 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
       style: const TextStyle(fontSize: 12),
       onChanged: (v) => setState(() => _filter = v),
     );
-    final scanBtn = fluent.Tooltip(
-      message: '重新扫描游戏资源',
-      // 轮询态只重建这一个图标（阶段 4c）
-      child: ListenableBuilder(
-        listenable: _scanning,
-        builder: (context, _) => fluent.IconButton(
+    final scanBtn = ListenableBuilder(
+      listenable: _scanning,
+      builder: (context, _) => fluent.Tooltip(
+        message: _scanning.value ? '取消扫描' : '重新扫描游戏资源',
+        // 轮询态只重建这一个图标（阶段 4c）。扫描中给「取消」，不再干等。
+        child: fluent.IconButton(
           icon: _scanning.value
-              ? const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(strokeWidth: 2))
+              ? const Icon(FluentIcons.dismiss_24_regular, size: 14)
               : const Icon(FluentIcons.arrow_sync_24_regular, size: 14),
-          onPressed: _scanning.value ? null : _scan,
+          onPressed: _scanning.value ? _cancelScan : _scan,
         ),
       ),
     );
@@ -1222,14 +1827,15 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
 
   Widget _buildGrid(List<String> list) {
     if (list.isEmpty) {
-      return Center(
-        child: Text('没有匹配的资源',
-            style: TextStyle(fontSize: 12, color: palette.textHint)),
-      );
+      return const EmptyState('没有匹配的资源');
     }
     return GridView.builder(
-      controller: _gridScroll,
+      scrollCacheExtent: const ScrollCacheExtent.pixels(210), controller: _gridScroll,
       padding: const EdgeInsets.all(8),
+      // 全库没有任何 AutomaticKeepAliveClientMixin：这些 tile 不需要保活，
+      // 关掉可省掉每个 tile 两层 KeepAlive/AutomaticKeepAlive 包装
+      // （大画廊一次几十个 tile，纯减开销，行为不变）。
+      addAutomaticKeepAlives: false,
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 172,
         mainAxisSpacing: 8,
@@ -1272,13 +1878,19 @@ class _ImageAssetPickerDialogState extends State<ImageAssetPickerDialog> {
                   fit: StackFit.expand,
                   children: [
                     if (_localPreviewBytes[key] != null)
-                      Image.memory(
-                        _localPreviewBytes[key]!,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
-                        // 选中文件解不出图（损坏/伪装扩展名）时回落索引缩略图。
-                        errorBuilder: (_, _, _) =>
-                            TexThumb(keyName: key, fit: BoxFit.contain),
+                      // 阶段 5·4d 漏点：本地点选文件的预览同样缺 cacheWidth，
+                      // 一个 172 档的格子会按原图解码。补上统一档位。
+                      LayoutBuilder(
+                        builder: (context, tile) => Image.memory(
+                          _localPreviewBytes[key]!,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                          cacheWidth:
+                              TextureBudget.decodeWidth(context, tile.maxWidth),
+                          // 选中文件解不出图（损坏/伪装扩展名）时回落索引缩略图。
+                          errorBuilder: (_, _, _) =>
+                              TexThumb(keyName: key, fit: BoxFit.contain),
+                        ),
                       )
                     else
                       TexThumb(keyName: key, fit: BoxFit.contain),

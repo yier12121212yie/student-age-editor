@@ -1,20 +1,24 @@
-/// 自托管网页版大资源（贴图/配乐/视频）导入：字节留在 COS，模组只存引用。
+/// 自托管网页版大资源（贴图/配乐/视频）导入：大文件不进 base64 通道。
 ///
 /// 与 [StagedModImport]（整包导入、落盘）不同，这里走模块 A 的「直传不落盘」
 /// 形态：upload/request → PUT 预签名 → `POST /api/mods/add_ref` 把暂存对象钉成
 /// 模组引用（status=linked），模组目录只写一条 cos_resources.json 索引。
 /// 导出时由服务端把引用资源从 COS 拉回、与本地盘文件拼进 zip。
+///
+/// 未配置 COS 时改走 [LocalChunkUpload]：分片 PUT 到本机后端，`add_ref`
+/// 把落盘文件直接复制进模组目录并删除暂存记录（同一份资源不存两份）。
 library;
 
 import 'dart:typed_data';
 
 import 'api_client.dart';
 import 'blob_put.dart';
+import 'local_chunk_upload.dart';
 
 class StagedResourceRef {
   StagedResourceRef._();
 
-  /// web 上超过该阈值的单文件改走「留 COS 只存引用」；小文件继续走
+  /// web 上超过该阈值的单文件改走「大文件通道」；小文件继续走
   /// `/api/mod/import_files`（base64 落盘），保证游戏/预览在服务器上能直接
   /// 读盘。阈值与整包导入一致（48 MiB）。
   static const int refThresholdBytes = 48 * 1024 * 1024;
@@ -28,25 +32,36 @@ class StagedResourceRef {
     bool registerAudio = false,
     void Function(String label, double? frac)? onStage,
   }) async {
-    onStage?.call('申请直传', null);
-    final init = await ApiClient.instance.post(
-      '/api/v1/files/upload/request',
-      body: <String, dynamic>{'name': name, 'size': bytes.length},
-      timeout: const Duration(seconds: 60),
-    );
-    final initMap = (init as Map).cast<String, dynamic>();
-    final fileId = (initMap['file_id'] ?? '').toString();
-    final uploadUrl = (initMap['upload_url'] ?? '').toString();
-    if (fileId.isEmpty || uploadUrl.isEmpty) {
-      throw ApiException(500, 'upload/request 未返回 file_id/upload_url');
+    final bool local = await LocalChunkUpload.useLocal();
+    String fileId;
+    if (local) {
+      fileId = await LocalChunkUpload.uploadBytes(
+        name,
+        bytes,
+        onStage: onStage,
+      );
+    } else {
+      onStage?.call('申请直传', null);
+      final init = await ApiClient.instance.post(
+        '/api/v1/files/upload/request',
+        body: <String, dynamic>{'name': name, 'size': bytes.length},
+        timeout: const Duration(seconds: 60),
+      );
+      final initMap = (init as Map).cast<String, dynamic>();
+      fileId = (initMap['file_id'] ?? '').toString();
+      final uploadUrl = (initMap['upload_url'] ?? '').toString();
+      if (fileId.isEmpty || uploadUrl.isEmpty) {
+        throw ApiException(500, 'upload/request 未返回 file_id/upload_url');
+      }
+
+      onStage?.call('直传对象存储', 0);
+      await putBytesToUrl(bytes, uploadUrl, onProgress: (sent, total) {
+        if (total > 0) onStage?.call('直传对象存储', sent / total);
+      });
     }
 
-    onStage?.call('直传对象存储', 0);
-    await putBytesToUrl(bytes, uploadUrl, onProgress: (sent, total) {
-      if (total > 0) onStage?.call('直传对象存储', sent / total);
-    });
-
-    // 不调 upload/complete：资源留在 COS，由 add_ref 钉成持久引用。
+    // COS：不调 upload/complete，资源留在 COS，由 add_ref 钉成持久引用。
+    // 本地分片：complete 已落盘，add_ref 复制进模组后删除暂存记录。
     onStage?.call('登记引用', null);
     final res = await ApiClient.instance.post(
       '/api/mods/add_ref',

@@ -4,6 +4,12 @@
 本 zip 是 `flutter build web` 的产物，属独立发行物，与桌面安装包/APK 互不
 混包。解压后得到网页资源目录（含 index.html、main.dart.js 等）。
 
+说明：本包已内置同源的 CanvasKit、中文界面字体（EditorCJK）与 fallback 字体
+（canvaskit/、assets/assets/fonts/EditorCJK.ttf、fallback_fonts/），运行时
+**不访问** www.gstatic.com / fonts.gstatic.com，国内网络可直接使用。包内另含
+.gz/.br 预压缩旁文件，由 backend 静态路由按浏览器 Accept-Encoding 自动选择，
+无需手工配置；请整目录原样部署，不要只挑 index.html/main.dart.js 拷贝。
+
 一、本机浏览器形态（推荐起步）
   1. 下载本 web-app zip 与对应平台的桌面发行包（student-age-editor-*.zip），
      两者分别解压。

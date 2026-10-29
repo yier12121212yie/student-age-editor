@@ -363,7 +363,7 @@ class _MinimapPainter extends CustomPainter {
       }
       _block.color = flowNodeTint(n).withValues(alpha: 0.9);
       canvas.drawRRect(
-        RRect.fromRectAndRadius(r, const Radius.circular(AppRadius.xs)),
+        RRect.fromRectAndRadius(r, const Radius.circular(AppRadius.xxs)),
         _block,
       );
     }

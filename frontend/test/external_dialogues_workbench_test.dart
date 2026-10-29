@@ -202,7 +202,7 @@ void main() {
     expect(tester.takeException(), isNull, reason: '外部对话渲染不应异常');
     expect(find.text('共 6 个入口'), findsOneWidget);
     expect(find.text('送礼 · 小雨 ← 苹果'), findsWidgets);
-    expect(find.text('对白链（TalkCfg）'), findsOneWidget);
+    expect(find.text('对白链'), findsOneWidget);
     expect(find.text('对话预览'), findsOneWidget);
     expect(find.text('谢谢你的礼物'), findsWidgets);
   });
@@ -298,7 +298,7 @@ void main() {
     await tester.tap(find.text('事件外对话').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.text('对白链（TalkCfg）'), findsOneWidget);
+    expect(find.text('对白链'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

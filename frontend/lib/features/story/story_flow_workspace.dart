@@ -13,7 +13,7 @@ import '../../core/history_client.dart';
 import '../../core/models.dart';
 import '../../core/save_service.dart';
 import '../editor/field_meta.dart';
-import '../editor/suggestion_text_field.dart';
+import '../editor/id_ref_picker.dart';
 import '../resources/image_asset_picker.dart' show TexThumb;
 import 'story_flow_clipboard.dart';
 import 'story_flow_drop.dart';
@@ -96,9 +96,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   /// 置空，纯移动节点不失效——位置不属于图数据。
   FlowGraph? _cachedGraph;
 
-  /// C5：内联字段元数据缓存（key=节点 id）。作废点只有 [_bumpGraph]。
-  final Map<String, List<FieldMeta>> _inlineMetasCache = {};
-
   /// 位置版本：[_positions] 原地修改、身份永不变，`shouldRepaint` 无从比较，
   /// 此前连线能跟随节点纯粹是「graph 身份每帧都变」的副作用。缓存 graph 后
   /// 必须显式把它交给画布，否则拖拽时连线会静止。
@@ -151,9 +148,41 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   /// 内容变更的唯一入口：标脏（顺带作废图缓存）+ 记一步可撤销快照。
   /// 撤销/重做回滚时**不要**走这里，直接赋值 `_dirty`，否则回滚会被记成新改动。
   void _markEdited({Object? mergeKey}) {
+    // 结构/离散操作前先结算挂起的文本编辑，保证撤销顺序与用户操作一致。
+    _flushContentEdit();
     _dirty = true;
     _bumpGraph();
     _history.record(_stageTalks, _stageOpts, _positions, mergeKey: mergeKey);
+  }
+
+  /// 文本编辑的延迟结算（P2）：写回已经发生，这里只负责撤销快照与图刷新。
+  void _scheduleContentEdit(Object mergeKey) {
+    final wasDirty = _stageDirty;
+    _stageDirty = true;
+    _contentCommitKey = mergeKey;
+    _contentCommitTimer?.cancel();
+    _contentCommitTimer = Timer(const Duration(milliseconds: 350), () {
+      _contentCommitTimer = null;
+      if (!mounted) return;
+      setState(() {
+        _bumpGraph();
+        _history.record(_stageTalks, _stageOpts, _positions,
+            mergeKey: _contentCommitKey);
+      });
+    });
+    // 首个字符需要一次重建（保存按钮/脏标记）；之后逐字不再全页重建。
+    if (!wasDirty) setState(() {});
+  }
+
+  /// 立即结算挂起的文本编辑（保存 / 撤销 / 切事件 / 结构操作前）。
+  void _flushContentEdit() {
+    final timer = _contentCommitTimer;
+    if (timer == null) return;
+    timer.cancel();
+    _contentCommitTimer = null;
+    _bumpGraph();
+    _history.record(_stageTalks, _stageOpts, _positions,
+        mergeKey: _contentCommitKey);
   }
 
   /// 事件切换 / Mod 切换的进行中标记：两条链路都含「脏数据确认弹窗 +
@@ -184,6 +213,11 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   Map<String, dynamic> _flowFile = {};
   Timer? _layoutSaveTimer;
 
+  // P2：文本字段逐字输入先写回舞台，空闲 350ms 再合并成一步撤销并重建图。
+  // 此前每个字符都深拷贝整舞台 + 全图重建（大事件输入明显掉帧）。
+  Timer? _contentCommitTimer;
+  Object? _contentCommitKey;
+
   /// `.editor_flow.json` 是否已加载完成；就绪前禁止回写布局，
   /// 避免用空壳数据覆盖其他事件已保存的节点坐标。
   bool _flowLoaded = false;
@@ -207,9 +241,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     }
     return const Offset(60, 40);
   }
-
-  // 内联编辑展开的节点
-  final Set<String> _expandedNodes = {};
 
   /// 写回失败的字段，键为 `nodeId|field`（卡片/面板红字提示）。
   ///
@@ -261,6 +292,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     if (pending?.isActive ?? false) {
       unawaited(_writeLayoutFile());
     }
+    _contentCommitTimer?.cancel();
+    _contentCommitTimer = null;
     for (final c in _allCtls) {
       c.dispose();
     }
@@ -589,6 +622,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     // 取消防抖中的布局回写：该写入指向旧 mod 的沙箱，切换后不得串档
     _layoutSaveTimer?.cancel();
     _layoutSaveTimer = null;
+    _contentCommitTimer?.cancel();
+    _contentCommitTimer = null;
     // 清掉旧 mod 的舞台残留：新 mod 若无事件，_load 不会自动选中
     _evtId = null;
     _prefixes = const [];
@@ -603,7 +638,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     _layoutDirtyEvent = null;
     _positions = {};
     _selection = FlowSelection.none;
-    _expandedNodes.clear();
     _fieldInvalid.clear();
     _dragHoverNode = null;
     _tableMtime.clear();
@@ -631,6 +665,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   void _discardStage() {
+    _contentCommitTimer?.cancel();
+    _contentCommitTimer = null;
     _stageTalks = copyRecords(_talkBaseline);
     _stageOpts = copyRecords(_optBaseline);
     _resetPanelCtls();
@@ -645,6 +681,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
 
   Future<void> _selectEventInner(String evtId) async {
     final token = ++_selectSeq;
+    // 挂起的文本编辑属于旧事件，切换后不得再记进新舞台。
+    _contentCommitTimer?.cancel();
+    _contentCommitTimer = null;
     // 必须赶在 _evtId 改值之前按旧前缀回收：控制器键里带事件 id，
     // 赋完值就再也摘不到上一批了（长会话下会无界堆积）。
     if (_evtId != null) _dropCtls('$_evtId|');
@@ -697,7 +736,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       _optBaseline = copyRecords(_stageOpts);
       _dirty = false;
       _selection = FlowSelection.none;
-      _expandedNodes.clear();
       _fieldInvalid.clear();
       _inspectorOpen = false;
       _dragHoverNode = null;
@@ -710,9 +748,15 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
 
   /// Ctrl+Z。两层：内存栈覆盖「改了没保存」，栈空且舞台干净时才落到后端
   /// 表级历史（后端快照只在存表时打点，且 Talk/Option 各一条独立栈）。
-  Future<void> _undo() => _historyStep(_history.undo(), 'undo');
+  Future<void> _undo() {
+    _flushContentEdit();
+    return _historyStep(_history.undo(), 'undo');
+  }
 
-  Future<void> _redo() => _historyStep(_history.redo(), 'redo');
+  Future<void> _redo() {
+    _flushContentEdit();
+    return _historyStep(_history.redo(), 'redo');
+  }
 
   Future<void> _historyStep(FlowEditSnapshot? step, String op) async {
     if (step != null) {
@@ -722,7 +766,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
         _stageTalks = step.talks;
         _stageOpts = step.opts;
         _positions = step.positions;
-        _expandedNodes.removeWhere((id) => !_hasRecord(id));
         _fieldInvalid.removeWhere((k) => !_hasRecord(k.split('|').first));
         _selection = FlowSelection.none;
         // 回滚不走 _markEdited：否则撤销本身又被记成新的改动一步。
@@ -748,13 +791,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
 
   bool _hasRecord(String id) =>
       _stageTalks.containsKey(id) || _stageOpts.containsKey(id);
-
-  /// 展开/收起内联参数编辑器（卡片右下角箭头与右键菜单同一入口）。
-  void _toggleExpand(String id) {
-    setState(() {
-      if (!_expandedNodes.remove(id)) _expandedNodes.add(id);
-    });
-  }
 
   /// 局部重排：只重铺选中集的诱导子图，包围盒左上角锚死在原位，
   /// 未选中的节点一个都不动（整图 auto layout 会毁掉手工布局）。
@@ -799,10 +835,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     final batch = nodeId != null && _selection.nodes.length > 1;
     final items = <PopupMenuEntry<String>>[
       if (nodeId != null) ...[
-        _menuItem(
-          'toggle',
-          _expandedNodes.contains(nodeId) ? '收起参数' : '展开编辑参数',
-        ),
+        _menuItem('inspector', '编辑完整参数…'),
         _menuItem('copy', batch ? '复制 ${_selection.nodes.length} 个节点' : '复制'),
         _menuItem('paste', '粘贴', enabled: _hasClip),
         _menuItem(
@@ -853,8 +886,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     );
     if (picked == null || !mounted) return;
     switch (picked) {
-      case 'toggle':
-        if (nodeId != null) _toggleExpand(nodeId);
+      case 'inspector':
+        if (nodeId != null) _openInspector(nodeId);
       case 'copy':
         _copySelection();
       case 'paste':
@@ -1039,6 +1072,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
       '/api/tools/write',
       body: {'path': '.editor_flow_templates.json', 'content': content},
     );
+    if (!mounted) return;
     _templatesFileText = content;
     setState(() => _templates = decodeTemplatesFile(content));
   }
@@ -1245,6 +1279,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   /// EvtCfg 舞台从不修改（事件增删自落盘），不参与保存。
   Future<bool> _save({bool retried = false}) async {
     if (_evtId == null) return false;
+    // P2：把还在 350ms 窗口里的文本改动先结算，避免撤销快照/保存内容落后。
+    _flushContentEdit();
     if (_loadedModRoot != null && widget.state.modRoot != _loadedModRoot) {
       // 外部切 Mod 后用户选了「先留在旧画面」：此时保存 = 旧数据写新沙箱
       _toast(
@@ -1532,10 +1568,8 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   // ---------- 图数据 ----------
   /// 作废图缓存。任何改动 `_stageTalks`/`_stageOpts` 内容（含其中记录字段）
   /// 或 `_flowCards` 的路径都必须调用它；纯改节点位置**不要**调用。
-  /// 内联字段元数据（C5）以图内容为失效键，随之一起作废。
   void _bumpGraph() {
     _cachedGraph = null;
-    _inlineMetasCache.clear();
   }
 
   /// 事件 id 排序列表只在 EvtCfg 变化时重算（真实约 3,154 个 key，
@@ -1754,7 +1788,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     // 标脏布局：否则被删节点的坐标残留在 .editor_flow.json，
     // 之后新建复用同一 ID 的节点会"复活"到旧位置
     _markLayoutDirty();
-    _expandedNodes.remove(id);
     _fieldInvalid.removeWhere((k) => k.startsWith('$id|'));
     if (_selectedNode == id) _inspectorOpen = false;
     return true;
@@ -1922,7 +1955,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
   }
 
   // ---------- 事件增删 ----------
-  /// 无代码模式：自动分配一个 7 位事件 ID（1xxxxxx 家族），用户不必手抄编号。
+  /// 简易模式：自动分配一个 7 位事件 ID（1xxxxxx 家族），用户不必手抄编号。
   /// 返回 null = 家族内已用尽（1_000_000..1_999_999 全占）。
   String? _allocEventId() {
     final evt = _tablesData['EvtCfg'];
@@ -1936,7 +1969,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     final noCode = widget.state.noCodeMode;
     final autoId = noCode ? _allocEventId() : null;
     if (noCode && autoId == null) {
-      _toast('事件 ID 已用尽（无代码模式自动编号）', fluent.InfoBarSeverity.warning);
+      _toast('事件 ID 已用尽（简易模式自动编号）', fluent.InfoBarSeverity.warning);
       return;
     }
     final idCtl = _makeCtl('_evtId', '');
@@ -1953,7 +1986,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 无代码模式：不给 ID 输入框，改为自动编号的只读预览。
+                // 简易模式：不给 ID 输入框，改为自动编号的只读预览。
                 if (noCode)
                   Container(
                     width: double.infinity,
@@ -1964,7 +1997,7 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
                       border: Border.all(color: palette.border),
                     ),
                     child: Text(
-                      '事件 ID 将自动分配：$autoId\n（无代码模式无需手填编号）',
+                      '事件 ID 将自动分配：$autoId\n（简易模式无需手填编号）',
                       style: TextStyle(
                         fontSize: 12,
                         color: palette.textSecondary,
@@ -2147,7 +2180,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             _prefixes = const [];
             _stageTalks = {};
             _stageOpts = {};
-            _expandedNodes.clear();
             _fieldInvalid.clear();
             _inspectorOpen = false;
             setState(() => _dirty = false);
@@ -2252,6 +2284,14 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     });
   }
 
+  /// 卡片正文/标题输入获得焦点：同步选中集（画布对输入区让位，指针按下
+  /// 不再走选中路径），保证 Backspace/Delete 等快捷键与 Inspector 目标正确。
+  void _onNodeFocused(String nodeId) {
+    if (_cfgOf(nodeId) == null) return;
+    if (_selection.onlyNode == nodeId) return;
+    setState(() => _selection = FlowSelection.ofNode(nodeId));
+  }
+
   /// 该表的字段元数据（按 schema 缓存，避免每帧重算 21 个 key）。
   List<FieldMeta> _metasFor(String cfg) =>
       _metasCache[cfg] ??= flowFieldMetas(widget.state, cfg);
@@ -2319,6 +2359,150 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     c.text = encodeFieldValue(rec, field, type);
   }
 
+  // ---------- 卡片说话人（标题输入） ----------
+  /// 人物 id → 名称（原版字典 + Mod PersonCfg 合并，零请求）。
+  Map<String, String> get _roleNames => mergeNameDict(
+        state: widget.state,
+        dictName: 'roles',
+        modRecords: _tablesData['PersonCfg'],
+      );
+
+  /// 说话人控制器键：与字段控制器同池，靠事件前缀回收。
+  String _speakerKey(String nodeId) => '$_evtId|spk:$nodeId';
+
+  /// 该对白节点的说话人展示名：roleName 自定义名优先；否则解析 roleIds
+  /// 首个人物；都为空 → ''（卡片显示占位「对白/旁白」）。
+  String _speakerDisplay(String nodeId) {
+    final rec = _nodeRec(nodeId);
+    if (rec == null) return '';
+    final roleName = cln(rec['roleName']);
+    if (roleName.isNotEmpty) return roleName;
+    final ids = normalizeStoryIdList(rec['roleIds']);
+    if (ids.isEmpty) return '';
+    final names = _roleNames;
+    for (final id in ids) {
+      // normalizeStoryIdList 把数字串归一成 int，而名称字典的键是字符串，
+      // 直接 names[id] 会整片查不中（数字 id 的人物永远显示不出来）。
+      final n = names[cln(id)];
+      if (n != null && n.isNotEmpty) return n;
+    }
+    return '';
+  }
+
+  /// 卡片标题说话人输入控制器（仅对白节点）。
+  TextEditingController? _speakerCtlFor(String nodeId) {
+    if (_cfgOf(nodeId) != 'TalkCfg' || _evtId == null) return null;
+    final key = _speakerKey(nodeId);
+    return _ctls.putIfAbsent(
+      key,
+      () => _makeCtl(key, _speakerDisplay(nodeId)),
+    );
+  }
+
+  /// 外部改写 roleIds/roleName 后同步说话人输入框文案。
+  void _syncSpeakerCtl(String nodeId) {
+    final c = _ctls[_speakerKey(nodeId)];
+    if (c == null) return;
+    c.text = _speakerDisplay(nodeId);
+  }
+
+  /// 提交说话人输入（回车/失焦）：名称/ID → 人物 id。
+  ///
+  /// - 空串 → 清空说话人（旁白）；
+  /// - 「旁白」→ 写 roleName='旁白'、清 roleIds；
+  /// - 命中唯一人物 → roleIds=[id]、清 roleName；
+  /// - 多个相近 / 一个都没有 → 弹窗列出相近人物让人选，取消则保留为
+  ///   自定义名字 roleName（绝不静默丢弃用户输入）。
+  Future<void> _submitSpeaker(String nodeId, String text) async {
+    final rec = _nodeRec(nodeId);
+    if (rec == null || _cfgOf(nodeId) != 'TalkCfg') return;
+    final raw = text.trim();
+    if (raw.isEmpty) {
+      rec.remove('roleIds');
+      rec.remove('roleName');
+      _syncSpeakerCtl(nodeId);
+      _markSpeakerEdited(nodeId);
+      return;
+    }
+    if (raw == '旁白') {
+      rec.remove('roleIds');
+      rec['roleName'] = '旁白';
+      _syncSpeakerCtl(nodeId);
+      _markSpeakerEdited(nodeId);
+      return;
+    }
+
+    final names = _roleNames;
+    final lower = raw.toLowerCase();
+    // 1) 直接输 ID，或与 id/名称完全相等。
+    String? exact;
+    for (final e in names.entries) {
+      if (e.key.toLowerCase() == lower) {
+        exact = e.key;
+        break;
+      }
+    }
+    if (exact == null) {
+      for (final e in names.entries) {
+        if (e.value.trim().toLowerCase() == lower) {
+          exact = e.key;
+          break;
+        }
+      }
+    }
+    if (exact != null) {
+      _applySpeakerId(nodeId, exact);
+      return;
+    }
+
+    // 2) 模糊命中：名称互相包含，短的优先（更接近完整名字）。
+    final near = <(String, String)>[
+      for (final e in names.entries)
+        if (e.value.toLowerCase().contains(lower) ||
+            (lower.length >= 2 && lower.contains(e.value.toLowerCase())))
+          (e.key, e.value),
+    ]..sort((a, b) => a.$2.length.compareTo(b.$2.length));
+
+    if (!mounted) return;
+    final picked = await showIdBrowseDialog(
+      context,
+      title: near.isEmpty ? '未找到人物「$raw」' : '未精确匹配，请选择「$raw」对应的人物',
+      options: near,
+      multi: false,
+      initialSelected: const [],
+    );
+    if (!mounted) return;
+    if (picked != null && picked.isNotEmpty) {
+      _applySpeakerId(nodeId, picked.first);
+    } else {
+      // 取消：保留为自定义名字（roleName），卡片照常显示用户输入。
+      rec.remove('roleIds');
+      rec['roleName'] = raw;
+      final c = _ctls[_speakerKey(nodeId)];
+      if (c != null) c.text = raw;
+      _markSpeakerEdited(nodeId);
+    }
+  }
+
+  void _applySpeakerId(String nodeId, String id) {
+    final rec = _nodeRec(nodeId);
+    if (rec == null) return;
+    final idVal = int.tryParse(id) ?? id;
+    rec['roleIds'] = [idVal];
+    rec.remove('roleName');
+    _syncSpeakerCtl(nodeId);
+    _markSpeakerEdited(nodeId);
+    final name = _roleNames[id];
+    _toast(
+      '说话人已设为 ${name == null || name.isEmpty ? id : name}',
+      fluent.InfoBarSeverity.success,
+    );
+  }
+
+  void _markSpeakerEdited(String nodeId) {
+    setState(() => _markEdited(mergeKey: 'speaker:$nodeId'));
+  }
+
   /// 编辑文本写回：类型驱动解析。
   ///
   /// 与旧实现的两处语义差别，都是为「不污染存档」服务：
@@ -2347,7 +2531,9 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
     if (_fieldInvalid.remove(invalidKey)) {
       setState(() {});
     }
-    setState(() => _markEdited(mergeKey: 'field:$nodeId:$field'));
+    // 说话人字段改动（Inspector 里改 roleIds/roleName）：同步卡片标题输入框。
+    if (field == 'roleIds' || field == 'roleName') _syncSpeakerCtl(nodeId);
+    _scheduleContentEdit('field:$nodeId:$field');
   }
 
   bool _fieldInvalidFor(String nodeId, String field) =>
@@ -2426,31 +2612,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
 
   Iterable<Map<String, dynamic>> get _optRecords =>
       _stageOpts.values.whereType<Map<String, dynamic>>();
-
-  /// 内联区要渲染的字段：按节点所属表取，过滤掉不可写字段。
-  /// C5：展开卡片每次 build 都会来取，结果按节点缓存，作废点 =
-  /// [_bumpGraph]（内容/卡型/可写性变化的唯一汇合点）。
-  List<FieldMeta> _inlineMetas(String nodeId) {
-    final hit = _inlineMetasCache[nodeId];
-    if (hit != null) return hit;
-    // ignore: invalid_use_of_visible_for_testing_member
-    if (kDebugMode) debugFlowFieldMetasBuilds++;
-    final cfg = _cfgOf(nodeId);
-    if (cfg == null) return const [];
-    final isOption = cfg == 'OptionCfg';
-    final out = [
-      for (final m in flowInlineMetas(widget.state, cfg, isOption))
-        if (m.editable && _fieldWritable(cfg, m.key)) m,
-    ];
-    // ignore: invalid_use_of_visible_for_testing_member
-    return _inlineMetasCache[nodeId] = out;
-  }
-
-  SuggestionSource? _suggestForNode(String nodeId, FieldMeta meta) {
-    final cfg = _cfgOf(nodeId);
-    if (cfg == null) return null;
-    return sourceForField(cfg, meta, _suggestDeps);
-  }
 
   // ---------- 媒体资产拖放 ----------
   /// 资产 key ↔ AudioCfg/BgCfg.url 匹配：basename（去目录/扩展名）相等。
@@ -3044,7 +3205,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             positions: _positions,
             positionsVersion: positionsRev,
             selection: _selection,
-            expandedNodes: _expandedNodes,
             highlightNode: _dragHoverNode,
             // 阶段 4a：story 级共享墓碑集合，卡片同步读（每 story 一次
             // GET /api/cfg/deleted_talks，取代旧的每卡片一次）。
@@ -3054,15 +3214,14 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             onRedo: _redo,
             onCopy: _copySelection,
             onPaste: _pasteClipboard,
-            fieldInvalid: _fieldInvalidFor,
-            fieldDirty: _fieldDirty,
-            inlineMetas: _inlineMetas,
-            nodeFocus: _nodeFocusFor,
-            suggestFor: _suggestForNode,
-            // 无代码模式：内联区不再铺可输入的代码/ID 框（与 Inspector、
-            // schema 编辑器同一张分流表）；开关变化经 _contentSig 作废卡片缓存。
-            noCodeMode: widget.state.noCodeMode,
-            gameDicts: widget.state.gameDicts,
+            // 卡片内联编辑：正文 content 用字段控制器；标题说话人走专用通道
+            // （名称/ID → roleIds，匹配失败弹窗）。
+            fieldController: _nodeCtlFor,
+            onFieldChanged: _applyFieldText,
+            speakerController: _speakerCtlFor,
+            onSpeakerSubmitted: _submitSpeaker,
+            onNodeFocused: _onNodeFocused,
+            onDeleteNode: _deleteNode,
             onRequestInspector: (nodeId) => () => _openInspector(nodeId),
             onSelectionChanged: (s) => setState(() {
               _selection = s;
@@ -3073,10 +3232,6 @@ class _StoryFlowWorkspaceState extends State<StoryFlowWorkspace> {
             onAddEdge: _onAddEdge,
             onDeleteEdge: _onDeleteEdge,
             onRequestDelete: _requestDelete,
-            onToggleExpand: _toggleExpand,
-            fieldController: _nodeCtlFor,
-            onFieldChanged: _applyFieldText,
-            onDeleteNode: _deleteNode,
           );
         },
       ),

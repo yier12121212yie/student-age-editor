@@ -18,11 +18,15 @@
 #include "server/services/mod_files_routes.h"
 #include "server/services/mod_refs_routes.h"
 #include "server/services/mods_routes.h"
+#include "server/services/mcp_routes.h"
+#include "server/services/mcp_bridge.h"
 #include "server/services/p3b_domain_tools_routes.h"
 #include "server/services/plugins_routes.h"
 #include "server/services/semantic_routes.h"
 #include "server/services/system_routes.h"
 #include "server/services/tts.h"
+#include "server/services/workshop_service.h"
+#include "server/services/semantic_linter.h"
 #include "server/services/workspace_routes.h"
 #include "server/state.h"
 
@@ -87,6 +91,15 @@ Router build_router() {
     register_cloud_routes(r);
     // 自托管大文件流转（模块 A）：/api/v1/files/*。自有路径段，无遮蔽风险。
     file_transfer::register_file_transfer_routes(r);
+    // HTTP MCP（网页版 M2）：POST/GET /api/mcp。自有路径段，且工具执行直接复用
+    // p3b/stage 领域服务（不经本路由自转发），注册在最后即可。
+    register_mcp_routes(r);
+    // C2：网页版 stdio MCP 桥接（后端持有子进程；托管默认关闭 + 命令白名单）。
+    mcp_bridge::register_mcp_bridge_routes(r);
+    // 战役一：Steam 创意工坊原生发布中心
+    register_workshop_routes(r);
+    // 战役二：编译级 Mod 语义诊断与一键修复引擎
+    register_semantic_linter_routes(r);
     return r;
 }
 

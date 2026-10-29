@@ -59,9 +59,9 @@ Map<String, Offset> _positions() => {
   _n3: const Offset(560, 40),
 };
 
-/// 卡片底座中部：避开底部端口行与右下角展开箭头。
+/// 标题条左侧拖拽把手：正文/说话人是输入框，拖动节点必须从这里起手。
 Offset _cardCenter(Map<String, Offset> p, String id) =>
-    p[id]! + const Offset(60, 40);
+    p[id]! + const Offset(6, 12);
 
 void main() {
   late _HarnessState host;
@@ -294,10 +294,10 @@ class _HarnessState extends State<_Harness> {
       onAddEdge: (_, _, _) {},
       onDeleteEdge: (_, _, _) {},
       onRequestDelete: () => requestDeleteCalls++,
-      onToggleExpand: (_) {},
       fieldController: (_, _) => null,
       onFieldChanged: (_, _, _) {},
-      onDeleteNode: (_) {},
+      speakerController: (_) => null,
+      onSpeakerSubmitted: (_, _) {},
     );
   }
 }

@@ -129,15 +129,38 @@ RawResp raw_get(const std::string& host, int port, const std::string& target,
     return out;
 }
 
+std::string header_value(const std::string& headers, const std::string& name) {
+    const std::string key = name + ": ";
+    size_t p = headers.find(key);
+    while (p != std::string::npos && p != 0 && headers[p - 1] != '\n') {
+        p = headers.find(key, p + 1);
+    }
+    if (p == std::string::npos) return {};
+    const size_t b = p + key.size();
+    size_t e = headers.find("\r\n", b);
+    return headers.substr(b, e == std::string::npos ? std::string::npos : e - b);
+}
+
 struct StaticWebRoot {
     std::filesystem::path dir;
     explicit StaticWebRoot(const std::string& tag) : dir(sat::make_temp_dir(tag)) {
         auto write = [&](const std::string& name, const std::string& text) {
-            std::ofstream(dir / std::filesystem::u8path(name), std::ios::binary) << text;
+            auto p = dir / std::filesystem::u8path(name);
+            std::error_code ec;
+            if (!std::filesystem::exists(p.parent_path(), ec)) {
+                std::filesystem::create_directories(p.parent_path(), ec);
+            }
+            std::ofstream(p, std::ios::binary) << text;
         };
         write("index.html", "<html>WEB</html>");
         write("main.dart.js", "//bundle");
         write("manifest.json", "{}");
+        // Pre-compressed sidecars (build_release.py output). static_routes
+        // serves the bytes verbatim; the fake payload keeps the test honest
+        // about *which* sidecar was picked without needing a gzip decoder.
+        write("main.dart.js.gz", "GZIP-BYTES");
+        write("main.dart.js.br", "BR-BYTES");
+        write("fallback_fonts/notosanssc/v37/slice.1.woff2", "FONT");
         // Sits next to, not inside, web_root: a successful escape would read it.
         std::ofstream(dir.parent_path() / std::filesystem::u8path(dir.filename().string() +
                                                                   "_outside.txt")) =
@@ -180,7 +203,8 @@ TEST_CASE("default tier is untouched by the CorsConfig hook (empty list)", "[web
     REQUIRE(res);
     CHECK(res->status == 200);
     CHECK(res->get_header_value("Access-Control-Allow-Origin") == "http://127.0.0.1");
-    CHECK(res->get_header_value("Access-Control-Allow-Headers") == "Content-Type");
+    CHECK(res->get_header_value("Access-Control-Allow-Headers") ==
+          "Content-Type, Authorization, Mcp-Session-Id");
     // The CONVENTIONS 2 order: Cache-Control before the ACA block.
     CHECK(res->get_header_value("Cache-Control") == "no-store");
 }
@@ -195,7 +219,7 @@ TEST_CASE("server tier echoes trusted origins and rejects others", "[web][cors]"
         CHECK(res->status == 200);
         CHECK(res->get_header_value("Access-Control-Allow-Origin") == "http://app.test");
         CHECK(res->get_header_value("Access-Control-Allow-Headers") ==
-              "Content-Type, Authorization");
+              "Content-Type, Authorization, Mcp-Session-Id");
     }
     {
         httplib::Headers h{{"Origin", "http://evil.test"}};
@@ -251,7 +275,7 @@ TEST_CASE("server tier OPTIONS preflight: 204 + echo + Authorization", "[web][co
     CHECK(res->status == 204);
     CHECK(res->get_header_value("Access-Control-Allow-Origin") == "http://app.test");
     CHECK(res->get_header_value("Access-Control-Allow-Headers") ==
-          "Content-Type, Authorization");
+          "Content-Type, Authorization, Mcp-Session-Id");
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +327,10 @@ TEST_CASE("static hosting: index, assets, cache classes, 404s and API precedence
         REQUIRE(res);
         CHECK(res->status == 200);
         CHECK(res->get_header_value("Content-Type") == "text/javascript; charset=utf-8");
-        CHECK(res->get_header_value("Cache-Control") == "public, max-age=3600");
+        CHECK(res->get_header_value("Cache-Control") == "no-cache");
+        CHECK(res->get_header_value("Vary") == "Accept-Encoding");
+        CHECK(res->get_header_value("Content-Encoding").empty());
+        CHECK(res->body == "//bundle");
     }
     {
         auto res = cli.Get("/missing.txt");
@@ -337,6 +364,78 @@ TEST_CASE("static hosting: index, assets, cache classes, 404s and API precedence
         // Raw (unencoded) dot-dot in the request line.
         auto raw = raw_get("127.0.0.1", bound_port(fx.base), "/..%2Fescape.txt");
         CHECK(raw.status == 400);
+    }
+}
+
+TEST_CASE("static hosting: precompressed sidecars, ETag/304 and cache classes",
+          "[web][static]") {
+    StaticWebRoot web("static_gzip");
+    StaticFixture fx(web.path());
+    const std::string host = "127.0.0.1";
+    const int port = bound_port(fx.base);
+
+    // Brotli wins over gzip when the client accepts both.
+    {
+        auto raw = raw_get(host, port, "/main.dart.js",
+                           "Accept-Encoding: gzip, deflate, br\r\n");
+        CHECK(raw.status == 200);
+        CHECK(raw.body == "BR-BYTES");
+        CHECK(header_value(raw.headers, "content-encoding") == "br");
+        CHECK(header_value(raw.headers, "vary") == "accept-encoding");
+        CHECK(header_value(raw.headers, "content-type") ==
+              "text/javascript; charset=utf-8");
+    }
+    // gzip-only clients get the gzip sidecar.
+    {
+        auto raw = raw_get(host, port, "/main.dart.js", "Accept-Encoding: gzip\r\n");
+        CHECK(raw.body == "GZIP-BYTES");
+        CHECK(header_value(raw.headers, "content-encoding") == "gzip");
+    }
+    // `br;q=0` explicitly opts out of brotli; gzip must win.
+    {
+        auto raw = raw_get(host, port, "/main.dart.js",
+                           "Accept-Encoding: br;q=0, gzip\r\n");
+        CHECK(raw.body == "GZIP-BYTES");
+        CHECK(header_value(raw.headers, "content-encoding") == "gzip");
+    }
+    // No Accept-Encoding -> identity bytes, no Content-Encoding, still Vary.
+    {
+        auto raw = raw_get(host, port, "/main.dart.js");
+        CHECK(raw.body == "//bundle");
+        CHECK(header_value(raw.headers, "content-encoding").empty());
+        CHECK(header_value(raw.headers, "vary") == "accept-encoding");
+    }
+    // ETag/304: validators are per-encoding, so a gzip validator must not
+    // satisfy a brotli request.
+    {
+        auto first = raw_get(host, port, "/main.dart.js", "Accept-Encoding: gzip\r\n");
+        const std::string etag = header_value(first.headers, "etag");
+        REQUIRE(etag.size() > 2);
+        CHECK(etag.find("gzip") != std::string::npos);
+        auto second = raw_get(host, port, "/main.dart.js",
+                              "Accept-Encoding: gzip\r\nIf-None-Match: " + etag + "\r\n");
+        CHECK(second.status == 304);
+        CHECK(second.body.empty());
+        CHECK(header_value(second.headers, "etag") == etag);
+        CHECK(header_value(second.headers, "cache-control") == "no-cache");
+        auto other = raw_get(host, port, "/main.dart.js",
+                             "Accept-Encoding: br\r\nIf-None-Match: " + etag + "\r\n");
+        CHECK(other.status == 200);
+        CHECK(other.body == "BR-BYTES");
+    }
+    // Hash-versioned fallback fonts are the only immutable class.
+    {
+        auto raw = raw_get(host, port, "/fallback_fonts/notosanssc/v37/slice.1.woff2");
+        CHECK(raw.status == 200);
+        CHECK(header_value(raw.headers, "cache-control") ==
+              "public, max-age=31536000, immutable");
+        CHECK(header_value(raw.headers, "content-type") == "font/woff2");
+    }
+    // Sidecars stay an implementation detail.
+    {
+        auto raw = raw_get(host, port, "/main.dart.js.gz");
+        CHECK(raw.status == 404);
+        CHECK(raw.body.find("no such file") != std::string::npos);
     }
 }
 

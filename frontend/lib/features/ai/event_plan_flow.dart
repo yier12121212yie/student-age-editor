@@ -1,4 +1,4 @@
-/// M6「AI 融入无代码流：生成整段事件」。
+/// M6「AI 融入简易流：生成整段事件」。
 ///
 /// 流程：自然语言描述 → AI 产出结构化提案 → diff 卡片（每张卡 = 一条 Cfg
 /// 行计划，效果字段带中文翻译）→ 勾选/一键全应用（增量写盘，产出普通
@@ -29,6 +29,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/error_text.dart';
 import '../../core/save_service.dart';
 import '../nocode/effect_block_editor.dart' show parseEffectText;
 import '../settings/settings_page.dart';
@@ -834,7 +835,7 @@ class _EventPlanFlowPageState extends State<EventPlanFlowPage> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _genError = '生成失败：$e';
+          _genError = '生成失败：${humanizeErrorMessage(e)}';
           _step = _FlowStep.input;
         });
       }
@@ -873,7 +874,7 @@ class _EventPlanFlowPageState extends State<EventPlanFlowPage> {
           }
           c.effectDescs[field] = descs.isEmpty ? text : descs.join('；');
         } catch (e) {
-          c.effectErrors[field] = '解析请求失败：$e';
+          c.effectErrors[field] = '解析请求失败：${humanizeErrorMessage(e)}';
         }
       }
     }
@@ -931,7 +932,7 @@ class _EventPlanFlowPageState extends State<EventPlanFlowPage> {
         }
       } catch (e) {
         c.status = EventPlanCardStatus.failed;
-        c.error = '写入失败：$e';
+        c.error = '写入失败：${humanizeErrorMessage(e)}';
         fail++;
       }
       if (mounted) setState(() {});

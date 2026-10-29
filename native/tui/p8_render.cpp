@@ -117,7 +117,7 @@ Element FooterBar(const AppState& s) {
     // native version added folded in at the end (two lines at 80 columns).
     return vbox({th::HintLine("N 新建Mod  y 复制  d 删除  e 编辑  f 格式化  s 保存  v 校验  "
                               "/ 过滤  ^k 全局搜索  c 云同步  a AI 助手  t 配音 TTS"),
-                 th::HintLine("u 检查更新  ^p palette  p 插件  b Bug 扫描  ^M 权限  "
+                 th::HintLine("u 检查更新  ^p palette  p 插件  b Bug 扫描  ^G 权限  "
                               "^N 无代码  ? 帮助  q 退出")});
 }
 
@@ -649,11 +649,13 @@ Element ConfirmBody(const AppState& s, int width) {
 
 // ^P palette: a fuzzy-filterable command list (label + key hint).
 Element PaletteBody(const AppState& s, int width, int lh) {
+    // Same case-insensitive match the state machine filters with — the
+    // renderer must show exactly what Enter would run.
     std::vector<int> shown;
     for (int i = 0; i < static_cast<int>(s.palette.items.size()); ++i) {
         const PaletteItem& it = s.palette.items[i];
-        if (s.palette.input.empty() || it.label.find(s.palette.input) != std::string::npos ||
-            it.id.find(s.palette.input) != std::string::npos)
+        if (s.palette.input.empty() || CaseInsensitiveContains(it.label, s.palette.input) ||
+            CaseInsensitiveContains(it.id, s.palette.input))
             shown.push_back(i);
     }
     Elements out{hbox({text(" 命令> ") | bold, text(s.palette.input + "▏") | inverted})};
@@ -786,7 +788,7 @@ Element HelpBody() {
                  text("  a / c / p / b  AI 助手 / 云同步 / 插件 / Bug 扫描弹窗") | color(TextDim()),
                  text("  u             检查更新（GitHub Releases）") | color(TextDim()),
                  text("  Ctrl-K        全局搜索对白") | color(TextDim()),
-                 text("  Ctrl-M        权限模式 confirm ↔ full") | color(TextDim()),
+                 text("  Ctrl-G        权限模式 confirm ↔ full") | color(TextDim()),
                  text("  Ctrl-N        无代码模式开关（选效果/人物，不写代码）") |
                      color(TextDim()),
                  text("  无代码: 编辑字段时 Tab/↑↓ 选候选 · Enter 接受（带参槽进二级选择）") |
@@ -851,7 +853,7 @@ ftxui::Element BuildElement(const AppState& s, int width, int list_height) {
             case Page::Agent:
                 body = Modal(s, AgentBody(s, width, list_height),
                              "🤖 AI 助手" + (s.agent_label.empty() ? "" : "  " + s.agent_label),
-                             "Enter 发送  Esc 关闭  Ctrl-M 权限模式", width, list_height);
+                             "Enter 发送  Esc 关闭  Ctrl-G 权限模式", width, list_height);
                 break;
             case Page::Plugins:
                 body = Modal(s, PluginsBody(s, width, list_height), "🧩 插件管理",

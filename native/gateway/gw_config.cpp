@@ -406,6 +406,79 @@ bool parse_config(const sa::json& j, Config* out, std::string* err) {
             return false;
         }
         out->ai.daily_limit = lim;
+
+        // --- C1：托管 TTS / 生图转发（media_relay，默认关闭）--------------
+        if (ai.contains("media_relay")) {
+            const auto& m = ai["media_relay"];
+            if (!m.is_object()) {
+                *err = "ai_relay.media_relay must be an object";
+                return false;
+            }
+            if (!get_bool(m, "enabled", &out->ai.media_enabled, err)) return false;
+            long long mlim = out->ai.media_daily_limit;
+            if (!get_int(m, "daily_limit", &mlim, err)) return false;
+            if (mlim < 0) {
+                *err = "ai_relay.media_relay.daily_limit must be >= 0";
+                return false;
+            }
+            out->ai.media_daily_limit = mlim;
+            if (m.contains("tts")) {
+                const auto& t = m["tts"];
+                if (!t.is_object()) {
+                    *err = "ai_relay.media_relay.tts must be an object";
+                    return false;
+                }
+                if (!get_str(t, "provider", &out->ai.tts_provider, err)) return false;
+                if (!get_str(t, "base_url", &out->ai.tts_base_url, err)) return false;
+                if (!get_str(t, "api_key", &out->ai.tts_api_key, err)) return false;
+                if (!get_str(t, "model", &out->ai.tts_model, err)) return false;
+                if (!get_str(t, "voice", &out->ai.tts_voice, err)) return false;
+                if (!get_str(t, "format", &out->ai.tts_format, err)) return false;
+            }
+            if (m.contains("image")) {
+                const auto& im = m["image"];
+                if (!im.is_object()) {
+                    *err = "ai_relay.media_relay.image must be an object";
+                    return false;
+                }
+                if (!get_str(im, "base_url", &out->ai.image_base_url, err)) return false;
+                if (!get_str(im, "api_key", &out->ai.image_api_key, err)) return false;
+                if (!get_str(im, "model", &out->ai.image_model, err)) return false;
+            }
+            if (out->ai.media_enabled && out->ai.tts_api_key.empty() &&
+                out->ai.image_api_key.empty()) {
+                out->warnings.push_back(
+                    "ai_relay.media_relay enabled but no tts/image api_key configured");
+            }
+        }
+    }
+
+    // --- C2：托管 stdio MCP 桥接（默认关闭）--------------------------------
+    if (j.contains("mcp_stdio")) {
+        const auto& m = j["mcp_stdio"];
+        if (!m.is_object()) {
+            *err = "'mcp_stdio' must be an object";
+            return false;
+        }
+        if (!get_bool(m, "enabled", &out->mcp_stdio_enabled, err)) return false;
+        if (m.contains("allow")) {
+            if (!m["allow"].is_array()) {
+                *err = "mcp_stdio.allow must be an array of strings";
+                return false;
+            }
+            for (const auto& v : m["allow"]) {
+                if (!v.is_string()) {
+                    *err = "mcp_stdio.allow entries must be strings";
+                    return false;
+                }
+                const std::string item = sa_core::str::trim(v.get<std::string>());
+                if (!item.empty()) out->mcp_stdio_allow.push_back(item);
+            }
+        }
+        if (out->mcp_stdio_enabled && out->mcp_stdio_allow.empty()) {
+            out->warnings.push_back(
+                "mcp_stdio enabled but 'allow' is empty; every command will be denied");
+        }
     }
 
     // --- cloud_public_only（安全批次 A，默认 true）---------------------------

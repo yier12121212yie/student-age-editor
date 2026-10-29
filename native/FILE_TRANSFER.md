@@ -37,19 +37,32 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/v1/files/upload/request` | 上报 `{name, size}`，返回 30 分钟有效的 COS 公网 `PUT` 预签名 URL（`upload_url`/`cos_key`/`expires_in`）。 |
-| `POST` | `/api/v1/files/upload/complete` | `{file_id}` 通知上传完成；入后台队列，Worker 走内网 Endpoint 拉回本地磁盘、校验后删除 COS 暂存对象。返回 `202 {status:"archiving", retry_after}`。 |
-| `GET` | `/api/v1/files/:id/download` | 文件在 COS → 返回 `{status:"ready", url}`（CDN 或预签名 GET）；已在本地 → 触发预热并返回 `202 {status:"warming_up", retry_after}`；归档中返回 `202 {status:"archiving"}`。 |
+| `POST` | `/api/v1/files/upload/request` | 上报 `{name, size}`，返回 30 分钟有效的 COS 公网 `PUT` 预签名 URL（`upload_url`/`cos_key`/`expires_in`）。适合中小文件单次直传。 |
+| `POST` | `/api/v1/files/upload/multipart/init` | **大文件分片上传**：上报 `{name, size}`，后端调 COS `InitiateMultipartUpload`，返回 `{file_id, part_size, part_count, expires_in}`。`part_size` 默认 8 MiB，并按总大小自适应放大以满足「片数 ≤ 10000」。 |
+| `POST` | `/api/v1/files/upload/multipart/sign` | `{file_id, part_number}`（或 `{file_id, part_numbers:[...]}` 批量）→ 该片带 `partNumber`/`uploadId` 的预签名 PUT URL（`{parts:[{part_number, part_url}]}`）。 |
+| `POST` | `/api/v1/files/upload/multipart/complete` | `{file_id, parts:[{part_number, etag}]}` → 后端调 COS 合并分片，记录转 `archiving` 并入队落盘。返回 `202 {status:"archiving", retry_after}`。 |
+| `POST` | `/api/v1/files/upload/multipart/abort` | `{file_id}` 取消分片上传（best-effort `AbortMultipartUpload`）并标记 `failed`。 |
+| `GET` | `/api/v1/files/upload/modes` | 选路探测：`{cos, local, part_size}`。配了 COS 时 `cos:true`（前端优先用它，可走 CDN / 内网落盘）；否则 `local:true`，前端改走下面的本地分片。 |
+| `POST` | `/api/v1/files/upload/local/init` | **免对象存储的大文件上传**：上报 `{name, size}`，返回 `{file_id, part_size(=8 MiB), part_count}`，字节落到 `<data_root>` 下的暂存目录（上限沿用 `EDITOR_FILE_MAX_BYTES`）。 |
+| `PUT` | `/api/v1/files/upload/local/:id/part/:n` | 原始字节（`application/octet-stream`），第 `n` 片（1 起）；大小必须与 init 给出的分片边界完全一致，否则 400。请求体正好落在 httpd 的 raw_body 保留上限内。 |
+| `POST` | `/api/v1/files/upload/local/complete` | `{file_id}` 按序拼接分片、校验总大小后落成 `archived`（`storage_type:"local"`），可直接用于 `import_staged` / `add_ref`。 |
+| `POST` | `/api/v1/files/upload/local/abort` | `{file_id}` 清理暂存分片并标记 `failed`（客户端取消/出错时调用）。 |
+| `POST` | `/api/v1/files/upload/complete` | `{file_id}` 通知上传完成（单次直传与 COS 分片上传共用）；入后台队列，Worker 走内网 Endpoint 拉回本地磁盘、校验后删除 COS 暂存对象。返回 `202 {status:"archiving", retry_after}`。本地分片在 complete 时已落盘，**不需要**这一步。 |
+| `GET` | `/api/v1/files/:id/download` | 文件在 COS → 返回 `{status:"ready", url}`（CDN 或预签名 GET）；本地记录（无 COS）→ `{status:"ready", url:"/api/v1/files/<id>/raw", local:true}`；已在本地但配了 COS → 触发预热并返回 `202 {status:"warming_up", retry_after}`。 |
+| `GET` | `/api/v1/files/:id/raw` | **本地记录直读**（chunked 流）：浏览器必须带 `Authorization: Bearer`，因此前端用 XHR 取字节而不是原生下载。 |
 | `GET` | `/api/v1/files/:id` | 状态查询（供客户端轮询）。 |
 
 消费者：
 
 - **大模组包导入**（`POST /api/mods/import_staged {file_id}`，见
   `server/services/mods_routes.cpp`）：网页端选择 >48 MiB 的模组 zip 时，前端
-  自动走 申请 → PUT 直传 → complete 落盘 → 轮询 `archived` → import_staged
-  的链路，对落盘文件跑与 `import_path` 同款导入管线。该端点只认本账号数据根
-  里的已归档记录，**从不接受调用方提供的路径**（`import_path` 在托管模式下
-  依旧被网关封禁）。
+  自动走直传 → complete 落盘 → 轮询 `archived` → import_staged 的链路，对落盘
+  文件跑与 `import_path` 同款导入管线；其中 **>64 MiB 的包走 COS 分片上传**
+  （init → 逐片 sign + 浏览器 `Blob.slice` 直传 → complete 合并），单次请求
+  体与前端内存都被 `part_size` 兜住，数百 MB~GB 的包不再整包进内存。导入
+  解压按条目**流式落盘**（`ZipReader::extract_to_file`），大贴图/配乐也不整
+  条读进堆。该端点只认本账号数据根里的已归档记录，**从不接受调用方提供的
+  路径**（`import_path` 在托管模式下依旧被网关封禁）。
 - **单资源大文件「留 COS 只存引用」**（`POST /api/mods/add_ref {file_id,name,dir?}`，
   见 `server/services/mod_refs_routes.cpp`）：贴图/配乐/视频超过 48 MiB 时，
   浏览器同样直传，但不 `complete` 落盘——add_ref 把记录钉成 `linked`（永久
@@ -61,6 +74,10 @@
   store-only zip，产物用 `register_local_artifact` 登记为 `archived` 记录；
   客户端轮询 `/api/v1/files/:id/download` 拿直链，带进度下载。导出包内不含
   `cos_resources.json` 与 `.editor_history/`——分发的 zip 永远是自包含实体文件。
+  **拼包中间产物写在 `EDITOR_FILE_LOCAL_ROOT`（本地落盘根目录，大容量盘）下
+  的 `.export_stage/`**，而不是系统临时目录：系统 temp 往往是容量小/易满的盘
+  （Linux tmpfs、Windows C:），大模组写到这里会 ENOSPC，表现为
+  「打包失败: write failed: &lt;某资源&gt;」；与产物目录同盘后登记也退化为原子 rename。
 - 人物立绘/背景等资源图走各自的扩展通道（`PORTRAITS.md` / `BACKGROUNDS.md`），
   与本模块共用 COS 配置。
 
@@ -72,6 +89,14 @@
 > 关闭，由管理员自管桶策略）；CDN 侧不继承 COS 桶的 CORS，若下载走 CDN，请在
 > CDN 域名配置响应头 `Access-Control-Allow-Origin`，否则前端会自动退回**浏览器
 > 原生下载**（无页内进度条，但不依赖 CORS）。
+
+> **没有对象存储时**：`GET /api/v1/files/upload/modes` 返回 `local:true`，浏览器
+> 改走 8 MiB 本地分片（`local/init` → 逐片 `PUT local/:id/part/:n` →
+> `local/complete`），字节直接写进服务器盘上的暂存目录，不经过 COS、也不需要
+> 任何 CORS 配置。分片大小刻意等于 httpd 的 `kRawBodyKeepMax`（8 MiB），
+> 每片都会作为原始请求体完整转发。大文件上限沿用 `EDITOR_FILE_MAX_BYTES`
+> （缺省 2 GiB，`0` 表示不限制）。导出下载走带鉴权的
+> `GET /api/v1/files/:id/raw`（前端用 XHR 取字节并显示进度）。
 
 客户端直传示例（`upload_url` 为 PUT 预签名地址，直接送文件流即可）：
 

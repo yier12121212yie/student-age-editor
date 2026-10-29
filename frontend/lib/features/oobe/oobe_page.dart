@@ -4,6 +4,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/error_text.dart';
 import '../../core/motion.dart';
 import '../../core/platform_env.dart';
 import '../../core/responsive.dart';
@@ -15,7 +16,7 @@ import '../../core/app_theme.dart';
 ///
 /// 首次访问自动显示，也可用启动参数 --oobe 强制开启。
 /// 步骤（均为可选，下一步即跳过）：欢迎 → 工作区 → 首个 Mod → AI 助手
-/// → TTS 配音 → 界面风格 → 云存储 → 完成提交。
+/// → 界面风格 → 云存储 → 完成提交。
 /// 完成或跳过都会写入后端共享标记（editor_env.json 的 oobe_completed），
 /// 与 CLI / TUI 共用，任一端完成后不再自动弹出。
 class OobePage extends StatefulWidget {
@@ -42,7 +43,7 @@ class OobePage extends StatefulWidget {
 class _OobePageState extends State<OobePage> {
   static Color get accent => accentColor;
   static Color get hintColor => palette.textMuted;
-  static const _totalSteps = 7; // 欢迎·工作区·Mod·AI·TTS·风格·云
+  static const _totalSteps = 6; // 欢迎·工作区·Mod·AI·风格·云
 
   int _step = 0;
   bool _busy = false;
@@ -70,14 +71,6 @@ class _OobePageState extends State<OobePage> {
   late final TextEditingController _aiModelCtrl;
   double _aiTemp = 0.7;
 
-  // TTS 配音步骤
-  String _ttsProvider = '';
-  late final TextEditingController _ttsApiKeyCtrl;
-  late final TextEditingController _ttsGroupIdCtrl;
-  late final TextEditingController _ttsModelCtrl;
-  late final TextEditingController _ttsVoiceCtrl;
-  double _ttsSpeed = 1.0;
-
   // 界面风格步骤
   late UiMode _uiMode = UiMode.creation;
   late UiMode _uiModeInitial = UiMode.creation;
@@ -103,10 +96,6 @@ class _OobePageState extends State<OobePage> {
     _aiBaseUrlCtrl = TextEditingController();
     _aiApiKeyCtrl = TextEditingController();
     _aiModelCtrl = TextEditingController();
-    _ttsApiKeyCtrl = TextEditingController();
-    _ttsGroupIdCtrl = TextEditingController();
-    _ttsModelCtrl = TextEditingController();
-    _ttsVoiceCtrl = TextEditingController();
     _cloudNameCtrl = TextEditingController();
     _cloudUrlCtrl = TextEditingController();
     _cloudRootCtrl = TextEditingController();
@@ -126,10 +115,6 @@ class _OobePageState extends State<OobePage> {
     _aiBaseUrlCtrl.dispose();
     _aiApiKeyCtrl.dispose();
     _aiModelCtrl.dispose();
-    _ttsApiKeyCtrl.dispose();
-    _ttsGroupIdCtrl.dispose();
-    _ttsModelCtrl.dispose();
-    _ttsVoiceCtrl.dispose();
     _cloudNameCtrl.dispose();
     _cloudUrlCtrl.dispose();
     _cloudRootCtrl.dispose();
@@ -175,12 +160,6 @@ class _OobePageState extends State<OobePage> {
       _aiApiKeyCtrl.text = ai.apiKey;
       _aiModelCtrl.text = ai.model;
       _aiTemp = ai.temperature;
-      _ttsProvider = ai.ttsProvider;
-      _ttsApiKeyCtrl.text = ai.ttsApiKey;
-      _ttsGroupIdCtrl.text = ai.ttsGroupId;
-      _ttsModelCtrl.text = ai.ttsModel;
-      _ttsVoiceCtrl.text = ai.ttsVoice;
-      _ttsSpeed = ai.ttsSpeed.clamp(0.5, 2.0);
       _uiMode = mode;
       _uiModeInitial = mode;
     });
@@ -201,7 +180,7 @@ class _OobePageState extends State<OobePage> {
       ? _suggestedWorkspace
       : _wsCtrl.text.trim();
 
-  /// AI / TTS 有任一输入时返回待保存的配置，否则返回 null（前端保存 + 写穿
+  /// AI 有任一输入时返回待保存的配置，否则返回 null（前端保存 + 写穿
   /// /api/ai/settings；生图等未编辑字段沿用既有配置，避免误覆盖）。
   Future<AiSettings?> _collectAiSettings() async {
     final base = await AiSettings.load();
@@ -214,25 +193,10 @@ class _OobePageState extends State<OobePage> {
       imageModel: base.imageModel,
       imageApiKey: base.imageApiKey,
       imageBaseUrl: base.imageBaseUrl,
-      ttsProvider: _ttsProvider,
-      ttsApiKey: _ttsApiKeyCtrl.text.trim(),
-      ttsBaseUrl: base.ttsBaseUrl,
-      ttsModel: _ttsModelCtrl.text.trim(),
-      ttsVoice: _ttsVoiceCtrl.text.trim(),
-      ttsGroupId: _ttsGroupIdCtrl.text.trim(),
-      ttsSpeed: _ttsSpeed,
-      ttsVolume: base.ttsVolume,
-      ttsPitch: base.ttsPitch,
-      ttsFormat: base.ttsFormat,
     );
     final any = ai.apiKey.isNotEmpty ||
         ai.baseUrl.isNotEmpty ||
-        ai.model.isNotEmpty ||
-        ai.ttsProvider.isNotEmpty ||
-        ai.ttsApiKey.isNotEmpty ||
-        ai.ttsGroupId.isNotEmpty ||
-        ai.ttsModel.isNotEmpty ||
-        ai.ttsVoice.isNotEmpty;
+        ai.model.isNotEmpty;
     return any ? ai : null;
   }
 
@@ -295,7 +259,7 @@ class _OobePageState extends State<OobePage> {
           _cloudTestMsg = (r is Map && r['ok'] == true) ? '连接成功' : '连接失败');
     } catch (e) {
       if (!mounted) return;
-      setState(() => _cloudTestMsg = '连接失败：$e');
+      setState(() => _cloudTestMsg = '连接失败：${humanizeErrorMessage(e)}');
     } finally {
       if (mounted) setState(() => _cloudTesting = false);
     }
@@ -321,11 +285,13 @@ class _OobePageState extends State<OobePage> {
         // flow only created it on the final step, so skipping/or leaving early
         // silently dropped the entered name.
         if (!await _ensureModCreated()) return;
+        if (!mounted) return;
         setState(() => _step = 3);
         return;
       default:
         if (_step == _totalSteps - 1) {
           await _finish(setupMod: true);
+          if (!mounted) return;
         } else {
           setState(() => _step += 1);
         }
@@ -378,7 +344,7 @@ class _OobePageState extends State<OobePage> {
           if (mounted) setState(() => _busy = false);
           return;
         }
-        // AI / TTS：有输入才落盘（本地缓存 + 写穿 .editor_ai.json）
+        // AI：有输入才落盘（本地缓存 + 写穿 .editor_ai.json）
         final ai = await _collectAiSettings();
         if (ai != null) await ai.save();
         // 界面风格：有变更才切换（回调由应用侧持久化并立即生效）
@@ -409,7 +375,8 @@ class _OobePageState extends State<OobePage> {
         _busy = false;
         _modError = e.toString();
       });
-      _toast('操作失败：$e', severity: fluent.InfoBarSeverity.error);
+      _toast('操作失败：${humanizeErrorMessage(e)}',
+          severity: fluent.InfoBarSeverity.error);
     }
   }
 
@@ -514,14 +481,14 @@ class _OobePageState extends State<OobePage> {
                     style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: palette.textHigh)),
               ),
               const SizedBox(height: 22),
-              _feature(FluentIcons.folder_open_24_regular, '离线文件模式',
-                  '直接读写 Cfgs/zh-cn/*.json，无需游戏进程'),
-              _feature(FluentIcons.checkmark_circle_24_regular, 'Schema 校验',
-                  '406 张配置表字段类型校验，避免脏数据写坏存档'),
-              _feature(FluentIcons.code_24_regular, 'CLI / TUI / GUI',
-                  '三种界面共用同一份配置；本向导完成后不会再次弹出'),
+              _feature(FluentIcons.folder_open_24_regular, '离线编辑',
+                  '直接编辑本机模组文件，无需启动游戏'),
+              _feature(FluentIcons.checkmark_circle_24_regular, '自动检查',
+                  '保存前自动检查内容，避免写坏存档'),
+              _feature(FluentIcons.code_24_regular, '多种界面风格',
+                  '创作 / 经典 / 剧情图任选；本向导完成后不会再次弹出'),
               _feature(FluentIcons.settings_24_regular, '一次性完成初始配置',
-                  '工作区、首个 Mod、AI 助手、配音、云存储均可在此配置，随时可跳过'),
+                  '工作区、首个 Mod、AI 助手、云存储均可在此配置，随时可跳过'),
               if (_modsCount > 0)
                 Padding(
                   padding: const EdgeInsets.only(top: 14),
@@ -539,7 +506,7 @@ class _OobePageState extends State<OobePage> {
               Text('① 选择工作区',
                   style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
-              Text('存放模组的根目录，选择后 CLI/TUI/GUI 三端通用；目录不存在会自动创建。',
+              Text('存放模组的根目录，各界面通用；目录不存在会自动创建。',
                   style: TextStyle(fontSize: 11, color: hintColor)),
               const SizedBox(height: 16),
               _radioTile(
@@ -587,7 +554,7 @@ class _OobePageState extends State<OobePage> {
               Text('② 创建第一个模组（可选）',
                   style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
-              Text('生成 manifest.json 与 Cfgs/zh-cn 空骨架；留空则直接进入编辑器。',
+              Text('生成模组清单与空白结构；留空则直接进入编辑器。',
                   style: TextStyle(fontSize: 11, color: hintColor)),
               const SizedBox(height: 16),
               Text('模组名称', style: TextStyle(fontSize: 12, color: hintColor)),
@@ -686,73 +653,11 @@ class _OobePageState extends State<OobePage> {
         );
       case 4:
         return SingleChildScrollView(
-          key: const ValueKey('oobe-tts'),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('④ 配音 TTS（可选）',
-                  style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 4),
-              Text('为文本合成语音：阿里云（DashScope）或 MiniMax（T2A V2）；留空即可跳过。',
-                  style: TextStyle(fontSize: 11, color: hintColor)),
-              const SizedBox(height: 16),
-              _fieldLabel('服务商'),
-              fluent.ComboBox<String>(
-                value: _ttsProvider,
-                isExpanded: true,
-                items: const [
-                  fluent.ComboBoxItem(value: '', child: Text('未配置（跳过）')),
-                  fluent.ComboBoxItem(value: 'aliyun', child: Text('阿里云 DashScope（百炼）')),
-                  fluent.ComboBoxItem(value: 'minimax', child: Text('MiniMax（T2A V2）')),
-                ],
-                onChanged: (v) => setState(() => _ttsProvider = v ?? ''),
-              ),
-              const SizedBox(height: 12),
-              _fieldLabel('API Key'),
-              fluent.TextBox(
-                controller: _ttsApiKeyCtrl,
-                obscureText: true,
-                placeholder: 'sk-...（阿里云）或 MiniMax API Key',
-              ),
-              if (_ttsProvider == 'minimax') ...[
-                const SizedBox(height: 12),
-                _fieldLabel('Group ID（MiniMax 控制台获取）'),
-                fluent.TextBox(
-                  controller: _ttsGroupIdCtrl,
-                  placeholder: '19xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-                ),
-              ],
-              const SizedBox(height: 12),
-              _fieldLabel('模型（留空使用默认）'),
-              fluent.TextBox(
-                controller: _ttsModelCtrl,
-                placeholder: 'qwen-tts / cosyvoice-v2 / speech-02-hd',
-              ),
-              const SizedBox(height: 12),
-              _fieldLabel('默认音色（留空使用服务商默认）'),
-              fluent.TextBox(
-                controller: _ttsVoiceCtrl,
-                placeholder: 'Cherry / female-shaonv / 其他 voice id',
-              ),
-              const SizedBox(height: 12),
-              _fieldLabel('语速'),
-              fluent.Slider(
-                value: _ttsSpeed,
-                min: 0.5,
-                max: 2,
-                onChanged: (v) => setState(() => _ttsSpeed = v),
-                label: '${_ttsSpeed.toStringAsFixed(1)}x',
-              ),
-            ],
-          ),
-        );
-      case 5:
-        return SingleChildScrollView(
           key: const ValueKey('oobe-style'),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('⑤ 界面风格（可选）',
+              Text('④ 界面风格（可选）',
                   style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               Text('选择你习惯的界面布局，切换后立即生效，可随时在设置页修改。',
@@ -790,7 +695,7 @@ class _OobePageState extends State<OobePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('⑥ 云存储（可选）',
+              Text('⑤ 云存储（可选）',
                   style: TextStyle(fontSize: 15, color: palette.textHigh, fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               Text('把 Mod 目录连接到云盘做备份/同步；可留空跳过，之后在「云同步」面板随时添加。',

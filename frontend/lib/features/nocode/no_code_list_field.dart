@@ -4,7 +4,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import '../../core/app_theme.dart';
 import '../editor/field_utils.dart';
 
-/// 无代码模式下的普通数据数组（非效果码 / 无引用规则）：**行级列表编辑器**。
+/// 简易模式下的普通数据数组（非效果码 / 无引用规则）：**行级列表编辑器**。
 ///
 /// 与 [NoCodeEffectField] 的区别：这里的值是生日、立绘排版参数一类的普通
 /// 数据，展示效果码候选既帮不上忙也不符合游戏实际语义。本编辑器只做「增删
@@ -35,7 +35,7 @@ class NoCodeListField extends StatefulWidget {
 
   final ValueChanged<dynamic> onChanged;
 
-  /// 逃生口：关闭无代码模式以便手动编辑（null = 不显示）。
+  /// 逃生口：切换到高级编辑以便手动编辑（null = 不显示）。
   final VoidCallback? onDisableNoCode;
 
   /// 紧凑形态（剧情图内联卡片约 200px 宽）：缩小字号与行距。
@@ -187,7 +187,7 @@ class _NoCodeListFieldState extends State<NoCodeListField> {
               child: fluent.Button(
                 onPressed: widget.onDisableNoCode,
                 child: const Text(
-                  '关闭无代码模式以手动编辑',
+                  '切换到高级编辑',
                   style: TextStyle(fontSize: 10),
                 ),
               ),

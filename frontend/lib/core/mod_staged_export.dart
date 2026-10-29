@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'api_client.dart';
 import 'blob_put.dart';
+import 'long_task_progress.dart';
 
 class StagedModExport {
   StagedModExport._();
@@ -22,7 +23,9 @@ class StagedModExport {
   static Future<({String filename, Uint8List? bytes, String url})> run(
     String? name, {
     void Function(String label, double? frac)? onStage,
+    bool Function()? isCancelled,
   }) async {
+    _checkCancel(isCancelled);
     onStage?.call('服务端打包', null);
     final raw = await ApiClient.instance.runLongTask(
       '/api/mods/export_staged',
@@ -38,7 +41,9 @@ class StagedModExport {
     onStage?.call('等待分发就绪', null);
     final deadline = DateTime.now().add(const Duration(minutes: 30));
     String url = '';
+    bool local = false;
     while (true) {
+      _checkCancel(isCancelled);
       final rec = await ApiClient.instance.get('/api/v1/files/$fileId/download');
       final m = rec is Map ? rec.cast<String, dynamic>() : const <String, dynamic>{};
       final status = (m['status'] ?? '').toString();
@@ -46,6 +51,7 @@ class StagedModExport {
       if (status == 'ready' || status == 'linked' || status == 's3_uploaded') {
         if (got.isNotEmpty) {
           url = got;
+          local = m['local'] == true;
           break;
         }
       }
@@ -59,16 +65,45 @@ class StagedModExport {
       await Future<void>.delayed(Duration(seconds: retry));
     }
 
+    _checkCancel(isCancelled);
     onStage?.call('下载中', 0);
+    // 本地记录（未配置 COS 的部署）走 /api/v1/files/{id}/raw：必须带鉴权，
+    // 浏览器原生下载拿不到 Bearer，所以这里只能取字节（仍带进度）。
+    final source = _absolute(url);
     try {
-      final bytes = await getBytesFromUrl(url, onProgress: (received, total) {
-        if (total > 0) onStage?.call('下载中', received / total);
-      });
-      return (filename: filename, bytes: bytes, url: url);
+      final bytes = local
+          ? await getBytesFromUrlWithHeaders(
+              source,
+              headers: ApiClient.instance.authHeaders(),
+              onProgress: (received, total) {
+                if (total > 0) onStage?.call('下载中', received / total);
+              },
+            )
+          : await getBytesFromUrl(source, onProgress: (received, total) {
+              if (total > 0) onStage?.call('下载中', received / total);
+            });
+      return (filename: filename, bytes: bytes, url: source);
     } catch (_) {
+      // 本地通道失败没有「无鉴权直链」可退回，如实上抛让用户重试。
+      if (local) rethrow;
       // 对象存储/CDN 未放行 CORS（或直链读取失败）：退回浏览器原生下载。
       onStage?.call('浏览器下载', null);
-      return (filename: filename, bytes: null, url: url);
+      return (filename: filename, bytes: null, url: source);
     }
+  }
+
+  /// 本地下载接口返回站内相对路径（`/api/v1/files/{id}/raw`）。
+  static String _absolute(String url) {
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    final base = ApiClient.instance.baseUrl;
+    if (base.endsWith('/') && url.startsWith('/')) {
+      return '${base.substring(0, base.length - 1)}$url';
+    }
+    return '$base$url';
+  }
+
+  /// 取消检查点：已取消则抛出 [LongTaskCancelled]（调用方静默吞掉）。
+  static void _checkCancel(bool Function()? isCancelled) {
+    if (isCancelled?.call() ?? false) throw const LongTaskCancelled();
   }
 }

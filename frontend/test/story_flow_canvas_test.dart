@@ -10,64 +10,19 @@ import 'package:http/testing.dart';
 
 import 'package:student_age_editor/core/api_client.dart';
 import 'package:student_age_editor/core/models.dart';
-import 'package:student_age_editor/features/editor/field_meta.dart';
 import 'package:student_age_editor/features/story/story_director_view.dart';
 import 'package:student_age_editor/features/story/story_flow_graph.dart';
 import 'package:student_age_editor/features/story/story_flow_models.dart';
 import 'package:student_age_editor/features/story/story_logic.dart';
 
-/// 内联展开区要渲染的字段：与 workspace 交给画布的同一份清单同形。
-/// 渲染出来是「label key」，所以断言里的中文名就是这里的 label。
-const _talkMetas = <FieldMeta>[
-  FieldMeta(key: 'roleName', type: 'String', label: '说话人', section: 'common'),
-  FieldMeta(key: 'content', type: 'String', label: '台词', section: 'common'),
-  FieldMeta(
-    key: 'check',
-    type: '2D Array',
-    label: '检定',
-    section: 'common',
-    effectLike: true,
-    suggestMode: 'condition',
-    multivalued: true,
-  ),
-  FieldMeta(
-    key: 'screenEffect',
-    type: '1D Array',
-    label: '屏幕效果',
-    section: 'common',
-    effectLike: true,
-    suggestMode: 'screen',
-    multivalued: true,
-    replaceWholeOnAccept: true,
-  ),
-  FieldMeta(
-    key: 'bg',
-    type: 'Number',
-    label: '背景',
-    section: 'common',
-    rule: FieldRule(dictName: 'bgs'),
-  ),
-  FieldMeta(
-    key: 'audio',
-    type: 'Number',
-    label: '音频',
-    section: 'common',
-    rule: FieldRule(dictName: 'audios'),
-  ),
-  FieldMeta(key: 'time', type: 'Number', label: '时间', section: 'common'),
-];
-
-/// 画布交互回归测试：内联编辑区的滚轮隔离、删除入口（按钮/键盘）、
-/// 缩放状态下的节点命中。
+/// 画布交互回归测试：卡片内联编辑（正文/说话人）的指针让位、删除入口
+/// （键盘）、缩放状态下的节点命中。
 void main() {
   const nodeId = '1000001001';
 
   late FlowGraph graph;
   late Map<String, TextEditingController> ctls;
-  late Set<String> expanded;
-  late List<String> deletedNodes;
   late int requestDeleteCalls;
-  late List<String> toggleExpandCalls;
   late FlowSelection selection;
 
   setUp(() {
@@ -81,17 +36,14 @@ void main() {
       starts: [nodeId],
     );
     ctls = {};
-    expanded = {};
-    deletedNodes = [];
     requestDeleteCalls = 0;
-    toggleExpandCalls = [];
     selection = FlowSelection.none;
   });
 
   TextEditingController ctlFor(String id, String field) =>
-      ctls.putIfAbsent('$id|$field', () => TextEditingController(text: ''));
+      ctls.putIfAbsent('$id|$field', () => TextEditingController(text: 'a'));
 
-  // 回调触发后需以新的 selected/expanded 重建（模拟宿主 setState）。
+  // 回调触发后需以新的 selected 重建（模拟宿主 setState）。
   Future<void> pump(
     WidgetTester tester, {
     Map<String, Offset>? positions,
@@ -108,17 +60,15 @@ void main() {
                 graph: graph,
                 positions: positions ?? const {nodeId: Offset(100, 100)},
                 selection: selection,
-                expandedNodes: expanded,
                 onSelectionChanged: (s) => selection = s,
                 onMoveNode: (_, _) {},
                 onAddEdge: (_, _, _) {},
                 onDeleteEdge: (_, _, _) {},
                 onRequestDelete: () => requestDeleteCalls++,
-                onToggleExpand: (id) => toggleExpandCalls.add(id),
                 fieldController: ctlFor,
-                inlineMetas: (_) => _talkMetas,
                 onFieldChanged: (_, _, _) {},
-                onDeleteNode: deletedNodes.add,
+                speakerController: (_) => null,
+                onSpeakerSubmitted: (_, _) {},
               ),
             ),
           ),
@@ -136,14 +86,6 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  double editorScrollOffset(WidgetTester tester) {
-    final scrollable = find.descendant(
-      of: find.byType(StoryFlowGraph),
-      matching: find.byType(Scrollable),
-    );
-    return tester.state<ScrollableState>(scrollable.first).position.pixels;
-  }
-
   /// 视口缩放：阶段 4 后卡片按世界像素布局，缩放只体现在 FlowViewport 上，
   /// 控件 layout size 恒定不变，所以直接读画布状态暴露的视口。
   double viewScale(WidgetTester tester) => tester
@@ -152,35 +94,21 @@ void main() {
       .value
       .scale;
 
-  group('展开内联编辑器', () {
-    testWidgets('点击删除按钮调用 onDeleteNode', (tester) async {
-      expanded.add(nodeId);
+  group('卡片内联编辑', () {
+    testWidgets('正文可直接编辑（卡片内出现输入框）', (tester) async {
       await pump(tester);
-      expect(find.text('参数'), findsOneWidget);
-      await tester.tap(find.text('删除'));
-      await tester.pumpAndSettle();
-      expect(deletedNodes, [nodeId]);
+      expect(find.byType(EditableText), findsWidgets);
     });
 
-    testWidgets('展开对白节点含 screenEffect 编辑行', (tester) async {
-      expanded.add(nodeId);
-      await pump(tester);
-      expect(find.textContaining('屏幕效果 screenEffect'), findsOneWidget);
-      // 选项类字段不应出现在对白编辑区
-      expect(find.textContaining('主支对白'), findsNothing);
-    });
-
-    testWidgets('编辑区内的滚轮只滚编辑区，不缩放画布', (tester) async {
-      expanded.add(nodeId);
+    testWidgets('正文区滚轮不缩放画布', (tester) async {
       await pump(tester);
       final before = viewScale(tester);
-      await wheel(tester, const Offset(200, 300), 120);
+      // 卡片 (100,100) 的正文区（标题条 30px 以下）。
+      await wheel(tester, const Offset(150, 170), 120);
       expect(viewScale(tester), before, reason: '画布被缩放：滚轮穿透到了画布 zoom');
-      expect(editorScrollOffset(tester), greaterThan(0.0), reason: '编辑区自身应可滚动');
     });
 
     testWidgets('空白画布上的滚轮仍然缩放', (tester) async {
-      expanded.add(nodeId);
       await pump(tester);
       final before = viewScale(tester);
       await wheel(tester, const Offset(600, 500), -120);
@@ -191,8 +119,8 @@ void main() {
   group('删除入口', () {
     testWidgets('选中节点后按 Delete 键触发 onRequestDelete', (tester) async {
       await pump(tester);
-      // 点击底座卡片选中节点（不落在端口/箭头上）
-      await tester.tapAt(const Offset(150, 130));
+      // 点击标题条左侧拖拽把手选中节点（正文/说话人输入区会让位给输入框）
+      await tester.tapAt(const Offset(108, 115));
       await tester.pumpAndSettle();
       await pump(tester); // 以 selected 重建，模拟宿主 setState
       expect(selection.onlyNode, nodeId);
@@ -207,8 +135,9 @@ void main() {
       // 在空白处 (600,500) 放大 1.1 倍：pan = (600,500)*(-0.1) = (-60,-50)，
       // 节点 (100,100) → 屏幕 (50,60)，卡片足迹 x∈[50,270]、y∈[60,183]。
       // 旧命中矩形宽未乘 scale（右缘 250+4），260 处落空 → 复现该 bug。
+      // 点标题条左侧把手（缩放后 x∈[50,70]、y∈[60,93]）。
       await wheel(tester, const Offset(600, 500), -120);
-      await tester.tapAt(const Offset(260, 120));
+      await tester.tapAt(const Offset(62, 78));
       await tester.pumpAndSettle();
       expect(
         selection.onlyNode,
@@ -238,17 +167,15 @@ void main() {
                         graph: graph,
                         positions: const {nodeId: Offset(100, 100)},
                         selection: selection,
-                        expandedNodes: expanded,
                         onSelectionChanged: (s) => selection = s,
                         onMoveNode: (_, _) {},
                         onAddEdge: (_, _, _) {},
                         onDeleteEdge: (_, _, _) {},
                         onRequestDelete: () => requestDeleteCalls++,
-                        onToggleExpand: (id) => toggleExpandCalls.add(id),
                         fieldController: ctlFor,
-                        inlineMetas: (_) => _talkMetas,
                         onFieldChanged: (_, _, _) {},
-                        onDeleteNode: deletedNodes.add,
+                        speakerController: (_) => null,
+                        onSpeakerSubmitted: (_, _) {},
                       ),
                     ),
                   ],
@@ -264,7 +191,8 @@ void main() {
       await tester.tapAt(const Offset(20, 15)); // 点外部文本框，焦点离开画布
       await tester.pumpAndSettle();
       expect(fieldFocus.hasFocus, isTrue);
-      await tester.tapAt(const Offset(150, 130)); // 点选节点
+      // 画布上方有 30px 的文本框：节点在画布内的 (100,100)，屏幕 y 要 +30。
+      await tester.tapAt(const Offset(108, 145)); // 点标题把手选中节点
       await tester.pumpAndSettle();
       await pumpWithField(); // 以 selected 重建，模拟宿主 setState
       expect(selection.onlyNode, nodeId);
@@ -292,7 +220,7 @@ void main() {
 
     testWidgets('左键按下卡片仍可选中（门控不误伤正常操作）', (tester) async {
       await pump(tester);
-      final g = await tester.startGesture(const Offset(150, 130));
+      final g = await tester.startGesture(const Offset(108, 115));
       await g.up();
       await tester.pumpAndSettle();
       expect(selection.onlyNode, nodeId);
@@ -344,12 +272,13 @@ void main() {
         .viewportListenable
         .value;
 
-    /// 节点底座中部的屏幕坐标：与绘制同一套换算（screen = pan + scale·world）。
+    /// 节点标题条左侧拖拽把手的屏幕坐标：与绘制同一套换算
+    /// （screen = pan + scale·world），+（6,12）落在把手内。
     Offset screenOf(WidgetTester tester, Offset world) =>
         world * viewport(tester).scale +
         viewport(tester).pan +
         tester.getTopLeft(find.byType(StoryFlowGraph)) +
-        const Offset(60, 40);
+        const Offset(6, 12);
 
     testWidgets('视口外节点不挂卡片；平移进来后可点选', (tester) async {
       // 画布 900x700：世界 (1200,900) 在视口外，一次平移即可送进可见区。

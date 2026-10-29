@@ -53,8 +53,13 @@
       Windows 安装包另需 Inno Setup 6（缺失时 Windows 通道打印警告后跳过
       安装包步骤，仅出便携 zip）；Linux 安装包另需 dpkg-deb 与
       appimagetool；macOS 安装包使用系统自带 hdiutil/pkgbuild/productbuild。
+      web 通道可选 pip 包：fonttools（图标字体子集化 + 内置中文字体生成，
+      缺失则首屏多约 4 MB 或中文回退引擎切片）、brotli（额外预压缩，缺失则
+      只有 gzip）。内置中文字体已随仓库提交，正常构建无需联网。
 """
 import argparse
+import gzip
+import hashlib
 import io
 import json
 import os
@@ -112,6 +117,25 @@ NATIVE_SERVER_BINS = ("backend", "backend_gateway")
 # Web 特征文件（构建产物级）：桌面 zip/APK 与服务器包清单断言用
 WEB_FINGERPRINT_TOKENS = ("flutter_service_worker", "main.dart.js",
                           "index.html")
+# fallback 字体镜像脚本（Roboto / Noto 中文切片 → 同源 fallback_fonts/）
+WEB_FALLBACK_FONT_SCRIPT = os.path.join(ROOT, "tools",
+                                        "fetch_web_fallback_fonts.py")
+# 图标字体子集化脚本（fluent 字体按实际引用裁剪，4.4 MB → ~0.05 MB）
+WEB_ICON_SUBSET_SCRIPT = os.path.join(ROOT, "tools",
+                                      "subset_web_icon_fonts.py")
+# 内置中文字体（Web 用；CanvasKit 没有系统字体，靠引擎 fallback 切片不可靠）
+WEB_CJK_FONT_SCRIPT = os.path.join(ROOT, "tools", "build_web_cjk_font.py")
+WEB_CJK_FONT_ASSET = os.path.join(FRONTEND, "assets", "fonts", "EditorCJK.ttf")
+WEB_CJK_FONT_BUILT = "assets/assets/fonts/EditorCJK.ttf"
+# 预压缩旁文件（.gz/.br）的源文件类型；图片/woff2 本身已压缩，跳过
+WEB_PRECOMPRESS_EXTS = (".html", ".htm", ".js", ".mjs", ".css", ".json",
+                        ".wasm", ".ttf", ".otf", ".svg", ".txt", ".xml",
+                        ".map")
+# 首屏体积预算（gzip）：main.dart.js 1.66 MB、chromium wasm 1.96 MB、
+# 内置中文字体 1.36 MB，留出功能增长余量；超出即打印醒目警告，防止悄悄回到
+# 11 MB 级首屏。6 MB 同时兜住「图标字体子集化失效」（会再回到 ~5.8 MB）。
+WEB_MAIN_JS_BUDGET = 2.2 * 1048576
+WEB_FIRST_LOAD_BUDGET = 6.0 * 1048576
 
 # ----------------------------- Windows 安装包 -----------------------------
 SETUP_ISS = os.path.join(ROOT, "packaging", "installer", "setup.iss")
@@ -259,11 +283,10 @@ def _image_pack_ready(pack_dir):
 def _ensure_image_pack_dir(zip_path, pack_dir, export_script, label, hint):
     """导出一个图片资源扩展包（可选）并解包出安装目录；不可用时返回 False。
 
-    人物图片包要从游戏 bundle 解码真实立绘，依赖装有《学生时代》的 Windows
-    机器 + UnityPy/Pillow（见 packaging/export_portrait_pack.py）；背景包可
-    直接吃 `参考资料/背景` 已解码图片（见 export_background_pack.py）。任何
-    前置缺失都只提示并返回 False，不阻塞安装包构建——安装器侧据此隐藏对应的
-    可选组件。
+    人物图片包优先吃 `Tex2D/role`（备用回退 `参考资料/人物立绘` 或游戏 bundle 解码，
+    见 packaging/export_portrait_pack.py）；背景包优先吃 `Tex2D/bg`（备用回退
+    `参考资料/背景` 或游戏 bundle，见 export_background_pack.py）。任何前置缺失
+    都只提示并返回 False，不阻塞安装包构建——安装器侧据此隐藏对应的可选组件。
     """
     if _image_pack_ready(pack_dir):
         return True
@@ -296,7 +319,7 @@ def _ensure_portrait_pack_dir():
     """导出「人物图片资源扩展包」（可选组件）。"""
     return _ensure_image_pack_dir(
         PORTRAIT_PACK_ZIP, PORTRAIT_PACK_DIR, PORTRAIT_PACK_EXPORT,
-        "人物图片资源扩展包", "需装有游戏的机器")
+        "人物图片资源扩展包", "需 Tex2D/role 或装有游戏的机器")
 
 
 def _background_pack_ready():
@@ -307,7 +330,7 @@ def _ensure_background_pack_dir():
     """导出「背景图片资源扩展包」（可选组件）。"""
     return _ensure_image_pack_dir(
         BACKGROUND_PACK_ZIP, BACKGROUND_PACK_DIR, BACKGROUND_PACK_EXPORT,
-        "背景图片资源扩展包", "需 参考资料/背景 或装有游戏的机器")
+        "背景图片资源扩展包", "需 Tex2D/bg 或 参考资料/背景 或装有游戏的机器")
 
 
 def build_installer(version, source_dir):
@@ -575,7 +598,12 @@ def _zip_flat(src_dir, zip_path):
                 p = os.path.join(root, name)
                 if os.path.isdir(p):
                     continue
-                z.write(p, os.path.relpath(p, src_dir))
+                rel = os.path.relpath(p, src_dir)
+                # .gz/.br 旁文件本身不可再压缩：存储模式，省 CPU 也不变差。
+                mode = (zipfile.ZIP_STORED
+                        if rel.endswith((".gz", ".br"))
+                        else zipfile.ZIP_DEFLATED)
+                z.write(p, rel, compress_type=mode)
     return zip_path
 
 
@@ -622,26 +650,287 @@ def _stage_web_readme(dst_dir):
                 "   随后浏览器打开后端提示的本地地址即可使用。\n")
 
 
+def _write_bytes_if_changed(path, data):
+    """只在新内容不同时落盘，保留 mtime（构建可重复、ETag 稳定）。"""
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) == len(data):
+            with open(path, "rb") as f:
+                if f.read() == data:
+                    return False
+    except OSError:
+        pass
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+    return True
+
+
+def _write_web_version_stamp(version):
+    """生成 web 根目录的 version.json（前端产物的「有新版本」检测）。
+
+    `build` 取 main.dart.js 的内容指纹（sha256 前 16 位）：代码一变就变，
+    与版本号是否手写无关。index.html 里的轮询脚本比对该值，发现变化就提示
+    「刷新以使用新版本」——否则已打开的标签页会一直跑旧包（service worker
+    只在新页面加载时才切换）。文件缺失时不影响功能，只少一条更新提示。"""
+    main_js = os.path.join(WEB_DIST, "main.dart.js")
+    if not os.path.isfile(main_js):
+        print("    警告：缺少 main.dart.js，跳过 version.json 生成。")
+        return False
+    digest = hashlib.sha256()
+    with open(main_js, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    payload = {"version": version, "build": digest.hexdigest()[:16]}
+    data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    _write_bytes_if_changed(os.path.join(WEB_DIST, "version.json"), data)
+    print("    版本指纹：%s（%s）" % (payload["build"], version))
+    return True
+
+
+def _mirror_web_fallback_fonts():
+    """把 Roboto / Noto 中文切片镜像进 build/web/fallback_fonts/。
+
+    失败只告警：产物的 bootstrap 会探测 manifest.json，缺失时回退
+    fonts.gstatic.com（开发构建/离线构建仍然可用，只是国内会慢）。"""
+    if not os.path.isfile(WEB_FALLBACK_FONT_SCRIPT):
+        print("    提示：未找到 %s，跳过 fallback 字体镜像。"
+              % os.path.relpath(WEB_FALLBACK_FONT_SCRIPT, ROOT))
+        return False
+    print("    镜像 fallback 字体（Noto Sans SC / Roboto / Emoji / Symbols）...")
+    proc = subprocess.run(
+        [sys.executable, WEB_FALLBACK_FONT_SCRIPT, "--web-root", WEB_DIST],
+        cwd=ROOT)
+    if proc.returncode != 0:
+        print("    警告：fallback 字体镜像失败；网页版将回退 fonts.gstatic.com"
+              "（中国大陆可能不可达）。")
+        return False
+    return True
+
+
+def _web_precompress_skip(rel):
+    """本通道（dart2js + canvaskit）永远不会请求的 wasm 变体。
+
+    skwasm/wimp/webparagraph 只服务 `--wasm` 构建；.symbols 是给调试器用的
+    符号表，运行时不加载。压缩它们只会让发行 zip 白白多出十几 MB。"""
+    if rel.startswith(("canvaskit/skwasm", "canvaskit/wimp",
+                       "canvaskit/webparagraph/")):
+        return True
+    return rel.endswith(".symbols")
+
+
+def _ensure_web_cjk_font():
+    """确保内置中文字体存在（缺失时尝试用 tools/build_web_cjk_font.py 生成）。
+
+    字体已随仓库提交，正常构建不会重新生成；只有字符集/生成器变化或文件被
+    删掉时才需要下载源字体并重新裁剪（约 1-2 分钟）。"""
+    if os.path.isfile(WEB_CJK_FONT_ASSET):
+        return True
+    print("    内置中文字体缺失，尝试生成（首次需下载约 17 MB 源字体）...")
+    if not os.path.isfile(WEB_CJK_FONT_SCRIPT):
+        print("    警告：未找到 %s，跳过。" % os.path.relpath(
+            WEB_CJK_FONT_SCRIPT, ROOT))
+        return False
+    proc = subprocess.run([sys.executable, WEB_CJK_FONT_SCRIPT], cwd=ROOT)
+    if proc.returncode != 0 or not os.path.isfile(WEB_CJK_FONT_ASSET):
+        print("    警告：内置中文字体生成失败；网页版首屏中文可能显示豆腐块。")
+        return False
+    return True
+
+
+def _subset_web_icon_fonts():
+    """按源码引用裁剪 fluent 图标字体（flutter_tools 对包字体只裁表不裁字形）。"""
+    if not os.path.isfile(WEB_ICON_SUBSET_SCRIPT):
+        print("    提示：未找到 %s，跳过图标字体子集化。"
+              % os.path.relpath(WEB_ICON_SUBSET_SCRIPT, ROOT))
+        return False
+    print("    裁剪图标字体（fluent_ui / fluentui_system_icons）...")
+    proc = subprocess.run(
+        [sys.executable, WEB_ICON_SUBSET_SCRIPT, "--web-root", WEB_DIST],
+        cwd=ROOT)
+    if proc.returncode != 0:
+        print("    警告：图标字体子集化失败，保留原字体（首屏多约 4 MB）。")
+        return False
+    return True
+
+
+def _precompress_web_assets(root):
+    """为静态产物生成 .gz/.br 旁文件（静态路由据 Accept-Encoding 选择）。
+
+    返回 {相对路径: {"raw": bytes, "gz": bytes, "br": bytes}}。图片、woff2
+    等已压缩格式跳过；小于 1 KB 的文件压缩收益抵不过头部开销，也跳过。"""
+    try:
+        import brotli  # type: ignore
+    except ImportError:
+        brotli = None
+        print("    提示：未安装 brotli 模块，只生成 .gz"
+              "（CI 里 pip install brotli 可再降约 15%）")
+
+    removed = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if not name.endswith((".gz", ".br")):
+                continue
+            full = os.path.join(dirpath, name)
+            base = full[:-3]
+            rel = os.path.relpath(base, root).replace("\\", "/")
+            stale = not os.path.isfile(base) or _web_precompress_skip(rel)
+            if name.endswith(".br") and brotli is None:
+                stale = True
+            if stale:
+                try:
+                    os.remove(full)
+                    removed += 1
+                except OSError:
+                    pass
+    if removed:
+        print("    清理过期旁文件 %d 个" % removed)
+
+    stats = {}
+    total_raw = total_gz = total_br = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for name in sorted(files):
+            if name.endswith((".gz", ".br")):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in WEB_PRECOMPRESS_EXTS:
+                continue
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root).replace("\\", "/")
+            # 本通道是 dart2js/canvaskit 构建；skwasm/wimp/webparagraph 变体
+            # 只服务 --wasm 构建，浏览器永远不会请求。
+            if _web_precompress_skip(rel):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size < 1024:
+                continue
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+            except OSError:
+                continue
+            entry = {"raw": size}
+            gz = gzip.compress(data, compresslevel=9, mtime=0)
+            if len(gz) < len(data):
+                _write_bytes_if_changed(path + ".gz", gz)
+                entry["gz"] = len(gz)
+            if brotli is not None:
+                quality = 9 if size >= 1048576 else 11
+                br = brotli.compress(data, quality=quality)
+                if len(br) < len(data):
+                    _write_bytes_if_changed(path + ".br", br)
+                    entry["br"] = len(br)
+            stats[rel] = entry
+            total_raw += entry["raw"]
+            total_gz += entry.get("gz", entry["raw"])
+            total_br += entry.get("br", entry.get("gz", entry["raw"]))
+    print("    预压缩 %d 个文件：%.2f MB -> gzip %.2f MB%s"
+          % (len(stats), total_raw / 1048576.0, total_gz / 1048576.0,
+             (" / brotli %.2f MB" % (total_br / 1048576.0)) if brotli else ""))
+    return stats
+
+
+def _web_size_report(stats):
+    """打印首屏传输估算并按预算告警（不阻断构建，避免误伤发布）。"""
+    def pick(rel):
+        return stats.get(rel, {})
+
+    def fmt(entry):
+        raw = entry.get("raw", 0)
+        gz = entry.get("gz", raw)
+        br = entry.get("br", gz)
+        return "%.2f MB -> gzip %.2f MB / br %.2f MB" % (
+            raw / 1048576.0, gz / 1048576.0, br / 1048576.0)
+
+    main = pick("main.dart.js")
+    canvas = pick("canvaskit/chromium/canvaskit.wasm") or \
+        pick("canvaskit/canvaskit.wasm")
+    cjk = pick(WEB_CJK_FONT_BUILT)
+
+    font_rels = []
+    manifest = os.path.join(WEB_DIST, "assets", "FontManifest.json")
+    try:
+        with open(manifest, "r", encoding="utf-8") as f:
+            for fam in json.load(f):
+                for font in fam.get("fonts", []):
+                    asset = font.get("asset", "")
+                    if asset:
+                        font_rels.append("assets/" + asset)
+    except (OSError, ValueError):
+        pass
+
+    fonts = [pick(r) for r in font_rels if r in stats]
+    font_raw = sum(e.get("raw", 0) for e in fonts)
+    font_gz = sum(e.get("gz", e.get("raw", 0)) for e in fonts)
+    font_br = sum(e.get("br", e.get("gz", e.get("raw", 0))) for e in fonts)
+
+    first_gz = sum(e.get("gz", e.get("raw", 0))
+                   for e in (main, canvas, cjk) + tuple(fonts))
+    first_br = sum(e.get("br", e.get("gz", e.get("raw", 0)))
+                   for e in (main, canvas, cjk) + tuple(fonts))
+
+    if main:
+        print("    [首屏] main.dart.js        " + fmt(main))
+    if canvas:
+        print("    [首屏] CanvasKit(wasm)     " + fmt(canvas))
+    if cjk:
+        print("    [首屏] 内置中文字体        " + fmt(cjk))
+    elif not os.path.isfile(os.path.join(WEB_DIST,
+                                        *WEB_CJK_FONT_BUILT.split("/"))):
+        print("    警告：产物缺少内置中文字体（Web 首屏中文会退化为引擎切片，"
+              "可能出现豆腐块）")
+    if fonts:
+        print("    [首屏] 图标/声明字体 %2d 个  %.2f MB -> gzip %.2f MB / br %.2f MB"
+              % (len(fonts), font_raw / 1048576.0, font_gz / 1048576.0,
+                 font_br / 1048576.0))
+    print("    [首屏] 合计（不含按需 fallback 切片）  gzip %.2f MB / br %.2f MB"
+          % (first_gz / 1048576.0, first_br / 1048576.0))
+
+    assert main.get("gz") or main.get("br"), \
+        "构建产物缺少 main.dart.js 的 .gz/.br 旁文件（静态路由将只能下发原始 5 MB 包）"
+    if main.get("gz", 0) > WEB_MAIN_JS_BUDGET:
+        print("    警告：main.dart.js gzip %.2f MB 超过预算 %.2f MB"
+              % (main.get("gz", 0) / 1048576.0,
+                 WEB_MAIN_JS_BUDGET / 1048576.0))
+    if first_gz > WEB_FIRST_LOAD_BUDGET:
+        print("    警告：首屏 gzip %.2f MB 超过预算 %.2f MB"
+              % (first_gz / 1048576.0,
+                 WEB_FIRST_LOAD_BUDGET / 1048576.0))
+
+
 def build_web_release(version, skip_frontend=False):
     """web 目标：flutter build web → dist/web-app-<版本>.zip（独立发行物）。
 
     版本注入沿用 build_frontend 的惯例（现有通道不传 --dart-define，构建
     版本号由 pubspec 承担）；跨平台可构建，产物不进任何桌面包。"""
     global _TOTAL_STEPS
-    _TOTAL_STEPS = 2
+    _TOTAL_STEPS = 3
     _step(1, "构建 Flutter Web 前端 ...")
     if not skip_frontend:
         cmd = _flutter_cmd()
         if cmd is None:
             raise SystemExit("错误：未找到 flutter 命令。"
                              "请安装 Flutter SDK 并将其加入 PATH。")
-        subprocess.run(cmd + ["build", "web", "--release"],
+        _ensure_web_cjk_font()
+        # --no-web-resources-cdn：CanvasKit 从同源 canvaskit/ 取，不依赖
+        # www.gstatic.com（与 web/flutter_bootstrap.js 里的配置一致）。
+        subprocess.run(cmd + ["build", "web", "--release",
+                              "--no-web-resources-cdn"],
                        cwd=FRONTEND, check=True)
     else:
         assert os.path.isfile(os.path.join(WEB_DIST, "index.html")), \
             "--skip-frontend 但找不到 Web 构建产物 %s" % WEB_DIST
 
-    _step(2, "组装并打包 Web 发行版 ...")
+    _step(2, "镜像 fallback 字体 + 裁剪图标字体 + 生成预压缩旁文件 ...")
+    _mirror_web_fallback_fonts()
+    _subset_web_icon_fonts()
+    _write_web_version_stamp(version)
+    _web_size_report(_precompress_web_assets(WEB_DIST))
+
+    _step(3, "组装并打包 Web 发行版 ...")
     if not os.path.isdir(WEB_DIST):
         raise SystemExit("错误：未找到 flutter build web 产物目录 %s"
                          "（先不带 --skip-frontend 构建一次）。" % WEB_DIST)

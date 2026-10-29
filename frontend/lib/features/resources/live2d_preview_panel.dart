@@ -8,6 +8,7 @@ import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/texture_budget.dart';
 
 /// Live2D 模型面板：模型库 + 表达式渲染预览。
 ///
@@ -33,8 +34,13 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
   Map<String, dynamic>? _selected;
   String? _curExpr;
 
-  /// `path|expression` → PNG 字节。会话级内存缓存。
-  final Map<String, Uint8List> _renderCache = {};
+  /// `path|expression` → PNG 字节。会话级缓存。
+  ///
+  /// 阶段 5·C10：原先是**裸 `Map`，没有任何上限**——而 Live2D 渲染 PNG 单张可达
+  /// 数 MB，切 20 个表达式就是 20 张常驻。改为条数 + 总字节双上限的 LRU。
+  /// 淘汰时连带把对应的**解码位图**从引擎缓存里赶走（否则压缩字节没了、位图还占着）。
+  final BoundedByteLru _renderCache =
+      BoundedByteLru(maxEntries: 12, maxBytes: 64 << 20);
   Uint8List? _renderBytes;
   bool _rendering = false;
   String? _renderError;
@@ -46,6 +52,14 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
   void initState() {
     super.initState();
     _loadModels();
+  }
+
+  @override
+  void dispose() {
+    // 阶段 5：面板退场即回收——压缩字节交给 LRU，解码位图交回引擎。
+    final all = _renderCache.clear();
+    if (all.isNotEmpty) unawaited(TextureBudget.evictBytes(all));
+    super.dispose();
   }
 
   // ---------------- 模型列表 ----------------
@@ -150,7 +164,10 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
       final bytes = data.length > 256 * 1024
           ? await compute(_base64DecodeIsolate, data)
           : base64Decode(data);
-      _renderCache[key] = bytes;
+      // 阶段 5·C10：写入上限 LRU，并把被淘汰的那些字节对应的**解码位图**也
+      // 从引擎缓存里赶走（只丢压缩字节不丢位图 = 峰值照样涨）。
+      final dropped = _renderCache.put(key, bytes);
+      if (dropped.isNotEmpty) unawaited(TextureBudget.evictBytes(dropped));
       if (!mounted || seq != _renderSeq) return; // 已被更新的渲染取代
       setState(() {
         _renderBytes = bytes;
@@ -168,8 +185,8 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
   }
 
   void _showRenderError(String msg) {
-    setState(() => _renderError = msg);
     if (!mounted) return;
+    setState(() => _renderError = msg);
     fluent.displayInfoBar(context,
         builder: (ctx, close) => fluent.InfoBar(
               severity: fluent.InfoBarSeverity.error,
@@ -320,11 +337,20 @@ class _Live2DPreviewPanelState extends State<Live2DPreviewPanel> {
               children: [
                 if (_renderBytes != null && !_rendering)
                   Positioned.fill(
-                    child: InteractiveViewer(
-                      maxScale: 6,
-                      child: Center(
-                        child: Image.memory(_renderBytes!,
-                            fit: BoxFit.contain, gaplessPlayback: true),
+                    child: LayoutBuilder(
+                      builder: (context, box) => InteractiveViewer(
+                        maxScale: 6,
+                        child: Center(
+                          // 阶段 5·C10：此处此前**没有 cacheWidth**，每次都按
+                          // 后端渲染出的原分辨率解码（单张可达数 MB）。按面板
+                          // 实际宽度 × DPR 降采样。
+                          child: Image.memory(_renderBytes!,
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              cacheWidth: TextureBudget.decodeWidth(
+                                  context, box.maxWidth,
+                                  max: TextureBudget.kLive2dMaxDecodeWidth)),
+                        ),
                       ),
                     ),
                   )

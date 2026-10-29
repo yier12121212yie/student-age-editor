@@ -25,6 +25,8 @@
 #include <thread>
 
 #include "server/revision_manager.h"
+#include "sa_core/paths.h"
+#include "sa_core/sha256.h"
 #include "test_support.h"
 
 namespace {
@@ -96,16 +98,39 @@ TEST_CASE("revision_manager: unchanged files reuse the fingerprint cache") {
     CHECK(rm::debug_files_hashed_count() == 3);
 
     // Fresh scan with no content change: everything comes from the cache.
+    // B2：同一 root 重复 set 不再自动失效，显式强制一次扫描来验证复用。
     rm::set_workspace_root(root);
-    REQUIRE_FALSE(rm::get_current_revision().empty());
+    REQUIRE_FALSE(rm::compute_revision_cached(true).empty());
     CHECK(rm::debug_files_scanned_count() == 3);
     CHECK(rm::debug_files_hashed_count() == 0);
 
     // A changed file forces exactly that one file to be re-hashed.
     rm::set_workspace_root(root);
     write_file(fx.root / "Cfgs" / "zh-cn" / "TalkCfg.json", R"({"id":"t9"})");
-    REQUIRE_FALSE(rm::get_current_revision().empty());
+    REQUIRE_FALSE(rm::compute_revision_cached(true).empty());
     CHECK(rm::debug_files_hashed_count() == 1);
+}
+
+TEST_CASE("revision_manager: 写后播种指纹，重算不再重读该文件") {
+    RevFixture fx("rev_seed");
+    const std::string root = fx.root.string();
+    rm::set_workspace_root(root);
+    REQUIRE_FALSE(rm::compute_revision_cached(true).empty());
+
+    // 模拟 cfg_store 的一次写盘：内容变了，mtime/size 也变了。
+    const auto p = fx.root / "Cfgs" / "zh-cn" / "TalkCfg.json";
+    write_file(p, R"({"id":"t2"})");
+    auto raw = sa_core::paths::read_bytes(p.string());
+    REQUIRE(raw.has_value());
+    auto st = sa_core::paths::stat(p.string());
+    REQUIRE(st.has_value());
+
+    // 路径故意用 Windows 分隔符：seed 与 collect_target_files 的 `/` 必须归一。
+    rm::seed_file_fingerprint(p.string(), st->mtime_ns, st->size,
+                              sa_core::sha256_hex(*raw));
+    rm::invalidate_cache();
+    REQUIRE_FALSE(rm::compute_revision_cached(false).empty());
+    CHECK(rm::debug_files_hashed_count() == 0);
 }
 
 TEST_CASE("revision_manager: 空 root 与空 client_revision 的边界") {

@@ -1,16 +1,20 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_dialogs.dart';
+import '../../core/app_feedback.dart';
 import '../../core/app_theme.dart';
+import '../../core/debouncer.dart';
+import '../../core/error_text.dart';
 import '../../core/models.dart';
-import '../../core/motion.dart';
+import '../../core/workbench_controller.dart';
 import '../../core/workbench_guard.dart';
 import '../../core/workbench_scaffold.dart';
+import '../../core/save_bar.dart';
+import '../editor/section_card.dart';
+import '../editor/synced_fields.dart';
 import '../blocks/block_library.dart';
 import '../editor/field_utils.dart';
 import '../resources/image_asset_picker.dart' show TexThumb;
@@ -40,20 +44,24 @@ class MinigamesWorkbench extends StatefulWidget {
 const _gameCfg = 'MinigameCfg';
 const _actionCfg = 'MinigameActionCfg';
 
-class _TableBuf {
-  _TableBuf(this.name, this.data, this.snap, this.mtime);
-
-  final String name;
-  Map<String, dynamic> data;
-  String snap;
-  int? mtime;
-
-  bool get dirty => jsonEncode(data) != snap;
-}
-
 class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
     with WorkbenchLeaveGuard<MinigamesWorkbench> {
-  final Map<String, _TableBuf> _tables = {};
+  /// A3：可写主表（`GuideCfg` / `RelationCfg` / `TalkCfg` 为只读引用表）。
+  late final WorkbenchController _ctl = WorkbenchController(
+    cfgs: const [_gameCfg, _actionCfg],
+    onConflict: _onConflict,
+    onError: (e) {
+      if (mounted) {
+        AppFeedback.error(context, '保存失败：${humanizeErrorMessage(e)}',
+            detail: e.toString());
+      }
+    },
+    onSaved: (_) {},
+  );
+
+  /// 兼容旧访问点：把控制器表按名字包成 map（读取 `data` / `dirty` / `mtime`）。
+  Map<String, WorkbenchTable> get _tables =>
+      {for (final t in _ctl.tables) t.cfg: t};
 
   Map<String, dynamic> _guides = {};
   Map<String, dynamic> _relations = {};
@@ -68,32 +76,36 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
   String _search = '';
 
   final TextEditingController _searchCtrl = TextEditingController();
+  final Debouncer _searchDebounce = Debouncer();
 
   @override
   void initState() {
     super.initState();
+    _ctl.addListener(_onCtl);
     _loadAll();
+  }
+
+  void _onCtl() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _ctl.loading;
+      _saving = _ctl.saving;
+      _error = _ctl.error?.toString();
+    });
   }
 
   @override
   void dispose() {
+    _ctl.removeListener(_onCtl);
+    _ctl.dispose();
     _searchCtrl.dispose();
+    _searchDebounce.dispose();
     super.dispose();
   }
 
   // ------------------------------------------------------------------
   // 数据
   // ------------------------------------------------------------------
-
-  Map<String, dynamic> _dataOf(dynamic r) {
-    if (r is Map && r['data'] is Map) {
-      return (r['data'] as Map).cast<String, dynamic>();
-    }
-    return <String, dynamic>{};
-  }
-
-  int? _mtimeOf(dynamic r) =>
-      (r is Map && r['mtime_ns'] is int) ? r['mtime_ns'] as int : null;
 
   // ---- 离开守卫（切模式/切模组/刷新）：见 core/workbench_guard.dart ----
   @override
@@ -110,38 +122,20 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
   String get guardSubject => '小游戏库';
 
   Future<void> _loadAll() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
     try {
       final res = await Future.wait([
-        ApiClient.instance.get('/api/cfg/$_gameCfg'),
-        ApiClient.instance.get('/api/cfg/$_actionCfg'),
+        _ctl.load(),
         ApiClient.instance.get('/api/cfg/GuideCfg'),
         ApiClient.instance.get('/api/cfg/RelationCfg'),
         ApiClient.instance.get('/api/cfg/TalkCfg'),
       ]);
       if (!mounted) return;
-      final games = _dataOf(res[0]);
-      final actions = _dataOf(res[1]);
-      _guides = _dataOf(res[2]);
-      _relations = _dataOf(res[3]);
-      _talks = _dataOf(res[4]);
-      _tables
-        ..clear()
-        ..[_gameCfg] =
-            _TableBuf(_gameCfg, games, jsonEncode(games), _mtimeOf(res[0]))
-        ..[_actionCfg] =
-            _TableBuf(_actionCfg, actions, jsonEncode(actions), _mtimeOf(res[1]));
+      _guides = WorkbenchController.extractData(res[1]);
+      _relations = WorkbenchController.extractData(res[2]);
+      _talks = WorkbenchController.extractData(res[3]);
       _ensureSelection();
-      setState(() => _loading = false);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+    } catch (_) {
+      // 错误已由控制器记录并经监听器反映到 _error。
     }
   }
 
@@ -162,71 +156,21 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
 
   bool _tableDirty(String t) => _tables[t]?.dirty ?? false;
 
-  bool get _dirty => _tableDirty(_gameCfg) || _tableDirty(_actionCfg);
+  bool get _dirty => _ctl.dirtyDeep;
 
   Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      for (final name in const [_gameCfg, _actionCfg]) {
-        final buf = _tables[name]!;
-        if (!buf.dirty) continue;
-        final ok = await _saveTable(buf);
-        if (!ok || !mounted) return;
-      }
-      if (mounted) _info('小游戏库已保存', fluent.InfoBarSeverity.success);
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<bool> _saveTable(_TableBuf buf) async {
-    var force = false;
-    for (;;) {
-      try {
-        final body = <String, dynamic>{
-          'data': buf.data,
-          if (!force) 'expect_mtime_ns': buf.mtime,
-          if (force) 'force': true,
-        };
-        final r = await ApiClient.instance.put('/api/cfg/${buf.name}', body: body);
-        if (!mounted) return false;
-        buf.mtime = _mtimeOf(r);
-        buf.snap = jsonEncode(buf.data);
-        return true;
-      } on ApiException catch (e) {
-        if (!mounted) return false;
-        if (e.statusCode == 409 && !force) {
-          final act = await _conflictDialog(buf.name);
-          if (!mounted) return false;
-          if (act == 'reload') {
-            await _loadAll();
-            return false;
-          }
-          if (act == 'force') {
-            force = true;
-            continue;
-          }
-          return false;
-        }
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      } catch (e) {
-        if (!mounted) return false;
-        _info('保存失败：$e', fluent.InfoBarSeverity.error);
-        return false;
-      }
-    }
+    final ok = await _ctl.save();
+    if (mounted && ok) AppFeedback.success(context, '小游戏库已保存');
   }
 
   void _discard() {
-    setState(() {
-      for (final buf in _tables.values) {
-        buf.data = (jsonDecode(buf.snap) as Map).cast<String, dynamic>();
-      }
-      _ensureSelection();
-    });
+    _ctl.discard();
+    _ensureSelection();
   }
+
+  /// 409 冲突弹窗 → 控制器的 [WorkbenchConflictChoice]。
+  Future<WorkbenchConflictChoice?> _onConflict(WorkbenchTable table) =>
+      showWorkbenchConflictDialog(context, table);
 
   Future<String?> _conflictDialog(String name) {
     return fluent.showDialog<String>(
@@ -253,17 +197,6 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
     );
   }
 
-  void _info(String msg, fluent.InfoBarSeverity severity) {
-    if (!mounted) return;
-    fluent.displayInfoBar(
-      context,
-      builder: (ctx, close) => fluent.InfoBar(
-        title: Text(msg),
-        severity: severity,
-      ),
-    );
-  }
-
   // ------------------------------------------------------------------
   // 行访问
   // ------------------------------------------------------------------
@@ -280,11 +213,20 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
       _selLevel == null ? null : _rowIn(_actionCfg, _selLevel!);
 
   List<String> get _sortedGames {
+    // 排序结果按源表版本号缓存：一次 build 内多处调用共享同一份结果，
+    // 源表未变时也不重排。避免每帧 O(n log n) 与重复组装。
+    final rev = _ctl.table(_gameCfg).revision;
+    if (rev == _sortRev) return _sortedGamesCache;
     final ids = _tableData(_gameCfg).keys.toList();
     ids.sort((a, b) =>
         (int.tryParse(a) ?? 0).compareTo(int.tryParse(b) ?? 0));
+    _sortRev = rev;
+    _sortedGamesCache = ids;
     return ids;
   }
+
+  int _sortRev = -1;
+  List<String> _sortedGamesCache = const [];
 
   List<String> _levelsOf(String? gameId) {
     if (gameId == null) return const [];
@@ -507,36 +449,15 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return Container(
-        color: palette.bgDeep2,
-        child: const Center(child: fluent.ProgressRing()),
-      );
-    }
-    if (_error != null) {
-      return Container(
-        color: palette.bgDeep2,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(FluentIcons.error_circle_24_regular,
-                  size: 34, color: palette.statusDanger),
-              const SizedBox(height: 10),
-              Text('小游戏库加载失败',
-                  style: TextStyle(fontSize: 13, color: palette.textPrimary)),
-              const SizedBox(height: 6),
-              Text('$_error',
-                  style: TextStyle(fontSize: 11, color: palette.textMuted)),
-              const SizedBox(height: 12),
-              fluent.Button(onPressed: _loadAll, child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
-    }
-
     return WorkbenchScaffold(
+      errorTitle: '小游戏数据加载失败',
+      status: _loading
+          ? WorkbenchStatus.loading
+          : _error != null
+              ? WorkbenchStatus.error
+              : WorkbenchStatus.ready,
+      error: _error,
+      onRetry: _loadAll,
       leftBuilder: (w) => _leftPanel(w),
       center: _center(),
       rightBuilder: (w) => _rightPanel(w),
@@ -569,7 +490,8 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
                 fluent.TextBox(
                   controller: _searchCtrl,
                   placeholder: '搜索小游戏名称或编号',
-                  onChanged: (v) => setState(() => _search = v),
+                  onChanged: (v) =>
+                      _searchDebounce.run(() => setState(() => _search = v)),
                 ),
                 const SizedBox(height: 10),
                 fluent.FilledButton(
@@ -578,7 +500,7 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
                       style: TextStyle(fontSize: 12.5)),
                 ),
                 const SizedBox(height: 6),
-                _MiniBtn(
+                WorkbenchMiniButton(
                   label: '删除此小游戏',
                   danger: true,
                   enabled: _selGame != null,
@@ -718,7 +640,7 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
                       color: palette.textHigh),
                 ),
                 const SizedBox(height: 2),
-                Text('MinigameCfg · #$_selGame',
+                Text('小游戏 · 编号 $_selGame',
                     style: TextStyle(fontSize: 10.5, color: palette.textMuted)),
               ],
             ),
@@ -730,23 +652,23 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
   }
 
   Widget _gameEditor(Map<String, dynamic> game) {
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '小游戏定义',
       children: [
-        _labeled('名称', _SyncedText(
+        _labeled('名称', SyncedTextField(
           value: game['name']?.toString() ?? '',
           hint: '小游戏名称',
           onChanged: (v) => setState(() => game['name'] = v),
         )),
-        _labeled('玩法提示', _SyncedText(
+        _labeled('玩法提示', SyncedTextField(
           value: game['tips']?.toString() ?? '',
           hint: '显示给玩家的玩法说明',
           maxLines: 3,
           onChanged: (v) => setState(() => game['tips'] = v),
         )),
-        _labeled('背景音乐编号', _NumBox(
-          value: game['bgm'],
-          hint: 'AudioCfg 编号，0 = 无',
+        _labeled('背景音乐编号', NumBox(
+          format: true, value: game['bgm'],
+          hint: '音频编号，0 = 不播放',
           onChanged: (v) => setState(() => game['bgm'] = (v ?? 0).toInt()),
         )),
       ],
@@ -757,8 +679,8 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
 
   Widget _levelsSection() {
     final levels = _levelsOf(_selGame);
-    return _SectionCard(
-      title: '关卡（MinigameActionCfg）',
+    return WorkbenchSectionCard(
+      title: '关卡',
       subtitle: '编号规则：小游戏编号 × 100 + 关卡序号（第 1~5 关）。',
       children: [
         Wrap(
@@ -806,23 +728,23 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
                       fontWeight: FontWeight.w600,
                       color: palette.textHigh)),
               const Spacer(),
-              _MiniBtn(label: '删除此关', danger: true, onTap: _deleteLevel),
+              WorkbenchMiniButton(label: '删除此关', danger: true, onTap: _deleteLevel),
             ],
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: _labeled('精力消耗', _NumBox(
-                  value: level['cost'],
+                child: _labeled('精力消耗', NumBox(
+                  format: true, value: level['cost'],
                   onChanged: (v) =>
                       setState(() => level['cost'] = (v ?? 0).toInt()),
                 )),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _labeled('模式', _NumBox(
-                  value: level['mode'],
+                child: _labeled('模式', NumBox(
+                  format: true, value: level['mode'],
                   onChanged: (v) =>
                       setState(() => level['mode'] = (v ?? 0).toInt()),
                 )),
@@ -839,7 +761,7 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
             },
             onChanged: (v) => setState(() => level['needRelation'] = v),
           )),
-          _labeled('数值参数（逗号分隔）', _ListNumField(
+          _labeled('数值参数（逗号分隔）', ListNumField(
             value: parms,
             hint: '例如 30,60,0.5,0.2',
             onChanged: (v) => setState(() => level['parms'] = v),
@@ -847,27 +769,27 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
           Row(
             children: [
               Expanded(
-                child: _labeled('开场对话', _NumBox(
-                  value: level['startTalk'],
-                  hint: 'TalkCfg 编号',
+                child: _labeled('开场对话', NumBox(
+                  format: true, value: level['startTalk'],
+                  hint: '对话编号',
                   onChanged: (v) =>
                       setState(() => level['startTalk'] = (v ?? 0).toInt()),
                 )),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _labeled('胜利对话', _NumBox(
-                  value: level['winTalk'],
-                  hint: 'TalkCfg 编号',
+                child: _labeled('胜利对话', NumBox(
+                  format: true, value: level['winTalk'],
+                  hint: '对话编号',
                   onChanged: (v) =>
                       setState(() => level['winTalk'] = (v ?? 0).toInt()),
                 )),
               ),
             ],
           ),
-          _labeled('失败对话', _NumBox(
-            value: level['loseTalk'],
-            hint: 'TalkCfg 编号',
+          _labeled('失败对话', NumBox(
+            format: true, value: level['loseTalk'],
+            hint: '对话编号',
             onChanged: (v) =>
                 setState(() => level['loseTalk'] = (v ?? 0).toInt()),
           )),
@@ -891,7 +813,7 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
                     ],
                   ),
                 ),
-                _MiniBtn(label: '打开积木库', onTap: _editEffect),
+                WorkbenchMiniButton(label: '打开积木库', onTap: _editEffect),
               ],
             ),
           ),
@@ -903,55 +825,13 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
   // ---------- 底部保存条 ----------
 
   Widget _saveBar() {
-    final dirty = _dirty;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            dirty
-                ? FluentIcons.circle_24_filled
-                : FluentIcons.checkmark_circle_24_regular,
-            size: 12,
-            color: dirty ? palette.statusWarn : palette.statusOk,
-          ),
-          const SizedBox(width: 6),
-          Text(dirty ? '有未保存的修改' : '已与磁盘同步',
-              style: TextStyle(fontSize: 11.5, color: palette.textSecondary)),
-          const Spacer(),
-          if (widget.onOpenSearch != null)
-            _MiniBtn(label: '检索剧情库', onTap: widget.onOpenSearch!),
-          const SizedBox(width: 8),
-          _MiniBtn(
-            label: '放弃修改',
-            enabled: dirty && !_saving,
-            onTap: _discard,
-          ),
-          const SizedBox(width: 8),
-          fluent.FilledButton(
-            onPressed: (!dirty || _saving) ? null : _saveAll,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_saving)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: fluent.ProgressRing(strokeWidth: 2),
-                  )
-                else
-                  const Icon(FluentIcons.save_24_regular, size: 13),
-                const SizedBox(width: 6),
-                const Text('保存修改', style: TextStyle(fontSize: 12.5)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return SaveBar(
+      dirty: _dirty,
+      saving: _saving,
+      onSave: _saveAll,
+      onDiscard: _discard,
+      onOpenSearch: widget.onOpenSearch,
+      history: _ctl,
     );
   }
 
@@ -972,7 +852,7 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _SectionCard(
+                  WorkbenchSectionCard(
                     title: '玩法预览',
                     children: [_previewCard(game)],
                   ),
@@ -1052,11 +932,11 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
   Widget _statsCard(Map<String, dynamic> game) {
     final levels = _levelsOf(_selGame);
     final level = _level;
-    return _SectionCard(
+    return WorkbenchSectionCard(
       title: '统计与引用',
       children: [
         _kv('关卡数量', '${levels.length}'),
-        _kv('背景音乐', _intOf(game, 'bgm') == 0 ? '无' : 'AudioCfg #${_intOf(game, 'bgm')}'),
+        _kv('背景音乐', _intOf(game, 'bgm') == 0 ? '无' : '音频编号 ${_intOf(game, 'bgm')}'),
         if (level != null) ...[
           _kv('当前关卡', '第 ${_levelIndex(_selLevel ?? '')} 关'),
           _kv('精力消耗', '${_intOf(level, 'cost')}'),
@@ -1114,51 +994,6 @@ class _MinigamesWorkbenchState extends State<MinigamesWorkbench>
 // 通用小部件
 // ---------------------------------------------------------------------------
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.children,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-      decoration: BoxDecoration(
-        color: palette.bgAlt,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: palette.goldText)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(
-                    fontSize: 11, height: 1.6, color: palette.textMuted)),
-          ],
-          const SizedBox(height: 10),
-          for (final c in children) ...[
-            c,
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
 
 class _Tag extends StatelessWidget {
   const _Tag({required this.text, required this.color});
@@ -1334,222 +1169,6 @@ class _DropdownInt extends StatelessWidget {
       onChanged: (v) {
         if (v != null) onChanged(v);
       },
-    );
-  }
-}
-
-class _SyncedText extends StatefulWidget {
-  const _SyncedText({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-    this.maxLines = 1,
-  });
-
-  final String value;
-  final ValueChanged<String> onChanged;
-  final String? hint;
-  final int maxLines;
-
-  @override
-  State<_SyncedText> createState() => _SyncedTextState();
-}
-
-class _SyncedTextState extends State<_SyncedText> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value);
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _SyncedText old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value != _c.text) {
-      _c.text = widget.value;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      maxLines: widget.maxLines,
-      placeholder: widget.hint,
-      onChanged: widget.onChanged,
-    );
-  }
-}
-
-class _NumBox extends StatefulWidget {
-  const _NumBox({required this.value, required this.onChanged, this.hint});
-  final num? value;
-  final ValueChanged<num?> onChanged;
-  final String? hint;
-
-  @override
-  State<_NumBox> createState() => _NumBoxState();
-}
-
-class _NumBoxState extends State<_NumBox> {
-  late final TextEditingController _c =
-      TextEditingController(text: _fmt(widget.value));
-  final FocusNode _focus = FocusNode();
-
-  static String _fmt(num? v) {
-    if (v == null) return '';
-    if (v is double && v == v.roundToDouble()) return v.toInt().toString();
-    return v.toString();
-  }
-
-  @override
-  void didUpdateWidget(covariant _NumBox old) {
-    super.didUpdateWidget(old);
-    final cur = _fmt(widget.value);
-    if (!_focus.hasFocus && cur != _c.text) _c.text = cur;
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) =>
-          widget.onChanged(v.trim().isEmpty ? null : num.tryParse(v.trim())),
-    );
-  }
-}
-
-class _ListNumField extends StatefulWidget {
-  const _ListNumField({
-    required this.value,
-    required this.onChanged,
-    this.hint,
-  });
-
-  final List<int> value;
-  final ValueChanged<List<int>> onChanged;
-  final String? hint;
-
-  @override
-  State<_ListNumField> createState() => _ListNumFieldState();
-}
-
-class _ListNumFieldState extends State<_ListNumField> {
-  late final TextEditingController _c =
-      TextEditingController(text: widget.value.join(', '));
-  final FocusNode _focus = FocusNode();
-
-  @override
-  void didUpdateWidget(covariant _ListNumField old) {
-    super.didUpdateWidget(old);
-    if (!_focus.hasFocus && widget.value.join(', ') != _c.text) {
-      _c.text = widget.value.join(', ');
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return fluent.TextBox(
-      controller: _c,
-      focusNode: _focus,
-      placeholder: widget.hint,
-      onChanged: (v) {
-        final text = v.replaceAll('，', ',');
-        final parts = text
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
-        final nums = <int>[];
-        for (final p in parts) {
-          final n = int.tryParse(p);
-          if (n == null) return; // 有非法项时暂不写回
-          nums.add(n);
-        }
-        widget.onChanged(nums);
-      },
-    );
-  }
-}
-
-class _MiniBtn extends StatefulWidget {
-  const _MiniBtn({
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final bool enabled;
-  final bool danger;
-
-  @override
-  State<_MiniBtn> createState() => _MiniBtnState();
-}
-
-class _MiniBtnState extends State<_MiniBtn> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = !widget.enabled
-        ? palette.iconDisabled
-        : widget.danger
-            ? palette.statusDanger
-            : palette.textPrimary;
-    return MouseRegion(
-      cursor:
-          widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: AppMotion.fast,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hover && widget.enabled ? palette.card : palette.bgAlt,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: widget.danger && widget.enabled
-                  ? palette.statusDanger.withValues(alpha: 0.35)
-                  : palette.border,
-            ),
-          ),
-          child: Text(
-            widget.label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, color: color),
-          ),
-        ),
-      ),
     );
   }
 }

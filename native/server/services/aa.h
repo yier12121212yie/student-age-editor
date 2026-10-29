@@ -138,9 +138,18 @@ std::optional<std::pair<std::string, std::string>> read_portrait_local_tex(
 // nullopt。上传布局约定见 packaging/gateway/PORTRAITS.md。
 std::optional<std::string> portrait_url_for(const std::string& key);
 
+// 探测与解析人物立绘本地目录（优先 EDITOR_PORTRAIT_DIR，其次 Tex2D/role）
+std::string resolve_portrait_dir();
+std::shared_ptr<DecodedPack> portrait_local_store();
+bool has_portrait_local_tex(const std::string& key);
+
 // 是否配置了人物图片资源扩展来源（本地目录或对象存储 URL）——/api/aa/preview
 // 在既无游戏索引也无活动包时，据此放行而非直接 400 not ready。
 bool portrait_source_configured();
+
+// 探测与解析场景背景本地目录（优先 EDITOR_BG_DIR，其次 Tex2D/bg）
+std::string resolve_background_dir();
+std::shared_ptr<DecodedPack> background_local_store();
 
 // 背景图片资源扩展的额外来源（与人物图片资源扩展同构，供「背景展示」）：
 //   EDITOR_BG_DIR      —— 本地已解包的背景目录（tex/<文件>.webp|png|jpg）
@@ -156,6 +165,12 @@ std::optional<std::string> background_url_for(const std::string& key);
 
 // 是否配置了背景图片资源扩展来源（本地目录或对象存储 URL）。
 bool background_source_configured();
+
+// 当前活动模组本地贴图查找（支持 WYSIWYG 预览当前模组 Textures/ 下自定义立绘与背景）：
+// 未选择模组或未命中返回 nullopt。
+std::optional<std::pair<std::string, std::string>> read_mod_local_tex(
+    const std::string& key);
+bool has_mod_local_tex(const std::string& key);
 
 // Probed aa_index.json locations, first loadable wins: EDITOR_AA_INDEX_FILE →
 // <root>/_cache/aa_index → <root>/_cache/resource_packs/*/aa_index.json
@@ -174,7 +189,13 @@ std::pair<std::string, std::string> pack_active_info();
 std::string tex_mime(std::string_view ext);
 std::string aud_mime(std::string_view ext);
 
-// Register /api/aa/{keys,preview,status,export,scan}.
+// 二进制直发（性能优化）：本地立绘/背景/模组/解码包资源直接出原始字节流，
+// 对象存储扩展回 302（Location: <url>），If-None-Match 命中回 304（0 字节）。
+// 解析顺序与 POST /api/aa/preview 完全一致；纯二进制，无 Base64 / JSON 包装。
+Resp fetch_tex_raw(const std::string& key, const std::string& if_none_match);
+Resp fetch_aud_raw(const std::string& key, const std::string& if_none_match);
+
+// Register /api/aa/{keys,preview,status,export,scan,raw,tex}.
 void register_aa_routes(Router& r);
 
 }  // namespace sa

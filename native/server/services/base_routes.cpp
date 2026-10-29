@@ -132,7 +132,10 @@ void register_base_routes(Router& r) {
         }
         
         revision_manager::set_workspace_root(mod_root);
-        std::string revision = revision_manager::get_current_revision();
+        // B2：set_workspace_root 对同一 root 不再作废缓存；本接口的语义是
+        // 「现在磁盘上的指纹」，因此显式强制一次扫描（未变化的文件复用
+        // per-file 指纹，只 stat 不重读）。
+        std::string revision = revision_manager::compute_revision_cached(true);
         
         if (revision.empty()) {
             return Resp::Json(500, json{{"error", "failed to compute revision"}});
